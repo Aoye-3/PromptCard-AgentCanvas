@@ -3309,6 +3309,10 @@ const FreeCanvasTextNodeView = ({
   useLayoutEffect(() => {
     const editor = editorRef.current
     if (!editing || !editor) return
+    if (draftTextRef.current === null) {
+      editor.textContent = displayText
+      draftTextRef.current = displayText
+    }
     const restore = (offset: number) => {
       editor.focus({ preventScroll: true })
       restoreEditableCaret(editor, offset)
@@ -3331,15 +3335,11 @@ const FreeCanvasTextNodeView = ({
       if (editorRef.current) restore(offset)
     })
     caretOffsetRef.current = null
-  }, [editing, node.segments])
+  }, [displayText, editing, node.segments])
 
   useEffect(() => {
-    if (editing) {
-      draftTextRef.current = displayText
-      return
-    }
-    draftTextRef.current = null
-  }, [displayText, editing])
+    if (!editing) draftTextRef.current = null
+  }, [editing])
 
   const handleInput = () => {
     const editor = editorRef.current
@@ -3352,7 +3352,6 @@ const FreeCanvasTextNodeView = ({
     const diff = diffTextRange(displayText, nextText)
     if (!diff) return
     onTextRangeReplace(node.id, { start: diff.start, end: diff.end }, diff.insertedText, userColor)
-    draftTextRef.current = null
   }
 
   const handlePaste = (event: ReactClipboardEvent<HTMLDivElement>) => {
@@ -3413,13 +3412,14 @@ const FreeCanvasTextNodeView = ({
         onKeyUp={captureSelection}
         onBlur={() => {
           commitDraft()
+          if (editorRef.current) editorRef.current.textContent = ''
           onEdit(null)
         }}
         onMouseDown={event => {
           if (editing) event.stopPropagation()
         }}
       >
-        {displayText ? (
+        {editing ? null : displayText ? (
           node.segments.map((segment, index) => (
             <span
               key={segment.id}
@@ -3431,7 +3431,7 @@ const FreeCanvasTextNodeView = ({
             </span>
           ))
         ) : (
-          <span className="text-gray-400">{editing ? '' : 'Double-click to type'}</span>
+          <span className="text-gray-400">Double-click to type</span>
         )}
       </div>
       <Handle type="source" position={Position.Right} className="!bg-gray-950 !opacity-0 group-hover:!opacity-100" />

@@ -900,6 +900,41 @@ describe('project-level free canvas image generation entry', () => {
     }))
   })
 
+  it('leaves editable text content unmanaged by React while editing', async () => {
+    const node = createFreeCanvasTextNode('Editable body', { x: 120, y: 160 }, 1)
+    const canvas = { ...createFreeCanvasProject(1, { nodes: [node] }), selectedNodeId: node.id }
+    let renderer!: ReturnType<typeof create>
+
+    await act(async () => {
+      renderer = create(
+        <FreeCanvasBuilderScreen
+          activeProject={{ id: 'project-a', title: 'Project A' } as IPromptProject}
+          freeCanvas={canvas}
+          imageGenerationNodeV1
+          onBack={vi.fn()}
+          onRenameProject={vi.fn()}
+          onSave={vi.fn()}
+          onChange={vi.fn()}
+        />
+      )
+    })
+
+    const reactFlow = renderer.root.find(candidate => (
+      typeof candidate.props.onNodeContextMenu === 'function' && Array.isArray(candidate.props.nodes)
+    ))
+    const TextNode = reactFlow.props.nodeTypes.freeCanvasNode
+    let nodeRenderer!: ReturnType<typeof create>
+    await act(async () => {
+      nodeRenderer = create(
+        <TextNode data={{ ...reactFlow.props.nodes[0].data, editing: true }} selected />
+      )
+    })
+
+    const editor = nodeRenderer.root.findByProps({ 'data-free-canvas-text-content': true })
+    expect(editor.props.contentEditable).toBe(true)
+    expect(editor.children).toHaveLength(0)
+  })
+
   it('applies append proposals as a new user segment and rejects stale selection rewrites', async () => {
     const node = createFreeCanvasTextNode('Original', { x: 120, y: 160 }, 10)
     const canvas = { ...createFreeCanvasProject(1, { nodes: [node] }), selectedNodeId: node.id }
