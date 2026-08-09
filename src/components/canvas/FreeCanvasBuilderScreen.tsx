@@ -1766,6 +1766,20 @@ const FreeCanvasBuilderInner = ({
       : null)
   }, [imageComposerDraft, maxComposerImages])
 
+  const addCanvasTextAsComposerReference = useCallback((nodeId: string) => {
+    const node = freeCanvasRef.current.nodes.find(
+      candidate => candidate.id === nodeId && candidate.kind === 'text'
+    )
+    if (!node) return
+    setRightPanelMode('image-generation')
+    setRightPanelCollapsed(false)
+    const result = injectCanvasNodesIntoDraft(imageComposerDraft, [node])
+    setImageComposerDraft(result.draft)
+    setUploadError(result.rejected.length > 0
+      ? result.rejected.map(item => item.reason).join(' ')
+      : null)
+  }, [imageComposerDraft])
+
   const addCanvasImageAsAgentReference = useCallback((node: IFreeCanvasImageNode) => {
     setRightPanelCollapsed(false)
     setAgentDraftRequest({
@@ -1964,8 +1978,12 @@ const FreeCanvasBuilderInner = ({
       void sendTextNodeToAgent(nodeId, 'reference')
       return
     }
+    if (command === 'send-to-image-generation') {
+      addCanvasTextAsComposerReference(nodeId)
+      return
+    }
     deleteCanvasNodes(nodeId)
-  }, [copyTextNode, deleteCanvasNodes, sendTextNodeToAgent])
+  }, [addCanvasTextAsComposerReference, copyTextNode, deleteCanvasNodes, sendTextNodeToAgent])
 
   useEffect(() => {
     const handleLocalShortcut = (event: KeyboardEvent) => {
@@ -2731,6 +2749,11 @@ const FreeCanvasBuilderInner = ({
                 <CanvasTextNodeContextMenu
                   position={{ x: nodeContextMenu.x, y: nodeContextMenu.y }}
                   completeDisabled={previewMode}
+                  imageGenerationDisabled={
+                    previewMode
+                    || !imageGenerationNodeV1
+                    || !freeCanvasTextSegmentsToPlainText(contextNode.segments).trim()
+                  }
                   onExecute={command => executeTextCommand(contextNode.id, command)}
                   onClose={closeNodeContextMenu}
                 />

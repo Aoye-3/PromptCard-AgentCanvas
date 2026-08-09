@@ -805,7 +805,7 @@ describe('project-level free canvas image generation entry', () => {
 
     const menu = renderer.root.findByProps({ 'aria-label': '文字节点菜单' })
     const labels = menu.findAllByType('button').map(button => button.findAllByType('span')[1]?.children[0])
-    expect(labels).toEqual(expect.arrayContaining(['复制', '补全', '发送到 Agent', '删除']))
+    expect(labels).toEqual(expect.arrayContaining(['复制', '补全', '发送到 Agent', '发送到图片生成参考', '删除']))
     expect(onChange).not.toHaveBeenCalled()
 
     const complete = menu.findAllByType('button').find(button => (
@@ -835,6 +835,20 @@ describe('project-level free canvas image generation entry', () => {
     expect(referencePanel.props['data-agent-draft']).toBe('')
     expect(referencePanel.props['data-agent-node-id']).toBe(node.id)
     expect(referencePanel.props['data-agent-node-role']).toBe('reference')
+
+    act(() => reactFlow.props.onNodeContextMenu({
+      preventDefault: vi.fn(),
+      clientX: 240,
+      clientY: 180,
+      currentTarget: null
+    }, reactFlow.props.nodes[0]))
+    const imageReferenceMenu = renderer.root.findByProps({ 'aria-label': '文字节点菜单' })
+    const sendToImageGeneration = imageReferenceMenu.findAllByType('button').find(button => (
+      button.findAllByType('span').some(span => span.children.includes('发送到图片生成参考'))
+    ))!
+    act(() => sendToImageGeneration.props.onClick())
+
+    expect(renderer.root.findByProps({ 'data-free-canvas-image-generation-panel': true })).toBeTruthy()
   })
 
   it('keeps text styling controls collapsed and renders a readable rename input', async () => {
