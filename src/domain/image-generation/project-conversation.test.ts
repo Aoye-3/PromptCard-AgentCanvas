@@ -3,9 +3,11 @@ import type { IFreeCanvasImageNode, IFreeCanvasTextNode } from '@/models/PromptH
 import type { ImageGenerationRun } from '@/storage/storage-service-client'
 import {
   buildConversationGenerationRequest,
+  compileConversationPromptDocument,
   createEmptyConversationDraft,
   injectCanvasNodesIntoDraft,
   projectRunToTurn,
+  removeConversationTextReference,
   rebuildPreparedImageGenerationRequest
 } from './project-conversation'
 
@@ -82,16 +84,68 @@ describe('project image generation conversations', () => {
       imageNode('image-missing')
     ])
 
-    expect(result.draft.promptDocument).toEqual({
-      version: 1,
-      segments: [{ type: 'text', text: 'First prompt' }]
-    })
+    expect(result.draft.promptDocument).toEqual({ version: 1, segments: [{ type: 'text', text: '' }] })
+    expect(result.draft.textReferences).toEqual([{
+      nodeId: 'text-1',
+      label: 'text-1',
+      text: 'First prompt',
+      order: 0
+    }])
     expect(result.draft.inputs).toMatchObject([{
       assetId: 'asset-local',
       order: 0,
       role: 'reference-image'
     }])
     expect(result.rejected).toEqual([{ nodeId: 'image-missing', reason: '图片节点没有可用的本地资产。' }])
+  })
+
+  it('refreshes a repeated text reference without changing its order or visible prompt', () => {
+    const first = injectCanvasNodesIntoDraft(createEmptyConversationDraft(), [
+      { ...textNode('text-1', 'First snapshot'), title: 'First title' }
+    ])
+    const second = injectCanvasNodesIntoDraft(first.draft, [
+      { ...textNode('text-1', 'Updated snapshot'), title: 'Updated title' }
+    ])
+
+    expect(second.draft.promptDocument).toEqual({ version: 1, segments: [{ type: 'text', text: '' }] })
+    expect(second.draft.textReferences).toEqual([{
+      nodeId: 'text-1',
+      label: 'Updated title',
+      text: 'Updated snapshot',
+      order: 0
+    }])
+  })
+
+  it('compiles manual prompt before ordered text reference snapshots', () => {
+    const draft = {
+      ...createEmptyConversationDraft(),
+      promptDocument: { version: 1 as const, segments: [{ type: 'text' as const, text: 'User instruction' }] },
+      textReferences: [
+        { nodeId: 'text-2', label: 'Second', text: 'Second reference', order: 1 },
+        { nodeId: 'text-1', label: 'First', text: 'First reference', order: 0 }
+      ]
+    }
+
+    expect(compileConversationPromptDocument(draft)).toEqual({
+      version: 1,
+      segments: [{ type: 'text', text: 'User instruction\nFirst reference\nSecond reference' }]
+    })
+    expect(buildConversationGenerationRequest('project-1', 'conversation-1', draft).promptDocument)
+      .toEqual(compileConversationPromptDocument(draft))
+  })
+
+  it('removes a text reference without changing the visible prompt', () => {
+    const promptDocument = { version: 1 as const, segments: [{ type: 'text' as const, text: 'Keep me' }] }
+    const draft = {
+      ...createEmptyConversationDraft(),
+      promptDocument,
+      textReferences: [{ nodeId: 'text-1', label: 'Text 1', text: 'Reference', order: 0 }]
+    }
+
+    const next = removeConversationTextReference(draft, 'text-1')
+
+    expect(next.promptDocument).toEqual(promptDocument)
+    expect(next.textReferences).toEqual([])
   })
 
   it('preserves provider-neutral operation and creative lineage in the request snapshot', () => {
