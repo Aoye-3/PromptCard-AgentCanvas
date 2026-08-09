@@ -1178,6 +1178,69 @@ describe('project-level free canvas image generation entry', () => {
     })
   })
 
+  it('keeps a newly submitted placeholder running before its run record becomes visible', async () => {
+    configureReadyImageModel()
+    let latestCanvas = createFreeCanvasProject(1)
+    let finishGeneration: ((result: Record<string, unknown>) => void) | undefined
+    mocks.requestGeneration.mockImplementation(() => new Promise(resolve => { finishGeneration = resolve }))
+    let renderer!: ReturnType<typeof create>
+
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(latestCanvas)
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={{ id: 'project-a', title: 'Project A' } as IPromptProject}
+          freeCanvas={canvas}
+          imageGenerationNodeV1
+          onBack={vi.fn()}
+          onRenameProject={vi.fn()}
+          onSave={vi.fn()}
+          onChange={nextCanvas => {
+            latestCanvas = nextCanvas
+            setCanvas(nextCanvas)
+          }}
+          onPersistCanvas={async nextCanvas => {
+            latestCanvas = nextCanvas
+            setCanvas(nextCanvas)
+            return true
+          }}
+        />
+      )
+    }
+
+    await act(async () => {
+      renderer = create(<Harness />)
+    })
+    openImageGenerationPanel(renderer)
+    const prompt = renderer.root.findByProps({ 'aria-label': '图片描述' })
+    await act(async () => {
+      prompt.props.onInput({ currentTarget: promptEditorWithText('A red apple') })
+      await Promise.resolve()
+      renderer.root.findAllByType('form')[0].props.onSubmit({ preventDefault: vi.fn() })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(mocks.requestGeneration).toHaveBeenCalledTimes(1)
+    expect(latestCanvas.nodes[0]).toMatchObject({
+      meta: { generationState: 'running' }
+    })
+    expect(latestCanvas.nodes[0].meta).not.toHaveProperty('generationErrorCode')
+
+    await act(async () => {
+      finishGeneration?.({
+        runId: latestCanvas.nodes[0].meta.generationRunId,
+        state: 'succeeded',
+        assetId: 'asset-output.png',
+        captureId: 'capture-output',
+        contentType: 'image/png',
+        width: 1024,
+        height: 1024
+      })
+      await Promise.resolve()
+    })
+  })
+
   it('does not start the provider request when placeholder persistence fails', async () => {
     configureReadyImageModel()
     const onChange = vi.fn()

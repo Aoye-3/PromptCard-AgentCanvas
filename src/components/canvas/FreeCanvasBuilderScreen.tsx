@@ -1096,6 +1096,7 @@ const FreeCanvasBuilderInner = ({
         if (!isRunningFreeCanvasImageGeneration(node)) return false
         const runId = String(node.meta?.generationRunId || '')
         return !scheduledGenerationRunIdsRef.current.has(runId)
+          && !activeGenerationRunIdsRef.current.has(runId)
       })
       if (runningNodes.length === 0) return
       const runs = await Promise.all(runningNodes.map(async node => {
@@ -1212,6 +1213,8 @@ const FreeCanvasBuilderInner = ({
       || (!identity.resumePrepared && !imageModelUsable)
     ) return false
     const runId = identity.runId || createImageGenerationRunId()
+    if (activeGenerationRunIdsRef.current.has(runId)) return false
+    activeGenerationRunIdsRef.current.add(runId)
     const frame = imageGenerationPlaceholderFrame(snapshot)
     const current = freeCanvasRef.current
     const sourceNodeId = snapshot.operation?.source.nodeId
@@ -1266,6 +1269,7 @@ const FreeCanvasBuilderInner = ({
       }
     }
     if (!placeholderSaved) {
+      activeGenerationRunIdsRef.current.delete(runId)
       const failedCanvas = failFreeCanvasImageGeneration(freeCanvasRef.current, runId, 'storage_write_failed')
       emitGenerationCanvas(failedCanvas)
       const presentation = getRuntimeErrorPresentation('storage_write_failed')
@@ -1291,8 +1295,6 @@ const FreeCanvasBuilderInner = ({
       }))
       setImageAnnotationDocuments({})
     }
-    if (activeGenerationRunIdsRef.current.has(runId)) return false
-    activeGenerationRunIdsRef.current.add(runId)
     try {
       const request = identity.preparedRequest || buildConversationGenerationRequest(
         activeProject.id,
