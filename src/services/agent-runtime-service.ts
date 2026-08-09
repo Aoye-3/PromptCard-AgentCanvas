@@ -1,5 +1,6 @@
 import type {
   AgentInfo,
+  AgentCanvasEdit,
   AgentFreeCanvasTextInsertion,
   AgentFreeCanvasTextProposalBasis,
   AgentRunProvenance,
@@ -11,6 +12,8 @@ import type {
   CanvasAgentNodeContext,
   PromptLibraryWriteProposal
 } from '@/models/Agent.model'
+
+export type PromptLanguageMode = 'zh' | 'en' | 'mixed'
 
 const AGENT_API_BASE = '/agent-api'
 const PROMPTCARD_RUNTIME_BASE = `${AGENT_API_BASE}/promptcard/runtime`
@@ -161,6 +164,7 @@ export const agentRuntimeService = {
       requestId?: string
       text: string
       proposals: AgentWorkspaceProposal[]
+      canvasEdits: AgentCanvasEdit[]
       diagnostics?: Record<string, unknown>
     }>(`${PROMPTCARD_RUNTIME_BASE}/messages`, {
       method: 'POST',
@@ -192,6 +196,7 @@ export const agentRuntimeService = {
     content: string
     history?: Array<{ role: 'user' | 'assistant'; text: string }>
     mediaAction?: 'chat' | 'preview' | 'selection-rewrite'
+    promptLanguageMode?: PromptLanguageMode
     mediaPreview?: Record<string, unknown> | null
     selection?: { start: number; end: number; text: string } | null
   }) =>

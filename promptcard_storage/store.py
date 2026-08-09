@@ -977,12 +977,17 @@ class SqliteStore:
             connection.execute("DELETE FROM recent_captures WHERE id=?", (item_id,))
 
     def register_recent_captures_to_prompt_library(self, payload: dict[str, Any]) -> dict[str, Any]:
+        intent = payload.get("intent") or "initial"
         mode = payload.get("mode")
         requested = payload.get("captures")
+        if intent not in {"initial", "analysis-derived"}:
+            raise ValueError("Registration intent must be initial or analysis-derived")
         if mode not in {"separate", "merged"}:
             raise ValueError("Registration mode must be separate or merged")
         if not isinstance(requested, list) or not requested:
             raise ValueError("At least one recent capture is required")
+        if intent == "analysis-derived" and (mode != "separate" or len(requested) != 1):
+            raise ValueError("Analysis-derived registration requires exactly one separate capture")
 
         with self._transaction() as connection:
             captures: list[dict[str, Any]] = []
@@ -998,7 +1003,7 @@ class SqliteStore:
                 capture = json.loads(row[0])
                 if capture["revision"] != request.get("revision"):
                     raise RevisionConflict(capture)
-                if capture.get("registeredPromptId"):
+                if capture.get("registeredPromptId") and intent != "analysis-derived":
                     raise ValueError(f"Recent capture is already registered: {capture['id']}")
                 asset_row = connection.execute(
                     "SELECT original_filename, content_type, size FROM assets WHERE asset_id=? AND lifecycle_status='active'",
@@ -1060,6 +1065,9 @@ class SqliteStore:
 
             registered: list[dict[str, Any]] = []
             for capture_index, capture in enumerate(captures):
+                if capture.get("registeredPromptId") and intent == "analysis-derived":
+                    registered.append(capture)
+                    continue
                 preset_index = capture_index if mode == "separate" else 0
                 updated = normalize_recent_capture({
                     **capture,

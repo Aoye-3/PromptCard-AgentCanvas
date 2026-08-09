@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -33,6 +33,9 @@ from app.gateway.text_generation.service import (
     complete_sdk_text,
     resolve_text_model,
 )
+
+
+MAX_CANVAS_AGENT_IMAGE_BYTES = 30 * 1024 * 1024
 
 
 class PromptCardRuntimeMessageRequest(BaseModel):
@@ -79,6 +82,10 @@ class PromptCardMediaAnalysisRequest(BaseModel):
     content: str = Field(default="", max_length=20_000)
     history: list[dict[str, Any]] = Field(default_factory=list, max_length=40)
     media_action: str = Field(default="chat", alias="mediaAction")
+    prompt_language_mode: Literal["zh", "en", "mixed"] = Field(
+        default="mixed",
+        alias="promptLanguageMode",
+    )
     media_preview: dict[str, Any] | None = Field(default=None, alias="mediaPreview")
     selection: dict[str, Any] | None = None
 
@@ -237,7 +244,31 @@ class PromptCardRuntimeService:
         payload["threadId"] = conversation_id or body.thread_id
         payload["requestId"] = request_id
         payload["modelDescriptor"] = descriptor
+        attachments = await _load_canvas_image_attachments(
+            resolved_canvas_context,
+            descriptor,
+        )
+        if attachments:
+            payload["attachments"] = attachments
         response = await _invoke_text_agent(payload)
+        raw_canvas_edits = response.get("canvasEdits")
+        raw_canvas_edits = raw_canvas_edits if isinstance(raw_canvas_edits, list) else []
+        response["canvasEdits"] = validate_agent_canvas_edits(
+            raw_canvas_edits,
+            workspace_context=body.workspace_context,
+            permission_scope=body.permission_scope,
+            canvas_node_context=resolved_canvas_context,
+        )
+        if raw_canvas_edits:
+            response["diagnostics"] = {
+                **(response.get("diagnostics") or {}),
+                "canvasEditValidation": {
+                    "received": len(raw_canvas_edits),
+                    "accepted": len(response["canvasEdits"]),
+                },
+            }
+            if not response["canvasEdits"]:
+                response["text"] = "画布修改未通过校验，请重试。"
         response["proposals"] = validate_agent_proposals(
             response.get("proposals") or [],
             workspace_context=body.workspace_context,
@@ -258,6 +289,13 @@ class PromptCardRuntimeService:
             else proposal
             for proposal in response["proposals"]
         ]
+        response["canvasEdits"] = [
+            {
+                **edit,
+                "provenance": {"model": model_snapshot, "skills": skill_audit},
+            }
+            for edit in response["canvasEdits"]
+        ]
         if conversation_id and body.project_id:
             saved = await _storage_request(
                 "POST",
@@ -274,7 +312,11 @@ class PromptCardRuntimeService:
                             else {}
                         ),
                     },
-                    "assistantMessage": {"role": "assistant", "text": response.get("text", "")},
+                    "assistantMessage": {
+                        "role": "assistant",
+                        "text": response.get("text", ""),
+                        "canvasEdits": response["canvasEdits"],
+                    },
                     "proposals": response["proposals"],
                     "modelSnapshot": model_snapshot,
                     "skillSnapshots": skill_audit,
@@ -316,6 +358,7 @@ class PromptCardRuntimeService:
                 "promptLibrary": [],
                 "history": _agent_history(body.history),
                 "mediaAction": body.media_action,
+                "promptLanguageMode": body.prompt_language_mode,
                 "mediaPreview": body.media_preview,
                 "modelDescriptor": resolve_text_model(None),
                 "selection": body.selection,
@@ -565,6 +608,66 @@ def validate_agent_proposals(
     return validated
 
 
+def validate_agent_canvas_edits(
+    edits: list[dict[str, Any]],
+    *,
+    workspace_context: dict[str, Any] | None,
+    permission_scope: str,
+    canvas_node_context: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if permission_scope != "workspace-chatbot-agent" or canvas_node_context is None:
+        return []
+    selected_text_id = canvas_node_context.get("targetNodeId")
+    if not selected_text_id:
+        return []
+    snapshot = (
+        workspace_context.get("snapshot")
+        if isinstance(workspace_context, dict)
+        else {}
+    ) or {}
+    selected_node = canvas_node_context.get("targetNode")
+    if not isinstance(selected_node, dict):
+        selected_node = next(
+            (
+                node for node in snapshot.get("nodes", [])
+                if isinstance(node, dict) and str(node.get("id")) == str(selected_text_id)
+            ),
+            None,
+        )
+
+    validated: list[dict[str, Any]] = []
+    for index, edit in enumerate(edits):
+        if not isinstance(edit, dict):
+            continue
+        kind = edit.get("kind")
+        if (
+            canvas_node_context.get("mode") == "complete"
+            and kind == "free_canvas_text_insertions"
+            and _valid_canvas_insertions(edit.get("insertions"), selected_node)
+            and str(edit.get("rationale") or "").strip()
+        ):
+            validated.append({
+                **_canvas_edit_base(edit, index),
+                "nodeId": str(selected_text_id),
+                "insertions": edit["insertions"],
+                **_canvas_protection(selected_node),
+            })
+        elif (
+            canvas_node_context.get("mode") == "rewrite"
+            and kind == "free_canvas_text_create"
+            and isinstance(edit.get("userText"), str)
+            and edit["userText"].strip()
+            and str(edit.get("rationale") or "").strip()
+        ):
+            validated.append({
+                **_canvas_edit_base(edit, index),
+                "kind": "free_canvas_text_create",
+                "sourceNodeId": str(selected_text_id),
+                "basis": _canvas_protection(selected_node),
+            })
+    return validated
+
+
 def _proposal_base(proposal: dict[str, Any], index: int) -> dict[str, Any]:
     return {
         **proposal,
@@ -593,6 +696,34 @@ def _canvas_proposal_base(proposal: dict[str, Any], index: int) -> dict[str, Any
         },
         index,
     )
+
+
+def _canvas_edit_base(edit: dict[str, Any], index: int) -> dict[str, Any]:
+    gateway_controlled_fields = {
+        "nodeId",
+        "sourceNodeId",
+        "mode",
+        "editMode",
+        "selection",
+        "basis",
+        "baseNodeRevision",
+        "templateDigest",
+        "baseContentDigest",
+        "baseSegmentsDigest",
+        "provenance",
+        "status",
+    }
+    filtered = {
+        key: value
+        for key, value in edit.items()
+        if key not in gateway_controlled_fields
+    }
+    return {
+        **filtered,
+        "id": str(filtered.get("id") or f"canvas-edit-{int(time.time() * 1000)}-{index}"),
+        "agentName": str(filtered.get("agentName") or "PromptCard Agent"),
+        "createdAt": int(filtered.get("createdAt") or int(time.time() * 1000)),
+    }
 
 
 def _canvas_protection(selected: dict[str, Any] | None) -> dict[str, Any]:
@@ -726,9 +857,16 @@ def _resolve_canvas_node_context(body: PromptCardRuntimeMessageRequest) -> dict[
         raise HTTPException(status_code=422, detail="canvas_node_context_nodes_invalid")
     if target_id and target_id in reference_ids:
         raise HTTPException(status_code=422, detail="canvas_node_context_roles_invalid")
-    attached_ids = ({target_id} if target_id else set()) | set(reference_ids)
-    if any(node_id not in nodes or nodes[node_id].get("kind") != "text" for node_id in attached_ids):
+    if target_id and (target_id not in nodes or nodes[target_id].get("kind") != "text"):
         raise HTTPException(status_code=422, detail="canvas_node_context_node_invalid")
+    if any(
+        node_id not in nodes or nodes[node_id].get("kind") not in {"text", "image"}
+        for node_id in reference_ids
+    ):
+        raise HTTPException(status_code=422, detail="canvas_node_context_node_invalid")
+    attached_ids = set(reference_ids)
+    if target_id:
+        attached_ids.add(target_id)
     mentions = raw.get("mentions")
     if not isinstance(mentions, list) or any(
         not isinstance(mention, dict)
@@ -790,6 +928,50 @@ def _resolve_canvas_node_context(body: PromptCardRuntimeMessageRequest) -> dict[
         "targetNode": nodes.get(target_id) if target_id else None,
         "referenceNodes": [nodes[node_id] for node_id in reference_ids],
     }
+
+
+async def _load_canvas_image_attachments(
+    context: dict[str, Any] | None,
+    descriptor: dict[str, Any],
+) -> list[dict[str, str]]:
+    reference_nodes = context.get("referenceNodes") if context else []
+    image_nodes = [
+        node for node in reference_nodes or []
+        if isinstance(node, dict) and node.get("kind") == "image"
+    ]
+    if not image_nodes:
+        return []
+
+    capabilities = descriptor.get("model", {}).get("capabilities", {})
+    inputs = capabilities.get("input", []) if isinstance(capabilities, dict) else []
+    if not isinstance(inputs, list) or "image" not in inputs:
+        raise HTTPException(status_code=422, detail="agent_model_image_input_unsupported")
+
+    storage = PromptCardStorageClient()
+    attachments: list[dict[str, str]] = []
+    total_bytes = 0
+    try:
+        for node in image_nodes:
+            asset_id = node.get("assetId")
+            if not isinstance(asset_id, str) or not asset_id.strip():
+                raise HTTPException(status_code=422, detail="canvas_reference_image_asset_invalid")
+            try:
+                asset = await run_in_threadpool(storage.load_asset, asset_id)
+            except StorageGatewayError:
+                raise HTTPException(status_code=502, detail="canvas_reference_image_unavailable") from None
+            if not asset.content_type.startswith("image/"):
+                raise HTTPException(status_code=422, detail="canvas_reference_image_asset_invalid")
+            total_bytes += len(asset.content)
+            if total_bytes > MAX_CANVAS_AGENT_IMAGE_BYTES:
+                raise HTTPException(status_code=413, detail="canvas_reference_images_too_large")
+            attachments.append({
+                "assetId": asset_id,
+                "contentType": asset.content_type,
+                "data": base64.b64encode(asset.content).decode("ascii"),
+            })
+    finally:
+        storage.close()
+    return attachments
 
 
 def _canvas_node_context_audit(context: dict[str, Any]) -> dict[str, Any]:
@@ -1022,6 +1204,7 @@ def _saved_turn_response(
         "requestId": request_id,
         "text": str(assistant.get("text") or ""),
         "proposals": turn.get("proposals") or [],
+        "canvasEdits": assistant.get("canvasEdits") or [],
         "diagnostics": {"idempotent": True, "modelSnapshot": turn.get("modelSnapshot")},
     }
 

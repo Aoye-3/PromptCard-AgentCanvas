@@ -5,7 +5,7 @@ import type { AgentMessage, AgentWorkspaceContext, AgentWorkspaceProposal } from
 
 const mocks = vi.hoisted(() => ({
   checkRuntime: vi.fn(),
-  sendMessage: vi.fn().mockResolvedValue([]),
+  sendMessage: vi.fn().mockResolvedValue({ proposals: [], canvasEdits: [] }),
   markProposalStatus: vi.fn(),
   init: vi.fn(),
   sessionError: undefined as string | undefined,
@@ -98,6 +98,33 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     expect(markup).not.toContain('>发送给 Agent</button>')
   })
 
+  it('renders assistant Markdown as semantic conversation content', () => {
+    mocks.messages = [{
+      id: 'assistant-markdown',
+      role: 'assistant',
+      content: '## 推荐方案\n\n- 第一镜头\n- 第二镜头\n\n```text\ncinematic lighting\n```\n\n**重点**',
+      createdAt: 1
+    }]
+
+    const markup = renderToStaticMarkup(
+      <AgentCollaborationPanel
+        title="Free Canvas Agent"
+        mode="free-canvas-workspace"
+        workspaceContext={workspaceContext}
+        onApplyWorkspaceProposal={vi.fn()}
+        embedded
+      />
+    )
+
+    expect(markup).toContain('<h2')
+    expect(markup).toContain('<ul')
+    expect(markup).toContain('<li>第一镜头</li>')
+    expect(markup).toContain('<pre')
+    expect(markup).toContain('<code')
+    expect(markup).toContain('<strong>重点</strong>')
+    expect(markup).not.toContain('## 推荐方案')
+  })
+
   it('moves the third quick action behind the compact overflow control', () => {
     let renderer!: ReactTestRenderer
     act(() => {
@@ -180,6 +207,82 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     expect(markup).not.toContain('Secret full prompt')
     expect(renderer.root.findByProps({ 'aria-label': 'Canvas Agent 编辑模式' }).props.value).toBe('complete')
     expect(mocks.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('attaches an image node as an Agent reference', () => {
+    const imageContext: AgentWorkspaceContext = {
+      ...workspaceContext,
+      snapshot: {
+        nodes: [{ id: 'image-1', kind: 'image', title: 'Yellow Crane Tower reference', assetId: 'asset-1' }]
+      }
+    }
+
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={imageContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          draftRequest={{ id: 'reference-image-1', canvasNode: { nodeId: 'image-1', role: 'reference' } }}
+          embedded
+        />
+      )
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('Yellow Crane Tower reference')
+  })
+
+  it('applies a returned Canvas edit immediately without rendering approval controls', async () => {
+    const applyCanvasEdit = vi.fn().mockResolvedValue(true)
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [],
+      canvasEdits: [{
+        id: 'canvas-edit-1',
+        kind: 'free_canvas_text_insertions',
+        agentName: 'PromptCard Agent',
+        nodeId: 'text-1',
+        insertions: [{
+          text: ' inserted',
+          reason: 'Add detail',
+          anchor: { type: 'segment', segmentId: 'segment-1', position: 'after' }
+        }],
+        baseNodeRevision: 2,
+        templateDigest: 'sha256:template',
+        baseSegmentsDigest: 'sha256:segments',
+        rationale: 'Complete the prompt',
+        createdAt: 1
+      }]
+    })
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          draftRequest={{ id: 'target-1', canvasNode: { nodeId: 'text-1', role: 'target', mode: 'complete' } }}
+          embedded
+        />
+      )
+    })
+    const composer = renderer.root.findByProps({ contentEditable: true })
+    act(() => composer.props.onInput({ currentTarget: { textContent: 'Complete it' } }))
+
+    await act(async () => {
+      composer.props.onKeyDown({
+        key: 'Enter', shiftKey: false, nativeEvent: { isComposing: false }, preventDefault: vi.fn()
+      })
+    })
+
+    expect(applyCanvasEdit).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'free_canvas_text_insertions', nodeId: 'text-1'
+    }))
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('Apply')
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('Reject')
   })
 
   it('previews every interleaved canvas insertion with its anchor reason', () => {

@@ -55,12 +55,13 @@ vi.mock('@xyflow/react', () => {
 })
 
 vi.mock('@/components/AgentCollaborationPanel', () => ({
-  AIChatbotBox: ({ draftRequest, onApplyWorkspaceProposal }: {
+  AIChatbotBox: ({ draftRequest, onApplyWorkspaceProposal, onApplyCanvasEdit }: {
     draftRequest?: {
       content?: string
       canvasNode?: { nodeId: string; role: string; mode?: string }
     }
     onApplyWorkspaceProposal?: (proposal: unknown) => void
+    onApplyCanvasEdit?: (edit: unknown) => void
   }) => (
     <div
       data-agent-panel
@@ -69,6 +70,7 @@ vi.mock('@/components/AgentCollaborationPanel', () => ({
       data-agent-node-role={draftRequest?.canvasNode?.role || ''}
       data-agent-node-mode={draftRequest?.canvasNode?.mode || ''}
       data-agent-apply={onApplyWorkspaceProposal}
+      data-agent-apply-canvas-edit={onApplyCanvasEdit}
     />
   )
 }))
@@ -448,6 +450,49 @@ describe('project-level free canvas image generation entry', () => {
     expect(mocks.getConversationRuns).not.toHaveBeenCalled()
   })
 
+  it('routes as-reference to Agent when the Agent tab is active', async () => {
+    const imageNode = createFreeCanvasImageNodeFromMedia({
+      id: 'agent-reference-source',
+      kind: 'imageAsset',
+      title: 'Agent reference image',
+      position: { x: 120, y: 160 },
+      width: 320,
+      height: 240,
+      assetId: 'asset-agent-reference.png',
+      imageUrl: '/storage-api/assets/asset-agent-reference.png',
+      meta: {}
+    })
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <FreeCanvasBuilderScreen
+          activeProject={{ id: 'project-a', title: 'Project A' } as IPromptProject}
+          freeCanvas={createFreeCanvasProject(1, {
+            nodes: [imageNode],
+            selectedNodeId: imageNode.id
+          })}
+          imageGenerationNodeV1
+          onBack={vi.fn()}
+          onRenameProject={vi.fn()}
+          onSave={vi.fn()}
+          onChange={vi.fn()}
+        />
+      )
+    })
+
+    const imageNodeData = renderer.root.find(candidate => (
+      Array.isArray(candidate.props.nodes) && candidate.props.nodes[0]?.data?.onImageCommand
+    )).props.nodes[0].data
+
+    act(() => imageNodeData.onImageCommand(imageNode.id, 'as-reference'))
+
+    const agentPanel = renderer.root.findByProps({ 'data-agent-panel': true })
+    expect(agentPanel.props['data-agent-node-id']).toBe(imageNode.id)
+    expect(agentPanel.props['data-agent-node-role']).toBe('reference')
+    expect(renderer.root.findAllByProps({ 'data-free-canvas-image-generation-panel': true })).toHaveLength(0)
+    expect(renderer.root.findAllByProps({ role: 'dialog' })).toHaveLength(0)
+  })
+
   it('adds an image directly to the Composer when 作为参考 is clicked without opening a workbench', async () => {
     const imageNode = createFreeCanvasImageNodeFromMedia({
       id: 'reference-source',
@@ -478,6 +523,7 @@ describe('project-level free canvas image generation entry', () => {
       )
     })
 
+    openImageGenerationPanel(renderer)
     const getImageNodeData = () => renderer.root.find(candidate => (
       Array.isArray(candidate.props.nodes) && candidate.props.nodes[0]?.data?.onImageCommand
     )).props.nodes[0].data
@@ -899,7 +945,7 @@ describe('project-level free canvas image generation entry', () => {
     expect(alert).toHaveBeenCalled()
   })
 
-  it('approves a source-bound rewrite as a collision-free derived node', async () => {
+  it('applies a direct source-bound rewrite as a collision-free derived node', async () => {
     const source = {
       ...createFreeCanvasTextNode('Original', { x: 120, y: 160 }, 10),
       id: 'source-text',
@@ -931,7 +977,7 @@ describe('project-level free canvas image generation entry', () => {
       )
     })
 
-    const apply = renderer.root.findByProps({ 'data-agent-panel': true }).props['data-agent-apply']
+    const apply = renderer.root.findByProps({ 'data-agent-panel': true }).props['data-agent-apply-canvas-edit']
     const templateDigest = await sha256({ presetText: '', segments: [] })
     const baseSegmentsDigest = await sha256(source.segments.map(segment => ({
       id: segment.id,

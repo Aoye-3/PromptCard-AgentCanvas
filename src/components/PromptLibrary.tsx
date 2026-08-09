@@ -6,7 +6,7 @@ import PromptLibraryForm, { type PromptLibraryFormSave } from './PromptLibraryFo
 import { PromptLibraryAgentPanel } from './PromptLibraryAgentPanel'
 import { createCategoryCounts, createPromptLibraryCategories, filterPromptLibraryPresets, type PromptLibraryCategory } from './PromptLibraryPreviewMode'
 import { PromptPresetPreviewDialog } from './prompt-media/PromptPresetPreviewDialog'
-import type { IPreset } from '@/models/Card.model'
+import { PROMPT_LIBRARY_CARD_TYPES, type IPreset } from '@/models/Card.model'
 import type { PresetReorderType } from '@/stores/preset-order'
 import { QUICK_MESSAGE_LABEL, isQuickMessagePreset } from '@/domain/prompt-library/quick-messages'
 import { useI18n } from '@/i18n'
@@ -112,18 +112,10 @@ const PromptLibrary = ({ embedded = false }: PromptLibraryProps) => {
     })
   }, [presets.length, showTrash])
 
-  const cardTypes = useMemo(() => [
-    { type: 'subject', label: cardTypeLabel('subject') },
-    { type: 'action', label: cardTypeLabel('action') },
-    { type: 'scene', label: cardTypeLabel('scene') },
-    { type: 'style', label: cardTypeLabel('style') },
-    { type: 'camera', label: cardTypeLabel('camera') },
-    { type: 'lighting', label: cardTypeLabel('lighting') },
-    { type: 'timing', label: cardTypeLabel('timing') },
-    { type: 'audio', label: cardTypeLabel('audio') },
-    { type: 'constraint', label: cardTypeLabel('constraint') },
-    { type: 'custom', label: cardTypeLabel('custom') }
-  ], [cardTypeLabel])
+  const cardTypes = useMemo(
+    () => PROMPT_LIBRARY_CARD_TYPES.map(type => ({ type, label: cardTypeLabel(type) })),
+    [cardTypeLabel]
+  )
   const promptLibraryCategories = useMemo(() => createPromptLibraryCategories(cardTypes), [cardTypes])
 
   const visiblePresets = showTrash && mode === 'edit' ? trashItems.map(item => item.payload) : presets

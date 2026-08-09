@@ -35,6 +35,7 @@ class PromptCardRuntimeMessageResponse(BaseModel):
     request_id: str | None = Field(default=None, alias="requestId")
     text: str
     proposals: list[dict[str, Any]]
+    canvas_edits: list[dict[str, Any]] = Field(default_factory=list, alias="canvasEdits")
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 

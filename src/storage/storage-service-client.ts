@@ -92,6 +92,7 @@ export interface StorageArtifactQuery {
 }
 
 export interface RecentCaptureRegistrationRequest {
+  intent?: 'initial' | 'analysis-derived'
   mode: 'separate' | 'merged'
   captures: Array<{
     id: string

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Request
@@ -72,6 +72,7 @@ class PresetBatchPayload(BaseModel):
 
 
 class RecentCaptureRegistrationPayload(BaseModel):
+    intent: Literal["initial", "analysis-derived"] = "initial"
     mode: str
     captures: list[dict[str, Any]] = Field(default_factory=list)
     prompt: dict[str, Any] | None = None

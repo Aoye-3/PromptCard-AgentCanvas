@@ -161,7 +161,7 @@ import {
   type ImageGenerationRun,
   type ProjectResource
 } from '@/storage/storage-service-client'
-import type { AgentWorkspaceProposal, CanvasAgentSelection } from '@/models/Agent.model'
+import type { AgentCanvasEdit, AgentWorkspaceProposal, CanvasAgentSelection } from '@/models/Agent.model'
 import type { IPreset } from '@/models/Card.model'
 import type { FreeCanvasImageAnnotationKind, IFreeCanvasImageAnnotation, IFreeCanvasImageGeneratorNode, IFreeCanvasImageNode, IFreeCanvasNode, IFreeCanvasProject, IFreeCanvasTextNode, IPromptProject } from '@/models/PromptHistory.model'
 
@@ -1766,6 +1766,14 @@ const FreeCanvasBuilderInner = ({
       : null)
   }, [imageComposerDraft, maxComposerImages])
 
+  const addCanvasImageAsAgentReference = useCallback((node: IFreeCanvasImageNode) => {
+    setRightPanelCollapsed(false)
+    setAgentDraftRequest({
+      id: `canvas-agent-node-${node.id}-reference-${Date.now()}`,
+      canvasNode: { nodeId: node.id, role: 'reference' }
+    })
+  }, [])
+
   const retryMultiViewMember = useCallback((member: MultiViewGroupPanelMember) => {
     const current = freeCanvasRef.current
     const failedNode = current.nodes.find(node => node.id === member.nodeId && node.kind === 'image')
@@ -1930,14 +1938,18 @@ const FreeCanvasBuilderInner = ({
       return
     }
     if (commandId === 'as-reference') {
-      addCanvasImageAsComposerReference(node)
+      if (rightPanelMode === 'agent') {
+        addCanvasImageAsAgentReference(node)
+      } else if (rightPanelMode === 'image-generation') {
+        addCanvasImageAsComposerReference(node)
+      }
       return
     }
     const operation = imageOperationForCommand(commandId)
     if (operation) {
       void openImageOperationWorkbench(node, operation)
     }
-  }, [addCanvasImageAsComposerReference, applyCanvasCommand, copyVisibleImageNode, deleteCanvasNodes, exportVisibleImageNode, openImageOperationWorkbench, reactFlow])
+  }, [addCanvasImageAsAgentReference, addCanvasImageAsComposerReference, applyCanvasCommand, copyVisibleImageNode, deleteCanvasNodes, exportVisibleImageNode, openImageOperationWorkbench, reactFlow, rightPanelMode])
 
   const executeTextCommand = useCallback((nodeId: string, command: TextNodeContextCommand) => {
     if (command === 'copy') {
@@ -2468,7 +2480,7 @@ const FreeCanvasBuilderInner = ({
     void addImageFiles(files, nextNodePosition(reactFlow, freeCanvas.nodes.length))
   }
 
-  const handleApplyAgentProposal = async (proposal: AgentWorkspaceProposal) => {
+  const handleApplyAgentProposal = async (proposal: AgentWorkspaceProposal | AgentCanvasEdit) => {
     if (proposal.kind === 'free_canvas_text_insertions') {
       const currentCanvas = freeCanvasRef.current
       const target = currentCanvas.nodes.find((node): node is IFreeCanvasTextNode => (
@@ -3197,6 +3209,7 @@ const FreeCanvasBuilderInner = ({
               sessionKey={`workspace:free-canvas:${activeProject.id}`}
               workspaceContext={workspaceContext}
               onApplyWorkspaceProposal={handleApplyAgentProposal}
+              onApplyCanvasEdit={handleApplyAgentProposal}
               draftRequest={agentDraftRequest}
               compact
               embedded
