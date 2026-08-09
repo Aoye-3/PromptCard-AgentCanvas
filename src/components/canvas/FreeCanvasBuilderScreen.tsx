@@ -120,10 +120,12 @@ import {
 } from '@/domain/prompt-library/quick-messages'
 import {
   buildConversationGenerationRequest,
+  compileConversationPromptDocument,
   createEmptyConversationDraft,
   injectCanvasNodesIntoDraft,
   promptDocumentPlainText,
   projectRunToTurn,
+  removeConversationTextReference,
   rebuildPreparedImageGenerationRequest,
   type ImageGenerationComposerDraft,
   type ProjectImageGenerationInput,
@@ -1414,7 +1416,9 @@ const FreeCanvasBuilderInner = ({
     if (imageComposerDraft.connectionId && !selectedImageConnection?.enabled) missing.push('所选图片连接已停用。')
     if (selectedImageConnection && !selectedImageConnection.credentialConfigured) missing.push('所选图片连接尚未配置凭据。')
     if (selectedImageConnection && !selectedImageConnection.lastTest?.ok) missing.push('所选图片连接尚未测试成功。')
-    if (!promptDocumentPlainText(imageComposerDraft.promptDocument).trim()) missing.push('请输入本轮图片描述。')
+    if (!promptDocumentPlainText(compileConversationPromptDocument(imageComposerDraft)).trim()) {
+      missing.push('请输入本轮图片描述。')
+    }
     if (unresolvedPromptReferenceIds(imageComposerDraft.promptDocument, imageComposerDraft.inputs).length > 0) {
       missing.push('提示词包含已经失效的参考图引用。')
     }
@@ -3043,6 +3047,7 @@ const FreeCanvasBuilderInner = ({
                     role: input.role,
                     order: input.order
                   })),
+                  textReferences: imageComposerDraft.textReferences,
                   maxImages: maxComposerImages,
                   onMentionReference: referenceId => setImageComposerDraft(current => {
                     const input = current.inputs.find(candidate => candidate.referenceId === referenceId)
@@ -3070,6 +3075,9 @@ const FreeCanvasBuilderInner = ({
                     inputs: current.inputs.filter(input => input.referenceId !== referenceId).map((input, order) => ({ ...input, order })),
                     regions: current.regions.filter(region => region.referenceId !== referenceId)
                   })),
+                  onRemoveTextReference: nodeId => setImageComposerDraft(current => (
+                    removeConversationTextReference(current, nodeId)
+                  )),
                   onMoveReference: (referenceId, direction) => setImageComposerDraft(current => ({
                     ...current,
                     inputs: moveComposerImageInput(current.inputs.map(input => ({

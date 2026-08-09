@@ -187,6 +187,22 @@ describe('ImageGenerationComposer', () => {
     expect(props.onRemoveReference).toHaveBeenCalledWith('reference-one')
   })
 
+  it('renders compact text reference labels and removes them independently', () => {
+    const props: ImageGenerationComposerProps = {
+      ...createProps(),
+      textReferences: [{ nodeId: 'text-one', label: '角色设定版', order: 0 }],
+      onRemoveTextReference: vi.fn()
+    }
+    let renderer!: ReactTestRenderer
+    act(() => { renderer = create(<ImageGenerationComposer {...props} />) })
+
+    const tag = renderer.root.findByProps({ 'data-image-generation-text-reference': 'text-one' })
+    expect(tag.findAllByType('span').some(node => node.children.includes('角色设定版'))).toBe(true)
+
+    act(() => renderer.root.findByProps({ 'aria-label': '移除文字参考 角色设定版' }).props.onClick())
+    expect(props.onRemoveTextReference).toHaveBeenCalledWith('text-one')
+  })
+
   it('keeps custom dimensions in the size popover and submits through Ctrl/Cmd+Enter', () => {
     const props: ImageGenerationComposerProps = {
       ...createProps(),

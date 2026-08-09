@@ -849,6 +849,10 @@ describe('project-level free canvas image generation entry', () => {
     act(() => sendToImageGeneration.props.onClick())
 
     expect(renderer.root.findByProps({ 'data-free-canvas-image-generation-panel': true })).toBeTruthy()
+    const textReference = renderer.root.findByProps({ 'data-image-generation-text-reference': node.id })
+    expect(textReference.findAllByType('span').some(span => span.children.includes(node.title))).toBe(true)
+    act(() => renderer.root.findByProps({ 'aria-label': `移除文字参考 ${node.title}` }).props.onClick())
+    expect(renderer.root.findAllByProps({ 'data-image-generation-text-reference': node.id })).toHaveLength(0)
   })
 
   it('keeps text styling controls collapsed and renders a readable rename input', async () => {
