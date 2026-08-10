@@ -4,6 +4,7 @@ import {
   AtSign,
   Check,
   ChevronDown,
+  FileText,
   ImagePlus,
   MoreHorizontal,
   Plus,
@@ -48,6 +49,9 @@ export const ImageGenerationComposer = (props: ImageGenerationComposerProps) => 
   const references = useMemo(() => (
     [...(props.references || [])].sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
   ), [props.references])
+  const textReferences = useMemo(() => (
+    [...(props.textReferences || [])].sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+  ), [props.textReferences])
   const previewReference = previewReferenceId
     ? references.find(reference => reference.referenceId === previewReferenceId)
     : undefined
@@ -153,6 +157,27 @@ export const ImageGenerationComposer = (props: ImageGenerationComposerProps) => 
               </ComposerMenu>
             )}
           </div>
+
+          {textReferences.map(reference => (
+            <div
+              key={reference.nodeId}
+              data-image-generation-text-reference={reference.nodeId}
+              className="flex h-10 max-w-40 shrink-0 items-center gap-1.5 rounded-lg border border-[#d1d5db] bg-[#f9fafb] px-2 text-[#4b5563]"
+              title={reference.label}
+            >
+              <FileText size={14} className="shrink-0 text-[#87867f]" aria-hidden="true" />
+              <span className="min-w-0 truncate text-[11px] font-bold">{reference.label}</span>
+              <button
+                type="button"
+                aria-label={`移除文字参考 ${reference.label}`}
+                disabled={!props.onRemoveTextReference}
+                className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[#87867f] transition hover:bg-gray-200 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => props.onRemoveTextReference?.(reference.nodeId)}
+              >
+                <X size={10} strokeWidth={2.5} aria-hidden="true" />
+              </button>
+            </div>
+          ))}
 
           {references.map((reference, index) => (
             <div key={reference.referenceId} className="relative shrink-0">

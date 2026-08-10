@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react'
 import { Bot, Check, ChevronDown, Loader2, Send, Target, X } from 'lucide-react'
 import type { CanvasAgentEditMode, CanvasAgentSelection } from '@/models/Agent.model'
 import {
@@ -149,6 +149,15 @@ export function CanvasAgentComposer({
     setActiveMentionIndex(0)
   }
 
+  const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.currentTarget.ownerDocument.execCommand(
+      'insertText',
+      false,
+      event.clipboardData.getData('text/plain')
+    )
+  }
+
   const insertMention = (node: CanvasAgentNodeSummary) => {
     const editor = editorRef.current
     const range = mentionRangeRef.current
@@ -285,6 +294,7 @@ export function CanvasAgentComposer({
           className="min-h-[58px] max-h-32 w-full overflow-y-auto whitespace-pre-wrap break-words border-0 bg-transparent px-1 py-0.5 text-[13px] leading-5 text-[#141413] outline-none empty:before:pointer-events-none empty:before:text-[#87867f] empty:before:content-[attr(data-placeholder)]"
           data-placeholder="描述你想修改的内容，输入 @ 引用节点"
           onInput={handleInput}
+          onPaste={handlePaste}
           onKeyDown={handleKeyDown}
         />
         {mentionQuery !== null ? (

@@ -3,14 +3,15 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from .assets import MAX_IMAGE_IMPORT_BYTES
+from .remote_images import RemoteImage, RemoteImageError, fetch_remote_image
 from .store import (
     AssetInUse,
     AssetValidationError,
@@ -72,6 +73,7 @@ class PresetBatchPayload(BaseModel):
 
 
 class RecentCaptureRegistrationPayload(BaseModel):
+    intent: Literal["initial", "analysis-derived"] = "initial"
     mode: str
     captures: list[dict[str, Any]] = Field(default_factory=list)
     prompt: dict[str, Any] | None = None
@@ -102,7 +104,14 @@ class AgentProposalStatusPayload(AgentConversationProjectPayload):
     status: str
 
 
-def create_app(storage: SqliteStore) -> FastAPI:
+class RemoteImagePayload(BaseModel):
+    url: str
+
+
+def create_app(
+    storage: SqliteStore,
+    remote_image_fetcher: Callable[[str], RemoteImage] = fetch_remote_image,
+) -> FastAPI:
     application = FastAPI(title="PromptCard Storage", version="1.0.0")
 
     @application.get("/health")
@@ -138,6 +147,18 @@ def create_app(storage: SqliteStore) -> FastAPI:
             raise _http_error(410, "asset_deleted", "Asset was permanently deleted") from exc
         except MissingItem as exc:
             raise _http_error(404, "not_found", "Asset not found") from exc
+
+    @application.post("/api/remote-images/fetch")
+    def fetch_browser_image(payload: RemoteImagePayload) -> Response:
+        try:
+            image = remote_image_fetcher(payload.url)
+            return Response(
+                content=image.content,
+                media_type=image.content_type,
+                headers={"X-File-Name": image.filename},
+            )
+        except RemoteImageError as exc:
+            raise _http_error(400, "remote_image_rejected", str(exc)) from exc
 
     @application.get("/api/storage/summary")
     def get_storage_summary() -> dict[str, Any]:

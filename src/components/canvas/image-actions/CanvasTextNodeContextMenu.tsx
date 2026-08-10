@@ -1,15 +1,16 @@
-import { Bot, Copy, Trash2, Wand2 } from 'lucide-react'
+import { Bot, Copy, FileImage, Trash2, Wand2 } from 'lucide-react'
 import type { ContextMenuPosition } from './image-action-ui'
 import {
   CanvasContextMenu,
   CanvasContextMenuItem
 } from './CanvasContextMenu'
 
-export type TextNodeContextCommand = 'copy' | 'complete' | 'send-to-agent' | 'delete'
+export type TextNodeContextCommand = 'copy' | 'complete' | 'send-to-agent' | 'send-to-image-generation' | 'delete'
 
 interface CanvasTextNodeContextMenuProps {
   position: ContextMenuPosition
   completeDisabled?: boolean
+  imageGenerationDisabled?: boolean
   onExecute: (command: TextNodeContextCommand) => void
   onClose: () => void
 }
@@ -17,6 +18,7 @@ interface CanvasTextNodeContextMenuProps {
 export const CanvasTextNodeContextMenu = ({
   position,
   completeDisabled = false,
+  imageGenerationDisabled = false,
   onExecute,
   onClose
 }: CanvasTextNodeContextMenuProps) => {
@@ -29,7 +31,7 @@ export const CanvasTextNodeContextMenu = ({
     <CanvasContextMenu
       position={position}
       ariaLabel="文字节点菜单"
-      estimatedHeight={148}
+      estimatedHeight={184}
       onClose={onClose}
     >
       <CanvasContextMenuItem
@@ -51,6 +53,13 @@ export const CanvasTextNodeContextMenu = ({
         disabled={completeDisabled}
         title={completeDisabled ? '预览模式下无法发送到 Agent' : '作为参考节点发送到 Agent'}
         onSelect={() => execute('send-to-agent')}
+      />
+      <CanvasContextMenuItem
+        icon={<FileImage className="h-3.5 w-3.5" />}
+        label="发送到图片生成参考"
+        disabled={imageGenerationDisabled}
+        title={imageGenerationDisabled ? '当前文字节点不能发送到图片生成' : '作为文字参考发送到图片生成'}
+        onSelect={() => execute('send-to-image-generation')}
       />
       <div className="mt-1 border-t border-gray-100 pt-1">
         <CanvasContextMenuItem

@@ -55,12 +55,13 @@ vi.mock('@xyflow/react', () => {
 })
 
 vi.mock('@/components/AgentCollaborationPanel', () => ({
-  AIChatbotBox: ({ draftRequest, onApplyWorkspaceProposal }: {
+  AIChatbotBox: ({ draftRequest, onApplyWorkspaceProposal, onApplyCanvasEdit }: {
     draftRequest?: {
       content?: string
       canvasNode?: { nodeId: string; role: string; mode?: string }
     }
     onApplyWorkspaceProposal?: (proposal: unknown) => void
+    onApplyCanvasEdit?: (edit: unknown) => void
   }) => (
     <div
       data-agent-panel
@@ -69,6 +70,7 @@ vi.mock('@/components/AgentCollaborationPanel', () => ({
       data-agent-node-role={draftRequest?.canvasNode?.role || ''}
       data-agent-node-mode={draftRequest?.canvasNode?.mode || ''}
       data-agent-apply={onApplyWorkspaceProposal}
+      data-agent-apply-canvas-edit={onApplyCanvasEdit}
     />
   )
 }))
@@ -448,6 +450,109 @@ describe('project-level free canvas image generation entry', () => {
     expect(mocks.getConversationRuns).not.toHaveBeenCalled()
   })
 
+  it('routes as-reference to Agent when the Agent tab is active', async () => {
+    const imageNode = createFreeCanvasImageNodeFromMedia({
+      id: 'agent-reference-source',
+      kind: 'imageAsset',
+      title: 'Agent reference image',
+      position: { x: 120, y: 160 },
+      width: 320,
+      height: 240,
+      assetId: 'asset-agent-reference.png',
+      imageUrl: '/storage-api/assets/asset-agent-reference.png',
+      meta: {}
+    })
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <FreeCanvasBuilderScreen
+          activeProject={{ id: 'project-a', title: 'Project A' } as IPromptProject}
+          freeCanvas={createFreeCanvasProject(1, {
+            nodes: [imageNode],
+            selectedNodeId: imageNode.id
+          })}
+          imageGenerationNodeV1
+          onBack={vi.fn()}
+          onRenameProject={vi.fn()}
+          onSave={vi.fn()}
+          onChange={vi.fn()}
+        />
+      )
+    })
+
+    const imageNodeData = renderer.root.find(candidate => (
+      Array.isArray(candidate.props.nodes) && candidate.props.nodes[0]?.data?.onImageCommand
+    )).props.nodes[0].data
+
+    act(() => imageNodeData.onImageCommand(imageNode.id, 'as-reference'))
+
+    const agentPanel = renderer.root.findByProps({ 'data-agent-panel': true })
+    expect(agentPanel.props['data-agent-node-id']).toBe(imageNode.id)
+    expect(agentPanel.props['data-agent-node-role']).toBe('reference')
+    expect(renderer.root.findAllByProps({ 'data-free-canvas-image-generation-panel': true })).toHaveLength(0)
+    expect(renderer.root.findAllByProps({ role: 'dialog' })).toHaveLength(0)
+  })
+
+  it('starts typing immediately after placing a text annotation', async () => {
+    const imageNode = createFreeCanvasImageNodeFromMedia({
+      id: 'annotation-source',
+      kind: 'imageAsset',
+      title: 'Annotation source',
+      position: { x: 120, y: 160 },
+      width: 320,
+      height: 240,
+      assetId: 'asset-annotation.png',
+      imageUrl: '/storage-api/assets/asset-annotation.png',
+      meta: {}
+    })
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <FreeCanvasBuilderScreen
+          activeProject={{ id: 'project-a', title: 'Project A' } as IPromptProject}
+          freeCanvas={createFreeCanvasProject(1, {
+            nodes: [imageNode],
+            selectedNodeId: imageNode.id
+          })}
+          imageGenerationNodeV1
+          onBack={vi.fn()}
+          onRenameProject={vi.fn()}
+          onSave={vi.fn()}
+          onChange={vi.fn()}
+        />,
+        {
+          createNodeMock: element => {
+            if (element.props['data-image-annotation-editor-frame']) {
+              return {
+                getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 })
+              }
+            }
+            if (element.props['data-image-annotation-editor']) return { focus: vi.fn() }
+            return {}
+          }
+        }
+      )
+    })
+
+    const imageNodeData = renderer.root.find(candidate => (
+      Array.isArray(candidate.props.nodes) && candidate.props.nodes[0]?.data?.onImageCommand
+    )).props.nodes[0].data
+    act(() => imageNodeData.onImageCommand(imageNode.id, 'annotate'))
+    act(() => renderer.root.findByProps({ title: 'Text mode' }).props.onClick())
+    act(() => renderer.root.findByProps({ 'data-image-annotation-editor-frame': true }).props.onPointerDown({
+      button: 0,
+      clientX: 400,
+      clientY: 300,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn()
+    }))
+
+    const textInput = renderer.root.findByProps({ 'aria-label': 'Image annotation text' })
+    act(() => textInput.props.onChange({ target: { value: 'Yellow Crane Tower' } }))
+
+    expect(renderer.root.findByProps({ 'aria-label': 'Image annotation text' }).props.value).toBe('Yellow Crane Tower')
+  })
+
   it('adds an image directly to the Composer when 作为参考 is clicked without opening a workbench', async () => {
     const imageNode = createFreeCanvasImageNodeFromMedia({
       id: 'reference-source',
@@ -478,6 +583,7 @@ describe('project-level free canvas image generation entry', () => {
       )
     })
 
+    openImageGenerationPanel(renderer)
     const getImageNodeData = () => renderer.root.find(candidate => (
       Array.isArray(candidate.props.nodes) && candidate.props.nodes[0]?.data?.onImageCommand
     )).props.nodes[0].data
@@ -759,7 +865,7 @@ describe('project-level free canvas image generation entry', () => {
 
     const menu = renderer.root.findByProps({ 'aria-label': '文字节点菜单' })
     const labels = menu.findAllByType('button').map(button => button.findAllByType('span')[1]?.children[0])
-    expect(labels).toEqual(expect.arrayContaining(['复制', '补全', '发送到 Agent', '删除']))
+    expect(labels).toEqual(expect.arrayContaining(['复制', '补全', '发送到 Agent', '发送到图片生成参考', '删除']))
     expect(onChange).not.toHaveBeenCalled()
 
     const complete = menu.findAllByType('button').find(button => (
@@ -789,6 +895,24 @@ describe('project-level free canvas image generation entry', () => {
     expect(referencePanel.props['data-agent-draft']).toBe('')
     expect(referencePanel.props['data-agent-node-id']).toBe(node.id)
     expect(referencePanel.props['data-agent-node-role']).toBe('reference')
+
+    act(() => reactFlow.props.onNodeContextMenu({
+      preventDefault: vi.fn(),
+      clientX: 240,
+      clientY: 180,
+      currentTarget: null
+    }, reactFlow.props.nodes[0]))
+    const imageReferenceMenu = renderer.root.findByProps({ 'aria-label': '文字节点菜单' })
+    const sendToImageGeneration = imageReferenceMenu.findAllByType('button').find(button => (
+      button.findAllByType('span').some(span => span.children.includes('发送到图片生成参考'))
+    ))!
+    act(() => sendToImageGeneration.props.onClick())
+
+    expect(renderer.root.findByProps({ 'data-free-canvas-image-generation-panel': true })).toBeTruthy()
+    const textReference = renderer.root.findByProps({ 'data-image-generation-text-reference': node.id })
+    expect(textReference.findAllByType('span').some(span => span.children.includes(node.title))).toBe(true)
+    act(() => renderer.root.findByProps({ 'aria-label': `移除文字参考 ${node.title}` }).props.onClick())
+    expect(renderer.root.findAllByProps({ 'data-image-generation-text-reference': node.id })).toHaveLength(0)
   })
 
   it('keeps text styling controls collapsed and renders a readable rename input', async () => {
@@ -854,6 +978,41 @@ describe('project-level free canvas image generation entry', () => {
     }))
   })
 
+  it('leaves editable text content unmanaged by React while editing', async () => {
+    const node = createFreeCanvasTextNode('Editable body', { x: 120, y: 160 }, 1)
+    const canvas = { ...createFreeCanvasProject(1, { nodes: [node] }), selectedNodeId: node.id }
+    let renderer!: ReturnType<typeof create>
+
+    await act(async () => {
+      renderer = create(
+        <FreeCanvasBuilderScreen
+          activeProject={{ id: 'project-a', title: 'Project A' } as IPromptProject}
+          freeCanvas={canvas}
+          imageGenerationNodeV1
+          onBack={vi.fn()}
+          onRenameProject={vi.fn()}
+          onSave={vi.fn()}
+          onChange={vi.fn()}
+        />
+      )
+    })
+
+    const reactFlow = renderer.root.find(candidate => (
+      typeof candidate.props.onNodeContextMenu === 'function' && Array.isArray(candidate.props.nodes)
+    ))
+    const TextNode = reactFlow.props.nodeTypes.freeCanvasNode
+    let nodeRenderer!: ReturnType<typeof create>
+    await act(async () => {
+      nodeRenderer = create(
+        <TextNode data={{ ...reactFlow.props.nodes[0].data, editing: true }} selected />
+      )
+    })
+
+    const editor = nodeRenderer.root.findByProps({ 'data-free-canvas-text-content': true })
+    expect(editor.props.contentEditable).toBe(true)
+    expect(editor.children).toHaveLength(0)
+  })
+
   it('applies append proposals as a new user segment and rejects stale selection rewrites', async () => {
     const node = createFreeCanvasTextNode('Original', { x: 120, y: 160 }, 10)
     const canvas = { ...createFreeCanvasProject(1, { nodes: [node] }), selectedNodeId: node.id }
@@ -899,7 +1058,7 @@ describe('project-level free canvas image generation entry', () => {
     expect(alert).toHaveBeenCalled()
   })
 
-  it('approves a source-bound rewrite as a collision-free derived node', async () => {
+  it('applies a direct source-bound rewrite as a collision-free derived node', async () => {
     const source = {
       ...createFreeCanvasTextNode('Original', { x: 120, y: 160 }, 10),
       id: 'source-text',
@@ -931,7 +1090,7 @@ describe('project-level free canvas image generation entry', () => {
       )
     })
 
-    const apply = renderer.root.findByProps({ 'data-agent-panel': true }).props['data-agent-apply']
+    const apply = renderer.root.findByProps({ 'data-agent-panel': true }).props['data-agent-apply-canvas-edit']
     const templateDigest = await sha256({ presetText: '', segments: [] })
     const baseSegmentsDigest = await sha256(source.segments.map(segment => ({
       id: segment.id,
@@ -1068,6 +1227,69 @@ describe('project-level free canvas image generation entry', () => {
     await act(async () => {
       finishGeneration?.({
         runId: placeholder.meta.generationRunId,
+        state: 'succeeded',
+        assetId: 'asset-output.png',
+        captureId: 'capture-output',
+        contentType: 'image/png',
+        width: 1024,
+        height: 1024
+      })
+      await Promise.resolve()
+    })
+  })
+
+  it('keeps a newly submitted placeholder running before its run record becomes visible', async () => {
+    configureReadyImageModel()
+    let latestCanvas = createFreeCanvasProject(1)
+    let finishGeneration: ((result: Record<string, unknown>) => void) | undefined
+    mocks.requestGeneration.mockImplementation(() => new Promise(resolve => { finishGeneration = resolve }))
+    let renderer!: ReturnType<typeof create>
+
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(latestCanvas)
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={{ id: 'project-a', title: 'Project A' } as IPromptProject}
+          freeCanvas={canvas}
+          imageGenerationNodeV1
+          onBack={vi.fn()}
+          onRenameProject={vi.fn()}
+          onSave={vi.fn()}
+          onChange={nextCanvas => {
+            latestCanvas = nextCanvas
+            setCanvas(nextCanvas)
+          }}
+          onPersistCanvas={async nextCanvas => {
+            latestCanvas = nextCanvas
+            setCanvas(nextCanvas)
+            return true
+          }}
+        />
+      )
+    }
+
+    await act(async () => {
+      renderer = create(<Harness />)
+    })
+    openImageGenerationPanel(renderer)
+    const prompt = renderer.root.findByProps({ 'aria-label': '图片描述' })
+    await act(async () => {
+      prompt.props.onInput({ currentTarget: promptEditorWithText('A red apple') })
+      await Promise.resolve()
+      renderer.root.findAllByType('form')[0].props.onSubmit({ preventDefault: vi.fn() })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(mocks.requestGeneration).toHaveBeenCalledTimes(1)
+    expect(latestCanvas.nodes[0]).toMatchObject({
+      meta: { generationState: 'running' }
+    })
+    expect(latestCanvas.nodes[0].meta).not.toHaveProperty('generationErrorCode')
+
+    await act(async () => {
+      finishGeneration?.({
+        runId: latestCanvas.nodes[0].meta.generationRunId,
         state: 'succeeded',
         assetId: 'asset-output.png',
         captureId: 'capture-output',

@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server'
+import { act, create } from 'react-test-renderer'
 import { describe, expect, it, vi } from 'vitest'
 import { CanvasAgentComposer } from './CanvasAgentComposer'
 
@@ -57,5 +58,29 @@ describe('CanvasAgentComposer model and edit controls', () => {
     )
 
     expect(markup).toContain('生成新文本节点，原节点不变')
+  })
+
+  it('pastes conversation text as plain text without carrying invisible source colors', () => {
+    const execCommand = vi.fn().mockReturnValue(true)
+    const preventDefault = vi.fn()
+    const getData = vi.fn((type: string) => type === 'text/plain'
+      ? '帮我补全提示词'
+      : '<span style="color: white">帮我补全提示词</span>')
+    let renderer!: ReturnType<typeof create>
+
+    act(() => {
+      renderer = create(<CanvasAgentComposer {...baseProps} />)
+    })
+    const editor = renderer.root.findByProps({ 'data-agent-composer': true })
+
+    act(() => editor.props.onPaste({
+      clipboardData: { getData },
+      currentTarget: { ownerDocument: { execCommand } },
+      preventDefault
+    }))
+
+    expect(preventDefault).toHaveBeenCalledOnce()
+    expect(getData).toHaveBeenCalledWith('text/plain')
+    expect(execCommand).toHaveBeenCalledWith('insertText', false, '帮我补全提示词')
   })
 })

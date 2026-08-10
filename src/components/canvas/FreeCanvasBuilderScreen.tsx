@@ -74,6 +74,7 @@ import {
   replaceFreeCanvasTextRange,
   replaceFreeCanvasImageAnnotations,
   removeFreeCanvasProjectNodes,
+  fitFreeCanvasImageNodeFrameToContent,
   updateFreeCanvasImageNodeFrame,
   updateFreeCanvasNodePosition,
   updateFreeCanvasTextNodeStyle,
@@ -120,10 +121,12 @@ import {
 } from '@/domain/prompt-library/quick-messages'
 import {
   buildConversationGenerationRequest,
+  compileConversationPromptDocument,
   createEmptyConversationDraft,
   injectCanvasNodesIntoDraft,
   promptDocumentPlainText,
   projectRunToTurn,
+  removeConversationTextReference,
   rebuildPreparedImageGenerationRequest,
   type ImageGenerationComposerDraft,
   type ProjectImageGenerationInput,
@@ -161,7 +164,7 @@ import {
   type ImageGenerationRun,
   type ProjectResource
 } from '@/storage/storage-service-client'
-import type { AgentWorkspaceProposal, CanvasAgentSelection } from '@/models/Agent.model'
+import type { AgentCanvasEdit, AgentWorkspaceProposal, CanvasAgentSelection } from '@/models/Agent.model'
 import type { IPreset } from '@/models/Card.model'
 import type { FreeCanvasImageAnnotationKind, IFreeCanvasImageAnnotation, IFreeCanvasImageGeneratorNode, IFreeCanvasImageNode, IFreeCanvasNode, IFreeCanvasProject, IFreeCanvasTextNode, IPromptProject } from '@/models/PromptHistory.model'
 
@@ -1094,6 +1097,7 @@ const FreeCanvasBuilderInner = ({
         if (!isRunningFreeCanvasImageGeneration(node)) return false
         const runId = String(node.meta?.generationRunId || '')
         return !scheduledGenerationRunIdsRef.current.has(runId)
+          && !activeGenerationRunIdsRef.current.has(runId)
       })
       if (runningNodes.length === 0) return
       const runs = await Promise.all(runningNodes.map(async node => {
@@ -1210,6 +1214,8 @@ const FreeCanvasBuilderInner = ({
       || (!identity.resumePrepared && !imageModelUsable)
     ) return false
     const runId = identity.runId || createImageGenerationRunId()
+    if (activeGenerationRunIdsRef.current.has(runId)) return false
+    activeGenerationRunIdsRef.current.add(runId)
     const frame = imageGenerationPlaceholderFrame(snapshot)
     const current = freeCanvasRef.current
     const sourceNodeId = snapshot.operation?.source.nodeId
@@ -1264,6 +1270,7 @@ const FreeCanvasBuilderInner = ({
       }
     }
     if (!placeholderSaved) {
+      activeGenerationRunIdsRef.current.delete(runId)
       const failedCanvas = failFreeCanvasImageGeneration(freeCanvasRef.current, runId, 'storage_write_failed')
       emitGenerationCanvas(failedCanvas)
       const presentation = getRuntimeErrorPresentation('storage_write_failed')
@@ -1289,8 +1296,6 @@ const FreeCanvasBuilderInner = ({
       }))
       setImageAnnotationDocuments({})
     }
-    if (activeGenerationRunIdsRef.current.has(runId)) return false
-    activeGenerationRunIdsRef.current.add(runId)
     try {
       const request = identity.preparedRequest || buildConversationGenerationRequest(
         activeProject.id,
@@ -1414,7 +1419,9 @@ const FreeCanvasBuilderInner = ({
     if (imageComposerDraft.connectionId && !selectedImageConnection?.enabled) missing.push('所选图片连接已停用。')
     if (selectedImageConnection && !selectedImageConnection.credentialConfigured) missing.push('所选图片连接尚未配置凭据。')
     if (selectedImageConnection && !selectedImageConnection.lastTest?.ok) missing.push('所选图片连接尚未测试成功。')
-    if (!promptDocumentPlainText(imageComposerDraft.promptDocument).trim()) missing.push('请输入本轮图片描述。')
+    if (!promptDocumentPlainText(compileConversationPromptDocument(imageComposerDraft)).trim()) {
+      missing.push('请输入本轮图片描述。')
+    }
     if (unresolvedPromptReferenceIds(imageComposerDraft.promptDocument, imageComposerDraft.inputs).length > 0) {
       missing.push('提示词包含已经失效的参考图引用。')
     }
@@ -1766,6 +1773,28 @@ const FreeCanvasBuilderInner = ({
       : null)
   }, [imageComposerDraft, maxComposerImages])
 
+  const addCanvasTextAsComposerReference = useCallback((nodeId: string) => {
+    const node = freeCanvasRef.current.nodes.find(
+      candidate => candidate.id === nodeId && candidate.kind === 'text'
+    )
+    if (!node) return
+    setRightPanelMode('image-generation')
+    setRightPanelCollapsed(false)
+    const result = injectCanvasNodesIntoDraft(imageComposerDraft, [node])
+    setImageComposerDraft(result.draft)
+    setUploadError(result.rejected.length > 0
+      ? result.rejected.map(item => item.reason).join(' ')
+      : null)
+  }, [imageComposerDraft])
+
+  const addCanvasImageAsAgentReference = useCallback((node: IFreeCanvasImageNode) => {
+    setRightPanelCollapsed(false)
+    setAgentDraftRequest({
+      id: `canvas-agent-node-${node.id}-reference-${Date.now()}`,
+      canvasNode: { nodeId: node.id, role: 'reference' }
+    })
+  }, [])
+
   const retryMultiViewMember = useCallback((member: MultiViewGroupPanelMember) => {
     const current = freeCanvasRef.current
     const failedNode = current.nodes.find(node => node.id === member.nodeId && node.kind === 'image')
@@ -1930,14 +1959,18 @@ const FreeCanvasBuilderInner = ({
       return
     }
     if (commandId === 'as-reference') {
-      addCanvasImageAsComposerReference(node)
+      if (rightPanelMode === 'agent') {
+        addCanvasImageAsAgentReference(node)
+      } else if (rightPanelMode === 'image-generation') {
+        addCanvasImageAsComposerReference(node)
+      }
       return
     }
     const operation = imageOperationForCommand(commandId)
     if (operation) {
       void openImageOperationWorkbench(node, operation)
     }
-  }, [addCanvasImageAsComposerReference, applyCanvasCommand, copyVisibleImageNode, deleteCanvasNodes, exportVisibleImageNode, openImageOperationWorkbench, reactFlow])
+  }, [addCanvasImageAsAgentReference, addCanvasImageAsComposerReference, applyCanvasCommand, copyVisibleImageNode, deleteCanvasNodes, exportVisibleImageNode, openImageOperationWorkbench, reactFlow, rightPanelMode])
 
   const executeTextCommand = useCallback((nodeId: string, command: TextNodeContextCommand) => {
     if (command === 'copy') {
@@ -1952,8 +1985,12 @@ const FreeCanvasBuilderInner = ({
       void sendTextNodeToAgent(nodeId, 'reference')
       return
     }
+    if (command === 'send-to-image-generation') {
+      addCanvasTextAsComposerReference(nodeId)
+      return
+    }
     deleteCanvasNodes(nodeId)
-  }, [copyTextNode, deleteCanvasNodes, sendTextNodeToAgent])
+  }, [addCanvasTextAsComposerReference, copyTextNode, deleteCanvasNodes, sendTextNodeToAgent])
 
   useEffect(() => {
     const handleLocalShortcut = (event: KeyboardEvent) => {
@@ -2468,7 +2505,7 @@ const FreeCanvasBuilderInner = ({
     void addImageFiles(files, nextNodePosition(reactFlow, freeCanvas.nodes.length))
   }
 
-  const handleApplyAgentProposal = async (proposal: AgentWorkspaceProposal) => {
+  const handleApplyAgentProposal = async (proposal: AgentWorkspaceProposal | AgentCanvasEdit) => {
     if (proposal.kind === 'free_canvas_text_insertions') {
       const currentCanvas = freeCanvasRef.current
       const target = currentCanvas.nodes.find((node): node is IFreeCanvasTextNode => (
@@ -2719,6 +2756,11 @@ const FreeCanvasBuilderInner = ({
                 <CanvasTextNodeContextMenu
                   position={{ x: nodeContextMenu.x, y: nodeContextMenu.y }}
                   completeDisabled={previewMode}
+                  imageGenerationDisabled={
+                    previewMode
+                    || !imageGenerationNodeV1
+                    || !freeCanvasTextSegmentsToPlainText(contextNode.segments).trim()
+                  }
                   onExecute={command => executeTextCommand(contextNode.id, command)}
                   onClose={closeNodeContextMenu}
                 />
@@ -3008,6 +3050,7 @@ const FreeCanvasBuilderInner = ({
                     role: input.role,
                     order: input.order
                   })),
+                  textReferences: imageComposerDraft.textReferences,
                   maxImages: maxComposerImages,
                   onMentionReference: referenceId => setImageComposerDraft(current => {
                     const input = current.inputs.find(candidate => candidate.referenceId === referenceId)
@@ -3035,6 +3078,9 @@ const FreeCanvasBuilderInner = ({
                     inputs: current.inputs.filter(input => input.referenceId !== referenceId).map((input, order) => ({ ...input, order })),
                     regions: current.regions.filter(region => region.referenceId !== referenceId)
                   })),
+                  onRemoveTextReference: nodeId => setImageComposerDraft(current => (
+                    removeConversationTextReference(current, nodeId)
+                  )),
                   onMoveReference: (referenceId, direction) => setImageComposerDraft(current => ({
                     ...current,
                     inputs: moveComposerImageInput(current.inputs.map(input => ({
@@ -3197,6 +3243,7 @@ const FreeCanvasBuilderInner = ({
               sessionKey={`workspace:free-canvas:${activeProject.id}`}
               workspaceContext={workspaceContext}
               onApplyWorkspaceProposal={handleApplyAgentProposal}
+              onApplyCanvasEdit={handleApplyAgentProposal}
               draftRequest={agentDraftRequest}
               compact
               embedded
@@ -3296,6 +3343,10 @@ const FreeCanvasTextNodeView = ({
   useLayoutEffect(() => {
     const editor = editorRef.current
     if (!editing || !editor) return
+    if (draftTextRef.current === null) {
+      editor.textContent = displayText
+      draftTextRef.current = displayText
+    }
     const restore = (offset: number) => {
       editor.focus({ preventScroll: true })
       restoreEditableCaret(editor, offset)
@@ -3318,15 +3369,11 @@ const FreeCanvasTextNodeView = ({
       if (editorRef.current) restore(offset)
     })
     caretOffsetRef.current = null
-  }, [editing, node.segments])
+  }, [displayText, editing, node.segments])
 
   useEffect(() => {
-    if (editing) {
-      draftTextRef.current = displayText
-      return
-    }
-    draftTextRef.current = null
-  }, [displayText, editing])
+    if (!editing) draftTextRef.current = null
+  }, [editing])
 
   const handleInput = () => {
     const editor = editorRef.current
@@ -3339,7 +3386,6 @@ const FreeCanvasTextNodeView = ({
     const diff = diffTextRange(displayText, nextText)
     if (!diff) return
     onTextRangeReplace(node.id, { start: diff.start, end: diff.end }, diff.insertedText, userColor)
-    draftTextRef.current = null
   }
 
   const handlePaste = (event: ReactClipboardEvent<HTMLDivElement>) => {
@@ -3400,13 +3446,14 @@ const FreeCanvasTextNodeView = ({
         onKeyUp={captureSelection}
         onBlur={() => {
           commitDraft()
+          if (editorRef.current) editorRef.current.textContent = ''
           onEdit(null)
         }}
         onMouseDown={event => {
           if (editing) event.stopPropagation()
         }}
       >
-        {displayText ? (
+        {editing ? null : displayText ? (
           node.segments.map((segment, index) => (
             <span
               key={segment.id}
@@ -3418,7 +3465,7 @@ const FreeCanvasTextNodeView = ({
             </span>
           ))
         ) : (
-          <span className="text-gray-400">{editing ? '' : 'Double-click to type'}</span>
+          <span className="text-gray-400">Double-click to type</span>
         )}
       </div>
       <Handle type="source" position={Position.Right} className="!bg-gray-950 !opacity-0 group-hover:!opacity-100" />
@@ -3505,6 +3552,21 @@ const FreeCanvasImageNodeView = ({
             className={`pointer-events-none select-none ${crop ? 'absolute max-w-none' : 'h-full w-full object-contain'}`}
             style={imageStyle}
             draggable={false}
+            onLoad={event => {
+              const frame = fitFreeCanvasImageNodeFrameToContent(
+                node,
+                event.currentTarget.naturalWidth,
+                event.currentTarget.naturalHeight
+              )
+              if (
+                !frame
+                || (
+                  Math.abs(frame.width - node.width) < 0.5
+                  && Math.abs(frame.height - node.height) < 0.5
+                )
+              ) return
+              onResize(node.id, frame)
+            }}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-xs font-semibold text-gray-400">
@@ -4417,6 +4479,7 @@ const ImageAnnotationEditor = ({
       height
     }
     commitDraft([...draftAnnotations, placed], placed.id)
+    if (kind === 'text') setEditingTextAnnotationId(placed.id)
   }
 
   const handleFramePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {

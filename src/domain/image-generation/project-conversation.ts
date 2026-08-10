@@ -19,6 +19,13 @@ export interface ProjectImageGenerationInput {
   label?: string
 }
 
+export interface ProjectImageGenerationTextReference {
+  nodeId: string
+  label: string
+  text: string
+  order: number
+}
+
 export interface ImageGenerationComposerDraft {
   promptDocument: PromptDocument
   workflow: ProjectImageGenerationWorkflow
@@ -32,6 +39,7 @@ export interface ImageGenerationComposerDraft {
   outputFormat: 'png' | 'jpeg'
   watermark: boolean
   inputs: ProjectImageGenerationInput[]
+  textReferences?: ProjectImageGenerationTextReference[]
   regions: ImageGenerationRegion[]
   operation?: ImageOperationRecipeSnapshot
 }
@@ -58,6 +66,7 @@ export const createEmptyConversationDraft = (
   outputFormat: preferences.outputFormat || 'png',
   watermark: preferences.watermark === true,
   inputs: [],
+  textReferences: [],
   regions: [],
   operation: undefined
 })
@@ -72,12 +81,7 @@ export const buildConversationGenerationRequest = (
   connectionId: draft.connectionId,
   modelId: draft.modelId,
   mode: workflowMode(draft.workflow),
-  promptDocument: {
-    version: 1,
-    segments: draft.promptDocument.segments.map(segment => segment.type === 'text'
-      ? { type: 'text', text: segment.text }
-      : { type: 'reference', referenceId: segment.referenceId, label: segment.label })
-  },
+  promptDocument: compileConversationPromptDocument(draft),
   inputs: [...draft.inputs]
     .sort((left, right) => left.order - right.order)
     .map(({ referenceId, role, assetId, sourceAssetId, order }) => ({
@@ -103,8 +107,8 @@ export const injectCanvasNodesIntoDraft = (
   current: ImageGenerationComposerDraft,
   nodes: readonly IFreeCanvasNode[]
 ): CanvasInjectionResult => {
-  let promptDocument = clonePromptDocument(current.promptDocument)
   const inputs = [...current.inputs]
+  const textReferences = [...(current.textReferences || [])]
   const rejected: CanvasInjectionResult['rejected'] = []
 
   for (const node of nodes) {
@@ -113,7 +117,15 @@ export const injectCanvasNodesIntoDraft = (
       if (!text) {
         rejected.push({ nodeId: node.id, reason: '文字节点没有可见文本。' })
       } else {
-        promptDocument = appendPromptText(promptDocument, text)
+        const existingIndex = textReferences.findIndex(reference => reference.nodeId === node.id)
+        const reference = {
+          nodeId: node.id,
+          label: node.title,
+          text,
+          order: existingIndex >= 0 ? textReferences[existingIndex].order : textReferences.length
+        }
+        if (existingIndex >= 0) textReferences[existingIndex] = reference
+        else textReferences.push(reference)
       }
       continue
     }
@@ -139,8 +151,8 @@ export const injectCanvasNodesIntoDraft = (
   return {
     draft: {
       ...current,
-      promptDocument,
       inputs,
+      textReferences,
       workflow: current.workflow === 'text-to-image' && inputs.length > 0
         ? 'reference-generate'
         : current.workflow
@@ -148,6 +160,26 @@ export const injectCanvasNodesIntoDraft = (
     rejected
   }
 }
+
+export const compileConversationPromptDocument = (
+  draft: ImageGenerationComposerDraft
+): PromptDocument => [...(draft.textReferences || [])]
+  .sort((left, right) => left.order - right.order)
+  .reduce(
+    (document, reference) => appendPromptText(document, reference.text),
+    clonePromptDocument(draft.promptDocument)
+  )
+
+export const removeConversationTextReference = (
+  draft: ImageGenerationComposerDraft,
+  nodeId: string
+): ImageGenerationComposerDraft => ({
+  ...draft,
+  textReferences: [...(draft.textReferences || [])]
+    .sort((left, right) => left.order - right.order)
+    .filter(reference => reference.nodeId !== nodeId)
+    .map((reference, order) => ({ ...reference, order }))
+})
 
 export const projectRunToTurn = (
   run: ImageGenerationRun,

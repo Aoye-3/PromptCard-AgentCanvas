@@ -3,6 +3,8 @@ export type PermissionScope =
   | 'prompt-library-agent'
   | 'media-analysis-agent'
 
+export type PromptLanguageMode = 'zh' | 'en' | 'mixed'
+
 export interface PromptLibraryItem {
   id?: string
   type?: string
@@ -51,6 +53,7 @@ export interface InvocationInput {
     referenceNodes?: Array<Record<string, unknown>>
   } | null
   mediaAction?: 'chat' | 'preview' | 'selection-rewrite'
+  promptLanguageMode?: PromptLanguageMode
   mediaPreview?: Record<string, unknown> | null
   selection?: {
     start: number
@@ -62,10 +65,16 @@ export interface InvocationInput {
     contentType: string
     data: string
   }
+  attachments?: Array<{
+    assetId: string
+    contentType: string
+    data: string
+  }>
 }
 
 export interface InvocationPolicy {
   allowedProposalKinds: string[]
+  allowedCanvasEditKinds: string[]
   selectedTextNodeId: string | null
   canvasEditMode: 'insertions' | 'derived_node' | null
   canvasSelection: { start: number; end: number; selectedText: string } | null
@@ -105,10 +114,11 @@ export function buildInvocation(input: InvocationInput) {
     : []
 
   let allowedProposalKinds: string[] = []
+  let allowedCanvasEditKinds: string[] = []
   if (input.permissionScope === 'prompt-library-agent') {
     allowedProposalKinds = ['prompt_library_write_proposal']
   } else if (input.permissionScope === 'workspace-chatbot-agent') {
-    allowedProposalKinds = hasExplicitCanvasContext
+    allowedCanvasEditKinds = hasExplicitCanvasContext
       ? selectedTextNodeId
         ? input.canvasNodeContext?.mode === 'complete'
           ? ['free_canvas_text_insertions']
@@ -132,17 +142,22 @@ export function buildInvocation(input: InvocationInput) {
     skillSnapshots: (input.skillSnapshots || []).slice(0, 8),
     canvasNodeContext: input.canvasNodeContext || null,
     mediaAction: input.mediaAction || 'chat',
+    promptLanguageMode: input.permissionScope === 'media-analysis-agent'
+      ? input.promptLanguageMode || 'mixed'
+      : null,
     mediaPreview: input.mediaPreview || null,
     selection: input.selection || null,
-    attachments: input.attachment
-      ? [{
-          assetId: input.attachment.assetId,
-          mimeType: input.attachment.contentType,
-          data: input.attachment.data
-        }]
-      : [],
+    attachments: (input.attachments?.length
+      ? input.attachments
+      : input.attachment ? [input.attachment] : []
+    ).slice(0, 10).map(attachment => ({
+      assetId: attachment.assetId,
+      mimeType: attachment.contentType,
+      data: attachment.data
+    })),
     policy: {
       allowedProposalKinds,
+      allowedCanvasEditKinds,
       selectedTextNodeId,
       canvasEditMode,
       canvasSelection,

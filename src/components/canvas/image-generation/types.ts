@@ -69,8 +69,14 @@ export interface ImageGenerationComposerProps {
     role?: 'source-image' | 'reference-image'
     order?: number
   }>
+  textReferences?: Array<{
+    nodeId: string
+    label: string
+    order?: number
+  }>
   onMentionReference?: (referenceId: string) => void
   onRemoveReference?: (referenceId: string) => void
+  onRemoveTextReference?: (nodeId: string) => void
   onMoveReference?: (referenceId: string, direction: -1 | 1) => void
   onReferenceRoleChange?: (referenceId: string, role: 'source-image' | 'reference-image') => void
   maxImages?: number

@@ -38,6 +38,7 @@ describe('agent store', () => {
       threadId: 'thread-1',
       text: 'agent response',
       proposals: [workspaceProposal],
+      canvasEdits: [],
       diagnostics: {}
     })
     serviceMock.getModelConfig.mockResolvedValue({
@@ -108,7 +109,7 @@ describe('agent store', () => {
 
     const expectedProposal = { ...workspaceProposal, threadId: 'thread-1' }
     const session = useAgentStore.getState().getAgentSession('workspace:card:project-1')
-    expect(returned).toEqual([expectedProposal])
+    expect(returned).toEqual({ proposals: [expectedProposal], canvasEdits: [] })
     expect(session.proposals).toEqual([expectedProposal])
     expect(serviceMock.sendMessage).toHaveBeenCalledWith({
       threadId: undefined,
@@ -145,6 +146,45 @@ describe('agent store', () => {
     })
 
     expect(serviceMock.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ canvasNodeContext }))
+  })
+
+  it('returns validated Canvas edits separately without storing them as pending proposals', async () => {
+    const canvasEdit = {
+      id: 'canvas-edit-1',
+      kind: 'free_canvas_text_insertions' as const,
+      agentName: 'PromptCard Agent',
+      nodeId: 'text-1',
+      insertions: [{
+        text: ' inserted',
+        reason: 'Add detail',
+        anchor: { type: 'segment' as const, segmentId: 'segment-1', position: 'after' as const }
+      }],
+      baseNodeRevision: 7,
+      templateDigest: 'sha256:template',
+      baseSegmentsDigest: 'sha256:segments',
+      rationale: 'Complete the prompt',
+      createdAt: 1
+    }
+    serviceMock.sendMessage.mockResolvedValueOnce({
+      threadId: 'thread-1',
+      text: 'Canvas edit generated.',
+      proposals: [],
+      canvasEdits: [canvasEdit]
+    })
+
+    const returned = await useAgentStore.getState().sendMessage('Complete it', [], {
+      sessionKey: 'workspace:free-canvas:project-1',
+      mode: 'free-canvas-workspace',
+      canvasNodeContext: {
+        mode: 'complete', targetNodeId: 'text-1', referenceNodeIds: [], mentions: []
+      }
+    })
+
+    expect(returned).toEqual({
+      proposals: [],
+      canvasEdits: [{ ...canvasEdit, threadId: 'thread-1', contextId: undefined }]
+    })
+    expect(useAgentStore.getState().getAgentSession('workspace:free-canvas:project-1').proposals).toEqual([])
   })
 
   it('does not attach the Prompt Library to ordinary Canvas completion requests', async () => {

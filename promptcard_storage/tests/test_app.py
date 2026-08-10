@@ -61,6 +61,29 @@ class StorageAppContractTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["detail"]["code"], "invalid_asset")
 
+    def test_downloads_a_remote_browser_image_without_exposing_a_generic_proxy(self) -> None:
+        calls = []
+
+        class DownloadedImage:
+            content = b"\x89PNG\r\n\x1a\nimage"
+            content_type = "image/png"
+            filename = "thumbnail.png"
+
+        client = TestClient(create_app(
+            self.store,
+            remote_image_fetcher=lambda url: calls.append(url) or DownloadedImage(),
+        ))
+
+        response = client.post("/api/remote-images/fetch", json={
+            "url": "https://cdn.example.com/thumbnail.png",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, DownloadedImage.content)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertEqual(response.headers["x-file-name"], "thumbnail.png")
+        self.assertEqual(calls, ["https://cdn.example.com/thumbnail.png"])
+
     def test_replaces_presets_through_batch_endpoint(self) -> None:
         response = self.client.put("/api/presets/batch", json={"presets": [preset("p1", "One")]})
 
@@ -191,6 +214,55 @@ class StorageAppContractTest(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["presets"][0]["meta"]["media"][0]["assetId"], asset["id"])
         self.assertEqual(payload["captures"][0]["registeredPromptId"], payload["presets"][0]["id"])
+
+    def test_creates_analysis_derived_prompt_without_reassigning_registered_capture(self) -> None:
+        asset = self.client.post(
+            "/api/assets",
+            content=b"\x89PNG\r\n\x1a\nimage",
+            headers={"content-type": "image/png", "x-file-name": "source.png"},
+        ).json()
+        capture = self.client.post("/api/recent-captures", json={
+            "id": "capture-analysis-derived",
+            "assetId": asset["id"],
+            "kind": "screenshot",
+            "contentType": "image/png",
+            "title": "Source",
+        }).json()
+        initial = self.client.post("/api/recent-captures/register-to-prompt-library", json={
+            "mode": "separate",
+            "captures": [{
+                "id": capture["id"],
+                "revision": capture["revision"],
+                "label": "Original",
+                "content": "Original prompt",
+                "type": "style",
+            }],
+        }).json()
+        registered_capture = initial["captures"][0]
+        original_prompt_id = registered_capture["registeredPromptId"]
+
+        response = self.client.post("/api/recent-captures/register-to-prompt-library", json={
+            "intent": "analysis-derived",
+            "mode": "separate",
+            "captures": [{
+                "id": registered_capture["id"],
+                "revision": registered_capture["revision"],
+                "label": "Derived",
+                "content": "Derived analysis prompt",
+                "type": "camera",
+                "category": "portrait",
+            }],
+        })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertNotEqual(payload["presets"][0]["id"], original_prompt_id)
+        self.assertEqual(payload["presets"][0]["type"], "camera")
+        self.assertEqual(payload["presets"][0]["meta"]["media"][0]["assetId"], asset["id"])
+        self.assertEqual(payload["captures"][0]["registeredPromptId"], original_prompt_id)
+        persisted = self.client.get(f"/api/recent-captures/{capture['id']}").json()
+        self.assertEqual(persisted["registeredPromptId"], original_prompt_id)
+        self.assertEqual(persisted["revision"], registered_capture["revision"])
 
     def test_agent_conversation_and_skill_hub_contracts(self) -> None:
         self.client.post("/api/projects", json={

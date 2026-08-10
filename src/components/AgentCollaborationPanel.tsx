@@ -5,6 +5,7 @@ import { usePresetStore } from '@/stores/preset.store'
 import { agentRuntimeService } from '@/services/agent-runtime-service'
 import type {
   AgentMessage,
+  AgentCanvasEdit,
   AgentModelInfo,
   AgentWorkspaceContext,
   AgentWorkspaceMode,
@@ -13,6 +14,7 @@ import type {
   CanvasAgentSelection
 } from '@/models/Agent.model'
 import { AgentConversationMenu } from '@/components/agent/AgentConversationMenu'
+import { AgentMarkdownMessage } from '@/components/agent/AgentMarkdownMessage'
 import { CanvasAgentComposer, type CanvasAgentModelOption, type CanvasAgentNodeSummary } from '@/components/agent/CanvasAgentComposer'
 import {
   attachCanvasAgentNode,
@@ -30,6 +32,7 @@ interface AgentCollaborationPanelProps {
   workspaceContext: AgentWorkspaceContext
   sessionKey?: string
   onApplyWorkspaceProposal: (proposal: AgentWorkspaceProposal) => Promise<boolean | void> | boolean | void
+  onApplyCanvasEdit?: (edit: AgentCanvasEdit) => Promise<boolean | void> | boolean | void
   autoApplyWorkspaceChanges?: boolean
   compact?: boolean
   embedded?: boolean
@@ -67,6 +70,7 @@ export function AgentCollaborationPanel({
   workspaceContext,
   sessionKey: sessionKeyProp,
   onApplyWorkspaceProposal,
+  onApplyCanvasEdit,
   autoApplyWorkspaceChanges = false,
   compact = false,
   embedded = false,
@@ -199,7 +203,7 @@ export function AgentCollaborationPanel({
           mentions,
         }
       : undefined
-    const returnedProposals = await sendMessage(content.trim(), presets, {
+    const returned = await sendMessage(content.trim(), presets, {
       workspaceContext,
       mode,
       permissionScope: 'workspace-chatbot-agent',
@@ -212,8 +216,28 @@ export function AgentCollaborationPanel({
     if (!succeeded) return
     setSelectedSkillIds([])
 
+    const appliedCanvasEdits: AgentCanvasEdit[] = []
+    if (onApplyCanvasEdit) {
+      for (const edit of returned.canvasEdits) {
+        const applied = await onApplyCanvasEdit(edit)
+        if (applied === false) continue
+        appliedCanvasEdits.push(edit)
+      }
+    }
+    if (appliedCanvasEdits.length > 0) {
+      setAppliedMessages(current => [
+        ...current,
+        {
+          id: `agent-canvas-applied-${Date.now()}`,
+          role: 'system',
+          content: summarizeAppliedCanvasEdits(appliedCanvasEdits),
+          createdAt: Date.now()
+        }
+      ])
+    }
+
     if (autoApplyWorkspaceChanges) {
-      const workspaceProposals = returnedProposals.filter(isDirectWorkspaceProposal)
+      const workspaceProposals = returned.proposals.filter(isDirectWorkspaceProposal)
       for (const proposal of workspaceProposals) {
         const applied = await onApplyWorkspaceProposal(proposal)
         if (applied === false) continue
@@ -376,7 +400,11 @@ export function AgentCollaborationPanel({
                 <div className="mb-1 text-[10px] font-black uppercase opacity-55">
                   {message.role === 'user' ? '你' : message.role === 'system' ? '已应用' : 'Agent'}
                 </div>
-                <pre className="whitespace-pre-wrap break-words font-sans">{message.content}</pre>
+                {message.role === 'assistant' ? (
+                  <AgentMarkdownMessage content={message.content} />
+                ) : (
+                  <pre className="whitespace-pre-wrap break-words font-sans">{message.content}</pre>
+                )}
               </div>
             </div>
           ))
@@ -611,7 +639,7 @@ function readCanvasNodeSummaries(workspaceContext: AgentWorkspaceContext): Canva
   return nodes.flatMap(value => {
     if (!value || typeof value !== 'object') return []
     const node = value as Record<string, unknown>
-    if (node.kind !== 'text' || typeof node.id !== 'string') return []
+    if ((node.kind !== 'text' && node.kind !== 'image') || typeof node.id !== 'string') return []
     return [{
       id: node.id,
       title: String(node.title || node.id),
@@ -767,6 +795,15 @@ function summarizeAppliedChanges(proposals: AgentWorkspaceProposal[]) {
   if (updated) parts.push(`已更新 ${updated} 张卡片`)
   if (created) parts.push(`已新增 ${created} 张卡片`)
   return parts.length ? parts.join('，') : 'Agent 已返回修改，但没有可应用的卡片变更。'
+}
+
+function summarizeAppliedCanvasEdits(edits: AgentCanvasEdit[]) {
+  const completed = edits.filter(edit => edit.kind === 'free_canvas_text_insertions').length
+  const rewritten = edits.filter(edit => edit.kind === 'free_canvas_text_create').length
+  const parts = []
+  if (completed) parts.push(`已补全 ${completed} 个文字节点`)
+  if (rewritten) parts.push(`已生成 ${rewritten} 个改写节点`)
+  return parts.join('；') || '画布修改已应用'
 }
 
 export const AIChatbotBox = AgentCollaborationPanel

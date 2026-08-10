@@ -11,6 +11,19 @@ export type CardType =
   | 'constraint'
   | 'custom'
 
+export const PROMPT_LIBRARY_CARD_TYPES: CardType[] = [
+  'subject',
+  'action',
+  'scene',
+  'style',
+  'camera',
+  'lighting',
+  'timing',
+  'audio',
+  'constraint',
+  'custom'
+]
+
 export interface ICard {
   id: string
   type: CardType

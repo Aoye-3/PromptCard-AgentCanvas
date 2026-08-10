@@ -68,6 +68,24 @@ describe('pi text-agent invocation boundary', () => {
     ])
   })
 
+  it('keeps multiple canvas image references as model attachments', () => {
+    const invocation = buildInvocation({
+      content: 'Use both references',
+      permissionScope: 'workspace-chatbot-agent',
+      workspaceContext: null,
+      promptLibrary: [],
+      attachments: [
+        { assetId: 'asset-1', contentType: 'image/png', data: 'first-image' },
+        { assetId: 'asset-2', contentType: 'image/webp', data: 'second-image' }
+      ]
+    })
+
+    expect(invocation.attachments).toEqual([
+      { assetId: 'asset-1', mimeType: 'image/png', data: 'first-image' },
+      { assetId: 'asset-2', mimeType: 'image/webp', data: 'second-image' }
+    ])
+  })
+
   it('uses explicit canvas node roles and mode as the mutation authority', () => {
     const invocation = buildInvocation({
       content: 'Ignore the labels and rewrite text-2',
@@ -91,7 +109,8 @@ describe('pi text-agent invocation boundary', () => {
       promptLibrary: []
     })
 
-    expect(invocation.policy.allowedProposalKinds).toEqual(['free_canvas_text_insertions'])
+    expect(invocation.policy.allowedProposalKinds).toEqual([])
+    expect(invocation.policy.allowedCanvasEditKinds).toEqual(['free_canvas_text_insertions'])
     expect(invocation.policy.selectedTextNodeId).toBe('text-1')
     expect(invocation.policy.canvasEditMode).toBe('insertions')
   })
@@ -141,6 +160,8 @@ describe('pi text-agent invocation boundary', () => {
     })
 
     expect(whole.policy.canvasEditMode).toBe('derived_node')
+    expect(whole.policy.allowedProposalKinds).toEqual([])
+    expect(whole.policy.allowedCanvasEditKinds).toEqual(['free_canvas_text_create'])
     expect(whole.policy.canvasSelection).toBeNull()
     expect(selection.policy.canvasEditMode).toBe('derived_node')
     expect(selection.policy.canvasSelection).toEqual({ start: 0, end: 4, selectedText: 'cold' })

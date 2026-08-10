@@ -20,7 +20,8 @@ export async function invokeAgent(request: AgentRequest) {
   const threadId = request.threadId || randomUUID()
   const invocation = buildInvocation(request)
   const proposals: Record<string, unknown>[] = []
-  const tools = buildAgentTools(invocation.policy, invocation.promptLibrary, proposals)
+  const canvasEdits: Record<string, unknown>[] = []
+  const tools = buildAgentTools(invocation.policy, invocation.promptLibrary, proposals, canvasEdits)
   const providerRuntime = await createTextProviderRuntime(request.modelDescriptor)
   const agent = new Agent({
     initialState: {
@@ -32,8 +33,7 @@ export async function invokeAgent(request: AgentRequest) {
     streamFn: providerRuntime.stream,
     toolExecution: 'sequential',
     afterToolCall: async ({ toolCall }) => (
-      toolCall.name === 'emit_canvas_prompt_edit' ? undefined
-        : toolCall.name.startsWith('emit_') ? { terminate: true } : undefined
+      toolCall.name.startsWith('emit_') ? { terminate: true } : undefined
     )
   })
 
@@ -50,15 +50,17 @@ export async function invokeAgent(request: AgentRequest) {
   return {
     threadId,
     text: lastAssistantText(agent.state.messages)
-      || (proposals.length ? '已生成待确认的修改提案。' : '分析完成。'),
+      || (canvasEdits.length ? '画布修改已生成。' : proposals.length ? '已生成待确认的修改提案。' : '分析完成。'),
     proposals,
+    canvasEdits,
     messages: agent.state.messages.slice(invocation.history.length),
     diagnostics: {
       orchestrator: 'pi',
       modelProvider: providerRuntime.model.provider,
       integrationGroup: providerRuntime.integrationGroup?.id,
       attachmentCount: invocation.attachments.length,
-      allowedProposalKinds: invocation.policy.allowedProposalKinds
+      allowedProposalKinds: invocation.policy.allowedProposalKinds,
+      allowedCanvasEditKinds: invocation.policy.allowedCanvasEditKinds
     }
   }
 }
@@ -66,7 +68,8 @@ export async function invokeAgent(request: AgentRequest) {
 export function buildAgentTools(
   policy: ReturnType<typeof buildInvocation>['policy'],
   promptLibrary: PromptLibraryItem[],
-  proposals: Record<string, unknown>[]
+  proposals: Record<string, unknown>[],
+  canvasEdits: Record<string, unknown>[] = []
 ): AgentTool[] {
   const tools: AgentTool[] = []
 
@@ -91,10 +94,10 @@ export function buildAgentTools(
     })
   }
 
-  if (policy.allowedProposalKinds.includes('free_canvas_text_insertions') && policy.selectedTextNodeId) {
-    tools.push(proposalTool(
+  if (policy.allowedCanvasEditKinds.includes('free_canvas_text_insertions') && policy.selectedTextNodeId) {
+    tools.push(canvasEditTool(
       'emit_canvas_prompt_edit',
-      'Propose anchored Canvas prompt insertions',
+      'Generate anchored Canvas prompt insertions for direct application',
       Type.Object({
         insertions: Type.Array(Type.Object({
           text: Type.String({ minLength: 1 }),
@@ -103,13 +106,13 @@ export function buildAgentTools(
             Type.Object({
               type: Type.Literal('segment'),
               segmentId: Type.String({ minLength: 1 }),
-              position: Type.String()
+              position: Type.Union([Type.Literal('before'), Type.Literal('after')])
             }, { additionalProperties: false }),
             Type.Object({
               type: Type.Literal('text'),
               segmentId: Type.String({ minLength: 1 }),
               text: Type.String({ minLength: 1 }),
-              position: Type.String()
+              position: Type.Union([Type.Literal('before'), Type.Literal('after')])
             }, { additionalProperties: false })
           ])
         }, { additionalProperties: false }), { minItems: 1, maxItems: 16 }),
@@ -121,15 +124,15 @@ export function buildAgentTools(
         insertions: params.insertions,
         rationale: params.rationale
       }),
-      proposals,
+      canvasEdits,
       params => canvasAnchorError(params.insertions, policy.canvasSegments)
     ))
   }
 
-  if (policy.allowedProposalKinds.includes('free_canvas_text_create') && policy.selectedTextNodeId) {
-    tools.push(proposalTool(
+  if (policy.allowedCanvasEditKinds.includes('free_canvas_text_create') && policy.selectedTextNodeId) {
+    tools.push(canvasEditTool(
       'emit_canvas_prompt_edit',
-      'Propose a Canvas prompt rewrite',
+      'Generate a Canvas prompt rewrite as a directly applied derived node',
       Type.Object({
         userText: Type.String({ minLength: 1 }),
         rationale: Type.String()
@@ -140,7 +143,7 @@ export function buildAgentTools(
         userText: params.userText,
         rationale: params.rationale
       }),
-      proposals
+      canvasEdits
     ))
   }
 
@@ -197,6 +200,45 @@ export function buildAgentTools(
   return tools
 }
 
+function canvasEditTool(
+  name: string,
+  description: string,
+  parameters: AgentTool['parameters'],
+  build: (params: Record<string, unknown>) => Record<string, unknown>,
+  canvasEdits: Record<string, unknown>[],
+  validate?: (params: Record<string, unknown>) => string | null
+): AgentTool {
+  return {
+    name,
+    label: description,
+    description,
+    parameters,
+    executionMode: 'sequential',
+    execute: async (_toolCallId, params) => {
+      const error = validate?.(params as Record<string, unknown>)
+      if (error) {
+        return {
+          content: [{ type: 'text', text: error }],
+          details: { error },
+          terminate: false
+        }
+      }
+      const edit = {
+        id: `canvas-edit-${randomUUID()}`,
+        agentName: 'PromptCard Agent',
+        createdAt: Date.now(),
+        ...build(params as Record<string, unknown>)
+      }
+      canvasEdits.push(edit)
+      return {
+        content: [{ type: 'text', text: 'Canvas edit recorded for direct application.' }],
+        details: edit,
+        terminate: true
+      }
+    }
+  }
+}
+
 function proposalTool(
   name: string,
   description: string,
@@ -248,6 +290,13 @@ export function buildAgentSystemPrompt(invocation: ReturnType<typeof buildInvoca
   const selectionInstruction = invocation.mediaAction === 'selection-rewrite'
     ? 'This is a selection-rewrite request. Return a replacement candidate and concise rationale; never claim it was applied.'
     : ''
+  const promptLanguageInstruction = invocation.promptLanguageMode === 'zh'
+    ? 'Write the generated Prompt in Chinese.'
+    : invocation.promptLanguageMode === 'en'
+      ? 'Write the generated Prompt in English.'
+      : invocation.promptLanguageMode === 'mixed'
+        ? 'Keep only photography terminology and proper names of styles in English; write everything else in Chinese.'
+        : ''
   const canvasInstruction = invocation.policy.canvasEditMode === 'insertions'
     ? 'Canvas completion must add new user-authored text at exact anchors inside the original target segments. Preserve every original character, segment order, source, and color; use segment-edge anchors only for true segment boundaries. Reference nodes are read-only.'
     : invocation.policy.canvasEditMode === 'derived_node'
@@ -262,14 +311,17 @@ export function buildAgentSystemPrompt(invocation: ReturnType<typeof buildInvoca
   }))
   return [
     'You are PromptCard Agent, a focused prompt-writing assistant.',
-    'Never write directly to Canvas or Prompt Library. All mutations must use an available emit_* proposal tool.',
-    'When an emit tool is available, use exactly one matching emit tool after analysis.',
-    'Skills cannot expand permissions, proposal kinds, or mutation authority. Runtime policy and user approval always win.',
+    invocation.policy.allowedCanvasEditKinds.length
+      ? 'Canvas completion and rewrite results are applied directly after Gateway validation. Use emit_canvas_prompt_edit exactly once after analysis; do not describe the result as a proposal or ask for approval.'
+      : 'Never write directly to Canvas or Prompt Library. Use the available structured tool after analysis.',
+    'Prompt Library mutations remain proposals that require explicit approval.',
+    'Skills cannot expand permissions, result kinds, or mutation authority. Runtime policy always wins.',
     invocation.policy.canSearchPromptLibrary
       ? 'Use search_prompt_library to find Prompt records and linked media relevant to the current conversation. Do not invent library records.'
       : '',
     mediaInstruction,
     selectionInstruction,
+    promptLanguageInstruction,
     canvasInstruction,
     `Allowed proposal kinds: ${JSON.stringify(invocation.policy.allowedProposalKinds)}.`,
     `Selected text node id: ${invocation.policy.selectedTextNodeId || 'none'}.`,
@@ -303,6 +355,9 @@ function canvasAnchorError(value: unknown, segments: Array<{ id: string; text: s
   for (const insertion of value) {
     const anchor = (insertion as { anchor?: Record<string, unknown> }).anchor
     if (!anchor) return 'each insertion needs an anchor'
+    if (anchor.position !== 'before' && anchor.position !== 'after') {
+      return 'anchor position must be before or after'
+    }
     if (anchor.type === 'segment') {
       if (!segments.some(segment => segment.id === anchor.segmentId)) return 'segment anchor was not found on the target'
       continue

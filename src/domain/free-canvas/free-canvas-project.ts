@@ -525,6 +525,45 @@ export const updateFreeCanvasImageNodeFrame = (
   })
 })
 
+export const fitFreeCanvasImageNodeFrameToContent = (
+  node: Pick<IFreeCanvasImageNode, 'position' | 'width' | 'height' | 'crop'>,
+  naturalWidth: number,
+  naturalHeight: number
+): { position: IFreeCanvasPosition; width: number; height: number } | null => {
+  const cropWidth = node.crop?.width ?? 1
+  const cropHeight = node.crop?.height ?? 1
+  const contentWidth = naturalWidth * cropWidth
+  const contentHeight = naturalHeight * cropHeight
+  if (
+    !Number.isFinite(contentWidth)
+    || !Number.isFinite(contentHeight)
+    || !Number.isFinite(node.width)
+    || !Number.isFinite(node.height)
+    || contentWidth <= 0
+    || contentHeight <= 0
+    || node.width <= 0
+    || node.height <= 0
+  ) return null
+
+  const contentRatio = contentWidth / contentHeight
+  const frameRatio = node.width / node.height
+  if (contentRatio >= frameRatio) {
+    const height = node.width / contentRatio
+    return {
+      position: { x: node.position.x, y: node.position.y + (node.height - height) / 2 },
+      width: node.width,
+      height
+    }
+  }
+
+  const width = node.height * contentRatio
+  return {
+    position: { x: node.position.x + (node.width - width) / 2, y: node.position.y },
+    width,
+    height: node.height
+  }
+}
+
 export const addFreeCanvasImageAnnotation = (
   project: IFreeCanvasProject,
   nodeId: string,

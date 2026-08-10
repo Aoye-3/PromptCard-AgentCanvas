@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { agentRuntimeService, type DeepSeekModelConfig, type DeepSeekModelConfigUpdate } from '@/services/agent-runtime-service'
 import type {
   AgentAuthStatus,
+  AgentCanvasEdit,
   AgentConversationSession,
   AgentInfo,
   AgentMessage,
@@ -52,7 +53,7 @@ interface AgentState {
       selectedSkillIds?: string[]
       canvasNodeContext?: CanvasAgentNodeContext
     }
-  ) => Promise<AgentWorkspaceProposal[]>
+  ) => Promise<{ proposals: AgentWorkspaceProposal[]; canvasEdits: AgentCanvasEdit[] }>
   getAgentSession: (sessionKey: AgentSessionKey) => AgentConversationSession
   hydrateSession: (sessionKey: AgentSessionKey, session: Partial<AgentConversationSession>) => void
   markProposalStatus: (id: string, status: 'approved' | 'rejected', sessionKey: AgentSessionKey) => void
@@ -233,6 +234,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         threadId: proposal.threadId || result.threadId,
         contextId: proposal.contextId || options?.workspaceContext?.contextId
       }))
+      const canvasEdits = (result.canvasEdits || []).map(edit => ({
+        ...edit,
+        threadId: edit.threadId || result.threadId,
+        contextId: edit.contextId || options?.workspaceContext?.contextId
+      }))
 
       set(state => ({
         sessionsByKey: updateSessions(state.sessionsByKey, sessionKey, session => ({
@@ -253,7 +259,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           updatedAt: Date.now()
         }))
       }))
-      return proposals
+      return { proposals, canvasEdits }
     } catch (error) {
       set(state => ({
         runtimeError: error instanceof Error ? error.message : String(error),
@@ -273,7 +279,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           updatedAt: Date.now()
         }))
       }))
-      return []
+      return { proposals: [], canvasEdits: [] }
     }
   },
 

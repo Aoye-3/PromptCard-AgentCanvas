@@ -264,7 +264,7 @@ export interface AgentRunProvenance {
   skills: Array<{ skillId: string; revision: number; digest: string }>
 }
 
-export interface AgentFreeCanvasTextInsertionsProposal {
+export interface AgentFreeCanvasTextInsertionsEdit {
   kind: 'free_canvas_text_insertions'
   contextId?: string
   id: string
@@ -278,11 +278,10 @@ export interface AgentFreeCanvasTextInsertionsProposal {
   baseSegmentsDigest: string
   rationale: string
   provenance?: AgentRunProvenance
-  status: 'pending' | 'approved' | 'rejected'
   createdAt: number
 }
 
-export interface AgentFreeCanvasTextCreateProposal {
+export interface AgentFreeCanvasTextCreateEdit {
   kind: 'free_canvas_text_create'
   contextId?: string
   id: string
@@ -295,8 +294,19 @@ export interface AgentFreeCanvasTextCreateProposal {
   basis?: AgentFreeCanvasTextProposalBasis
   provenance?: AgentRunProvenance
   rationale: string
-  status: 'pending' | 'approved' | 'rejected'
   createdAt: number
+}
+
+export type AgentCanvasEdit =
+  | AgentFreeCanvasTextInsertionsEdit
+  | AgentFreeCanvasTextCreateEdit
+
+export interface AgentFreeCanvasTextInsertionsProposal extends AgentFreeCanvasTextInsertionsEdit {
+  status: 'pending' | 'approved' | 'rejected'
+}
+
+export interface AgentFreeCanvasTextCreateProposal extends AgentFreeCanvasTextCreateEdit {
+  status: 'pending' | 'approved' | 'rejected'
 }
 
 export type AgentWorkspaceProposal =

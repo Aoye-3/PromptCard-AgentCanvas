@@ -1,3 +1,4 @@
+import { useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import { Camera, CheckCircle2, ClipboardPaste, Clock3, Download, ExternalLink, Film, GripHorizontal, ImagePlus, Mic, PlaySquare, ShieldCheck, Video, Wand2, X } from 'lucide-react'
 import type { CaptureToolbarStatus } from './capture-toolbar-window'
 
@@ -12,6 +13,7 @@ interface CaptureBarScreenProps {
   clipboardMessage?: string
   onReadClipboard?: () => void
   onPasteClipboard?: (event: React.ClipboardEvent<HTMLElement>) => void
+  onDropBrowserImage?: (event: ReactDragEvent<HTMLElement>) => void
   onOpenRecentCaptures?: () => void
 }
 
@@ -70,15 +72,62 @@ export const CaptureBarScreen = ({
   clipboardMessage = '',
   onReadClipboard = () => undefined,
   onPasteClipboard = () => undefined,
+  onDropBrowserImage = () => undefined,
   onOpenRecentCaptures = () => undefined
 }: CaptureBarScreenProps) => {
   const statusState = statusCopy[status]
   const isOpening = status === 'opening'
   const isClosing = status === 'closing'
   const isRunning = status === 'running'
+  const dragDepth = useRef(0)
+  const [isBrowserImageDragging, setIsBrowserImageDragging] = useState(false)
+
+  const handleDragEnter = (event: ReactDragEvent<HTMLElement>) => {
+    event.preventDefault()
+    dragDepth.current += 1
+    setIsBrowserImageDragging(true)
+  }
+
+  const handleDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleDragLeave = (event: ReactDragEvent<HTMLElement>) => {
+    event.preventDefault()
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setIsBrowserImageDragging(false)
+  }
+
+  const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    dragDepth.current = 0
+    setIsBrowserImageDragging(false)
+    onDropBrowserImage(event)
+  }
 
   return (
-    <section className="min-h-screen bg-[#f7f7f5] px-8 py-8" data-capture-bar-screen>
+    <section
+      className="min-h-screen bg-[#f7f7f5] px-8 py-8"
+      data-capture-bar-screen
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isBrowserImageDragging && (
+        <div
+          className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-amber-50/95 p-8 backdrop-blur-sm"
+          data-browser-image-drop-overlay
+        >
+          <div className="flex max-w-lg flex-col items-center rounded-2xl border-2 border-dashed border-amber-400 bg-white px-10 py-12 text-center shadow-2xl">
+            <ImagePlus className="h-12 w-12 text-amber-500" />
+            <div className="mt-4 text-2xl font-black text-gray-950">松开以保存图片</div>
+            <div className="mt-2 text-sm font-semibold text-gray-500">图片会进入近期捕获，并停留在当前页面。</div>
+          </div>
+        </div>
+      )}
       <div className="mx-auto flex max-w-[1400px] flex-col gap-6">
         <header className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
           <div>
@@ -126,7 +175,7 @@ export const CaptureBarScreen = ({
               </span>
               <div>
                 <h2 className="text-lg font-black text-gray-950">粘贴剪贴板截图</h2>
-                <p className="mt-1 text-sm leading-6 text-gray-600">支持微信、QQ 等截图工具复制的 PNG、JPEG、WebP。点击读取，或聚焦此区域后按 Ctrl+V。</p>
+                <p className="mt-1 text-sm leading-6 text-gray-600">支持从浏览器拖入当前图片，也支持微信、QQ 等截图工具复制的 PNG、JPEG、WebP。点击读取，或聚焦此区域后按 Ctrl+V。</p>
                 {clipboardMessage && (
                   <p className={`mt-2 text-sm font-bold ${clipboardStatus === 'error' ? 'text-red-600' : 'text-emerald-700'}`} role="status">
                     {clipboardMessage}
