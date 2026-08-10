@@ -74,6 +74,7 @@ import {
   replaceFreeCanvasTextRange,
   replaceFreeCanvasImageAnnotations,
   removeFreeCanvasProjectNodes,
+  fitFreeCanvasImageNodeFrameToContent,
   updateFreeCanvasImageNodeFrame,
   updateFreeCanvasNodePosition,
   updateFreeCanvasTextNodeStyle,
@@ -3551,6 +3552,21 @@ const FreeCanvasImageNodeView = ({
             className={`pointer-events-none select-none ${crop ? 'absolute max-w-none' : 'h-full w-full object-contain'}`}
             style={imageStyle}
             draggable={false}
+            onLoad={event => {
+              const frame = fitFreeCanvasImageNodeFrameToContent(
+                node,
+                event.currentTarget.naturalWidth,
+                event.currentTarget.naturalHeight
+              )
+              if (
+                !frame
+                || (
+                  Math.abs(frame.width - node.width) < 0.5
+                  && Math.abs(frame.height - node.height) < 0.5
+                )
+              ) return
+              onResize(node.id, frame)
+            }}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-xs font-semibold text-gray-400">
@@ -4463,6 +4479,7 @@ const ImageAnnotationEditor = ({
       height
     }
     commitDraft([...draftAnnotations, placed], placed.id)
+    if (kind === 'text') setEditingTextAnnotationId(placed.id)
   }
 
   const handleFramePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {

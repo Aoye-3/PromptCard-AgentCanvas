@@ -61,6 +61,29 @@ class StorageAppContractTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["detail"]["code"], "invalid_asset")
 
+    def test_downloads_a_remote_browser_image_without_exposing_a_generic_proxy(self) -> None:
+        calls = []
+
+        class DownloadedImage:
+            content = b"\x89PNG\r\n\x1a\nimage"
+            content_type = "image/png"
+            filename = "thumbnail.png"
+
+        client = TestClient(create_app(
+            self.store,
+            remote_image_fetcher=lambda url: calls.append(url) or DownloadedImage(),
+        ))
+
+        response = client.post("/api/remote-images/fetch", json={
+            "url": "https://cdn.example.com/thumbnail.png",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, DownloadedImage.content)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertEqual(response.headers["x-file-name"], "thumbnail.png")
+        self.assertEqual(calls, ["https://cdn.example.com/thumbnail.png"])
+
     def test_replaces_presets_through_batch_endpoint(self) -> None:
         response = self.client.put("/api/presets/batch", json={"presets": [preset("p1", "One")]})
 

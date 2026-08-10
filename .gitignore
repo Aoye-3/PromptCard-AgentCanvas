@@ -109,6 +109,7 @@ NewVison/Prompt Guide/
 
 # Media files
 *.mp4
+!assets/readme/demo/*.mp4
 *.avi
 *.mov
 *.wmv

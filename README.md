@@ -7,6 +7,7 @@
 </p>
 
 <p align="center">
+  <a href="#演示视频">演示视频</a> ·
   <a href="#产品总览">产品总览</a> ·
   <a href="#一条完整的本地创作链路">创作链路</a> ·
   <a href="#核心功能">核心功能</a> ·
@@ -24,6 +25,10 @@ PMAgent-Canvas 是面向 AIGC 创作者的本地桌面 Agent 画布。它把参�
 
 > [!IMPORTANT]
 > 当前仓库提供的是 **Windows 桌面开发预览**。双击 `start-desktop.vbs` 可以启动可编辑源码对应的桌面壳；它不是已签名的免环境安装包。
+
+## 演示视频
+
+[▶ 查看 PMAgent-Canvas Demo 演示视频](./assets/readme/demo/demo-video.mp4)
 
 ## 产品总览
 

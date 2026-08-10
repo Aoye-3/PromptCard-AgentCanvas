@@ -493,6 +493,66 @@ describe('project-level free canvas image generation entry', () => {
     expect(renderer.root.findAllByProps({ role: 'dialog' })).toHaveLength(0)
   })
 
+  it('starts typing immediately after placing a text annotation', async () => {
+    const imageNode = createFreeCanvasImageNodeFromMedia({
+      id: 'annotation-source',
+      kind: 'imageAsset',
+      title: 'Annotation source',
+      position: { x: 120, y: 160 },
+      width: 320,
+      height: 240,
+      assetId: 'asset-annotation.png',
+      imageUrl: '/storage-api/assets/asset-annotation.png',
+      meta: {}
+    })
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <FreeCanvasBuilderScreen
+          activeProject={{ id: 'project-a', title: 'Project A' } as IPromptProject}
+          freeCanvas={createFreeCanvasProject(1, {
+            nodes: [imageNode],
+            selectedNodeId: imageNode.id
+          })}
+          imageGenerationNodeV1
+          onBack={vi.fn()}
+          onRenameProject={vi.fn()}
+          onSave={vi.fn()}
+          onChange={vi.fn()}
+        />,
+        {
+          createNodeMock: element => {
+            if (element.props['data-image-annotation-editor-frame']) {
+              return {
+                getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 })
+              }
+            }
+            if (element.props['data-image-annotation-editor']) return { focus: vi.fn() }
+            return {}
+          }
+        }
+      )
+    })
+
+    const imageNodeData = renderer.root.find(candidate => (
+      Array.isArray(candidate.props.nodes) && candidate.props.nodes[0]?.data?.onImageCommand
+    )).props.nodes[0].data
+    act(() => imageNodeData.onImageCommand(imageNode.id, 'annotate'))
+    act(() => renderer.root.findByProps({ title: 'Text mode' }).props.onClick())
+    act(() => renderer.root.findByProps({ 'data-image-annotation-editor-frame': true }).props.onPointerDown({
+      button: 0,
+      clientX: 400,
+      clientY: 300,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn()
+    }))
+
+    const textInput = renderer.root.findByProps({ 'aria-label': 'Image annotation text' })
+    act(() => textInput.props.onChange({ target: { value: 'Yellow Crane Tower' } }))
+
+    expect(renderer.root.findByProps({ 'aria-label': 'Image annotation text' }).props.value).toBe('Yellow Crane Tower')
+  })
+
   it('adds an image directly to the Composer when 作为参考 is clicked without opening a workbench', async () => {
     const imageNode = createFreeCanvasImageNodeFromMedia({
       id: 'reference-source',

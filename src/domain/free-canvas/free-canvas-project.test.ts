@@ -12,6 +12,7 @@ import {
   createQuickTextNode,
   freeCanvasTextSegmentsToPlainText,
   failFreeCanvasImageGeneration,
+  fitFreeCanvasImageNodeFrameToContent,
   completeFreeCanvasImageGeneration,
   migrateLegacyThreeStageFreeCanvasProject,
   replaceFreeCanvasTextRange,
@@ -761,6 +762,21 @@ describe('free canvas project domain', () => {
       height: 360
     })
     expect(resized.nodes[0].annotations[0]).toMatchObject({ x: 0.08, y: 0.08, width: 0.28, height: 0.18 })
+  })
+
+  test('fits a mismatched image node frame to the intrinsic image content without moving the content', () => {
+    const frame = fitFreeCanvasImageNodeFrameToContent({
+      position: { x: 100, y: 80 },
+      width: 400,
+      height: 400,
+      crop: null
+    }, 1600, 900)
+
+    expect(frame).toEqual({
+      position: { x: 100, y: 167.5 },
+      width: 400,
+      height: 225
+    })
   })
 
   test('creates quick text as red preset text and appends black user text', () => {

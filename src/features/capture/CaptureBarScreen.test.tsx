@@ -1,5 +1,5 @@
-import { Children, isValidElement, type ReactElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { create } from 'react-test-renderer'
 import { describe, expect, it, vi } from 'vitest'
 import { CaptureBarScreen } from './CaptureBarScreen'
 
@@ -25,14 +25,17 @@ describe('CaptureBarScreen', () => {
   it('wires primary open and close controls to handlers', () => {
     const onOpenToolbar = vi.fn()
     const onCloseToolbar = vi.fn()
-    const screen = CaptureBarScreen({
-      status: 'running',
-      onOpenToolbar,
-      onCloseToolbar
-    })
+    const renderer = create(
+      <CaptureBarScreen
+        status="running"
+        onOpenToolbar={onOpenToolbar}
+        onCloseToolbar={onCloseToolbar}
+      />
+    )
+    const [openButton, closeButton] = renderer.root.findAllByType('button')
 
-    findButton(screen, '启动捕获栏').props.onClick()
-    findButton(screen, '关闭捕获栏').props.onClick()
+    openButton.props.onClick()
+    closeButton.props.onClick()
 
     expect(onOpenToolbar).toHaveBeenCalledTimes(1)
     expect(onCloseToolbar).toHaveBeenCalledTimes(1)
@@ -53,31 +56,8 @@ describe('CaptureBarScreen', () => {
 
     expect(markup).toContain('data-clipboard-capture')
     expect(markup).toContain('粘贴剪贴板截图')
+    expect(markup).toContain('从浏览器拖入')
     expect(markup).toContain('Ctrl+V')
     expect(markup).toContain('查看近期捕获')
   })
 })
-
-const findButton = (node: ReactNode, label: string): ReactElement<{ onClick: () => void }> => {
-  const buttons = collectButtons(node)
-  const button = buttons.find(candidate => textContent(candidate).includes(label))
-  if (!button) throw new Error(`Button ${label} was not found.`)
-  return button
-}
-
-const collectButtons = (node: ReactNode): Array<ReactElement<{ onClick: () => void }>> => {
-  if (!isValidElement(node)) return []
-  const current = node.type === 'button'
-    ? [node as ReactElement<{ onClick: () => void }>]
-    : []
-  return [
-    ...current,
-    ...Children.toArray(node.props.children).flatMap(collectButtons)
-  ]
-}
-
-const textContent = (node: ReactNode): string => {
-  if (typeof node === 'string' || typeof node === 'number') return String(node)
-  if (!isValidElement(node)) return ''
-  return Children.toArray(node.props.children).map(textContent).join('')
-}

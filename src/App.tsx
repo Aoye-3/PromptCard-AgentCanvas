@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent } from 'react'
 import PromptLibrary from './components/PromptLibrary'
 import ThreeStageBuilderScreen from './components/ThreeStageBuilder'
 import { AgentDashboard } from './components/AgentDashboard'
@@ -18,6 +18,7 @@ import { CaptureBarScreen } from './features/capture/CaptureBarScreen'
 import type { ClipboardCaptureStatus } from './features/capture/CaptureBarScreen'
 import { getClipboardImageFiles } from './components/canvas/canvas-image-assets'
 import { importImageCapture, readClipboardImageFiles } from './features/capture/image-capture-import'
+import { extractBrowserImageDrop, resolveBrowserImageDrop } from './features/capture/browser-image-drop'
 import { closeCaptureToolbarWindow, openCaptureToolbarWindow, type CaptureToolbarStatus } from './features/capture/capture-toolbar-window'
 import type { BuilderModePreviewSnapshot } from './components/app/builder-preview-contract'
 import { AddCardModal, CreateProjectModal, HistoryModal, RenameProjectModal } from './components/app/ProjectModals'
@@ -1075,6 +1076,35 @@ function App() {
     void importClipboardFiles(files)
   }
 
+  const handleDropBrowserImage = async (event: ReactDragEvent<HTMLElement>) => {
+    setClipboardCaptureStatus('reading')
+    setClipboardCaptureMessage('正在读取拖入图片...')
+    try {
+      const dropped = await resolveBrowserImageDrop(extractBrowserImageDrop(event.dataTransfer))
+      setClipboardCaptureStatus('saving')
+      setClipboardCaptureMessage(`正在保存 ${dropped.files.length} 张图片...`)
+      const startedAt = Date.now()
+      for (const [index, file] of dropped.files.entries()) {
+        await importImageCapture({
+          file,
+          kind: 'pastedMedia',
+          sourcePlatform: 'Browser drag',
+          capturedAt: startedAt + index,
+          origin: {
+            type: 'browser-drag',
+            ...(dropped.sourceUrl ? { sourceUrl: dropped.sourceUrl } : {})
+          }
+        })
+      }
+      setClipboardCaptureStatus('saved')
+      setClipboardCaptureMessage(`已保存 ${dropped.files.length} 张图片到近期捕获，可继续拖入。`)
+    } catch (error) {
+      console.error('Failed to import browser image drop:', error)
+      setClipboardCaptureStatus('error')
+      setClipboardCaptureMessage(error instanceof Error ? error.message : '拖入图片保存失败。')
+    }
+  }
+
   const handleCopyPrompt = async () => {
     if (!currentPrompt.trim()) {
       alert(t('noPromptToCopy'))
@@ -1356,6 +1386,7 @@ function App() {
       clipboardMessage={clipboardCaptureMessage}
       onReadClipboard={() => void handleReadClipboard()}
       onPasteClipboard={handlePasteClipboard}
+      onDropBrowserImage={event => void handleDropBrowserImage(event)}
       onOpenRecentCaptures={() => setActiveTab('media')}
     />
   ) : activeTab === 'library' ? (
