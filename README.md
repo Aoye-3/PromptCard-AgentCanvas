@@ -30,6 +30,8 @@ PMAgent-Canvas 是面向 AIGC 创作者的本地桌面 Agent 画布。它把参�
 
 [▶ 查看 PMAgent-Canvas Demo 演示视频](./assets/readme/demo/demo-video.mp4)
 
+[▶ 百度网盘在线观看（提取码：6666）](https://pan.baidu.com/s/1Dcmho_NYCCUFW-jZm90L6A?pwd=6666)
+
 ## 产品总览
 
 画布是 PMAgent-Canvas 的中心层。左侧管理项目主体与素材，中间组织文本、参考图和生成结果，右侧在 Agent、图片生成与 Prompt 库之间切换。三部分围绕同一个项目上下文协作，而不是各自保存一份孤立数据。
