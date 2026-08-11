@@ -37,7 +37,7 @@ PMAgent-Canvas 是面向 AIGC 创作者的本地桌面 Agent 画布。它把参�
 画布是 PMAgent-Canvas 的中心层。左侧管理项目主体与素材，中间组织文本、参考图和生成结果，右侧在 Agent、图片生成与 Prompt 库之间切换。三部分围绕同一个项目上下文协作，而不是各自保存一份孤立数据。
 
 <p align="center">
-  <img src="./assets/readme/screenshots/canvas-overview.webp" width="100%" alt="PMAgent-Canvas 三栏画布：Agent 编辑、图片生成和 Prompt 库围绕中心画布协作">
+  <img src="./assets/readme/screenshots/canvas-overview.jpg" width="100%" alt="PMAgent-Canvas 画布三栏与主交互流程：Agent 编辑、图片生成和 Prompt 库协作">
 </p>
 
 ## 一条完整的本地创作链路
@@ -45,7 +45,7 @@ PMAgent-Canvas 是面向 AIGC 创作者的本地桌面 Agent 画布。它把参�
 从参考素材进入项目，到 Agent 辅助编写提示词，再到图片生成、二次编辑和资产归档，所有关键上下文都留在本地项目中。
 
 <p align="center">
-  <img src="./assets/readme/workflow.svg" width="100%" alt="PMAgent-Canvas 从项目素材到 Prompt、图片生成、编辑标注和资产沉淀的工作流">
+  <img src="./assets/readme/screenshots/workflow.jpg" width="100%" alt="PMAgent-Canvas 从素材收集、风格入库和提示词模板化到生成编辑与沉淀复用的完整工作流">
 </p>
 
 PMAgent-Canvas 不试图替代每一个外部生成或剪辑平台。它更关注生成前后的生产资料：参考图、分镜、Prompt、模型参数、生成结果、修改方向和复盘经验，让这些内容可以被继续搜索、复用和交付。
@@ -62,7 +62,7 @@ PMAgent-Canvas 不试图替代每一个外部生成或剪辑平台。它更关�
 - 生成历史与项目资产持久化保存。
 
 <p align="center">
-  <img src="./assets/readme/screenshots/image-generation-media-library.webp" width="100%" alt="PMAgent-Canvas 图片生成面板、全能参考模式和项目媒体素材库">
+  <img src="./assets/readme/screenshots/image-generation-media-library.jpg" width="100%" alt="PMAgent-Canvas 图片生成面板、全能参考模式、项目主体和媒体素材库">
 </p>
 
 ### Prompt 库与媒体管理
@@ -75,7 +75,7 @@ Prompt 不再只是一次性的文本。PMAgent-Canvas 将提示词、参考媒�
 - Agent 写入采用用户确认的提案边界。
 
 <p align="center">
-  <img src="./assets/readme/screenshots/prompt-library.webp" width="100%" alt="PMAgent-Canvas Agent 管理、Prompt 库和项目媒体管理页面">
+  <img src="./assets/readme/screenshots/prompt-library.jpg" width="100%" alt="PMAgent-Canvas Agent 管理、Prompt 媒体库和媒体管理页面">
 </p>
 
 ### 图片编辑、切割与二次标注
@@ -88,7 +88,11 @@ Prompt 不再只是一次性的文本。PMAgent-Canvas 将提示词、参考媒�
 - 编辑结果继续回到画布和项目素材中。
 
 <p align="center">
-  <img src="./assets/readme/screenshots/image-editing-annotations.webp" width="100%" alt="PMAgent-Canvas 生成式图片编辑、切割、消除和标注流程">
+  <img src="./assets/readme/screenshots/image-editing-generation.jpg" width="100%" alt="PMAgent-Canvas 生成式图片编辑、局部编辑、扩图、消除和多角度生成流程">
+</p>
+
+<p align="center">
+  <img src="./assets/readme/screenshots/image-editing-annotations.jpg" width="100%" alt="PMAgent-Canvas 分镜切割、文字标注、运镜标注和二次编辑流程">
 </p>
 
 ### 快捷消息节点与 Agent 协作
@@ -96,7 +100,7 @@ Prompt 不再只是一次性的文本。PMAgent-Canvas 将提示词、参考媒�
 快捷消息节点是一类可沉淀、可编辑的提示词模板。用户可以在画布中调整内容与样式，也可以从 Prompt 库查看完整上下文，再由 Agent 在规则范围内补全和改写。
 
 <p align="center">
-  <img src="./assets/readme/screenshots/agent-collaboration.webp" width="100%" alt="PMAgent-Canvas 快捷消息节点、悬浮编辑工具和 Agent 协作面板">
+  <img src="./assets/readme/screenshots/agent-collaboration.jpg" width="100%" alt="PMAgent-Canvas 快捷消息节点、悬浮编辑工具、Prompt 库复用和 Agent 协作面板">
 </p>
 
 ## 全能参考式提示词辅助编辑
@@ -125,7 +129,7 @@ Canvas Agent 将图片生成中的“全能参考”关系带到文本提示词�
 <details>
   <summary><strong>查看完整案例：分镜头指令图制作与编辑</strong></summary>
   <br>
-  <img src="./assets/readme/screenshots/use-case-storyboard.webp" width="100%" alt="使用 PMAgent-Canvas 制作和编辑 AIGC 分镜头指令图的完整案例">
+  <img src="./assets/readme/screenshots/use-case-storyboard.jpg" width="100%" alt="使用 PMAgent-Canvas 制作、生成和二次编辑 AIGC 分镜头指令图的完整案例">
 </details>
 
 ### 3D 效果图与初版拆分设计
@@ -135,7 +139,7 @@ Canvas Agent 将图片生成中的“全能参考”关系带到文本提示词�
 <details>
   <summary><strong>查看完整案例：3D 效果图与初版拆分设计</strong></summary>
   <br>
-  <img src="./assets/readme/screenshots/use-case-3d-design.webp" width="100%" alt="使用 PMAgent-Canvas 完成 3D 效果图、多角度生成和初版拆分设计的案例">
+  <img src="./assets/readme/screenshots/use-case-3d-design.jpg" width="100%" alt="使用 PMAgent-Canvas 完成 3D 效果图、多角度生成和初版拆分设计的案例">
 </details>
 
 ## 快速启动
