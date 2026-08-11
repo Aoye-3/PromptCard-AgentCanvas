@@ -45,7 +45,7 @@ PMAgent-Canvas 是面向 AIGC 创作者的本地桌面 Agent 画布。它把参�
 从参考素材进入项目，到 Agent 辅助编写提示词，再到图片生成、二次编辑和资产归档，所有关键上下文都留在本地项目中。
 
 <p align="center">
-  <img src="./assets/readme/screenshots/workflow.jpg" width="100%" alt="PMAgent-Canvas 从素材收集、风格入库和提示词模板化到生成编辑与沉淀复用的完整工作流">
+  <img src="./assets/readme/workflow.svg" width="100%" alt="PMAgent-Canvas 从项目素材到 Prompt、图片生成、编辑标注和资产沉淀的工作流">
 </p>
 
 PMAgent-Canvas 不试图替代每一个外部生成或剪辑平台。它更关注生成前后的生产资料：参考图、分镜、Prompt、模型参数、生成结果、修改方向和复盘经验，让这些内容可以被继续搜索、复用和交付。
@@ -126,7 +126,7 @@ Canvas Agent 将图片生成中的“全能参考”关系带到文本提示词�
 
 把前期收集的素材、分镜 Prompt、参考图和生成结果放进同一块画布，完成从指令图搭建、外部平台生成到结果复盘的闭环。
 
-<details>
+<details open>
   <summary><strong>查看完整案例：分镜头指令图制作与编辑</strong></summary>
   <br>
   <img src="./assets/readme/screenshots/use-case-storyboard.jpg" width="100%" alt="使用 PMAgent-Canvas 制作、生成和二次编辑 AIGC 分镜头指令图的完整案例">
@@ -136,10 +136,20 @@ Canvas Agent 将图片生成中的“全能参考”关系带到文本提示词�
 
 将三视图、材质参考、风格样本和多角度生成结果组织为可复用模板，再通过生成式编辑与标注完成细化和评审。
 
-<details>
+<details open>
   <summary><strong>查看完整案例：3D 效果图与初版拆分设计</strong></summary>
   <br>
   <img src="./assets/readme/screenshots/use-case-3d-design.jpg" width="100%" alt="使用 PMAgent-Canvas 完成 3D 效果图、多角度生成和初版拆分设计的案例">
+</details>
+
+### 提示词模板化、风格参考与灵感积累
+
+将反复使用的提示词封装为快捷模板，把风格参考沉淀到 Prompt 库，再由 Agent 调用、补全和改写，形成从灵感积累到复用交付的一体化工作流。
+
+<details open>
+  <summary><strong>查看完整案例：提示词模板化、风格参考与灵感积累</strong></summary>
+  <br>
+  <img src="./assets/readme/screenshots/use-case-prompt-workflow.jpg" width="100%" alt="使用 PMAgent-Canvas 完成提示词模板化、风格参考入库、Agent 补全和灵感复用的完整案例">
 </details>
 
 ## 快速启动
