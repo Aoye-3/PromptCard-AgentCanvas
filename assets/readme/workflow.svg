@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="250" viewBox="0 0 1200 250" role="img" aria-labelledby="title desc">
+  <title id="title">PMAgent-Canvas 创作工作流</title>
+  <desc id="desc">从项目素材、Agent 与 Prompt，到图片生成、编辑标注和资产沉淀的完整工作流。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#FF5A1F"/>
+    </marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="248" rx="24" fill="#FFF9F3" stroke="#FED7C3" stroke-width="2"/>
+  <text x="44" y="48" fill="#FF5A1F" font-size="16" font-weight="800" letter-spacing="1.2" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">ONE LOCAL CREATION LOOP</text>
+  <text x="44" y="82" fill="#111827" font-size="25" font-weight="800" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">素材、提示词、生成结果和复盘经验始终留在项目中</text>
+
+  <g transform="translate(44 110)" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+    <g>
+      <rect width="190" height="88" rx="16" fill="#FFFFFF" stroke="#E7E2DB"/>
+      <circle cx="28" cy="28" r="13" fill="#FFF1E9"/>
+      <path d="M20 25h16v12H20z M23 22h7l3 3" fill="none" stroke="#FF5A1F" stroke-width="2" stroke-linejoin="round"/>
+      <text x="52" y="34" fill="#111827" font-size="19" font-weight="800">项目素材</text>
+      <text x="20" y="66" fill="#6B7280" font-size="15">参考图 · 分镜 · 文件</text>
+    </g>
+
+    <path d="M198 44H224" stroke="#FF5A1F" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <g transform="translate(234 0)">
+      <rect width="190" height="88" rx="16" fill="#FFFFFF" stroke="#E7E2DB"/>
+      <circle cx="28" cy="28" r="13" fill="#111827"/>
+      <path d="M22 24h12v8H28l-4 4v-4h-2z" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round"/>
+      <text x="52" y="34" fill="#111827" font-size="19" font-weight="800">Agent 与 Prompt</text>
+      <text x="20" y="66" fill="#6B7280" font-size="15">Doubao Seed 2.0</text>
+    </g>
+
+    <path d="M432 44H458" stroke="#FF5A1F" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <g transform="translate(468 0)">
+      <rect width="190" height="88" rx="16" fill="#111827"/>
+      <circle cx="28" cy="28" r="13" fill="#FF5A1F"/>
+      <path d="M21 34l7-12 8 12z" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round"/>
+      <text x="52" y="34" fill="#FFFFFF" font-size="19" font-weight="800">图片生成</text>
+      <text x="20" y="66" fill="#D1D5DB" font-size="15">Seedream 5.0 Pro</text>
+    </g>
+
+    <path d="M666 44H692" stroke="#FF5A1F" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <g transform="translate(702 0)">
+      <rect width="190" height="88" rx="16" fill="#FFFFFF" stroke="#E7E2DB"/>
+      <circle cx="28" cy="28" r="13" fill="#FFF1E9"/>
+      <path d="M22 34l12-12 M22 22l12 12" stroke="#FF5A1F" stroke-width="2"/>
+      <text x="52" y="34" fill="#111827" font-size="19" font-weight="800">编辑与标注</text>
+      <text x="20" y="66" fill="#6B7280" font-size="15">局部修改 · 裁切 · 标注</text>
+    </g>
+
+    <path d="M900 44H926" stroke="#FF5A1F" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <g transform="translate(936 0)">
+      <rect width="176" height="88" rx="16" fill="#FFFFFF" stroke="#FF9B70" stroke-width="2"/>
+      <circle cx="28" cy="28" r="13" fill="#FFF1E9"/>
+      <path d="M21 23h14v12H21z M24 20h8v3" fill="none" stroke="#FF5A1F" stroke-width="2" stroke-linejoin="round"/>
+      <text x="52" y="34" fill="#111827" font-size="19" font-weight="800">资产沉淀</text>
+      <text x="20" y="66" fill="#6B7280" font-size="15">Prompt 库 · 媒体库</text>
+    </g>
+  </g>
+</svg>
