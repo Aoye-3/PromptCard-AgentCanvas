@@ -1,6 +1,6 @@
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react'
 import {
-  clampContextMenuPosition,
+  getCanvasContextMenuLayout,
   type ContextMenuPosition
 } from './image-action-ui'
 
@@ -31,7 +31,7 @@ export const CanvasContextMenu = ({
   children
 }: CanvasContextMenuProps) => {
   const menuRef = useRef<HTMLDivElement>(null)
-  const clamped = clampContextMenuPosition(
+  const layout = getCanvasContextMenuLayout(
     position,
     typeof window === 'undefined'
       ? { width: 1440, height: 900 }
@@ -40,16 +40,20 @@ export const CanvasContextMenu = ({
   )
 
   useEffect(() => {
-    menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+    const menu = menuRef.current
+    const firstEnabled = menu?.querySelector<HTMLButtonElement>('button:not(:disabled)')
+    if (firstEnabled) firstEnabled.focus()
+    else menu?.focus()
   }, [])
 
   return (
     <div
       ref={menuRef}
       role="menu"
+      tabIndex={-1}
       aria-label={ariaLabel}
-      className="fixed z-[75] max-h-[calc(100vh-24px)] w-56 overflow-y-auto rounded-xl border border-gray-200 bg-white p-1 text-gray-900 shadow-[0_18px_50px_rgba(15,23,42,0.18)]"
-      style={{ left: clamped.x, top: clamped.y }}
+      className="fixed z-[75] w-56 overflow-y-auto rounded-xl border border-gray-200 bg-white p-1 text-gray-900 shadow-[0_18px_50px_rgba(15,23,42,0.18)]"
+      style={{ left: layout.x, top: layout.y, maxHeight: layout.maxHeight }}
       onContextMenu={event => event.preventDefault()}
       onKeyDown={event => handleMenuKey(event, onClose)}
     >

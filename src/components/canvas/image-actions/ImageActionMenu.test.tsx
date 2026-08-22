@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ResolvedImageNodeCommand } from '@/domain/image-actions/image-node-commands'
 import { CanvasNodeContextMenu } from './CanvasNodeContextMenu'
 import { CanvasTextNodeContextMenu } from './CanvasTextNodeContextMenu'
+import { CanvasContextMenu } from './CanvasContextMenu'
 import { ImageNodeActionBar } from './ImageNodeActionBar'
-import { clampContextMenuPosition } from './image-action-ui'
+import { clampContextMenuPosition, getCanvasContextMenuLayout } from './image-action-ui'
 
 const command = (
   overrides: Partial<ResolvedImageNodeCommand> & Pick<ResolvedImageNodeCommand, 'id' | 'label'>
@@ -22,6 +23,28 @@ describe('image action menu surfaces', () => {
       .toEqual({ x: 12, y: 12 })
     expect(clampContextMenuPosition({ x: 980, y: 790 }, { width: 1000, height: 800 }, { width: 280, height: 500 }))
       .toEqual({ x: 708, y: 288 })
+  })
+
+  it('keeps long menus below the app header with a scrollable viewport while preserving short-menu placement', () => {
+    expect(getCanvasContextMenuLayout(
+      { x: 700, y: 180 },
+      { width: 1280, height: 720 },
+      { width: 224, height: 872 }
+    )).toEqual({ x: 700, y: 68, maxHeight: 640 })
+    expect(getCanvasContextMenuLayout(
+      { x: 700, y: 180 },
+      { width: 1280, height: 720 },
+      { width: 224, height: 232 }
+    )).toEqual({ x: 700, y: 180, maxHeight: 640 })
+  })
+
+  it('makes an all-disabled menu container programmatically focusable for Escape handling', () => {
+    const html = renderToStaticMarkup(
+      <CanvasContextMenu position={{ x: 100, y: 100 }} ariaLabel="Unavailable menu" estimatedHeight={96} onClose={vi.fn()}>
+        <button type="button" role="menuitem" disabled>Unavailable</button>
+      </CanvasContextMenu>
+    )
+    expect(html).toContain('tabindex="-1"')
   })
 
   it('renders one named toolbar and truthful disabled reason', () => {

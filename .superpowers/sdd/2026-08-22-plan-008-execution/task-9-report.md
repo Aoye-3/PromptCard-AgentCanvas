@@ -15,6 +15,8 @@ Response DTO fields are additive and optional. Canvas normalization preserves su
 - `src/components/canvas/image-actions/CanvasReferenceCodeAction.tsx`
 - `src/components/canvas/image-actions/CanvasReferenceCodeAction.test.tsx`
 - `src/components/canvas/image-actions/CanvasUnsupportedNodeContextMenu.tsx`
+- `src/components/canvas/image-actions/CanvasContextMenu.tsx`
+- `src/components/canvas/image-actions/image-action-ui.ts`
 - `src/components/canvas/image-actions/CanvasNodeContextMenu.tsx`
 - `src/components/canvas/image-actions/CanvasTextNodeContextMenu.tsx`
 - `src/components/canvas/image-actions/ImageActionMenu.test.tsx`
@@ -51,7 +53,7 @@ The first sandboxed Vitest launch also failed before test collection with `spawn
 
 - Final Task 9 focused suite:
   - Command: `npm.cmd test -- --run src/domain/reference-codes/reference-code.test.ts src/domain/free-canvas/free-canvas-project.test.ts src/storage/storage-service-client.test.ts src/components/canvas/image-actions/CanvasReferenceCodeAction.test.tsx src/components/canvas/image-actions/ImageActionMenu.test.tsx src/components/canvas/FreeCanvasBuilderScreen.image-generation.test.tsx`
-  - Result: 6 files passed; 117/117 tests passed in 2.70 s. Existing `MultiViewGroupPanel` duplicate `item-left` key warnings remain.
+  - Result after the browser-gate fixes: 6 files passed; 119/119 tests passed in 2.27 s. Existing `MultiViewGroupPanel` duplicate `item-left` key warnings remain.
 - Task 7 copy-code regression:
   - Command: `npm.cmd test -- --run src/components/prompt-media/useClipboardCopyFeedback.test.tsx src/domain/prompt-media/prompt-media.test.ts src/components/prompt-media/PromptPresetPreviewDialog.test.tsx src/components/PromptLibraryPreviewMode.test.ts src/stores/preset.store.test.ts`
   - Result: 5 files passed; 32/32 tests passed.
@@ -64,19 +66,25 @@ The first sandboxed Vitest launch also failed before test collection with `spawn
 
 ## Browser evidence
 
-- Spec: `tests/e2e/free-canvas-copy-code.spec.ts`, Chromium with the repository-local `.playwright-browsers` cache.
+- Spec: `tests/e2e/free-canvas-copy-code.spec.ts`, Chromium with the repository-local `node_modules/.cache/ms-playwright` cache.
 - Real Storage create responses supplied the exact project/text/image public codes; the spec covers project Enter, text Space, image mouse rejection/retry, unsupported arrow state, selection/editor/dialog/write invariants, console errors, and 320/768 overflow.
 - RED browser diagnostics found and drove two fixes:
   - React Flow selection synchronization closed a newly opened context menu.
   - Exact failing locator after that fix: `tests/e2e/free-canvas-copy-code.spec.ts:55`, `expect.poll(() => clipboardText(page)).toBe(textCode)`. The menu button was disabled because Canvas normalization discarded its response `referenceCode`; clipboard therefore retained `Task 9 text content` rather than the expected `CVT-...`.
-- The normalization defect is now covered by a focused regression test and fixed. A final post-fix browser run did not finish within the required 60-second outer limit and was terminated; Playwright emitted no later failing locator before termination. Therefore a complete post-fix browser pass, including the 320/768 tail, is not claimed.
-- Each normally failed run executed its `finally` cleanup. The two runs intentionally terminated at the outer limit left exact fixtures; `copy-code-1787430836421` and `copy-code-1787431072035` were subsequently trashed and permanently deleted through the Storage store API.
+- Subsequent RED runs exposed two real menu-accessibility defects at the default 1280x720 viewport: the long image menu was clamped under the global header, and an all-disabled unsupported menu had no focus target for Escape. Focused tests first failed for the missing safe layout helper and missing `tabIndex=-1`; the production fix now reserves the 56px app header plus 12px padding, constrains menu height to the remaining viewport with scrolling, and focuses the menu container when no enabled item exists.
+- The original monolithic browser scenario was split into three independently cleaned scenarios with 60-second budgets and minimum fixture data:
+  - project Enter + text Space + no workspace mutation: `1 passed (30.2s)`;
+  - image normal mouse reject/retry + long-menu first/last reachability with a real Storage asset: `1 passed (36.3s)`;
+  - unsupported arrow + Escape + 320/768 overflow: `1 passed (24.6s)`.
+- Complete spec result after adding console-error/write invariants: `3 passed (41.4s)` using two workers. Every scenario executed exact project trash plus permanent-delete cleanup in its own `finally` block; the image scenario also trashed and permanently deleted its uploaded Storage asset.
+- Fixtures left by intentionally stopped diagnostic runs were enumerated by exact `copy-code-*` IDs, then trashed and permanently deleted through the Storage store API.
 
 ## Commit
 
 Single implementation commit subject: `feat(canvas): copy public reference codes`. This report is part of that commit; the resolved commit hash is recorded in the parent handoff because a commit cannot contain its own final hash.
 
+Browser-gate fix commit subject: `fix(canvas): keep reference menus reachable`.
+
 ## Concerns
 
-- Browser verification remains incomplete because the post-fix runner exceeded the mandated outer time limit during the test/service lifecycle and was stopped. The last concrete browser failure is fixed and protected by unit/component coverage, but the E2E spec should be rerun in an already-running E2E service session to avoid web-server startup/teardown consuming the outer limit.
 - Existing duplicate React keys, repository lint baseline failures, CSS syntax warning, and bundle-size warnings are outside Task 9 scope and were not changed.

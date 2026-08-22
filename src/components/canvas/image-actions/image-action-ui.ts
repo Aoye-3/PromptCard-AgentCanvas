@@ -6,6 +6,7 @@ export interface ContextMenuPosition {
 }
 
 const edgePadding = 12
+const appHeaderHeight = 56
 
 export const clampContextMenuPosition = (
   position: ContextMenuPosition,
@@ -15,6 +16,21 @@ export const clampContextMenuPosition = (
   x: Math.max(edgePadding, Math.min(position.x, viewport.width - size.width - edgePadding)),
   y: Math.max(edgePadding, Math.min(position.y, viewport.height - size.height - edgePadding))
 })
+
+export const getCanvasContextMenuLayout = (
+  position: ContextMenuPosition,
+  viewport: { width: number; height: number },
+  size: { width: number; height: number }
+): ContextMenuPosition & { maxHeight: number } => {
+  const safeTop = Math.min(appHeaderHeight + edgePadding, Math.max(edgePadding, viewport.height - edgePadding))
+  const maxHeight = Math.max(0, viewport.height - safeTop - edgePadding)
+  const visibleHeight = Math.min(size.height, maxHeight)
+  return {
+    x: Math.max(edgePadding, Math.min(position.x, viewport.width - size.width - edgePadding)),
+    y: Math.max(safeTop, Math.min(position.y, viewport.height - visibleHeight - edgePadding)),
+    maxHeight
+  }
+}
 
 export const imageCommandDisabledReasonLabel = (
   reason: ResolvedImageNodeCommand['disabledReason']
