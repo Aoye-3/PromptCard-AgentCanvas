@@ -16,6 +16,7 @@ from typing import Any, Callable, Iterator, Literal
 
 from .assets import (
     DEFAULT_MAX_ASSET_BYTES,
+    IMAGE_CONTENT_TYPES,
     AssetStore,
     AssetValidationError,
     DeletedAssetLookup,
@@ -348,7 +349,7 @@ class SqliteStore:
         }:
             raise ReferenceCodeError("reference_namespace_mismatch")
         namespace_name = (
-            "canvasText"
+            "canvasTemplate"
             if parsed_node.namespace is ReferenceNamespace.CANVAS_TEMPLATE
             else "canvasMedia"
         )
@@ -856,7 +857,9 @@ class SqliteStore:
         with self._transaction() as connection:
             current = self._get_row_payload(connection, "projects", item_id, "active")
             if current["revision"] != revision:
-                raise RevisionConflict(current)
+                raise RevisionConflict(
+                    self._with_project_public_references(connection, current)
+                )
             updated = normalize_project({
                 **current,
                 **updates,
@@ -2861,11 +2864,9 @@ class SqliteStore:
                 node_id = node.get("id")
                 if not isinstance(node_id, str) or not node_id:
                     continue
-                kind = node.get("kind")
-                if kind == "text":
-                    candidates.add(("CVT", project_id, node_id))
-                elif kind == "image" and self._is_stable_canvas_image(node):
-                    candidates.add(("CVM", project_id, node_id))
+                namespace = self._canvas_node_namespace(node)
+                if namespace is not None:
+                    candidates.add((namespace.value, project_id, node_id))
 
         for preset_id, payload_json in connection.execute(
             "SELECT id, payload_json FROM presets ORDER BY id"
@@ -3109,12 +3110,9 @@ class SqliteStore:
         self, node: dict[str, Any]
     ) -> ReferenceNamespace | None:
         kind = node.get("kind")
-        node_id = node.get("id")
-        if (
-            not isinstance(node_id, str)
-            or not node_id
-            or node_id != node_id.strip(_PUBLIC_REFERENCE_EDGE_WHITESPACE)
-        ):
+        try:
+            _validate_canvas_node(node)
+        except ValueError:
             return None
         if kind == "text":
             return ReferenceNamespace.CANVAS_TEMPLATE
@@ -4116,13 +4114,18 @@ def _validate_project_canvas_nodes(project: dict[str, Any]) -> None:
         kind = node.get("kind")
         if kind is not None and not isinstance(kind, str):
             raise ValueError("Canvas nodes are invalid")
-        if kind not in {"text", "image"}:
-            continue
-        _validate_canvas_node(node)
-        node_id = node["id"]
+        node_id = node.get("id")
+        if (
+            not isinstance(node_id, str)
+            or not node_id
+            or node_id != node_id.strip(_PUBLIC_REFERENCE_EDGE_WHITESPACE)
+        ):
+            raise ValueError("Canvas nodes are invalid")
         if node_id in seen_ids:
             raise ValueError("Canvas nodes are invalid")
         seen_ids.add(node_id)
+        if kind in {"text", "image"}:
+            _validate_canvas_node(node)
 
 
 def _validate_canvas_node(node: dict[str, Any]) -> None:
@@ -4136,7 +4139,7 @@ def _validate_canvas_node(node: dict[str, Any]) -> None:
         or node_id != node_id.strip(_PUBLIC_REFERENCE_EDGE_WHITESPACE)
     ):
         raise ValueError("Canvas nodes are invalid")
-    if title is not None and not isinstance(title, str):
+    if not isinstance(title, str):
         raise ValueError("Canvas nodes are invalid")
     for dimension in (width, height):
         if dimension is not None and (
@@ -4157,9 +4160,11 @@ def _validate_canvas_node(node: dict[str, Any]) -> None:
         return
     if node.get("kind") != "image":
         raise ValueError("Canvas nodes are invalid")
+    if width is None or height is None:
+        raise ValueError("Canvas nodes are invalid")
     content_type = node.get("contentType")
     size = node.get("size")
-    if content_type is not None and not isinstance(content_type, str):
+    if content_type is not None and content_type not in IMAGE_CONTENT_TYPES:
         raise ValueError("Canvas nodes are invalid")
     if size is not None and (
         isinstance(size, bool) or not isinstance(size, int) or size < 0

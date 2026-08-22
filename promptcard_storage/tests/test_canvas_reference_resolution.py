@@ -6,14 +6,40 @@ import unittest
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 
 from promptcard_storage import store as store_module
 from promptcard_storage.app import create_app
+from promptcard_storage.maintenance import restore_backup
 from promptcard_storage.reference_codes import ReferenceCodeError
 from promptcard_storage.store import JsonCollectionStore
 
 
 TEST_ROOT = Path("F:.test-tmp/task8-canvas-references")
+CONTRACT_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "contracts"
+    / "promptcard-bridge"
+    / "v1"
+    / "schema.json"
+)
+
+
+def typed_reference_validator() -> Draft202012Validator:
+    schema = json.loads(CONTRACT_SCHEMA_PATH.read_text(encoding="utf-8"))
+    registry = Registry().with_resources([
+        (
+            definition["$id"],
+            Resource.from_contents(
+                definition, default_specification=DRAFT202012
+            ),
+        )
+        for definition in schema["$defs"].values()
+        if isinstance(definition, dict) and "$id" in definition
+    ])
+    return Draft202012Validator(schema["$defs"]["TypedReference"], registry=registry)
 
 
 def text_node(node_id: str, text: str = "Alpha", **overrides: object) -> dict:
@@ -207,7 +233,7 @@ class CanvasReferenceResolutionTest(unittest.TestCase):
         })
         text_result = self.store.resolve_canvas_reference(project_code, text_code.lower())
         self.assertEqual(text_result, {
-            "reference": {"namespace": "canvasText", "code": text_code},
+            "reference": {"namespace": "canvasTemplate", "code": text_code},
             "project": {"referenceCode": project_code, "revision": 1},
             "node": {
                 "referenceCode": text_code,
@@ -231,6 +257,10 @@ class CanvasReferenceResolutionTest(unittest.TestCase):
                 "size": 321,
             },
         })
+        validator = typed_reference_validator()
+        validator.validate(project_result["reference"])
+        validator.validate(text_result["reference"])
+        validator.validate(image_result["reference"])
         serialized = json.dumps((project_result, text_result, image_result))
         for secret in ("bounded", "text-long", "image-safe", "shared-asset", "private.png", "credentials", "must-not-leak"):
             self.assertNotIn(secret, serialized)
@@ -244,7 +274,7 @@ class CanvasReferenceResolutionTest(unittest.TestCase):
             self.store.resolve_canvas_reference(second["referenceCode"], first_node_code)
         self.assertEqual(caught.exception.code, "canvas_reference_project_mismatch")
         self.assertEqual(caught.exception.reference, {
-            "namespace": "canvasText", "code": first_node_code
+            "namespace": "canvasTemplate", "code": first_node_code
         })
 
     def test_parse_namespace_and_unknown_codes_fail_before_identity_lookup(self) -> None:
@@ -373,6 +403,19 @@ class CanvasReferenceResolutionTest(unittest.TestCase):
             "nested-text": [text_node("x", segments=[{"text": {"credentials": "secret"}}])],
             "bad-width": [image_node("x", width={"assetId": "secret"})],
             "bad-height": [image_node("x", height=math.inf)],
+            "missing-text-title": [{
+                key: value for key, value in text_node("x").items() if key != "title"
+            }],
+            "missing-image-width": [{
+                key: value for key, value in image_node("x").items() if key != "width"
+            }],
+            "supported-unsupported-duplicate": [
+                text_node("duplicate"),
+                {"id": "duplicate", "kind": "arrow", "title": "Arrow"},
+            ],
+            "malicious-content-type": [image_node(
+                "x", contentType="https://secret.invalid/?credentials=token"
+            )],
         }
         for name, nodes in malformed.items():
             with self.subTest(boundary="create", malformed=name):
@@ -418,7 +461,7 @@ class CanvasReferenceResolutionTest(unittest.TestCase):
             self.store.resolve_canvas_reference(project_code, node_code)
         self.assertEqual(caught.exception.code, "canvas_node_invalid")
         self.assertEqual(caught.exception.reference, {
-            "namespace": "canvasText", "code": node_code
+            "namespace": "canvasTemplate", "code": node_code
         })
         response = TestClient(create_app(self.store)).get(
             f"/api/projects/references/{project_code}/nodes/{node_code}"
@@ -428,6 +471,80 @@ class CanvasReferenceResolutionTest(unittest.TestCase):
         serialized = json.dumps(response.json())
         for secret in ("credentials", "secret-value", "F:/private", "target", "corrupt"):
             self.assertNotIn(secret, serialized)
+
+    def test_malicious_persisted_image_content_type_is_never_echoed(self) -> None:
+        created = self.store.create_project(project(
+            "bad-content-type", [image_node("image-target")]
+        ))
+        project_code = created["referenceCode"]
+        node_code = created["freeCanvas"]["nodes"][0]["referenceCode"]
+        raw = self.raw_project("bad-content-type")
+        raw["freeCanvas"]["nodes"][0]["contentType"] = (
+            "https://secret.invalid/?credentials=token-value"
+        )
+        with self.store._connect() as connection:
+            connection.execute(
+                "UPDATE projects SET payload_json=? WHERE id='bad-content-type'",
+                (json.dumps(raw),),
+            )
+            connection.commit()
+
+        response = TestClient(create_app(self.store)).get(
+            f"/api/projects/references/{project_code}/nodes/{node_code}"
+        )
+        self.assertEqual(response.status_code, 410)
+        self.assertEqual(response.json()["detail"]["code"], "canvas_node_invalid")
+        serialized = json.dumps(response.json())
+        for secret in ("secret.invalid", "credentials", "token-value"):
+            self.assertNotIn(secret, serialized)
+
+    def test_reconcile_and_projection_skip_unresolvable_supported_nodes(self) -> None:
+        created = self.store.create_project(project("corrupt-reconcile", []))
+        raw = self.raw_project("corrupt-reconcile")
+        raw["freeCanvas"]["nodes"] = [{
+            key: value for key, value in text_node("missing-title").items()
+            if key != "title"
+        }]
+        with self.store._connect() as connection:
+            connection.execute(
+                "UPDATE projects SET payload_json=? WHERE id='corrupt-reconcile'",
+                (json.dumps(raw),),
+            )
+            connection.commit()
+
+        reopened = JsonCollectionStore(self.data_dir)
+        projected = reopened.get_project("corrupt-reconcile")
+        self.assertNotIn("referenceCode", projected["freeCanvas"]["nodes"][0])
+        with reopened._connect() as connection:
+            self.assertEqual(
+                connection.execute(
+                    """SELECT public_code FROM public_references
+                       WHERE namespace='CVT' AND owner_scope='corrupt-reconcile'
+                         AND internal_id='missing-title'"""
+                ).fetchall(),
+                [],
+            )
+
+    def test_revision_conflict_projects_current_public_codes_without_persisting_them(self) -> None:
+        created = self.store.create_project(project(
+            "conflict", [text_node("conflict-text"), image_node("conflict-image")]
+        ))
+        response = TestClient(create_app(self.store)).put(
+            "/api/projects/conflict",
+            json={"revision": 999, "updates": {"title": "Stale write"}},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        current = response.json()["detail"]["current"]
+        self.assertEqual(current["referenceCode"], created["referenceCode"])
+        self.assertEqual(
+            [node["referenceCode"] for node in current["freeCanvas"]["nodes"]],
+            [
+                created["freeCanvas"]["nodes"][0]["referenceCode"],
+                created["freeCanvas"]["nodes"][1]["referenceCode"],
+            ],
+        )
+        self.assertNotIn("referenceCode", json.dumps(self.raw_project("conflict")))
 
     def test_duplicate_persisted_node_ids_do_not_expose_an_ambiguous_code(self) -> None:
         created = self.store.create_project(project(
@@ -501,6 +618,35 @@ class CanvasReferenceResolutionTest(unittest.TestCase):
         self.assertEqual(
             restored.resolve_canvas_reference(codes_before[0], codes_before[1])["node"]["text"],
             "Alpha",
+        )
+
+    def test_production_backup_restore_preserves_exact_project_and_node_resolution(self) -> None:
+        created = self.store.create_project(project(
+            "production-restore", [text_node("restore-text"), image_node("restore-image")]
+        ))
+        project_code = created["referenceCode"]
+        node_codes = [
+            node["referenceCode"] for node in created["freeCanvas"]["nodes"]
+        ]
+        backup_dir = self.data_dir / "production-backup"
+        restored_dir = self.data_dir / "production-restored"
+
+        manifest = self.store.backup(backup_dir)
+        restore_backup(restored_dir, backup_dir)
+        restored = JsonCollectionStore(restored_dir)
+
+        self.assertEqual(manifest["schemaVersion"], store_module.SCHEMA_VERSION)
+        self.assertEqual(
+            restored.resolve_project_reference(project_code)["reference"]["code"],
+            project_code,
+        )
+        self.assertEqual(
+            restored.resolve_canvas_reference(project_code, node_codes[0])["node"]["text"],
+            "Alpha",
+        )
+        self.assertEqual(
+            restored.resolve_canvas_reference(project_code, node_codes[1])["node"]["kind"],
+            "image",
         )
 
 

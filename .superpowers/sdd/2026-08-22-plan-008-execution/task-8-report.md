@@ -91,3 +91,46 @@ OK
 - Existing unrelated deleted runtime fixtures and the untracked plan draft were left untouched and are excluded from the commit.
 - The temporary Python test dependency is under ignored `.test-tmp` and is excluded from the commit.
 - Task 9 remains responsible for UI consumption; Task 10 remains responsible for CVC.
+
+## Independent review fix round
+
+Commit `9d78acc` received five Important findings. This targeted follow-up addressed all five without changing the frozen contract or schema version:
+
+1. CVT typed references now emit `namespace: "canvasTemplate"`, matching the frozen `contracts/promptcard-bridge/v1/schema.json`. Focused tests load that shared JSON Schema 2020-12 bundle, register its `$id` resources, and validate the actual project/CVT/CVM runtime `reference` objects against `TypedReference`.
+2. Optional image `contentType` is accepted only when it is an exact normalized member of Storage's existing `IMAGE_CONTENT_TYPES`. Malicious URL/credential strings are rejected at create/update and manually corrupted persisted values return redacted `canvas_node_invalid` without echoing the value.
+3. All Canvas nodes now require one nonblank, ASCII-edge-trimmed ID unique across the whole project, including supported/unsupported kind combinations. Text/image nodes must pass the same full resolvable-node validator before write, reconcile code generation, or response projection; text requires a scalar title and legal segments, while image requires a scalar title and finite positive width/height. Existing v10 tests were updated from simplified pseudo-nodes to legal current-model fixtures.
+4. Stale project updates project `RevisionConflict.current` through `_with_project_public_references`, so HTTP 409 returns PRJ/CVT/CVM while raw `payload_json` remains code-free.
+5. `maintenance.restore_backup` preserves explicit schema-1 compatibility and additionally accepts only the current `SCHEMA_VERSION` (10), not the intervening unsupported versions. The focused regression runs the production `store.backup -> maintenance.restore_backup -> reopen` path and proves PRJ/CVT/CVM exact resolution remains stable.
+
+### Fix-round RED
+
+```text
+python -m pytest promptcard_storage/tests/test_canvas_reference_resolution.py -q
+15 failed, 12 passed, 2 warnings, 21 subtests passed in 15.30s
+```
+
+The failures directly exercised all five review findings: eight malformed-write subtests, CVT namespace mismatch, malicious MIME echo, invalid-node reconcile projection, raw conflict current, and current-schema restore rejection.
+
+After the first implementation pass, focused tests exposed one test-order mistake and one remaining direct-kind branch in startup reconcile:
+
+```text
+2 failed, 17 passed, 2 warnings, 29 subtests passed in 16.59s
+```
+
+The test assertion was moved after the image response was created, and reconcile was changed to use the shared full node validator.
+
+### Fix-round GREEN
+
+```text
+python -m pytest promptcard_storage/tests/test_canvas_reference_resolution.py -q
+19 passed, 1 warning, 29 subtests passed in 9.33s
+```
+
+Relevant v10/reference/project/store/sqlite/app/backup verification:
+
+```text
+python -m pytest promptcard_storage/tests/test_public_references_v10.py promptcard_storage/tests/test_reference_codes.py promptcard_storage/tests/test_store.py promptcard_storage/tests/test_sqlite_store.py promptcard_storage/tests/test_app.py promptcard_storage/tests/test_backup.py -q
+65 passed, 1 warning, 69 subtests passed in 19.75s
+```
+
+Final AST parsing passed for all five changed Python files, and `git diff --check` exited 0 with only the repository's LF-to-CRLF notices. The pytest warning remains the existing workspace ACL preventing `.pytest_cache` writes.

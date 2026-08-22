@@ -396,13 +396,13 @@ class PublicReferencesV10Test(unittest.TestCase):
     def test_manual_v9_migration_backfills_active_trash_and_business_identities(self) -> None:
         store = JsonCollectionStore(self.data_dir)
         store.create_project(project("active-project", [
-            {"id": "same-node", "kind": "text", "segments": []},
-            {"id": "image-a", "kind": "image", "assetId": "shared-asset"},
-            {"id": "image-b", "kind": "image", "assetId": "shared-asset"},
+            {"id": "same-node", "kind": "text", "title": "Text", "segments": []},
+            {"id": "image-a", "kind": "image", "title": "Image A", "width": 640, "height": 480, "assetId": "shared-asset"},
+            {"id": "image-b", "kind": "image", "title": "Image B", "width": 640, "height": 480, "assetId": "shared-asset"},
         ]))
         store.create_project(project("trash-project", [
-            {"id": "same-node", "kind": "text", "segments": []},
-            {"id": "image-a", "kind": "image", "assetId": "shared-asset"},
+            {"id": "same-node", "kind": "text", "title": "Text", "segments": []},
+            {"id": "image-a", "kind": "image", "title": "Image A", "width": 640, "height": 480, "assetId": "shared-asset"},
         ]))
         store.trash_projects(["trash-project"])
         store.create_preset(preset("active-prompt", [{
@@ -447,8 +447,8 @@ class PublicReferencesV10Test(unittest.TestCase):
     def test_repeated_configure_and_reconcile_keep_codes_and_payloads_unchanged(self) -> None:
         store = JsonCollectionStore(self.data_dir)
         created = store.create_project(project("stable-project", [
-            {"id": "stable-text", "kind": "text", "segments": []},
-            {"id": "stable-image", "kind": "image", "assetId": "stable-asset"},
+            {"id": "stable-text", "kind": "text", "title": "Text", "segments": []},
+            {"id": "stable-image", "kind": "image", "title": "Image", "width": 640, "height": 480, "assetId": "stable-asset"},
         ]))
         prompt = store.create_preset(preset("stable-prompt", [{
             "id": "stable-binding", "kind": "image", "assetId": "stable-asset",

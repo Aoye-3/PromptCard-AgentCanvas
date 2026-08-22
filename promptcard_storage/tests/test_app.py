@@ -347,7 +347,10 @@ class StorageAppContractTest(unittest.TestCase):
         self.client.post("/api/projects", json={
             "id": "project-storage", "title": "Storage Project", "type": "free-canvas",
             "pages": [], "currentPage": 0,
-            "freeCanvas": {"nodes": [{"id": "image", "kind": "image", "assetId": asset["id"]}], "edges": []},
+            "freeCanvas": {"nodes": [{
+                "id": "image", "kind": "image", "title": "Project image",
+                "width": 640, "height": 480, "assetId": asset["id"],
+            }], "edges": []},
             "createdAt": 1, "updatedAt": 1, "lastOpenedAt": 1, "meta": {},
         })
         self.client.post("/api/storage/artifacts/trash", json={"ids": [asset["id"]]})

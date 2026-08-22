@@ -8,7 +8,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .store import DATABASE_NAME, MigrationError, SqliteStore
+from .store import DATABASE_NAME, SCHEMA_VERSION, MigrationError, SqliteStore
 
 
 def main() -> None:
@@ -37,7 +37,7 @@ def restore_backup(data_dir: Path, source: Path) -> None:
     if not manifest_path.is_file() or not source_database.is_file():
         raise MigrationError("Backup is missing manifest.json or promptcard.sqlite3")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schemaVersion") != 1:
+    if manifest.get("schemaVersion") not in {1, SCHEMA_VERSION}:
         raise MigrationError("Backup schema version is not supported")
     connection = sqlite3.connect(source_database)
     try:
