@@ -32,8 +32,10 @@ from .image_runs import (
 )
 from .migration import MigrationError, StorageInitializer
 from .reference_codes import (
+    ReferenceCodeError,
     ReferenceNamespace,
     generate_reference_code,
+    parse_reference_code,
 )
 
 Actor = Literal["user", "agent"]
@@ -65,6 +67,22 @@ class RevisionConflict(Exception):
 
 class MissingItem(Exception):
     pass
+
+
+class PromptReferenceError(Exception):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        reference: dict[str, str],
+        *,
+        status_code: int,
+    ) -> None:
+        self.code = code
+        self.message = message
+        self.reference = reference
+        self.status_code = status_code
+        super().__init__(code)
 
 
 class DeletedAsset(Exception):
@@ -174,6 +192,96 @@ class SqliteStore:
     def reconcile_public_references(self) -> None:
         with self._transaction() as connection:
             self._reconcile_public_references(connection)
+
+    def resolve_prompt_reference(self, reference_code: str) -> dict[str, Any]:
+        parsed = parse_reference_code(reference_code)
+        if parsed.namespace not in {
+            ReferenceNamespace.PROMPT_BUNDLE,
+            ReferenceNamespace.PROMPT_MEDIA,
+        }:
+            raise ReferenceCodeError("reference_namespace_mismatch")
+
+        canonical_code = parsed.code
+        namespace_name = (
+            "promptBundle"
+            if parsed.namespace is ReferenceNamespace.PROMPT_BUNDLE
+            else "promptMedia"
+        )
+        requested_reference = {
+            "namespace": namespace_name,
+            "code": canonical_code,
+        }
+        with self._connect() as connection:
+            registry_row = connection.execute(
+                """SELECT owner_scope, internal_id FROM public_references
+                   WHERE public_code=? AND namespace=?""",
+                (canonical_code, parsed.namespace.value),
+            ).fetchone()
+            if registry_row is None:
+                self._raise_prompt_reference_error(
+                    "prompt_bundle_reference_not_found"
+                    if parsed.namespace is ReferenceNamespace.PROMPT_BUNDLE
+                    else "prompt_media_reference_not_found",
+                    requested_reference,
+                    status_code=404,
+                )
+
+            owner_scope, internal_id = registry_row
+            prompt_id = (
+                internal_id
+                if parsed.namespace is ReferenceNamespace.PROMPT_BUNDLE
+                else owner_scope
+            )
+            prompt_row = connection.execute(
+                "SELECT status, payload_json FROM presets WHERE id=?",
+                (prompt_id,),
+            ).fetchone()
+            if prompt_row is None:
+                self._raise_prompt_reference_error(
+                    "prompt_bundle_missing"
+                    if parsed.namespace is ReferenceNamespace.PROMPT_BUNDLE
+                    else "prompt_media_owner_missing",
+                    requested_reference,
+                    status_code=410,
+                )
+            if prompt_row[0] == "trash":
+                self._raise_prompt_reference_error(
+                    "prompt_bundle_trashed"
+                    if parsed.namespace is ReferenceNamespace.PROMPT_BUNDLE
+                    else "prompt_media_owner_trashed",
+                    requested_reference,
+                    status_code=410,
+                )
+
+            prompt = json.loads(prompt_row[1])
+            media_items = self._preset_media(prompt)
+            if (
+                parsed.namespace is ReferenceNamespace.PROMPT_MEDIA
+                and not any(item.get("id") == internal_id for item in media_items)
+            ):
+                self._raise_prompt_reference_error(
+                    "prompt_media_detached",
+                    requested_reference,
+                    status_code=410,
+                )
+
+            projected = self._with_preset_public_references(connection, prompt)
+            resolved_media = [
+                self._resolved_prompt_media(connection, item)
+                for item in self._preset_media(projected)
+            ]
+            return {
+                "reference": requested_reference,
+                "prompt": {
+                    "referenceCode": projected["referenceCode"],
+                    "revision": projected["revision"],
+                    "type": projected["type"],
+                    "category": projected["category"],
+                    "label": projected["label"],
+                    "content": projected["content"],
+                },
+                "media": resolved_media,
+            }
 
     def create_agent_conversation(self, item: dict[str, Any]) -> dict[str, Any]:
         project_id = str(item.get("projectId") or "").strip()
@@ -1093,7 +1201,10 @@ class SqliteStore:
                     self._insert_preset(connection, created, "active", preset_index)
                 except sqlite3.IntegrityError as exc:
                     raise DuplicateItem(created["id"]) from exc
-                presets.append(created)
+                self._ensure_preset_public_references(connection, created)
+                presets.append(
+                    self._with_preset_public_references(connection, created)
+                )
 
             registered: list[dict[str, Any]] = []
             for capture_index, capture in enumerate(captures):
@@ -1122,15 +1233,20 @@ class SqliteStore:
             rows = connection.execute(
                 "SELECT payload_json FROM presets WHERE status='active' ORDER BY sort_order, created_at, id"
             ).fetchall()
-        return [json.loads(row[0]) for row in rows]
+            return [
+                self._with_preset_public_references(connection, json.loads(row[0]))
+                for row in rows
+            ]
 
     def get_preset(self, item_id: str) -> dict[str, Any]:
-        return self._get_payload("presets", item_id, "active")
+        with self._connect() as connection:
+            prompt = self._get_row_payload(connection, "presets", item_id, "active")
+            return self._with_preset_public_references(connection, prompt)
 
     def create_preset(self, item: dict[str, Any]) -> dict[str, Any]:
         now = now_ms()
         created = normalize_preset({
-            **item,
+            **_strip_preset_reference_codes(item),
             "id": item.get("id") or f"preset-{now}",
             "usageCount": item.get("usageCount", 0),
             "createdAt": item.get("createdAt") or now,
@@ -1143,26 +1259,29 @@ class SqliteStore:
                 self._insert_preset(connection, created, "active", sort_order)
             except sqlite3.IntegrityError as exc:
                 raise DuplicateItem(created["id"]) from exc
-        return created
+            self._ensure_preset_public_references(connection, created)
+            return self._with_preset_public_references(connection, created)
 
     def update_preset(self, item_id: str, updates: dict[str, Any], revision: int) -> dict[str, Any]:
         with self._transaction() as connection:
             current = self._get_row_payload(connection, "presets", item_id, "active")
             if current["revision"] != revision:
                 raise RevisionConflict(current)
+            normalized_updates = _strip_preset_reference_codes(updates)
             updated = normalize_preset({
                 **current,
-                **updates,
+                **normalized_updates,
                 "id": current["id"],
                 "createdAt": current.get("createdAt"),
                 "revision": current["revision"] + 1,
-                "updatedAt": updates.get("updatedAt") or now_ms(),
+                "updatedAt": normalized_updates.get("updatedAt") or now_ms(),
             })
             connection.execute(
                 "UPDATE presets SET revision=?, type=?, category=?, usage_count=?, created_at=?, updated_at=?, payload_json=? WHERE id=? AND status='active'",
                 (updated["revision"], updated["type"], updated["category"], updated["usageCount"], updated["createdAt"], updated["updatedAt"], _json(updated), item_id),
             )
-        return updated
+            self._ensure_preset_public_references(connection, updated)
+            return self._with_preset_public_references(connection, updated)
 
     def reorder_presets(self, ordered_ids: list[str], revision_map: dict[str, int]) -> list[dict[str, Any]]:
         with self._transaction() as connection:
@@ -1185,10 +1304,16 @@ class SqliteStore:
                     next_items[index] = item
                 else:
                     connection.execute("UPDATE presets SET sort_order=? WHERE id=?", (index, item["id"]))
-        return next_items
+            return [
+                self._with_preset_public_references(connection, item)
+                for item in next_items
+            ]
 
     def replace_presets(self, presets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        normalized = [normalize_preset(item) for item in presets]
+        normalized = [
+            normalize_preset(_strip_preset_reference_codes(item))
+            for item in presets
+        ]
         _ensure_unique_ids(normalized, "preset batch")
         with self._transaction() as connection:
             current = {item["id"]: item for item in self._active_presets(connection)}
@@ -1209,6 +1334,7 @@ class SqliteStore:
                     next_item = normalize_preset({**item, "revision": 1})
                     self._insert_preset(connection, next_item, "active", index)
                     normalized[index] = next_item
+                self._ensure_preset_public_references(connection, normalized[index])
             removed = [item_id for item_id in current if item_id not in incoming_ids]
             if removed:
                 placeholders = ",".join("?" for _ in removed)
@@ -1216,20 +1342,43 @@ class SqliteStore:
                     f"UPDATE presets SET status='trash', deleted_at=?, deleted_by='user', delete_reason='batch replace' WHERE id IN ({placeholders})",
                     (now, *removed),
                 )
-        return normalized
+            return [
+                self._with_preset_public_references(connection, item)
+                for item in normalized
+            ]
 
     def increment_preset_usage(self, item_id: str, revision: int) -> dict[str, Any]:
         current = self.get_preset(item_id)
         return self.update_preset(item_id, {"usageCount": current.get("usageCount", 0) + 1}, revision)
 
     def trash_presets(self, ids: list[str], deleted_by: Actor = "user", delete_reason: str | None = None) -> list[dict[str, Any]]:
-        return self._set_status("presets", ids, "active", "trash", deleted_by, delete_reason)
+        moved = self._set_status("presets", ids, "active", "trash", deleted_by, delete_reason)
+        with self._connect() as connection:
+            return [
+                self._with_preset_public_references(connection, item)
+                for item in moved
+            ]
 
     def list_preset_trash(self) -> list[dict[str, Any]]:
-        return self._list_trash("presets")
+        items = self._list_trash("presets")
+        with self._connect() as connection:
+            return [
+                {
+                    **item,
+                    "payload": self._with_preset_public_references(
+                        connection, item["payload"]
+                    ),
+                }
+                for item in items
+            ]
 
     def restore_presets(self, ids: list[str]) -> list[dict[str, Any]]:
-        return self._restore("presets", ids)
+        restored = self._restore("presets", ids)
+        with self._connect() as connection:
+            return [
+                self._with_preset_public_references(connection, item)
+                for item in restored
+            ]
 
     def delete_preset_trash(self, ids: list[str]) -> None:
         self._delete_trash("presets", ids)
@@ -1261,9 +1410,10 @@ class SqliteStore:
                     imported_projects += 1
             next_order = connection.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM presets").fetchone()[0]
             for raw in payload.get("presets") or []:
-                item = normalize_preset(raw)
+                item = normalize_preset(_strip_preset_reference_codes(raw))
                 if not connection.execute("SELECT 1 FROM presets WHERE id=?", (item["id"],)).fetchone():
                     self._insert_preset(connection, item, "active", next_order)
+                    self._ensure_preset_public_references(connection, item)
                     next_order += 1
                     imported_presets += 1
             connection.execute(
@@ -2590,6 +2740,138 @@ class SqliteStore:
         )
         return public_code
 
+    def _ensure_preset_public_references(
+        self,
+        connection: sqlite3.Connection,
+        prompt: dict[str, Any],
+    ) -> None:
+        prompt_id = str(prompt.get("id") or "")
+        self._ensure_public_reference(
+            connection,
+            ReferenceNamespace.PROMPT_BUNDLE,
+            prompt_id,
+            owner_scope="",
+        )
+        for binding in self._preset_media(prompt):
+            binding_id = binding.get("id")
+            if isinstance(binding_id, str) and binding_id:
+                self._ensure_public_reference(
+                    connection,
+                    ReferenceNamespace.PROMPT_MEDIA,
+                    binding_id,
+                    owner_scope=prompt_id,
+                )
+
+    def _with_preset_public_references(
+        self,
+        connection: sqlite3.Connection,
+        prompt: dict[str, Any],
+    ) -> dict[str, Any]:
+        projected = deepcopy(prompt)
+        prompt_id = str(projected.get("id") or "")
+        prompt_row = connection.execute(
+            """SELECT public_code FROM public_references
+               WHERE namespace='PLP' AND owner_scope='' AND internal_id=?""",
+            (prompt_id,),
+        ).fetchone()
+        if prompt_row is None:
+            raise MigrationError("Prompt public reference is missing")
+        projected["referenceCode"] = prompt_row[0]
+        for binding in self._preset_media(projected):
+            binding_id = binding.get("id")
+            if not isinstance(binding_id, str) or not binding_id:
+                continue
+            binding_row = connection.execute(
+                """SELECT public_code FROM public_references
+                   WHERE namespace='PLM' AND owner_scope=? AND internal_id=?""",
+                (prompt_id, binding_id),
+            ).fetchone()
+            if binding_row is None:
+                raise MigrationError("Prompt media public reference is missing")
+            binding["referenceCode"] = binding_row[0]
+        return projected
+
+    @staticmethod
+    def _preset_media(prompt: dict[str, Any]) -> list[dict[str, Any]]:
+        meta = prompt.get("meta")
+        media = meta.get("media") if isinstance(meta, dict) else None
+        if not isinstance(media, list):
+            return []
+        return [item for item in media if isinstance(item, dict)]
+
+    def _resolved_prompt_media(
+        self,
+        connection: sqlite3.Connection,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        reference = {
+            "namespace": "promptMedia",
+            "code": binding["referenceCode"],
+        }
+        asset_id = binding.get("assetId")
+        asset_row = (
+            connection.execute(
+                """SELECT original_filename, relative_path, content_type, size,
+                          lifecycle_status
+                   FROM assets WHERE asset_id=?""",
+                (asset_id,),
+            ).fetchone()
+            if isinstance(asset_id, str) and asset_id
+            else None
+        )
+        if asset_row is None:
+            self._raise_prompt_reference_error(
+                "prompt_media_asset_missing", reference, status_code=410
+            )
+        if asset_row[4] == "trash":
+            self._raise_prompt_reference_error(
+                "prompt_media_asset_trashed", reference, status_code=410
+            )
+        if asset_row[4] == "deleted":
+            self._raise_prompt_reference_error(
+                "prompt_media_asset_deleted", reference, status_code=410
+            )
+        if not (self.data_dir / asset_row[1]).is_file():
+            self._raise_prompt_reference_error(
+                "prompt_media_asset_missing", reference, status_code=410
+            )
+        title = binding.get("title")
+        return {
+            "referenceCode": binding["referenceCode"],
+            "kind": binding.get("kind")
+            or ("video" if str(asset_row[2]).startswith("video/") else "image"),
+            "filename": asset_row[0],
+            "contentType": asset_row[2],
+            "size": asset_row[3],
+            "title": title if isinstance(title, str) and title else asset_row[0],
+        }
+
+    @staticmethod
+    def _raise_prompt_reference_error(
+        code: str,
+        reference: dict[str, str],
+        *,
+        status_code: int,
+    ) -> None:
+        messages = {
+            "prompt_bundle_reference_not_found": "Prompt bundle reference was not found",
+            "prompt_media_reference_not_found": "Prompt media reference was not found",
+            "prompt_bundle_missing": "Prompt bundle is no longer available",
+            "prompt_media_owner_missing": "Prompt media owner is no longer available",
+            "prompt_bundle_trashed": "Prompt bundle is in Trash",
+            "prompt_media_owner_trashed": "Prompt media owner is in Trash",
+            "prompt_media_detached": "Prompt media binding is detached",
+            "prompt_media_asset_missing": "Prompt media asset is missing",
+            "prompt_media_asset_trashed": "Prompt media asset is in Trash",
+            "prompt_media_asset_deleted": "Prompt media asset was permanently deleted",
+        }
+        raise PromptReferenceError(
+            code,
+            messages[code],
+            reference,
+            status_code=status_code,
+        )
+
     def _create_agent_conversations_v9_schema(self, connection: sqlite3.Connection) -> None:
         connection.executescript("""
             CREATE TABLE IF NOT EXISTS agent_conversations(
@@ -3305,6 +3587,21 @@ def normalize_preset(item: dict[str, Any]) -> dict[str, Any]:
     preset.setdefault("updatedAt", preset.get("createdAt") or now)
     preset["revision"] = int(preset.get("revision") or 1)
     return preset
+
+
+def _strip_preset_reference_codes(item: dict[str, Any]) -> dict[str, Any]:
+    stripped = deepcopy(item)
+    stripped.pop("referenceCode", None)
+    meta = stripped.get("meta")
+    if not isinstance(meta, dict):
+        return stripped
+    media = meta.get("media")
+    if not isinstance(media, list):
+        return stripped
+    for binding in media:
+        if isinstance(binding, dict):
+            binding.pop("referenceCode", None)
+    return stripped
 
 
 def normalize_recent_capture(item: dict[str, Any]) -> dict[str, Any]:

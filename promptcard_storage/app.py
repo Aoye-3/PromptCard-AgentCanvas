@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from .assets import MAX_IMAGE_IMPORT_BYTES
+from .reference_codes import ReferenceCodeError
 from .remote_images import RemoteImage, RemoteImageError, fetch_remote_image
 from .store import (
     AssetInUse,
@@ -20,6 +21,7 @@ from .store import (
     FolderCycle,
     FolderNotEmpty,
     MissingItem,
+    PromptReferenceError,
     RevisionConflict,
     SqliteStore,
 )
@@ -576,12 +578,25 @@ def create_app(
     def migrate_browser_cache(payload: MigrationPayload) -> dict[str, Any]:
         return storage.migrate_browser_payload(payload.model_dump())
 
+    @application.get("/api/prompt-library/references/{reference_code}")
+    def resolve_prompt_reference(reference_code: str) -> dict[str, Any]:
+        return _handle(lambda: storage.resolve_prompt_reference(reference_code))
+
     return application
 
 
 def _handle(callback: Callable[[], Any]) -> Any:
     try:
         return callback()
+    except PromptReferenceError as exc:
+        raise _http_error(
+            exc.status_code,
+            exc.code,
+            exc.message,
+            {"reference": exc.reference},
+        ) from exc
+    except ReferenceCodeError as exc:
+        raise _http_error(400, exc.code, "Invalid public reference code") from exc
     except MissingItem as exc:
         raise _http_error(404, "not_found", "Storage item not found") from exc
     except DuplicateItem as exc:
