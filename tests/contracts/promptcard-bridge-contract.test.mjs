@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 
 import Ajv2020 from "ajv/dist/2020.js";
@@ -8,6 +8,7 @@ const contractDirectory = new URL(
   "../../contracts/promptcard-bridge/v1/",
   import.meta.url,
 );
+const fixtureDirectory = new URL("fixtures/", contractDirectory);
 
 async function readJson(filename) {
   return JSON.parse(
@@ -17,10 +18,22 @@ async function readJson(filename) {
 
 async function loadContract() {
   const manifest = await readJson("manifest.json");
-  const schema = await readJson("schema.json");
+  const schema = await readJson(manifest.schemaFile);
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   ajv.addSchema(schema);
   return { ajv, manifest, schema };
+}
+
+async function loadFixtures() {
+  const filenames = (await readdir(fixtureDirectory))
+    .filter((filename) => filename.endsWith(".json"))
+    .sort();
+  return Promise.all(
+    filenames.map(async (filename) => ({
+      filename,
+      fixture: JSON.parse(await readFile(new URL(filename, fixtureDirectory), "utf8")),
+    })),
+  );
 }
 
 const ULID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -50,7 +63,7 @@ function delivery(kind, item) {
 }
 
 describe("PromptCard bridge contract package", () => {
-  it("declares one version and every required stable entry point", async () => {
+  it("declares one version, its schema bundle, and every required stable entry point", async () => {
     const manifest = await readJson("manifest.json");
 
     assert.equal(manifest.contractVersion, "1.0.0");
@@ -58,21 +71,35 @@ describe("PromptCard bridge contract package", () => {
       manifest.schemaDialect,
       "https://json-schema.org/draft/2020-12/schema",
     );
-    assert.deepEqual(Object.keys(manifest.entryPoints).sort(), [
-      "contextPack",
-      "delivery",
-      "exactReferenceInput",
-      "mediaResource",
-      "promptBundle",
-      "proposal",
-      "searchResult",
-      "skillHostPin",
-      "skillPackage",
-      "skillRevision",
-      "status",
-      "structuredError",
-      "typedReference",
-    ]);
+    assert.equal(manifest.schemaFile, "schema.json");
+    assert.deepEqual(manifest.entryPoints, {
+      typedReference:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/typed-reference.schema.json",
+      exactReferenceInput:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/exact-reference-input.schema.json",
+      searchResult:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/search-result.schema.json",
+      promptBundle:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/prompt-bundle.schema.json",
+      mediaResource:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/media-resource.schema.json",
+      contextPack:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/context-pack.schema.json",
+      skillPackage:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-package.schema.json",
+      skillRevision:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-revision.schema.json",
+      skillHostPin:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-host-pin.schema.json",
+      proposal:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/proposal.schema.json",
+      delivery:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/delivery.schema.json",
+      status:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/status.schema.json",
+      structuredError:
+        "https://schemas.promptcard.dev/promptcard-bridge/v1/structured-error.schema.json",
+    });
 
     const ids = Object.values(manifest.entryPoints);
     assert.equal(new Set(ids).size, ids.length);
@@ -263,5 +290,81 @@ describe("PromptCard bridge contract package", () => {
       );
       assert.equal(validate(code), false, `${resource} accepted ${code}`);
     }
+  });
+
+  it("validates named positive and negative contract fixtures", async (t) => {
+    const fixtures = await loadFixtures();
+    assert.ok(fixtures.length > 0, "at least one contract fixture is required");
+
+    for (const { filename, fixture } of fixtures) {
+      await t.test(fixture.name ?? filename, async () => {
+        const { ajv, manifest } = await loadContract();
+
+        assert.equal(typeof fixture.name, "string", `${filename}: name`);
+        assert.equal(typeof fixture.entryPoint, "string", `${fixture.name}: entryPoint`);
+        assert.equal(
+          typeof fixture.expectedSchemaValidity,
+          "boolean",
+          `${fixture.name}: expectedSchemaValidity`,
+        );
+        assert.equal(
+          manifest.entryPoints[fixture.entryPoint],
+          fixture.schemaId,
+          `${fixture.name}: schemaId must match manifest entry point`,
+        );
+
+        const validate = ajv.getSchema(fixture.schemaId);
+        assert.equal(typeof validate, "function", `${fixture.name}: schema must compile`);
+        assert.equal(
+          validate(fixture.instance),
+          fixture.expectedSchemaValidity,
+          `${fixture.name}: schema validity`,
+        );
+
+        if (fixture.expectedOutcome) {
+          assert.equal(
+            typeof fixture.expectedOutcome.entryPoint,
+            "string",
+            `${fixture.name}: expectedOutcome.entryPoint`,
+          );
+          const outcomeValidate = ajv.getSchema(fixture.expectedOutcome.schemaId);
+          assert.equal(
+            manifest.entryPoints[fixture.expectedOutcome.entryPoint],
+            fixture.expectedOutcome.schemaId,
+            `${fixture.name}: outcome schemaId must match manifest entry point`,
+          );
+          assert.equal(
+            outcomeValidate(fixture.expectedOutcome.instance),
+            true,
+            `${fixture.name}: expected outcome must be schema-valid`,
+          );
+        }
+      });
+    }
+  });
+
+  it("keeps replay, conflict, and host-pin fixture semantics distinct", async () => {
+    const fixtures = new Map(
+      (await loadFixtures()).map(({ fixture }) => [fixture.name, fixture]),
+    );
+    const replay = fixtures.get("same request key and digest replays the first result");
+    const conflict = fixtures.get("same request key and different digest conflicts");
+    const hostPins = fixtures.get("independent local-agent and Codex host pins");
+
+    assert.equal(replay.instance.clientRequestId, conflict.instance.clientRequestId);
+    assert.equal(
+      replay.instance.normalizedRequestDigest,
+      conflict.expectedOutcome.instance.existingRequestDigest,
+    );
+    assert.notEqual(
+      replay.instance.normalizedRequestDigest,
+      conflict.instance.normalizedRequestDigest,
+    );
+    assert.equal(replay.expectedOutcome.instance.disposition, "replay");
+    assert.equal(conflict.expectedOutcome.instance.code, "delivery_conflict");
+    assert.deepEqual(
+      hostPins.instance.items.map((item) => item.hostPin.host).sort(),
+      ["codex", "local-agent"],
+    );
   });
 });

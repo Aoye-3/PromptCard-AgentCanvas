@@ -1,0 +1,17 @@
+{
+  "name": "unknown exact code has a not-found outcome",
+  "entryPoint": "exactReferenceInput",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/exact-reference-input.schema.json",
+  "instance": "PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "expectedSchemaValidity": true,
+  "expectedOutcome": {
+    "entryPoint": "structuredError",
+    "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/structured-error.schema.json",
+    "instance": {
+      "code": "not_found",
+      "message": "The referenced prompt bundle does not exist",
+      "retryable": false,
+      "details": [{ "path": "/target", "reason": "unknown_code" }]
+    }
+  }
+}

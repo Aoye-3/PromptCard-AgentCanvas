@@ -1,0 +1,7 @@
+{
+  "name": "case-insensitive exact reference input",
+  "entryPoint": "exactReferenceInput",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/exact-reference-input.schema.json",
+  "instance": "plm-01arz3ndektsv4rrffq69g5fav",
+  "expectedSchemaValidity": true
+}

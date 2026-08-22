@@ -32,3 +32,7 @@ Storage remains the durable authority. These schemas define the adapter boundary
 Consumers load `schema.json` into a JSON Schema 2020-12 validator and resolve the absolute IDs from `manifest.json`. The repository contract check uses the directly pinned Ajv 8.17.1 `Ajv2020` entry point; an older transitive Ajv is not compatible with this dialect.
 
 Run it directly with `npm run test:contracts`. The standard `npm test` entry point invokes the same contract check through its `pretest` hook before Vitest starts.
+
+## Fixtures
+
+`fixtures/*.json` are sorted and executed individually by the contract check. Every fixture declares `name`, `entryPoint`, `schemaId`, `instance`, and `expectedSchemaValidity`; `schemaId` must exactly equal the selected manifest entry point. Schema-valid business-error and status examples additionally declare `expectedOutcome` with its own entry point, schema ID, and schema-valid instance. This keeps malformed boundary inputs distinct from well-formed requests whose authoritative outcome is an error or replay state.

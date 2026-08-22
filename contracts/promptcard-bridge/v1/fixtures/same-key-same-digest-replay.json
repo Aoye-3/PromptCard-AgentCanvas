@@ -1,0 +1,43 @@
+{
+  "name": "same request key and digest replays the first result",
+  "entryPoint": "delivery",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/delivery.schema.json",
+  "instance": {
+    "clientRequestId": "replay-key-001",
+    "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "kind": "canvas.node.add",
+    "sourceCodeLists": {
+      "promptBundleCodes": [],
+      "promptMediaCodes": [],
+      "canvasTemplateCodes": ["CVT-01ARZ3NDEKTSV4RRFFQ69G5FAV"],
+      "canvasMediaCodes": [],
+      "skillCodes": []
+    },
+    "provenance": "codex-harness",
+    "items": [
+      {
+        "kind": "canvas.node.add",
+        "canvasTemplateCode": "cvt-01arz3ndektsv4rrffq69g5fav",
+        "nodeContent": {
+          "nodeType": "prompt",
+          "content": "The original node",
+          "position": { "x": 12, "y": 34 }
+        }
+      }
+    ]
+  },
+  "expectedSchemaValidity": true,
+  "expectedOutcome": {
+    "entryPoint": "status",
+    "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/status.schema.json",
+    "instance": {
+      "clientRequestId": "replay-key-001",
+      "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "applied",
+      "disposition": "replay",
+      "message": "Returned the first delivery result",
+      "resultCodes": ["CVT-01ARZ3NDEKTSV4RRFFQ69G5FAV"]
+    }
+  }
+}

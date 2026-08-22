@@ -1,0 +1,62 @@
+{
+  "name": "independent local-agent and Codex host pins",
+  "entryPoint": "delivery",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/delivery.schema.json",
+  "instance": {
+    "clientRequestId": "host-pins-001",
+    "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "kind": "skill.projection.add",
+    "sourceCodeLists": {
+      "promptBundleCodes": [],
+      "promptMediaCodes": [],
+      "canvasTemplateCodes": [],
+      "canvasMediaCodes": [],
+      "skillCodes": ["skl-01arz3ndektsv4rrffq69g5fav"]
+    },
+    "provenance": "codex-harness",
+    "items": [
+      {
+        "kind": "skill.projection.add",
+        "skillRevision": {
+          "skillCode": "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "revisionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "files": [{ "path": "SKILL.md", "content": "# Governed skill" }],
+          "sourceCodes": []
+        },
+        "hostPin": {
+          "host": "local-agent",
+          "skillCode": "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "revisionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      {
+        "kind": "skill.projection.add",
+        "skillRevision": {
+          "skillCode": "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "revisionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "files": [{ "path": "SKILL.md", "content": "# Governed skill" }],
+          "sourceCodes": []
+        },
+        "hostPin": {
+          "host": "codex",
+          "skillCode": "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "revisionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ]
+  },
+  "expectedSchemaValidity": true,
+  "expectedOutcome": {
+    "entryPoint": "status",
+    "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/status.schema.json",
+    "instance": {
+      "clientRequestId": "host-pins-001",
+      "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "applied",
+      "disposition": "original",
+      "message": "Applied independent host projections",
+      "resultCodes": ["SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV"]
+    }
+  }
+}

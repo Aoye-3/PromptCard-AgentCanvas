@@ -1,0 +1,31 @@
+{
+  "name": "revoked context has a permission-denied outcome",
+  "entryPoint": "contextPack",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/context-pack.schema.json",
+  "instance": {
+    "projectCode": "PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "entries": [
+      {
+        "reference": {
+          "namespace": "promptBundle",
+          "code": "PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        },
+        "content": "Previously authorized context",
+        "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "sourceCodes": []
+  },
+  "expectedSchemaValidity": true,
+  "expectedOutcome": {
+    "entryPoint": "structuredError",
+    "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/structured-error.schema.json",
+    "instance": {
+      "code": "permission_denied",
+      "message": "The canvas context has been revoked",
+      "retryable": false,
+      "details": [{ "path": "/cvcCode", "reason": "context_revoked" }]
+    }
+  }
+}

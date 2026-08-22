@@ -1,0 +1,7 @@
+{
+  "name": "internal storage IDs cannot substitute for exact targets",
+  "entryPoint": "exactReferenceInput",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/exact-reference-input.schema.json",
+  "instance": "9dfb713f-9fc7-4cc5-98ce-9326b9a90e70",
+  "expectedSchemaValidity": false
+}

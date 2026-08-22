@@ -1,0 +1,44 @@
+{
+  "name": "same request key and different digest conflicts",
+  "entryPoint": "delivery",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/delivery.schema.json",
+  "instance": {
+    "clientRequestId": "replay-key-001",
+    "normalizedRequestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "kind": "canvas.node.add",
+    "sourceCodeLists": {
+      "promptBundleCodes": [],
+      "promptMediaCodes": [],
+      "canvasTemplateCodes": ["CVT-01ARZ3NDEKTSV4RRFFQ69G5FAV"],
+      "canvasMediaCodes": [],
+      "skillCodes": []
+    },
+    "provenance": "codex-harness",
+    "items": [
+      {
+        "kind": "canvas.node.add",
+        "canvasTemplateCode": "CVT-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "nodeContent": {
+          "nodeType": "prompt",
+          "content": "A conflicting node",
+          "position": { "x": 12, "y": 34 }
+        }
+      }
+    ]
+  },
+  "expectedSchemaValidity": true,
+  "expectedOutcome": {
+    "entryPoint": "structuredError",
+    "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/structured-error.schema.json",
+    "instance": {
+      "code": "delivery_conflict",
+      "message": "The request ID is bound to another digest",
+      "retryable": false,
+      "clientRequestId": "replay-key-001",
+      "normalizedRequestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "existingRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "details": []
+    }
+  }
+}

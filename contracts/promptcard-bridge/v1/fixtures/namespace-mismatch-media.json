@@ -1,0 +1,13 @@
+{
+  "name": "prompt and canvas media namespaces cannot be interchanged",
+  "entryPoint": "mediaResource",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/media-resource.schema.json",
+  "instance": {
+    "namespace": "canvasMedia",
+    "code": "PLM-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "mediaType": "image/png",
+    "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "byteLength": 42
+  },
+  "expectedSchemaValidity": false
+}

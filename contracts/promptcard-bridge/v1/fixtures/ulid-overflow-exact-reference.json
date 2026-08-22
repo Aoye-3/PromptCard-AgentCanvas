@@ -1,0 +1,7 @@
+{
+  "name": "ULID values beyond 128 bits fail exact reference validation",
+  "entryPoint": "exactReferenceInput",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/exact-reference-input.schema.json",
+  "instance": "CVC-Z1ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "expectedSchemaValidity": false
+}

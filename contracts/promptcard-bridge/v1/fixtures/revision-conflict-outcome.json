@@ -1,0 +1,22 @@
+{
+  "name": "revision conflict is schema-valid with a validation outcome",
+  "entryPoint": "skillRevision",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-revision.schema.json",
+  "instance": {
+    "skillCode": "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "revisionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "files": [{ "path": "SKILL.md", "content": "# Existing revision" }],
+    "sourceCodes": []
+  },
+  "expectedSchemaValidity": true,
+  "expectedOutcome": {
+    "entryPoint": "structuredError",
+    "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/structured-error.schema.json",
+    "instance": {
+      "code": "validation_error",
+      "message": "The skill revision conflicts with the authoritative revision",
+      "retryable": false,
+      "details": [{ "path": "/revisionDigest", "reason": "revision_conflict" }]
+    }
+  }
+}

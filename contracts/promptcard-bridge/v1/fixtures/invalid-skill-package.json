@@ -1,0 +1,13 @@
+{
+  "name": "invalid Skill package fails schema validation",
+  "entryPoint": "skillPackage",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-package.schema.json",
+  "instance": {
+    "skillCode": "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "name": "",
+    "description": "A package without the required name",
+    "currentRevisionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceCodes": []
+  },
+  "expectedSchemaValidity": false
+}

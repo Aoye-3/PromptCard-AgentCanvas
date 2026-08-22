@@ -1,0 +1,44 @@
+{
+  "name": "successful additive canvas media delivery",
+  "entryPoint": "delivery",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/delivery.schema.json",
+  "instance": {
+    "clientRequestId": "delivery-success-001",
+    "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "cvcCode": "cvc-01arz3ndektsv4rrffq69g5fav",
+    "kind": "canvas.media.add",
+    "sourceCodeLists": {
+      "promptBundleCodes": [],
+      "promptMediaCodes": [],
+      "canvasTemplateCodes": [],
+      "canvasMediaCodes": [],
+      "skillCodes": []
+    },
+    "provenance": "codex-harness",
+    "items": [
+      {
+        "kind": "canvas.media.add",
+        "mediaResource": {
+          "namespace": "canvasMedia",
+          "code": "CVM-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "mediaType": "image/png",
+          "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "byteLength": 42
+        }
+      }
+    ]
+  },
+  "expectedSchemaValidity": true,
+  "expectedOutcome": {
+    "entryPoint": "status",
+    "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/status.schema.json",
+    "instance": {
+      "clientRequestId": "delivery-success-001",
+      "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "applied",
+      "disposition": "original",
+      "message": "Applied the additive delivery",
+      "resultCodes": ["CVM-01ARZ3NDEKTSV4RRFFQ69G5FAV"]
+    }
+  }
+}

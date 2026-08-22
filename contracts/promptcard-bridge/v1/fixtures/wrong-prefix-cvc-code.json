@@ -1,0 +1,12 @@
+{
+  "name": "wrong prefix cannot occupy a canvas code field",
+  "entryPoint": "contextPack",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v1/context-pack.schema.json",
+  "instance": {
+    "projectCode": "PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "cvcCode": "PLM-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "entries": [],
+    "sourceCodes": []
+  },
+  "expectedSchemaValidity": false
+}
