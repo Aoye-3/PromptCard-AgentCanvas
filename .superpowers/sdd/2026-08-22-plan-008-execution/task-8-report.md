@@ -288,3 +288,61 @@ The final pre-commit union of every focused and relevant suite above also passed
 $env:PYTHONPATH = (Resolve-Path '.test-tmp/task8-python-deps').Path; python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_canvas_reference_resolution.py promptcard_storage/tests/test_image_runs.py promptcard_storage/tests/test_image_conversations.py promptcard_storage/tests/test_image_assets_v5.py promptcard_storage/tests/test_project_resources.py promptcard_storage/tests/test_storage_artifacts.py promptcard_storage/tests/test_public_references_v10.py promptcard_storage/tests/test_sqlite_store.py -q
 118 passed, 1 warning, 134 subtests passed in 56.01s
 ```
+
+## Independent review fix round 5
+
+This targeted restore follow-up addresses the three latest schema, asset-tree, and concurrency findings:
+
+1. Canonical schema comparison now fingerprints every non-internal `table`, `index`, `view`, and `trigger` from `sqlite_master`. Tables retain structured column, foreign-key, and complete `index_list`/`index_xinfo` details; this explicitly covers SQLite auto-indexes whose own `sqlite_master.sql` is `NULL` and whose `sqlite_*` names are intentionally excluded as internal objects. Extra views and triggers are rejected. SQL normalization removes case and whitespace only outside quoted strings/identifiers, preserving spaces, case, doubled quote escapes, and bracket/backtick/double-quoted identifiers.
+2. The source assets entry and every descendant are inspected with `os.lstat` before `copytree`. Only a non-reparse regular directory containing non-reparse regular directories/files is accepted. Symlinks, Windows junction/reparse attributes, and special files are rejected without following them. The current Windows workspace could not create a real symlink, so that test records a platform skip; separate root and nested `FILE_ATTRIBUTE_REPARSE_POINT` simulations exercise the exact Windows validator branch without leaving the workspace.
+3. Restore is serialized by resolved target. An in-process per-target `RLock` is paired with a persistent sibling lock file: Windows uses blocking `msvcrt.LK_LOCK`, POSIX uses blocking `fcntl.flock`, and platforms lacking `fcntl` retain the clearly scoped process lock fallback. The lock spans source/staging validation, target snapshot, commit, rollback, and staging cleanup, and is always released in `finally`; the persistent file is never unlinked while waiters may reference it. A deterministic two-thread regression blocks restore A at commit and proves restore B cannot enter commit until A releases, then verifies the final project/database and asset bytes form one complete A or B pair. Both source backups remain byte/logically unchanged. A validation-error regression proves another thread can immediately reacquire the target lock.
+
+### Fix-round-5 RED
+
+Before production changes, the focused backup suite produced:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py -q
+6 failed, 15 passed, 1 skipped, 2 warnings, 20 subtests passed in 19.01s
+```
+
+The six failures covered extra view/trigger acceptance, quoted literal whitespace collapse, root/nested reparse acceptance, and overlapping same-target commits. The real nested-symlink case skipped because this Windows workspace lacks symlink creation permission; the simulated Windows reparse cases both failed as intended.
+
+The escaped-quote mutation was also proven independently against the old normalizer:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py::BackupRestoreValidationTest::test_schema_sql_normalizer_preserves_quotes_and_escaped_quotes -q
+1 failed, 2 warnings in 0.65s
+```
+
+### Fix-round-5 GREEN
+
+Focused backup/maintenance verification:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py -q
+17 passed, 1 skipped, 1 warning, 25 subtests passed in 23.65s
+```
+
+Backup plus Canvas exact-resolution verification:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_canvas_reference_resolution.py -q
+39 passed, 1 skipped, 1 warning, 64 subtests passed in 35.54s
+```
+
+Relevant v3-v10 migration, SQLite initializer, assets/resources, v10 registry, and storage-artifact verification:
+
+```text
+$env:PYTHONPATH = (Resolve-Path '.test-tmp/task8-python-deps').Path; python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_image_runs.py promptcard_storage/tests/test_image_conversations.py promptcard_storage/tests/test_image_assets_v5.py promptcard_storage/tests/test_project_resources.py promptcard_storage/tests/test_storage_artifacts.py promptcard_storage/tests/test_public_references_v10.py promptcard_storage/tests/test_sqlite_store.py -q
+101 passed, 1 skipped, 1 warning, 100 subtests passed in 50.12s
+```
+
+The skip is solely the unavailable real-symlink capability; Windows reparse behavior remains covered by root and nested attribute simulations. The warning remains the existing `.pytest_cache` ACL restriction. This round changes only `promptcard_storage/maintenance.py`, `promptcard_storage/tests/test_backup.py`, and this report; environment fixture deletions and the untracked plan draft remain excluded.
+
+The final pre-commit union of all focused and relevant suites above passed freshly:
+
+```text
+$env:PYTHONPATH = (Resolve-Path '.test-tmp/task8-python-deps').Path; python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_canvas_reference_resolution.py promptcard_storage/tests/test_image_runs.py promptcard_storage/tests/test_image_conversations.py promptcard_storage/tests/test_image_assets_v5.py promptcard_storage/tests/test_project_resources.py promptcard_storage/tests/test_storage_artifacts.py promptcard_storage/tests/test_public_references_v10.py promptcard_storage/tests/test_sqlite_store.py -q
+123 passed, 1 skipped, 1 warning, 139 subtests passed in 59.36s
+```

@@ -2,9 +2,12 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from promptcard_storage import maintenance as maintenance_module
@@ -396,12 +399,213 @@ class BackupRestoreValidationTest(unittest.TestCase):
                 bad_registry_rows, "bad-registry-rows"
             )
 
+    def test_restore_rejects_extra_schema_objects_and_changed_quoted_literal(self) -> None:
+        mutations = {
+            "extra-view": "CREATE VIEW leaked_projects AS SELECT payload_json FROM projects",
+            "extra-trigger": """CREATE TRIGGER mutate_projects AFTER INSERT ON projects
+                                BEGIN
+                                    UPDATE projects SET revision=revision WHERE id=NEW.id;
+                                END""",
+        }
+        for name, statement in mutations.items():
+            source = self.root / name
+            self.store.backup(source)
+            connection = sqlite3.connect(source / DATABASE_NAME)
+            try:
+                connection.execute(statement)
+                connection.commit()
+            finally:
+                connection.close()
+            with self.subTest(case=name):
+                self.assert_restore_rejected_without_touching_target(source, name)
+
+        quoted_literal = self.root / "changed-quoted-literal"
+        self.store.backup(quoted_literal)
+        connection = sqlite3.connect(quoted_literal / DATABASE_NAME)
+        try:
+            connection.execute("PRAGMA writable_schema=ON")
+            cursor = connection.execute(
+                """UPDATE sqlite_master
+                   SET sql=replace(sql, '''pending''', '''pen ding''')
+                   WHERE type='table' AND name='agent_conversation_proposals'"""
+            )
+            self.assertEqual(cursor.rowcount, 1)
+            connection.execute("PRAGMA writable_schema=OFF")
+            connection.commit()
+        finally:
+            connection.close()
+        with self.subTest(case="changed-quoted-literal"):
+            self.assert_restore_rejected_without_touching_target(
+                quoted_literal, "changed-quoted-literal"
+            )
+
+    def test_schema_sql_normalizer_preserves_quotes_and_escaped_quotes(self) -> None:
+        normalize = maintenance_module._normalize_schema_sql
+
+        self.assertEqual(
+            normalize("CREATE  TABLE  sample (value TEXT CHECK(value = 'pending'))"),
+            normalize("create table sample(value text check(value='pending'))"),
+        )
+        self.assertNotEqual(
+            normalize("CHECK(value='it''s pending')"),
+            normalize("CHECK(value='it''s pen ding')"),
+        )
+        self.assertNotEqual(
+            normalize('CREATE TABLE "spaced name"(value TEXT)'),
+            normalize('CREATE TABLE "spacedname"(value TEXT)'),
+        )
+
     def test_restore_rejects_assets_file_without_touching_target(self) -> None:
         source = self.root / "assets-file"
         self.store.backup(source)
         (source / "assets").write_bytes(b"not-a-directory")
 
         self.assert_restore_rejected_without_touching_target(source, "assets-file")
+
+    def test_assets_validator_rejects_root_and_nested_reparse_points(self) -> None:
+        assets = self.root / "reparse-assets"
+        assets.mkdir()
+        nested = assets / "ordinary.png"
+        nested.write_bytes(ORIGINAL_PNG)
+        real_lstat = os.lstat
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+        for name, reparse_path in (("root", assets), ("nested", nested)):
+            def fake_lstat(path: object, *, dir_fd: object = None) -> object:
+                result = real_lstat(path, dir_fd=dir_fd)
+                if Path(path) == reparse_path:
+                    return SimpleNamespace(
+                        st_mode=result.st_mode,
+                        st_file_attributes=reparse_flag,
+                    )
+                return result
+
+            with self.subTest(case=name), patch.object(
+                maintenance_module.os, "lstat", side_effect=fake_lstat
+            ):
+                with self.assertRaises(MigrationError):
+                    maintenance_module._validate_assets_path(assets)
+
+    def test_assets_validator_rejects_nested_symlink_when_supported(self) -> None:
+        assets = self.root / "linked-assets"
+        assets.mkdir()
+        outside = self.root / "outside.png"
+        outside.write_bytes(PROTECTED_PNG)
+        linked = assets / "linked.png"
+        try:
+            linked.symlink_to(outside)
+        except OSError as exc:
+            self.skipTest(f"workspace cannot create symlinks: {exc}")
+
+        with self.assertRaises(MigrationError):
+            maintenance_module._validate_assets_path(assets)
+
+    def test_same_target_restores_are_serialized_and_remain_consistent(self) -> None:
+        sources: dict[str, Path] = {}
+        source_snapshots = {}
+        for name, content in (("a", ORIGINAL_PNG), ("b", REPLACEMENT_PNG)):
+            store = JsonCollectionStore(self.root / f"source-{name}-data")
+            store.create_project({
+                "id": f"project-{name}", "title": name.upper(),
+                "type": "free-canvas", "pages": [], "currentPage": 0, "meta": {},
+            })
+            store.save_asset(f"{name}.png", "image/png", content)
+            source = self.root / f"source-{name}-backup"
+            store.backup(source)
+            sources[name] = source
+            source_snapshots[name] = self.storage_snapshot(source)
+
+        target = self.root / "serialized-target"
+        JsonCollectionStore(target)
+        first_at_commit = threading.Event()
+        release_first = threading.Event()
+        second_at_commit = threading.Event()
+        call_guard = threading.Lock()
+        commit_calls = 0
+        errors: list[BaseException] = []
+        real_commit = maintenance_module._commit_staged_restore
+
+        def controlled_commit(*args: object, **kwargs: object) -> None:
+            nonlocal commit_calls
+            with call_guard:
+                commit_calls += 1
+                call_number = commit_calls
+            if call_number == 1:
+                first_at_commit.set()
+                if not release_first.wait(15):
+                    raise AssertionError("timed out waiting to release first restore")
+            else:
+                second_at_commit.set()
+            real_commit(*args, **kwargs)
+
+        def run_restore(source: Path) -> None:
+            try:
+                restore_backup(target, source)
+            except BaseException as exc:
+                errors.append(exc)
+
+        with patch.object(
+            maintenance_module, "_commit_staged_restore", side_effect=controlled_commit
+        ):
+            first = threading.Thread(target=run_restore, args=(sources["a"],))
+            second = threading.Thread(target=run_restore, args=(sources["b"],))
+            first.start()
+            self.assertTrue(first_at_commit.wait(15))
+            second.start()
+            overlapped = second_at_commit.wait(4)
+            release_first.set()
+            first.join(20)
+            second.join(20)
+
+        self.assertFalse(first.is_alive() or second.is_alive())
+        self.assertFalse(overlapped, "second restore entered commit while first was blocked")
+        self.assertEqual(errors, [])
+        connection = sqlite3.connect(target / DATABASE_NAME)
+        try:
+            project_ids = tuple(row[0] for row in connection.execute(
+                "SELECT id FROM projects WHERE id LIKE 'project-%' ORDER BY id"
+            ))
+        finally:
+            connection.close()
+        asset_bytes = tuple(sorted(
+            path.read_bytes() for path in (target / "assets").iterdir() if path.is_file()
+        ))
+        self.assertIn(
+            (project_ids, asset_bytes),
+            {
+                (("project-a",), (ORIGINAL_PNG,)),
+                (("project-b",), (REPLACEMENT_PNG,)),
+            },
+        )
+        self.assertTrue((target.parent / f".{target.name}.restore.lock").is_file())
+        for name, source in sources.items():
+            self.assertEqual(self.storage_snapshot(source), source_snapshots[name])
+
+    def test_restore_lock_is_released_after_validation_failure(self) -> None:
+        source = self.root / "lock-release-source"
+        self.store.backup(source)
+        valid_source = self.root / "lock-release-valid"
+        self.store.backup(valid_source)
+        self.write_manifest(source, "not-an-integer")
+        target = self.root / "lock-release-target"
+
+        with self.assertRaises(MigrationError):
+            restore_backup(target, source)
+
+        errors: list[BaseException] = []
+
+        def restore_after_failure() -> None:
+            try:
+                restore_backup(target, valid_source)
+            except BaseException as exc:
+                errors.append(exc)
+
+        retry = threading.Thread(target=restore_after_failure)
+        retry.start()
+        retry.join(20)
+        self.assertFalse(retry.is_alive(), "restore lock remained held after failure")
+        self.assertEqual(errors, [])
+        self.assertTrue((target / DATABASE_NAME).is_file())
 
     def test_secondary_database_rollback_failure_uses_copy_fallback(self) -> None:
         case_root = self.root / "rollback-fallback"

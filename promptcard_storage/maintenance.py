@@ -6,6 +6,8 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -24,6 +26,10 @@ from .store import (
     _PUBLIC_REFERENCE_EDGE_WHITESPACE,
     iso_now,
 )
+
+
+_RESTORE_LOCKS_GUARD = threading.Lock()
+_RESTORE_LOCKS: dict[str, threading.RLock] = {}
 
 
 def main() -> None:
@@ -47,6 +53,11 @@ def main() -> None:
 
 
 def restore_backup(data_dir: Path, source: Path) -> None:
+    with _restore_target_lock(data_dir) as resolved_data_dir:
+        _restore_backup_locked(resolved_data_dir, source)
+
+
+def _restore_backup_locked(data_dir: Path, source: Path) -> None:
     if not (source / "manifest.json").is_file() or not (source / DATABASE_NAME).is_file():
         raise MigrationError("Backup is missing manifest.json or promptcard.sqlite3")
     _validate_assets_path(source / "assets")
@@ -168,43 +179,56 @@ def _validate_schema_matches(database_path: Path, canonical_path: Path) -> None:
 def _schema_fingerprint(database_path: Path) -> tuple[object, ...]:
     connection = sqlite3.connect(database_path)
     try:
-        table_rows = connection.execute(
-            """SELECT name, sql FROM sqlite_master
-               WHERE type='table' AND name NOT LIKE 'sqlite_%'
-               ORDER BY name"""
+        object_rows = connection.execute(
+            """SELECT type, name, tbl_name, sql FROM sqlite_master
+               WHERE type IN ('table', 'index', 'view', 'trigger')
+                 AND name NOT GLOB 'sqlite_*'
+               ORDER BY type, name"""
         ).fetchall()
         fingerprint: list[object] = []
-        for table_name, table_sql in table_rows:
-            quoted_table = table_name.replace("'", "''")
-            indexes = []
-            for index_row in connection.execute(
-                f"PRAGMA index_list('{quoted_table}')"
-            ).fetchall():
-                index_name = index_row[1]
-                quoted_index = index_name.replace("'", "''")
-                index_sql_row = connection.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
-                    (index_name,),
-                ).fetchone()
-                indexes.append((
-                    tuple(index_row[1:]),
+        for object_type, object_name, table_name, object_sql in object_rows:
+            details: tuple[object, ...] = ()
+            if object_type == "table":
+                quoted_table = object_name.replace("'", "''")
+                indexes = []
+                for index_row in connection.execute(
+                    f"PRAGMA index_list('{quoted_table}')"
+                ).fetchall():
+                    index_name = index_row[1]
+                    quoted_index = index_name.replace("'", "''")
+                    index_sql_row = connection.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+                        (index_name,),
+                    ).fetchone()
+                    indexes.append((
+                        tuple(index_row[1:]),
+                        tuple(connection.execute(
+                            f"PRAGMA index_xinfo('{quoted_index}')"
+                        ).fetchall()),
+                        _normalize_schema_sql(
+                            index_sql_row[0] if index_sql_row else None
+                        ),
+                    ))
+                details = (
                     tuple(connection.execute(
-                        f"PRAGMA index_xinfo('{quoted_index}')"
+                        f"PRAGMA table_info('{quoted_table}')"
                     ).fetchall()),
-                    _normalize_schema_sql(
-                        index_sql_row[0] if index_sql_row else None
-                    ),
-                ))
+                    tuple(connection.execute(
+                        f"PRAGMA foreign_key_list('{quoted_table}')"
+                    ).fetchall()),
+                    tuple(sorted(indexes, key=lambda item: item[0][0])),
+                )
+            elif object_type == "index":
+                quoted_index = object_name.replace("'", "''")
+                details = (tuple(connection.execute(
+                    f"PRAGMA index_xinfo('{quoted_index}')"
+                ).fetchall()),)
             fingerprint.append((
+                object_type,
+                object_name,
                 table_name,
-                _normalize_schema_sql(table_sql),
-                tuple(connection.execute(
-                    f"PRAGMA table_info('{quoted_table}')"
-                ).fetchall()),
-                tuple(connection.execute(
-                    f"PRAGMA foreign_key_list('{quoted_table}')"
-                ).fetchall()),
-                tuple(sorted(indexes, key=lambda item: item[0][0])),
+                _normalize_schema_sql(object_sql),
+                details,
             ))
         return tuple(fingerprint)
     finally:
@@ -212,7 +236,33 @@ def _schema_fingerprint(database_path: Path) -> tuple[object, ...]:
 
 
 def _normalize_schema_sql(sql: str | None) -> str | None:
-    return "".join(sql.lower().split()) if isinstance(sql, str) else None
+    if not isinstance(sql, str):
+        return None
+    normalized: list[str] = []
+    quote_end: str | None = None
+    index = 0
+    while index < len(sql):
+        character = sql[index]
+        if quote_end is None:
+            if character.isspace():
+                index += 1
+                continue
+            if character in {"'", '"', "`", "["}:
+                quote_end = "]" if character == "[" else character
+                normalized.append(character)
+            else:
+                normalized.append(character.lower())
+            index += 1
+            continue
+        normalized.append(character)
+        if character == quote_end:
+            if index + 1 < len(sql) and sql[index + 1] == quote_end:
+                normalized.append(sql[index + 1])
+                index += 2
+                continue
+            quote_end = None
+        index += 1
+    return "".join(normalized)
 
 
 def _validate_reference_rows(database_path: Path) -> None:
@@ -253,10 +303,99 @@ def _validate_reference_rows(database_path: Path) -> None:
 
 
 def _validate_assets_path(assets_path: Path) -> None:
-    if assets_path.is_symlink() or (
-        assets_path.exists() and not assets_path.is_dir()
-    ):
-        raise MigrationError("Backup assets entry must be a directory")
+    try:
+        root_metadata = os.lstat(assets_path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise MigrationError("Backup assets tree cannot be inspected") from exc
+    if _is_reparse_point(root_metadata) or not stat.S_ISDIR(root_metadata.st_mode):
+        raise MigrationError("Backup assets entry must be a regular directory")
+
+    pending = [assets_path]
+    try:
+        while pending:
+            directory = pending.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    metadata = os.lstat(path)
+                    if _is_reparse_point(metadata):
+                        raise MigrationError(
+                            "Backup assets tree contains a link or reparse point"
+                        )
+                    if stat.S_ISDIR(metadata.st_mode):
+                        pending.append(path)
+                    elif not stat.S_ISREG(metadata.st_mode):
+                        raise MigrationError(
+                            "Backup assets tree contains a special file"
+                        )
+    except MigrationError:
+        raise
+    except OSError as exc:
+        raise MigrationError("Backup assets tree cannot be inspected") from exc
+
+
+def _is_reparse_point(metadata: object) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
+
+
+@contextmanager
+def _restore_target_lock(data_dir: Path) -> Iterator[Path]:
+    resolved_data_dir = data_dir.resolve(strict=False)
+    lock_key = os.path.normcase(str(resolved_data_dir))
+    with _RESTORE_LOCKS_GUARD:
+        process_lock = _RESTORE_LOCKS.setdefault(lock_key, threading.RLock())
+    with process_lock:
+        resolved_data_dir.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = resolved_data_dir.parent / f".{resolved_data_dir.name}.restore.lock"
+        with lock_path.open("a+b") as lock_file:
+            _lock_restore_file(lock_file)
+            try:
+                yield resolved_data_dir
+            finally:
+                _unlock_restore_file(lock_file)
+
+
+def _lock_restore_file(lock_file: object) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+        try:
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        except OSError as exc:
+            raise MigrationError("Timed out acquiring restore lock") from exc
+        return
+    try:
+        import fcntl
+    except ImportError:
+        return
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_restore_file(lock_file: object) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            return
+        try:
+            import fcntl
+        except ImportError:
+            return
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        # Closing the file descriptor also releases the platform lock.
+        pass
 
 
 def _checkpoint_database(database_path: Path) -> None:
