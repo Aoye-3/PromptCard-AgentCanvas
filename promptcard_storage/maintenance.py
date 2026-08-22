@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -363,21 +364,39 @@ def _lock_restore_file(lock_file: object) -> None:
     if os.name == "nt":
         import msvcrt
 
-        lock_file.seek(0, os.SEEK_END)
-        if lock_file.tell() == 0:
-            lock_file.write(b"\0")
-            lock_file.flush()
-        lock_file.seek(0)
         try:
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
         except OSError as exc:
-            raise MigrationError("Timed out acquiring restore lock") from exc
-        return
+            raise MigrationError("Failed preparing restore lock") from exc
+        retry_delay = 0.05
+        while True:
+            try:
+                lock_file.seek(0)
+            except OSError as exc:
+                raise MigrationError("Failed acquiring restore lock") from exc
+            try:
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError as exc:
+                if not _is_windows_lock_contention(exc):
+                    raise MigrationError("Failed acquiring restore lock") from exc
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 0.25)
     try:
         import fcntl
     except ImportError:
         return
     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+
+def _is_windows_lock_contention(error: OSError) -> bool:
+    return (
+        error.errno in {errno.EACCES, errno.EAGAIN}
+        or getattr(error, "winerror", None) in {32, 33}
+    )
 
 
 def _unlock_restore_file(lock_file: object) -> None:

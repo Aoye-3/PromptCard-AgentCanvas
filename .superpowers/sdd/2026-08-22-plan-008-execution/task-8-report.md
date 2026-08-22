@@ -346,3 +346,47 @@ The final pre-commit union of all focused and relevant suites above passed fresh
 $env:PYTHONPATH = (Resolve-Path '.test-tmp/task8-python-deps').Path; python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_canvas_reference_resolution.py promptcard_storage/tests/test_image_runs.py promptcard_storage/tests/test_image_conversations.py promptcard_storage/tests/test_image_assets_v5.py promptcard_storage/tests/test_project_resources.py promptcard_storage/tests/test_storage_artifacts.py promptcard_storage/tests/test_public_references_v10.py promptcard_storage/tests/test_sqlite_store.py -q
 123 passed, 1 skipped, 1 warning, 139 subtests passed in 59.36s
 ```
+
+## Independent review fix round 6
+
+This single-finding follow-up removes the implicit approximately ten-second Windows cross-process lock timeout:
+
+1. Windows acquisition now keeps the persistent lock file open, seeks to byte zero for every attempt, and uses `msvcrt.LK_NBLCK` in an unbounded contention loop. Backoff starts at 50 ms and caps at 250 ms, avoiding a busy spin without inventing a restore timeout.
+2. Only confirmed lock-contention results are retried: `errno.EACCES`, `errno.EAGAIN`, or Windows sharing/lock violations 32/33. File preparation/seek failures and any other `msvcrt.locking` I/O error immediately become a clear `MigrationError`. Existing `finally` release still seeks to byte zero and unlocks the same byte; closing the handle remains the release fallback.
+3. A real Windows `spawn` multiprocessing regression holds the production target lock in process A, proves process B remains alive and unacquired while A holds it, then proves B acquires successfully after A releases. A separate deterministic unit regression injects twelve contention failures (beyond the old retry budget) before success without sleeping, and injects a non-contention device error followed by an assertion sentinel to prove no retry occurs.
+
+### Fix-round-6 RED
+
+After removing an environment-blocked multiprocessing `Queue` (named pipes are denied in this workspace) and retaining only native process Events/exit codes, the two lock regressions produced the intended single failure:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py::BackupRestoreValidationTest::test_windows_restore_lock_waits_across_processes_until_release promptcard_storage/tests/test_backup.py::BackupRestoreValidationTest::test_windows_lock_retries_contention_but_fails_other_io_errors -q
+1 failed, 1 passed, 2 warnings in 2.65s
+```
+
+The real cross-process coordination already worked for a short hold. The failure was the old single `LK_LOCK` call turning the first injected contention into `MigrationError` instead of continuing past twelve attempts.
+
+### Fix-round-6 GREEN
+
+Targeted Windows locking verification:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py::BackupRestoreValidationTest::test_windows_restore_lock_waits_across_processes_until_release promptcard_storage/tests/test_backup.py::BackupRestoreValidationTest::test_windows_lock_retries_contention_but_fails_other_io_errors -q
+2 passed, 1 warning in 1.83s
+```
+
+Focused backup/maintenance verification:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py -q
+19 passed, 1 skipped, 1 warning, 25 subtests passed in 24.74s
+```
+
+Final focused and relevant Storage union:
+
+```text
+$env:PYTHONPATH = (Resolve-Path '.test-tmp/task8-python-deps').Path; python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_canvas_reference_resolution.py promptcard_storage/tests/test_image_runs.py promptcard_storage/tests/test_image_conversations.py promptcard_storage/tests/test_image_assets_v5.py promptcard_storage/tests/test_project_resources.py promptcard_storage/tests/test_storage_artifacts.py promptcard_storage/tests/test_public_references_v10.py promptcard_storage/tests/test_sqlite_store.py -q
+125 passed, 1 skipped, 1 warning, 139 subtests passed in 57.52s
+```
+
+The sole skip remains the fix-round-5 real symlink privilege limitation; Windows reparse simulations remain covered. The warning remains the existing `.pytest_cache` ACL restriction. This round changes only `promptcard_storage/maintenance.py`, `promptcard_storage/tests/test_backup.py`, and this report.

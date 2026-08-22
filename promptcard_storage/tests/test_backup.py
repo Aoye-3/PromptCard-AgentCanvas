@@ -1,4 +1,6 @@
+import errno
 import json
+import multiprocessing
 import os
 import shutil
 import sqlite3
@@ -26,6 +28,25 @@ TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 PROTECTED_PNG = b"\x89PNG\r\n\x1a\nprotected-bytes"
 ORIGINAL_PNG = b"\x89PNG\r\n\x1a\noriginal-bytes"
 REPLACEMENT_PNG = b"\x89PNG\r\n\x1a\nreplacement-bytes"
+
+
+def _hold_restore_lock(
+    data_dir: str,
+    ready: object,
+    release: object,
+) -> None:
+    with maintenance_module._restore_target_lock(Path(data_dir)):
+        ready.set()
+        if not release.wait(15):
+            raise TimeoutError("holder release was not signalled")
+
+
+def _wait_for_restore_lock(
+    data_dir: str,
+    acquired: object,
+) -> None:
+    with maintenance_module._restore_target_lock(Path(data_dir)):
+        acquired.set()
 
 
 class ImageRunBackupTest(unittest.TestCase):
@@ -606,6 +627,71 @@ class BackupRestoreValidationTest(unittest.TestCase):
         self.assertFalse(retry.is_alive(), "restore lock remained held after failure")
         self.assertEqual(errors, [])
         self.assertTrue((target / DATABASE_NAME).is_file())
+
+    @unittest.skipUnless(os.name == "nt", "Windows file-lock semantics")
+    def test_windows_restore_lock_waits_across_processes_until_release(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        holder_ready = context.Event()
+        holder_release = context.Event()
+        waiter_acquired = context.Event()
+        target = self.root / "cross-process-lock-target"
+        holder = context.Process(
+            target=_hold_restore_lock,
+            args=(str(target), holder_ready, holder_release),
+        )
+        waiter = context.Process(
+            target=_wait_for_restore_lock,
+            args=(str(target), waiter_acquired),
+        )
+        holder.start()
+        try:
+            self.assertTrue(holder_ready.wait(10))
+            waiter.start()
+            self.assertFalse(waiter_acquired.wait(0.5))
+            self.assertTrue(waiter.is_alive())
+            holder_release.set()
+            self.assertTrue(waiter_acquired.wait(10))
+            holder.join(10)
+            waiter.join(10)
+        finally:
+            holder_release.set()
+            for process in (holder, waiter):
+                if process.is_alive():
+                    process.terminate()
+                process.join(5)
+
+        self.assertEqual(holder.exitcode, 0)
+        self.assertEqual(waiter.exitcode, 0)
+
+    @unittest.skipUnless(os.name == "nt", "Windows file-lock semantics")
+    def test_windows_lock_retries_contention_but_fails_other_io_errors(self) -> None:
+        import msvcrt
+
+        target = self.root / "windows-lock-retry"
+        target.mkdir()
+        lock_path = target / "lock"
+        contention_attempts = 0
+
+        def contend_then_acquire(*args: object) -> None:
+            nonlocal contention_attempts
+            contention_attempts += 1
+            if contention_attempts <= 12:
+                error = OSError(errno.EACCES, "lock is held")
+                error.winerror = 33
+                raise error
+
+        with lock_path.open("a+b") as lock_file, patch.object(
+            msvcrt, "locking", side_effect=contend_then_acquire
+        ), patch.object(maintenance_module.time, "sleep", return_value=None):
+            maintenance_module._lock_restore_file(lock_file)
+        self.assertEqual(contention_attempts, 13)
+
+        fatal_error = OSError(errno.EIO, "device failure")
+        with lock_path.open("a+b") as lock_file, patch.object(
+            msvcrt, "locking", side_effect=[fatal_error, AssertionError("retried")]
+        ), patch.object(maintenance_module.time, "sleep", return_value=None):
+            with self.assertRaisesRegex(MigrationError, "acquiring restore lock"):
+                maintenance_module._lock_restore_file(lock_file)
 
     def test_secondary_database_rollback_failure_uses_copy_fallback(self) -> None:
         case_root = self.root / "rollback-fallback"
