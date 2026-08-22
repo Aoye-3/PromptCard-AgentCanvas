@@ -155,6 +155,16 @@ class ContextPackV11Test(unittest.TestCase):
         )
         return current, asset, prompt
 
+    def create_plm_source(self, suffix: str) -> tuple[dict, dict, str]:
+        asset = self.store.save_asset(f"{suffix}.png", "image/png", PNG + suffix.encode())
+        prompt = self.store.create_preset(preset(f"prompt-{suffix}", asset))
+        media_code = prompt["meta"]["media"][0]["referenceCode"]
+        created = self.store.create_project(project(
+            f"project-{suffix}",
+            [text_node("text-a", promptLibraryReferences=[media_code])],
+        ))
+        return created, asset, media_code
+
     @staticmethod
     def pack_payload(created: dict, node_codes: list[str] | None = None) -> dict:
         selected = node_codes or [
@@ -171,13 +181,13 @@ class ContextPackV11Test(unittest.TestCase):
             "creator": "developer-001",
         }
 
-    def test_fresh_schema_and_real_v10_database_migrate_to_v11(self) -> None:
-        self.assertEqual(store_module.SCHEMA_VERSION, 11)
+    def test_fresh_schema_and_real_v10_v11_databases_migrate_to_v12(self) -> None:
+        self.assertEqual(store_module.SCHEMA_VERSION, 12)
         self.assertTrue(self.store.health()["capabilities"]["contextPacks"])
         with self.store._connect() as connection:
             self.assertEqual(
                 connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
-                11,
+                12,
             )
             self.assertEqual(
                 connection.execute(
@@ -185,6 +195,10 @@ class ContextPackV11Test(unittest.TestCase):
                 ).fetchone()[0],
                 "context_packs",
             )
+            self.assertEqual(connection.execute("PRAGMA recursive_triggers").fetchone()[0], 1)
+            self.assertIsNotNone(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='context_packs_no_replace'"
+            ).fetchone())
 
         legacy_dir = self.data_dir / "legacy-v10"
         legacy = JsonCollectionStore(legacy_dir)
@@ -192,8 +206,9 @@ class ContextPackV11Test(unittest.TestCase):
             connection.execute("DROP TRIGGER context_packs_snapshot_immutable")
             connection.execute("DROP TRIGGER context_packs_revocation_once")
             connection.execute("DROP TRIGGER context_packs_no_delete")
+            connection.execute("DROP TRIGGER IF EXISTS context_packs_no_replace")
             connection.execute("DROP TABLE context_packs")
-            connection.execute("DELETE FROM schema_migrations WHERE version=11")
+            connection.execute("DELETE FROM schema_migrations")
             connection.execute(
                 "INSERT INTO schema_migrations(version, name, applied_at) VALUES (10, 'add-public-reference-registry', 1)"
             )
@@ -202,10 +217,32 @@ class ContextPackV11Test(unittest.TestCase):
         with reopened._connect() as connection:
             self.assertEqual(
                 connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
-                11,
+                12,
             )
             self.assertIsNotNone(connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='context_packs_snapshot_immutable'"
+            ).fetchone())
+            self.assertIsNotNone(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='context_packs_no_replace'"
+            ).fetchone())
+
+        legacy_v11_dir = self.data_dir / "legacy-v11"
+        legacy_v11 = JsonCollectionStore(legacy_v11_dir)
+        with legacy_v11._connect() as connection:
+            connection.execute("DROP TRIGGER IF EXISTS context_packs_no_replace")
+            connection.execute("DELETE FROM schema_migrations")
+            connection.execute(
+                "INSERT INTO schema_migrations(version, name, applied_at) VALUES (11, 'add-canvas-context-packs', 1)"
+            )
+            connection.commit()
+        reopened_v11 = JsonCollectionStore(legacy_v11_dir)
+        with reopened_v11._connect() as connection:
+            self.assertEqual(
+                connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
+                12,
+            )
+            self.assertIsNotNone(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='context_packs_no_replace'"
             ).fetchone())
 
     def test_create_resolve_is_ordered_bounded_redacted_and_contract_valid(self) -> None:
@@ -250,6 +287,99 @@ class ContextPackV11Test(unittest.TestCase):
             str(self.data_dir), PNG.hex(),
         ):
             self.assertNotIn(forbidden, serialized)
+
+    def test_create_rejects_unavailable_prompt_media_assets_without_leaking_details(self) -> None:
+        def assert_unavailable(suffix: str, mutate) -> None:
+            created, asset, media_code = self.create_plm_source(suffix)
+            mutate(asset)
+            with self.assertRaises(PromptReferenceError) as unavailable:
+                self.store.create_context_pack(self.pack_payload(created))
+            self.assertEqual(unavailable.exception.code, "source_unavailable")
+            self.assertEqual(
+                unavailable.exception.reference,
+                {"namespace": "promptMedia", "code": media_code},
+            )
+            serialized = json.dumps({
+                "code": unavailable.exception.code,
+                "reference": unavailable.exception.reference,
+            })
+            self.assertNotIn(asset["id"], serialized)
+            self.assertNotIn(str(self.data_dir), serialized)
+
+        def trash(asset: dict) -> None:
+            self.store.trash_storage_artifacts([asset["id"]], "user", "test")
+
+        def delete_row(asset: dict) -> None:
+            with self.store._connect() as connection:
+                connection.execute("DELETE FROM assets WHERE asset_id=?", (asset["id"],))
+                connection.commit()
+
+        def mark_deleted(asset: dict) -> None:
+            with self.store._connect() as connection:
+                connection.execute(
+                    "UPDATE assets SET lifecycle_status='deleted', deleted_at=1 WHERE asset_id=?",
+                    (asset["id"],),
+                )
+                connection.commit()
+
+        def delete_file(asset: dict) -> None:
+            (self.data_dir / "assets" / asset["id"]).unlink()
+
+        for suffix, mutation in (
+            ("create-trash", trash),
+            ("create-row-missing", delete_row),
+            ("create-deleted", mark_deleted),
+            ("create-file-missing", delete_file),
+        ):
+            with self.subTest(lifecycle=suffix):
+                assert_unavailable(suffix, mutation)
+
+    def test_resolve_rechecks_prompt_media_asset_lifecycle_without_leaking_details(self) -> None:
+        def assert_unavailable(suffix: str, mutate) -> None:
+            created, asset, media_code = self.create_plm_source(suffix)
+            inspection = self.store.create_context_pack(self.pack_payload(created))
+            mutate(asset)
+            with self.assertRaises(PromptReferenceError) as unavailable:
+                self.store.resolve_context_pack(inspection["cvcCode"])
+            self.assertEqual(unavailable.exception.code, "source_unavailable")
+            self.assertEqual(
+                unavailable.exception.reference,
+                {"namespace": "promptMedia", "code": media_code},
+            )
+            serialized = json.dumps({
+                "code": unavailable.exception.code,
+                "reference": unavailable.exception.reference,
+            })
+            self.assertNotIn(asset["id"], serialized)
+            self.assertNotIn(str(self.data_dir), serialized)
+
+        def trash(asset: dict) -> None:
+            self.store.trash_storage_artifacts([asset["id"]], "user", "test")
+
+        def delete_row(asset: dict) -> None:
+            with self.store._connect() as connection:
+                connection.execute("DELETE FROM assets WHERE asset_id=?", (asset["id"],))
+                connection.commit()
+
+        def mark_deleted(asset: dict) -> None:
+            with self.store._connect() as connection:
+                connection.execute(
+                    "UPDATE assets SET lifecycle_status='deleted', deleted_at=1 WHERE asset_id=?",
+                    (asset["id"],),
+                )
+                connection.commit()
+
+        def delete_file(asset: dict) -> None:
+            (self.data_dir / "assets" / asset["id"]).unlink()
+
+        for suffix, mutation in (
+            ("resolve-trash", trash),
+            ("resolve-row-missing", delete_row),
+            ("resolve-deleted", mark_deleted),
+            ("resolve-file-missing", delete_file),
+        ):
+            with self.subTest(lifecycle=suffix):
+                assert_unavailable(suffix, mutation)
 
     def test_create_rejects_invalid_selection_revision_scope_and_nodes(self) -> None:
         first, _asset, _prompt = self.create_sources("first")
@@ -371,6 +501,46 @@ class ContextPackV11Test(unittest.TestCase):
                     "DELETE FROM context_packs WHERE cvc_code=?", (first["cvcCode"],)
                 )
 
+    def test_insert_or_replace_cannot_rewrite_or_unrevoke_context_pack(self) -> None:
+        created, _asset, _prompt = self.create_sources()
+        inspection = self.store.create_context_pack(self.pack_payload(created))
+        revoked = self.store.revoke_context_pack(
+            inspection["cvcCode"], "developer-002", "No longer needed"
+        )
+        before = self.store.inspect_context_pack(inspection["cvcCode"])
+        with self.store._connect() as connection:
+            original = list(connection.execute(
+                self.store._context_pack_select() + " WHERE cvc_code=?",
+                (inspection["cvcCode"],),
+            ).fetchone())
+            replacement = list(original)
+            replacement[4] = "attacker"
+            replacement[5] = '[{"changed":true}]'
+            replacement[9] = "sha256:" + "0" * 64
+            replacement[10:13] = [None, None, None]
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "cannot be replaced"):
+                connection.execute(
+                    """INSERT OR REPLACE INTO context_packs(
+                           cvc_code, project_code, project_revision, created_at, creator,
+                           entries_json, source_codes_json, source_boundaries_json,
+                           placement_hint_json, snapshot_digest,
+                           revoked_at, revoked_by, revocation_reason
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    replacement,
+                )
+            self.assertEqual(connection.execute("PRAGMA recursive_triggers").fetchone()[0], 1)
+            self.assertEqual(
+                connection.execute(
+                    self.store._context_pack_select() + " WHERE cvc_code=?",
+                    (inspection["cvcCode"],),
+                ).fetchone(),
+                tuple(original),
+            )
+        self.assertEqual(self.store.inspect_context_pack(inspection["cvcCode"]), before)
+        with self.assertRaises(PromptReferenceError) as blocked:
+            self.store.resolve_context_pack(revoked["cvcCode"])
+        self.assertEqual(blocked.exception.code, "context_revoked")
+
     def test_missing_detached_running_malformed_and_invalid_sources_fail_closed(self) -> None:
         missing = self.store.create_project(project(
             "missing-media", [image_node("missing", "asset-does-not-exist")]
@@ -485,7 +655,7 @@ class ContextPackV11Test(unittest.TestCase):
         backup_dir = self.data_dir / "backup"
         restored_dir = self.data_dir / "restored"
         manifest = self.store.backup(backup_dir)
-        self.assertEqual(manifest["schemaVersion"], 11)
+        self.assertEqual(manifest["schemaVersion"], 12)
         restore_backup(restored_dir, backup_dir)
         restored = JsonCollectionStore(restored_dir)
         self.assertEqual(restored.resolve_context_pack(first["cvcCode"]), expected)

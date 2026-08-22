@@ -42,7 +42,7 @@ from .reference_codes import (
 
 Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 DATABASE_NAME = "promptcard.sqlite3"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE = " \t\n\v\f\r"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
@@ -628,6 +628,12 @@ class SqliteStore:
                 self._require_context_media_available(
                     connection, project_row[0], media_code, project
                 )
+            for source_code in source_codes:
+                parsed_source = parse_reference_code(source_code)
+                if parsed_source.namespace is ReferenceNamespace.PROMPT_MEDIA:
+                    self._require_context_prompt_media_available(
+                        connection, parsed_source.code
+                    )
             return {
                 "projectCode": row[1],
                 "cvcCode": row[0],
@@ -3024,6 +3030,19 @@ class SqliteStore:
                 except Exception:
                     connection.rollback()
                     raise
+            if current_version == 11:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self._create_context_packs_v12_schema(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (12, "prevent-context-pack-replacement", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 12
+                except Exception:
+                    connection.rollback()
+                    raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
             connection.execute("BEGIN IMMEDIATE")
@@ -3070,6 +3089,7 @@ class SqliteStore:
         self._create_agent_conversations_v9_schema(connection)
         self._create_public_references_v10_schema(connection)
         self._create_context_packs_v11_schema(connection)
+        self._create_context_packs_v12_schema(connection)
 
     def _create_public_references_v10_schema(self, connection: sqlite3.Connection) -> None:
         connection.execute(f"""
@@ -3165,6 +3185,19 @@ class SqliteStore:
             BEGIN
                 SELECT RAISE(ABORT, 'context pack snapshots cannot be deleted');
             END;
+        """)
+
+    @staticmethod
+    def _create_context_packs_v12_schema(connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS context_packs_no_replace
+            BEFORE INSERT ON context_packs
+            WHEN EXISTS(
+                SELECT 1 FROM context_packs WHERE cvc_code=NEW.cvc_code
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'context pack snapshots cannot be replaced');
+            END
         """)
 
     def _harden_weak_public_references_v10_schema(
@@ -3544,10 +3577,8 @@ class SqliteStore:
             ).fetchone()
             valid = prompt_row is not None and prompt_row[0] == "active"
             if valid and parsed.namespace is ReferenceNamespace.PROMPT_MEDIA:
-                prompt = json.loads(prompt_row[1])
-                valid = any(
-                    binding.get("id") == row[1]
-                    for binding in self._preset_media(prompt)
+                self._require_context_prompt_media_available(
+                    connection, parsed.code
                 )
             if not valid:
                 self._raise_context_pack_error(
@@ -3633,6 +3664,58 @@ class SqliteStore:
         ):
             self._raise_context_pack_error(
                 "media_unavailable", reference, status_code=410
+            )
+
+    def _require_context_prompt_media_available(
+        self,
+        connection: sqlite3.Connection,
+        media_code: str,
+    ) -> None:
+        reference = {"namespace": "promptMedia", "code": media_code}
+        registry = connection.execute(
+            """SELECT owner_scope, internal_id FROM public_references
+               WHERE public_code=? AND namespace='PLM'""",
+            (media_code,),
+        ).fetchone()
+        prompt_row = (
+            connection.execute(
+                "SELECT status, payload_json FROM presets WHERE id=?", (registry[0],)
+            ).fetchone()
+            if registry is not None
+            else None
+        )
+        try:
+            prompt = json.loads(prompt_row[1]) if prompt_row is not None else None
+        except (TypeError, json.JSONDecodeError):
+            prompt = None
+        bindings = (
+            [
+                binding
+                for binding in self._preset_media(prompt)
+                if binding.get("id") == registry[1]
+            ]
+            if isinstance(prompt, dict) and registry is not None
+            else []
+        )
+        asset_id = bindings[0].get("assetId") if len(bindings) == 1 else None
+        asset = (
+            connection.execute(
+                "SELECT relative_path, lifecycle_status FROM assets WHERE asset_id=?",
+                (asset_id,),
+            ).fetchone()
+            if isinstance(asset_id, str) and asset_id
+            else None
+        )
+        if (
+            prompt_row is None
+            or prompt_row[0] != "active"
+            or len(bindings) != 1
+            or asset is None
+            or asset[1] != "active"
+            or not (self.data_dir / asset[0]).is_file()
+        ):
+            self._raise_context_pack_error(
+                "source_unavailable", reference, status_code=410
             )
 
     @staticmethod
@@ -4550,6 +4633,7 @@ class SqliteStore:
     def _connect(self, configure: bool = True) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path, timeout=5.0)
         try:
+            connection.execute("PRAGMA recursive_triggers=ON")
             if configure:
                 connection.execute("PRAGMA foreign_keys=ON")
                 connection.execute("PRAGMA busy_timeout=5000")
