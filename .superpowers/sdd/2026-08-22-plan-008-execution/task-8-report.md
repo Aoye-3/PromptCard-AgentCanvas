@@ -134,3 +134,51 @@ python -m pytest promptcard_storage/tests/test_public_references_v10.py promptca
 ```
 
 Final AST parsing passed for all five changed Python files, and `git diff --check` exited 0 with only the repository's LF-to-CRLF notices. The pytest warning remains the existing workspace ACL preventing `.pytest_cache` writes.
+
+## Independent review fix round 2
+
+This second targeted follow-up addressed three additional Important findings without changing contracts or the schema version:
+
+1. Present image `contentType` values now pass an explicit `str` check before membership lookup. Dict/list/null/numeric values consistently raise `ValueError`; the project API maps them to HTTP 400 `invalid_payload` instead of allowing `TypeError`/500. Omitting the optional field remains valid.
+2. Startup reconcile and project response projection now count IDs across every dictionary Canvas node, including unsupported arrow/image-generator nodes, before issuing or exposing CVT/CVM. A supported node whose ID is ambiguous with any other node gets no new mapping and no projected code. A previously issued code resolves to structured, redacted `canvas_node_invalid` while the dirty ambiguity exists. Normal unique unsupported nodes remain code-free.
+3. Production restore now accepts the migration range `1..SCHEMA_VERSION`, strictly requires an integer manifest version, reads the source database's actual `MAX(schema_migrations.version)`, and requires exact manifest/database agreement. Missing metadata, missing versions, spoofed values, mismatches, and future versions fail before target backup or replacement. A representative restored v9 database was reopened through the real Storage initializer and migrated to v10.
+
+The directly affected storage-artifact fixture was updated to use a legal current image node (title and positive dimensions); production asset behavior was not changed.
+
+### Fix-round-2 RED
+
+After test-isolation cleanup and before production changes:
+
+```text
+python -m pytest promptcard_storage/tests/test_canvas_reference_resolution.py promptcard_storage/tests/test_backup.py -q
+23 failed, 25 passed, 2 warnings, 35 subtests passed in 18.64s
+```
+
+The failures covered function/API MIME type handling, text+arrow and image+image-generator dirty-ID ambiguity, schema 1–9 restore acceptance, manifest/database mismatch validation, missing metadata, and spoofed manifest types.
+
+The first GREEN run reduced the result to ten failures, all caused by the test fixture assuming new databases retain cumulative migration rows. Storage records one current row for a fresh database, so the legacy fixtures were corrected to replace that row, matching the repository's existing manual-v9 tests.
+
+### Fix-round-2 GREEN
+
+Focused Task 8 verification:
+
+```text
+python -m pytest promptcard_storage/tests/test_canvas_reference_resolution.py -q
+22 passed, 1 warning, 39 subtests passed in 12.89s
+```
+
+Focused plus production backup/restore verification:
+
+```text
+python -m pytest promptcard_storage/tests/test_canvas_reference_resolution.py promptcard_storage/tests/test_backup.py -q
+27 passed, 1 warning, 56 subtests passed in 14.01s
+```
+
+Relevant v3–v10 migration, backup, SQLite initializer, and storage-artifact verification used the existing workspace-local HEIC dependency path:
+
+```text
+$env:PYTHONPATH = (Resolve-Path '.test-tmp/task8-python-deps').Path; python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_image_runs.py promptcard_storage/tests/test_image_conversations.py promptcard_storage/tests/test_image_assets_v5.py promptcard_storage/tests/test_project_resources.py promptcard_storage/tests/test_storage_artifacts.py promptcard_storage/tests/test_public_references_v10.py promptcard_storage/tests/test_sqlite_store.py -q
+89 passed, 1 warning, 92 subtests passed in 39.25s
+```
+
+The only warning remains the pre-existing `.pytest_cache` ACL restriction. No environment fixtures, dependency directories, plan drafts, frontend, contracts, Gateway, or schema-version files are included in this fix round.

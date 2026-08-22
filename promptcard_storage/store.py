@@ -2858,11 +2858,16 @@ class SqliteStore:
             nodes = free_canvas.get("nodes") if isinstance(free_canvas, dict) else None
             if not isinstance(nodes, list):
                 continue
+            node_id_counts = self._canvas_node_id_counts(nodes)
             for node in nodes:
                 if not isinstance(node, dict):
                     continue
                 node_id = node.get("id")
-                if not isinstance(node_id, str) or not node_id:
+                if (
+                    not isinstance(node_id, str)
+                    or not node_id
+                    or node_id_counts.get(node_id) != 1
+                ):
                     continue
                 namespace = self._canvas_node_namespace(node)
                 if namespace is not None:
@@ -2997,19 +3002,15 @@ class SqliteStore:
             raise MigrationError("Project public reference is missing")
         projected["referenceCode"] = project_row[0]
         nodes = self._project_canvas_nodes(projected)
-        supported_counts: dict[str, int] = {}
+        node_id_counts = self._canvas_node_id_counts(nodes)
         for node in nodes:
             node.pop("referenceCode", None)
-            namespace = self._canvas_node_namespace(node)
-            node_id = node.get("id")
-            if namespace is not None and isinstance(node_id, str):
-                supported_counts[node_id] = supported_counts.get(node_id, 0) + 1
         for node in nodes:
             namespace = self._canvas_node_namespace(node)
             node_id = node.get("id")
             if namespace is None or not isinstance(node_id, str):
                 continue
-            if supported_counts.get(node_id) != 1:
+            if node_id_counts.get(node_id) != 1:
                 continue
             node_row = connection.execute(
                 """SELECT public_code FROM public_references
@@ -3097,6 +3098,15 @@ class SqliteStore:
         free_canvas = project.get("freeCanvas")
         nodes = free_canvas.get("nodes") if isinstance(free_canvas, dict) else None
         return [node for node in nodes if isinstance(node, dict)] if isinstance(nodes, list) else []
+
+    @staticmethod
+    def _canvas_node_id_counts(nodes: list[Any]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for node in nodes:
+            node_id = node.get("id") if isinstance(node, dict) else None
+            if isinstance(node_id, str):
+                counts[node_id] = counts.get(node_id, 0) + 1
+        return counts
 
     @staticmethod
     def _is_stable_canvas_image(node: dict[str, Any]) -> bool:
@@ -4164,8 +4174,12 @@ def _validate_canvas_node(node: dict[str, Any]) -> None:
         raise ValueError("Canvas nodes are invalid")
     content_type = node.get("contentType")
     size = node.get("size")
-    if content_type is not None and content_type not in IMAGE_CONTENT_TYPES:
-        raise ValueError("Canvas nodes are invalid")
+    if "contentType" in node:
+        if (
+            not isinstance(content_type, str)
+            or content_type not in IMAGE_CONTENT_TYPES
+        ):
+            raise ValueError("Canvas nodes are invalid")
     if size is not None and (
         isinstance(size, bool) or not isinstance(size, int) or size < 0
     ):

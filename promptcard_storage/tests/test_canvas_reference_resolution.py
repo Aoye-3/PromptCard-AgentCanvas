@@ -443,6 +443,86 @@ class CanvasReferenceResolutionTest(unittest.TestCase):
                     ).fetchone()
                 self.assertEqual(after, before)
 
+    def test_non_string_image_content_types_raise_value_error_and_http_400(self) -> None:
+        client = TestClient(create_app(self.store), raise_server_exceptions=False)
+        for index, content_type in enumerate(({}, [], None, 7)):
+            node = image_node(f"invalid-content-type-{index}", contentType=content_type)
+            with self.subTest(boundary="validator", content_type=content_type):
+                with self.assertRaisesRegex(ValueError, "Canvas nodes are invalid"):
+                    store_module._validate_canvas_node(node)
+            with self.subTest(boundary="http", content_type=content_type):
+                response = client.post(
+                    "/api/projects",
+                    json=project(f"invalid-content-type-project-{index}", [node]),
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["detail"]["code"], "invalid_payload")
+
+    def test_dirty_supported_unsupported_duplicate_ids_do_not_reconcile_or_project_codes(self) -> None:
+        cases = (
+            ("text-arrow", text_node("ambiguous"), {
+                "id": "ambiguous", "kind": "arrow", "title": "Arrow"
+            }, "CVT"),
+            ("image-generator", image_node("ambiguous"), {
+                "id": "ambiguous", "kind": "image-generator", "title": "Generator"
+            }, "CVM"),
+        )
+        for name, supported, unsupported, namespace in cases:
+            with self.subTest(case=name):
+                case_dir = self.data_dir / name
+                case_store = JsonCollectionStore(case_dir)
+                case_store.create_project(project(name, []))
+                with case_store._connect() as connection:
+                    raw = json.loads(connection.execute(
+                        "SELECT payload_json FROM projects WHERE id=?", (name,)
+                    ).fetchone()[0])
+                raw["freeCanvas"]["nodes"] = [supported, unsupported]
+                with case_store._connect() as connection:
+                    connection.execute(
+                        "UPDATE projects SET payload_json=? WHERE id=?",
+                        (json.dumps(raw), name),
+                    )
+                    connection.commit()
+
+                reopened = JsonCollectionStore(case_dir)
+                projected = reopened.get_project(name)
+                self.assertTrue(all(
+                    "referenceCode" not in node
+                    for node in projected["freeCanvas"]["nodes"]
+                ))
+                with reopened._connect() as connection:
+                    self.assertEqual(connection.execute(
+                        """SELECT public_code FROM public_references
+                           WHERE namespace=? AND owner_scope=? AND internal_id='ambiguous'""",
+                        (namespace, name),
+                    ).fetchall(), [])
+
+    def test_existing_canvas_code_becomes_invalid_for_supported_unsupported_duplicate(self) -> None:
+        created = self.store.create_project(project(
+            "dirty-existing", [text_node("ambiguous")]
+        ))
+        project_code = created["referenceCode"]
+        node_code = created["freeCanvas"]["nodes"][0]["referenceCode"]
+        raw = self.raw_project("dirty-existing")
+        raw["freeCanvas"]["nodes"].append({
+            "id": "ambiguous", "kind": "arrow", "title": "Arrow"
+        })
+        with self.store._connect() as connection:
+            connection.execute(
+                "UPDATE projects SET payload_json=? WHERE id='dirty-existing'",
+                (json.dumps(raw),),
+            )
+            connection.commit()
+
+        projected = self.store.get_project("dirty-existing")
+        self.assertTrue(all(
+            "referenceCode" not in node
+            for node in projected["freeCanvas"]["nodes"]
+        ))
+        with self.assertRaises(store_module.PromptReferenceError) as caught:
+            self.store.resolve_canvas_reference(project_code, node_code)
+        self.assertEqual(caught.exception.code, "canvas_node_invalid")
+
     def test_malformed_persisted_node_returns_structured_redacted_store_and_http_error(self) -> None:
         created = self.store.create_project(project("corrupt", [text_node("target")]))
         project_code = created["referenceCode"]

@@ -18,7 +18,14 @@ def project_with_asset(item_id: str, asset_id: str) -> dict:
         "pages": [],
         "currentPage": 0,
         "freeCanvas": {
-            "nodes": [{"id": "image-one", "kind": "image", "assetId": asset_id}],
+            "nodes": [{
+                "id": "image-one",
+                "kind": "image",
+                "title": "Project image",
+                "width": 640,
+                "height": 480,
+                "assetId": asset_id,
+            }],
             "edges": [],
             "selectedNodeId": "image-one",
         },

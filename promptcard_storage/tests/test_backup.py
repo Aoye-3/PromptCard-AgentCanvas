@@ -1,9 +1,16 @@
+import json
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
-from promptcard_storage.store import JsonCollectionStore
+from promptcard_storage.maintenance import restore_backup
+from promptcard_storage.store import (
+    DATABASE_NAME,
+    SCHEMA_VERSION,
+    JsonCollectionStore,
+    MigrationError,
+)
 
 
 TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / ".test-tmp" / "task3-backup"
@@ -88,6 +95,133 @@ class ImageRunBackupTest(unittest.TestCase):
         finally:
             connection.close()
         self.assertEqual(row, (source["id"], derived["id"], "annotation-flattened"))
+
+
+class BackupRestoreValidationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT)
+        self.root = Path(self.temp_dir.name)
+        self.store = JsonCollectionStore(self.root / "data")
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def write_manifest(source: Path, version: object) -> None:
+        (source / "manifest.json").write_text(
+            json.dumps({"schemaVersion": version}), encoding="utf-8"
+        )
+
+    @staticmethod
+    def latest_version(database: Path) -> int | None:
+        connection = sqlite3.connect(database)
+        try:
+            row = connection.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()
+        finally:
+            connection.close()
+        return row[0]
+
+    def test_restore_accepts_each_migratable_schema_version_when_manifest_matches_database(self) -> None:
+        for version in range(1, SCHEMA_VERSION + 1):
+            with self.subTest(version=version):
+                source = self.root / f"source-v{version}"
+                target = self.root / f"target-v{version}"
+                self.store.backup(source)
+                connection = sqlite3.connect(source / DATABASE_NAME)
+                try:
+                    connection.execute(
+                        "UPDATE schema_migrations SET version=?, name='legacy-fixture'",
+                        (version,),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                self.write_manifest(source, version)
+
+                restore_backup(target, source)
+
+                self.assertEqual(
+                    self.latest_version(target / DATABASE_NAME), version
+                )
+
+    def test_restore_rejects_invalid_or_mismatched_schema_before_touching_target(self) -> None:
+        cases: list[tuple[str, object, int | None, bool]] = [
+            ("missing-table", 1, None, False),
+            ("missing-version", 1, None, True),
+            ("manifest-string", "10", 10, True),
+            ("manifest-boolean", True, 1, True),
+            ("manifest-object", {"version": 10}, 10, True),
+            ("manifest-mismatch", 9, 10, True),
+            ("future-version", SCHEMA_VERSION + 1, SCHEMA_VERSION + 1, True),
+        ]
+        for name, manifest_version, database_version, include_table in cases:
+            with self.subTest(case=name):
+                source = self.root / f"invalid-{name}"
+                source.mkdir()
+                connection = sqlite3.connect(source / DATABASE_NAME)
+                try:
+                    if include_table:
+                        connection.execute(
+                            """CREATE TABLE schema_migrations(
+                                   version INTEGER PRIMARY KEY,
+                                   name TEXT NOT NULL,
+                                   applied_at INTEGER NOT NULL
+                               )"""
+                        )
+                        if database_version is not None:
+                            connection.execute(
+                                "INSERT INTO schema_migrations VALUES (?, 'fixture', 1)",
+                                (database_version,),
+                            )
+                    connection.commit()
+                finally:
+                    connection.close()
+                self.write_manifest(source, manifest_version)
+                target = self.root / f"protected-{name}" / "data"
+                target_store = JsonCollectionStore(target)
+                target_store.create_project({
+                    "id": "must-survive", "title": "Protected", "type": "free-canvas",
+                    "pages": [], "currentPage": 0, "meta": {},
+                })
+                before = (target / DATABASE_NAME).read_bytes()
+
+                with self.assertRaises(MigrationError):
+                    restore_backup(target, source)
+
+                self.assertEqual((target / DATABASE_NAME).read_bytes(), before)
+                self.assertEqual(
+                    JsonCollectionStore(target).get_project("must-survive")["title"],
+                    "Protected",
+                )
+
+    def test_restore_real_v9_database_then_storage_migrates_it_to_current(self) -> None:
+        self.store.create_project({
+            "id": "legacy-project", "title": "Legacy", "type": "free-canvas",
+            "pages": [], "currentPage": 0, "meta": {},
+        })
+        source = self.root / "legacy-v9"
+        target = self.root / "restored-v9"
+        self.store.backup(source)
+        connection = sqlite3.connect(source / DATABASE_NAME)
+        try:
+            connection.execute("DROP TABLE public_references")
+            connection.execute(
+                "UPDATE schema_migrations SET version=9, name='legacy-v9-fixture'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self.write_manifest(source, 9)
+
+        restore_backup(target, source)
+        restored = JsonCollectionStore(target)
+
+        self.assertEqual(restored.get_project("legacy-project")["title"], "Legacy")
+        self.assertEqual(
+            self.latest_version(target / DATABASE_NAME), SCHEMA_VERSION
+        )
 
 
 if __name__ == "__main__":
