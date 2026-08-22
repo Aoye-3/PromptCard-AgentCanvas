@@ -41,6 +41,44 @@ const DIGEST =
   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER_DIGEST =
   "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const LIFECYCLE_OUTCOME_EXPECTATIONS = [
+  {
+    fixtureName: "successful additive canvas media delivery",
+    violation: "successful delivery cannot lose its applied/original result",
+    entryPoint: "status",
+    state: "applied",
+    disposition: "original",
+    resultCodes: [`CVM-${ULID}`],
+  },
+  {
+    fixtureName: "unknown exact code has a not-found outcome",
+    violation: "unknown code cannot replace not_found/unknown_code",
+    entryPoint: "structuredError",
+    code: "not_found",
+    details: [{ path: "/target", reason: "unknown_code" }],
+  },
+  {
+    fixtureName: "trashed media has a not-found outcome",
+    violation: "trashed media cannot replace not_found/trashed_media",
+    entryPoint: "structuredError",
+    code: "not_found",
+    details: [{ path: "/target", reason: "trashed_media" }],
+  },
+  {
+    fixtureName: "revoked context has a permission-denied outcome",
+    violation: "revoked context cannot replace permission_denied/context_revoked",
+    entryPoint: "structuredError",
+    code: "permission_denied",
+    details: [{ path: "/cvcCode", reason: "context_revoked" }],
+  },
+  {
+    fixtureName: "revision conflict is schema-valid with a validation outcome",
+    violation: "revision conflict cannot replace validation_error/revision_conflict",
+    entryPoint: "structuredError",
+    code: "validation_error",
+    details: [{ path: "/revisionDigest", reason: "revision_conflict" }],
+  },
+];
 
 const emptySourceCodeLists = {
   promptBundleCodes: [],
@@ -343,7 +381,29 @@ describe("PromptCard bridge contract package", () => {
     }
   });
 
-  it("keeps replay, conflict, and host-pin fixture semantics distinct", async () => {
+  it("rejects schema-valid swaps of lifecycle fixture outcomes", async (t) => {
+    const fixtures = new Map(
+      (await loadFixtures()).map(({ fixture }) => [fixture.name, fixture]),
+    );
+
+    for (const expected of LIFECYCLE_OUTCOME_EXPECTATIONS) {
+      await t.test(expected.violation, () => {
+        const outcome = fixtures.get(expected.fixtureName).expectedOutcome;
+
+        assert.equal(outcome.entryPoint, expected.entryPoint);
+        if (expected.state) {
+          assert.equal(outcome.instance.state, expected.state);
+          assert.equal(outcome.instance.disposition, expected.disposition);
+          assert.deepEqual(outcome.instance.resultCodes, expected.resultCodes);
+        } else {
+          assert.equal(outcome.instance.code, expected.code);
+          assert.deepEqual(outcome.instance.details, expected.details);
+        }
+      });
+    }
+  });
+
+  it("rejects drift in replay/conflict digest bindings and host-pin revision bindings", async () => {
     const fixtures = new Map(
       (await loadFixtures()).map(({ fixture }) => [fixture.name, fixture]),
     );
@@ -351,10 +411,17 @@ describe("PromptCard bridge contract package", () => {
     const conflict = fixtures.get("same request key and different digest conflicts");
     const hostPins = fixtures.get("independent local-agent and Codex host pins");
 
-    assert.equal(replay.instance.clientRequestId, conflict.instance.clientRequestId);
+    assert.equal(replay.instance.clientRequestId, "replay-key-001");
+    assert.equal(conflict.instance.clientRequestId, "replay-key-001");
+    assert.equal(replay.instance.normalizedRequestDigest, DIGEST);
+    assert.equal(conflict.instance.normalizedRequestDigest, OTHER_DIGEST);
     assert.equal(
       replay.instance.normalizedRequestDigest,
       conflict.expectedOutcome.instance.existingRequestDigest,
+    );
+    assert.equal(
+      conflict.instance.normalizedRequestDigest,
+      conflict.expectedOutcome.instance.normalizedRequestDigest,
     );
     assert.notEqual(
       replay.instance.normalizedRequestDigest,
@@ -366,5 +433,15 @@ describe("PromptCard bridge contract package", () => {
       hostPins.instance.items.map((item) => item.hostPin.host).sort(),
       ["codex", "local-agent"],
     );
+    for (const item of hostPins.instance.items) {
+      assert.equal(item.hostPin.skillCode, `SKL-${ULID}`);
+      assert.equal(item.hostPin.revisionDigest, DIGEST);
+      assert.equal(item.hostPin.skillCode, item.skillRevision.skillCode);
+      assert.equal(item.hostPin.revisionDigest, item.skillRevision.revisionDigest);
+    }
+    assert.equal(hostPins.expectedOutcome.entryPoint, "status");
+    assert.equal(hostPins.expectedOutcome.instance.state, "applied");
+    assert.equal(hostPins.expectedOutcome.instance.disposition, "original");
+    assert.deepEqual(hostPins.expectedOutcome.instance.resultCodes, [`SKL-${ULID}`]);
   });
 });
