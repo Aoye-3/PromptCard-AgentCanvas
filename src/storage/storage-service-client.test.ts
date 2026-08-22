@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
+import type { IPromptProject } from '@/models/PromptHistory.model'
 import { storageServiceClient } from './storage-service-client'
 
 afterEach(() => {
@@ -95,6 +96,46 @@ describe('storageServiceClient', () => {
     }), { status: 404, headers: { 'Content-Type': 'application/json' } })))
 
     await expect(storageServiceClient.projects.getById('missing')).resolves.toBeNull()
+  })
+
+  test('keeps response reference codes but strips them from project create and update payloads', async () => {
+    const projected: IPromptProject = {
+      id: 'project-1',
+      title: 'Canvas',
+      type: 'free-canvas',
+      revision: 1,
+      pages: [],
+      currentPage: 0,
+      referenceCode: 'PRJ-01M0N7FTG1PKB2AV2P8S62N6H8',
+      freeCanvas: {
+        nodes: [{
+          id: 'text-1', kind: 'text', title: 'Text', position: { x: 0, y: 0 }, width: 420, height: 180,
+          fontSize: 'large', segments: [], meta: {}, referenceCode: 'CVT-01M0N7FTG1PKB2AV2P8S62N6H8'
+        }],
+        edges: [], meta: {}
+      },
+      createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(projected), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(storageServiceClient.projects.getById('project-1')).resolves.toMatchObject({
+      referenceCode: projected.referenceCode,
+      freeCanvas: { nodes: [{ referenceCode: projected.freeCanvas!.nodes[0].referenceCode }] }
+    })
+    await storageServiceClient.projects.create(projected)
+    await storageServiceClient.projects.update('project-1', 1, projected)
+
+    const createPayload = JSON.parse(String(fetchMock.mock.calls[1][1]?.body))
+    const updatePayload = JSON.parse(String(fetchMock.mock.calls[2][1]?.body)).updates
+    for (const payload of [createPayload, updatePayload]) {
+      expect(payload.referenceCode).toBeUndefined()
+      expect(payload.freeCanvas.nodes[0].referenceCode).toBeUndefined()
+      expect(payload.freeCanvas.nodes[0].id).toBe('text-1')
+    }
   })
 
   test('manages project agent conversations and skills through scoped endpoints', async () => {

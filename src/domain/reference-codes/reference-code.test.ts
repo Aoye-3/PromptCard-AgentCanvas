@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { getPromptMediaReferenceCode, getPromptReferenceCode } from './reference-code'
+import {
+  getPromptMediaReferenceCode,
+  getPromptReferenceCode,
+  validatePublicReferenceCode
+} from './reference-code'
 
 const validUlid = '01M0N7FTG1PKB2AV2P8S62N6H8'
 
@@ -23,5 +27,15 @@ describe('reference code validation', () => {
   ])('rejects malformed unknown values %o', (value) => {
     expect(getPromptReferenceCode(value)).toBeNull()
     expect(getPromptMediaReferenceCode(value)).toBeNull()
+  })
+
+  it.each([
+    ['PRJ', `PRJ-${validUlid}`],
+    ['CVT', `CVT-${validUlid}`],
+    ['CVM', `CVM-${validUlid}`]
+  ] as const)('validates the canonical %s response projection', (prefix, code) => {
+    expect(validatePublicReferenceCode(code, prefix)).toBe(code)
+    expect(validatePublicReferenceCode(code.toLowerCase(), prefix)).toBeNull()
+    expect(validatePublicReferenceCode(code, prefix === 'PRJ' ? 'CVT' : 'PRJ')).toBeNull()
   })
 })

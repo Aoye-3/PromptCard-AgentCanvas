@@ -242,6 +242,7 @@ describe('project-level free canvas image generation entry', () => {
       innerWidth: 1200, innerHeight: 800
     })
     vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn(), activeElement: null })
+    vi.stubGlobal('HTMLElement', class HTMLElement {})
     mocks.bootstrapRuntime.mockResolvedValue({ user: { id: 'local-user' } })
     mocks.getCatalog.mockResolvedValue({ providers: [], models: [] })
     mocks.listConnections.mockResolvedValue([])
@@ -281,6 +282,125 @@ describe('project-level free canvas image generation entry', () => {
 
   it('keeps the entry hidden when no manual open callback is supplied', () => {
     expect(renderToStaticMarkup(<CanvasBottomToolbar {...baseProps} />)).not.toContain('打开图片生成')
+  })
+
+  it('wires project, text and image code copies without changing canvas, save or workspace state', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const projectCode = 'PRJ-01M0N7FTG1PKB2AV2P8S62N6H8'
+    const textCode = 'CVT-01M0N7FTG1PKB2AV2P8S62N6H9'
+    const imageCode = 'CVM-01M0N7FTG1PKB2AV2P8S62N6HA'
+    const textNode = {
+      ...createFreeCanvasTextNode('Copy text code', { x: 20, y: 30 }, 1),
+      referenceCode: textCode
+    }
+    const imageNode = {
+      ...createFreeCanvasImageNodeFromMedia({
+        id: 'copy-image', kind: 'imageAsset', title: 'Copy image code', position: { x: 100, y: 120 },
+        width: 320, height: 240, assetId: 'asset-copy.png', imageUrl: '/storage-api/assets/asset-copy.png', meta: {}
+      }),
+      referenceCode: imageCode
+    }
+    const freeCanvas: IFreeCanvasProject = {
+      nodes: [textNode, imageNode], edges: [], selectedNodeId: textNode.id, meta: {}
+    }
+    const before = JSON.stringify(freeCanvas)
+    const onChange = vi.fn()
+    const onSave = vi.fn()
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <FreeCanvasBuilderScreen
+          activeProject={{ id: 'project-a', title: 'Project A', referenceCode: projectCode } as IPromptProject}
+          freeCanvas={freeCanvas}
+          imageGenerationNodeV1
+          onBack={vi.fn()}
+          onRenameProject={vi.fn()}
+          onSave={onSave}
+          onChange={onChange}
+          onPersistCanvas={onPersistCanvas}
+        />
+      )
+    })
+
+    const projectButton = renderer.root.findAllByType('button').find(button => (
+      String(button.props['aria-label']).startsWith('复制项目代码：')
+    ))!
+    await act(async () => projectButton.props.onClick({ stopPropagation: vi.fn() }))
+    expect(writeText).toHaveBeenLastCalledWith(projectCode)
+
+    const flow = renderer.root.find(candidate => (
+      Array.isArray(candidate.props.nodes) && typeof candidate.props.onNodeContextMenu === 'function'
+    ))
+    const openMenu = (nodeId: string) => act(() => flow.props.onNodeContextMenu(
+      { preventDefault: vi.fn(), clientX: 20, clientY: 20, currentTarget: null },
+      flow.props.nodes.find((node: { id: string }) => node.id === nodeId)
+    ))
+
+    openMenu(textNode.id)
+    onChange.mockClear()
+    const textCodeButton = renderer.root.findAllByType('button').find(button => (
+      String(button.props['aria-label']).startsWith('复制节点代码：文字节点')
+    ))!
+    expect(textCodeButton.props.disabled).toBe(false)
+    await act(async () => {
+      textCodeButton.props.onClick({ stopPropagation: vi.fn() })
+      await Promise.resolve()
+    })
+    expect(writeText).toHaveBeenLastCalledWith(textCode)
+    expect(onChange).not.toHaveBeenCalled()
+
+    openMenu(imageNode.id)
+    onChange.mockClear()
+    await act(async () => renderer.root.findAllByType('button').find(button => (
+      String(button.props['aria-label']).startsWith('复制节点代码：图片节点')
+    ))!.props.onClick({ stopPropagation: vi.fn() }))
+    expect(writeText).toHaveBeenLastCalledWith(imageCode)
+    expect(onChange).not.toHaveBeenCalled()
+    expect(onSave).not.toHaveBeenCalled()
+    expect(onPersistCanvas).not.toHaveBeenCalled()
+    expect(renderer.root.findByProps({ 'data-agent-panel': true })).toBeTruthy()
+    expect(renderer.root.findAllByProps({ role: 'dialog' })).toHaveLength(0)
+    expect(JSON.stringify(freeCanvas)).toBe(before)
+  })
+
+  it('opens an explanatory code menu for unsupported Canvas nodes without firing workspace actions', async () => {
+    const arrowNode = {
+      id: 'arrow-unsupported', kind: 'arrow' as const, title: 'Unsupported arrow',
+      position: { x: 10, y: 10 }, width: 120, height: 48, text: 'go', color: '#111827', meta: {}
+    }
+    const freeCanvas = createFreeCanvasProject(1, { nodes: [arrowNode], selectedNodeId: arrowNode.id })
+    const onChange = vi.fn()
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <FreeCanvasBuilderScreen
+          activeProject={{ id: 'project-a', title: 'Project A' } as IPromptProject}
+          freeCanvas={freeCanvas}
+          onBack={vi.fn()}
+          onRenameProject={vi.fn()}
+          onSave={vi.fn()}
+          onChange={onChange}
+        />
+      )
+    })
+    const flow = renderer.root.find(candidate => (
+      Array.isArray(candidate.props.nodes) && typeof candidate.props.onNodeContextMenu === 'function'
+    ))
+
+    act(() => flow.props.onNodeContextMenu(
+      { preventDefault: vi.fn(), clientX: 20, clientY: 20, currentTarget: null },
+      flow.props.nodes[0]
+    ))
+
+    expect(renderer.root.findByProps({ 'aria-label': '箭头节点菜单' })).toBeTruthy()
+    const copyButton = renderer.root.findAllByType('button').find(button => (
+      String(button.props['aria-label']).startsWith('复制节点代码：箭头节点')
+    ))!
+    expect(copyButton.props.disabled).toBe(true)
+    expect(renderer.root.findByProps({ role: 'status' }).children.join('')).toContain('不支持节点代码')
+    expect(onChange).not.toHaveBeenCalled()
   })
 
   it('renders Agent, 图片生成 and Prompt库 as mutually exclusive peer tabs without creating a node', async () => {

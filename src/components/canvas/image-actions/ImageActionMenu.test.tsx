@@ -45,6 +45,10 @@ describe('image action menu surfaces', () => {
     const html = renderToStaticMarkup(
       <CanvasNodeContextMenu
         position={{ x: 12, y: 12 }}
+        node={{
+          id: 'image-1', kind: 'image', title: 'Image', position: { x: 0, y: 0 }, width: 640, height: 480,
+          assetId: 'asset-1', annotations: [], referenceCode: 'CVM-01M0N7FTG1PKB2AV2P8S62N6H8', meta: {}
+        }}
         commands={[
           command({ id: 'copy', label: '复制', surfaces: ['context', 'shortcut'], shortcut: 'Ctrl+C' }),
           command({ id: 'delete', label: '删除', surfaces: ['context', 'shortcut'], shortcut: 'Backspace' })
@@ -57,6 +61,7 @@ describe('image action menu surfaces', () => {
     expect(html).toContain('role="menu"')
     expect(html).toContain('Ctrl+C')
     expect(html).toContain('Backspace')
+    expect(html).toContain('复制节点代码')
     expect(html).toContain('w-56')
     expect(html).toContain('text-[13px]')
     expect(html).toContain('py-1.5')
@@ -68,6 +73,10 @@ describe('image action menu surfaces', () => {
     const html = renderToStaticMarkup(
       <CanvasTextNodeContextMenu
         position={{ x: 12, y: 12 }}
+        node={{
+          id: 'text-1', kind: 'text', title: 'Text', position: { x: 0, y: 0 }, width: 420, height: 180,
+          fontSize: 'large', segments: [], referenceCode: 'CVT-01M0N7FTG1PKB2AV2P8S62N6H8', meta: {}
+        }}
         onExecute={vi.fn()}
         onClose={vi.fn()}
       />
@@ -81,6 +90,7 @@ describe('image action menu surfaces', () => {
     expect(html).toContain('删除')
     expect(html).toContain('Ctrl+C')
     expect(html).toContain('Backspace')
+    expect(html).toContain('复制节点代码')
     expect(html).toContain('w-56')
     expect(html).toContain('text-[13px]')
     expect(html).toContain('py-1.5')

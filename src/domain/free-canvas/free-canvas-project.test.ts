@@ -254,6 +254,17 @@ describe('free canvas project domain', () => {
     })
   })
 
+  test('preserves response-only reference codes while normalizing supported Canvas nodes', () => {
+    const text = { ...createFreeCanvasTextNode('Prompt', { x: 0, y: 0 }, 100), referenceCode: 'CVT-response' }
+    const image = {
+      ...createFreeCanvasImageNodeFromMedia(createFreeCanvasMediaNode('imageAsset', { x: 20, y: 40 }, 100), 101),
+      referenceCode: 'CVM-response'
+    }
+    const project = createFreeCanvasProject(102, { nodes: [text, image] })
+
+    expect(project.nodes.map(node => node.referenceCode)).toEqual(['CVT-response', 'CVM-response'])
+  })
+
   test('creates a stable running image generation placeholder', () => {
     const node = createFreeCanvasImageGenerationPlaceholder({
       runId: 'image-run-0123456789abcdef0123456789abcdef',

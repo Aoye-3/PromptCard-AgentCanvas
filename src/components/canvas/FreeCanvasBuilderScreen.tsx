@@ -40,6 +40,8 @@ import { RegionEditorDialog } from '@/components/canvas/image-generation/RegionE
 import { ProjectResourceLibrary } from '@/components/canvas/ProjectResourceLibrary'
 import { ImageNodeActionBar } from '@/components/canvas/image-actions/ImageNodeActionBar'
 import { CanvasNodeContextMenu } from '@/components/canvas/image-actions/CanvasNodeContextMenu'
+import { CanvasProjectReferenceCodeAction } from '@/components/canvas/image-actions/CanvasReferenceCodeAction'
+import { CanvasUnsupportedNodeContextMenu } from '@/components/canvas/image-actions/CanvasUnsupportedNodeContextMenu'
 import {
   CanvasTextNodeContextMenu,
   type TextNodeContextCommand
@@ -2364,7 +2366,6 @@ const FreeCanvasBuilderInner = ({
           : nextNodeIds
       ))
     }
-    setNodeContextMenu(null)
   }, [commitCanvasSelection])
 
   const cancelImageCrop = () => setCropNodeId(null)
@@ -2388,13 +2389,6 @@ const FreeCanvasBuilderInner = ({
 
   const handleNodeContextMenu: NodeMouseHandler<FreeCanvasFlowNode> = (event, node) => {
     event.preventDefault()
-    const target = node.data.canvasNode
-    const imageMenuUnavailable = target.kind === 'image'
-      && (!target.assetId || target.meta.generationState === 'running')
-    if ((target.kind !== 'image' && target.kind !== 'text') || imageMenuUnavailable) {
-      setNodeContextMenu(null)
-      return
-    }
     const preservesSelection = selectedNodeIds.includes(node.id) || freeCanvas.selectedNodeId === node.id
     if (!preservesSelection) {
       setSelectedNodeId(node.id)
@@ -2678,12 +2672,13 @@ const FreeCanvasBuilderInner = ({
       className="fixed inset-x-0 bottom-0 top-14 z-20 overflow-hidden bg-[#f7f8fb]"
       onDropCapture={handleRootDropCapture}
     >
-      <header className="absolute left-4 top-4 z-40 flex items-center gap-2 rounded-full border border-gray-200 bg-white/95 px-2 py-2 shadow-sm">
+      <header className="absolute left-4 top-4 z-40 flex max-w-[calc(100vw-2rem)] flex-wrap items-center gap-1 rounded-2xl border border-gray-200 bg-white/95 px-2 py-2 shadow-sm sm:gap-2 sm:rounded-full">
         <ToolbarButton title="Back" onClick={onBack}><ArrowLeft className="h-4 w-4" /></ToolbarButton>
-        <button type="button" className="px-3 text-left" onClick={onRenameProject}>
-          <div className="text-sm font-black text-gray-950">{activeProject.title}</div>
+        <button type="button" className="min-w-0 max-w-32 px-2 text-left sm:max-w-64 sm:px-3" onClick={onRenameProject}>
+          <div className="truncate text-sm font-black text-gray-950">{activeProject.title}</div>
           <div className="text-[11px] font-semibold text-gray-400">Free Canvas</div>
         </button>
+        <CanvasProjectReferenceCodeAction project={activeProject} />
         <ToolbarButton title="Save" onClick={onSave}><Save className="h-4 w-4" /></ToolbarButton>
       </header>
 
@@ -2755,6 +2750,7 @@ const FreeCanvasBuilderInner = ({
               return (
                 <CanvasTextNodeContextMenu
                   position={{ x: nodeContextMenu.x, y: nodeContextMenu.y }}
+                  node={contextNode}
                   completeDisabled={previewMode}
                   imageGenerationDisabled={
                     previewMode
@@ -2766,13 +2762,22 @@ const FreeCanvasBuilderInner = ({
                 />
               )
             }
-            if (contextNode.kind !== 'image') return null
+            if (contextNode.kind !== 'image') {
+              return (
+                <CanvasUnsupportedNodeContextMenu
+                  position={{ x: nodeContextMenu.x, y: nodeContextMenu.y }}
+                  node={contextNode}
+                  onClose={closeNodeContextMenu}
+                />
+              )
+            }
             const selectionCount = selectedNodeIds.includes(contextNode.id)
               ? Math.max(1, selectedNodeIds.length)
               : 1
             return (
               <CanvasNodeContextMenu
                 position={{ x: nodeContextMenu.x, y: nodeContextMenu.y }}
+                node={contextNode}
                 commands={resolveCommandsForImageNode(contextNode, selectionCount)}
                 onExecute={commandId => executeImageCommand(contextNode.id, commandId)}
                 onClose={closeNodeContextMenu}

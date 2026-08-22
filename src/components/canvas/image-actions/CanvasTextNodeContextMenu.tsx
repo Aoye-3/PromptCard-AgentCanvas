@@ -1,14 +1,17 @@
 import { Bot, Copy, FileImage, Trash2, Wand2 } from 'lucide-react'
+import type { IFreeCanvasTextNode } from '@/models/PromptHistory.model'
 import type { ContextMenuPosition } from './image-action-ui'
 import {
   CanvasContextMenu,
   CanvasContextMenuItem
 } from './CanvasContextMenu'
+import { CanvasNodeReferenceCodeAction } from './CanvasReferenceCodeAction'
 
 export type TextNodeContextCommand = 'copy' | 'complete' | 'send-to-agent' | 'send-to-image-generation' | 'delete'
 
 interface CanvasTextNodeContextMenuProps {
   position: ContextMenuPosition
+  node: IFreeCanvasTextNode
   completeDisabled?: boolean
   imageGenerationDisabled?: boolean
   onExecute: (command: TextNodeContextCommand) => void
@@ -17,6 +20,7 @@ interface CanvasTextNodeContextMenuProps {
 
 export const CanvasTextNodeContextMenu = ({
   position,
+  node,
   completeDisabled = false,
   imageGenerationDisabled = false,
   onExecute,
@@ -31,9 +35,10 @@ export const CanvasTextNodeContextMenu = ({
     <CanvasContextMenu
       position={position}
       ariaLabel="文字节点菜单"
-      estimatedHeight={184}
+      estimatedHeight={232}
       onClose={onClose}
     >
+      <CanvasNodeReferenceCodeAction node={node} />
       <CanvasContextMenuItem
         icon={<Copy className="h-3.5 w-3.5" />}
         label="复制"

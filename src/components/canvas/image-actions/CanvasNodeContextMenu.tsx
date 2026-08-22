@@ -12,6 +12,7 @@ import {
   Trash2,
   ZoomIn
 } from 'lucide-react'
+import type { IFreeCanvasImageNode } from '@/models/PromptHistory.model'
 import type {
   ImageNodeCommandId,
   ResolvedImageNodeCommand
@@ -24,9 +25,11 @@ import {
   CanvasContextMenu,
   CanvasContextMenuItem
 } from './CanvasContextMenu'
+import { CanvasNodeReferenceCodeAction } from './CanvasReferenceCodeAction'
 
 export interface CanvasNodeContextMenuProps {
   position: ContextMenuPosition
+  node: IFreeCanvasImageNode
   commands: readonly ResolvedImageNodeCommand[]
   onExecute: (commandId: ImageNodeCommandId) => void
   onClose: () => void
@@ -34,6 +37,7 @@ export interface CanvasNodeContextMenuProps {
 
 export const CanvasNodeContextMenu = ({
   position,
+  node,
   commands,
   onExecute,
   onClose
@@ -45,9 +49,10 @@ export const CanvasNodeContextMenu = ({
     <CanvasContextMenu
       position={position}
       ariaLabel="图片节点菜单"
-      estimatedHeight={824}
+      estimatedHeight={872}
       onClose={onClose}
     >
+      <CanvasNodeReferenceCodeAction node={node} />
       {sections.map((section, sectionIndex) => (
         <div key={section[0]?.id || sectionIndex} className={sectionIndex > 0 ? 'mt-1 border-t border-gray-100 pt-1' : ''}>
           {section.map(command => (

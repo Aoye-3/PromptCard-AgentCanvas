@@ -441,6 +441,21 @@ async function isHealthy(): Promise<boolean> {
   }
 }
 
+const projectWritePayload = (project: Partial<IPromptProject>): Partial<IPromptProject> => {
+  const payload = { ...project }
+  delete payload.referenceCode
+  if (!payload.freeCanvas) return payload
+  payload.freeCanvas = {
+    ...payload.freeCanvas,
+    nodes: payload.freeCanvas.nodes.map(node => {
+      const nodePayload = { ...node }
+      delete nodePayload.referenceCode
+      return nodePayload
+    })
+  }
+  return payload
+}
+
 export const storageServiceClient = {
   health: isHealthy,
 
@@ -804,7 +819,7 @@ export const storageServiceClient = {
     },
     create(project: Partial<IPromptProject>, options: { signal?: AbortSignal } = {}): Promise<IPromptProject> {
       return request('/storage-api/projects', {
-        method: 'POST', body: JSON.stringify(project), signal: options.signal
+        method: 'POST', body: JSON.stringify(projectWritePayload(project)), signal: options.signal
       })
     },
     update(
@@ -814,7 +829,7 @@ export const storageServiceClient = {
       options: { signal?: AbortSignal } = {}
     ): Promise<IPromptProject> {
       return request(`/storage-api/projects/${encodeURIComponent(id)}`, {
-        method: 'PUT', body: JSON.stringify({ revision, updates }), signal: options.signal
+        method: 'PUT', body: JSON.stringify({ revision, updates: projectWritePayload(updates) }), signal: options.signal
       })
     },
     async trash(ids: string[], deletedBy: 'user' | 'agent' = 'user', deleteReason?: string): Promise<IPromptProject[]> {

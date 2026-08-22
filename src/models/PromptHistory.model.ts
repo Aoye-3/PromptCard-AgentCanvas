@@ -17,6 +17,8 @@ export interface IPromptHistory {
 
 export interface IPromptProject {
   id: string
+  /** Storage response projection. Never use as persisted project authority. */
+  referenceCode?: string
   title: string
   type: 'card' | 'storyboard' | 'three-stage' | 'free-canvas'
   revision: number
@@ -98,6 +100,8 @@ export interface IFreeCanvasImageAnnotation {
 
 export interface IFreeCanvasBaseNode {
   id: string
+  /** Storage response projection for supported stable Canvas nodes. */
+  referenceCode?: string
   kind: FreeCanvasProjectNodeKind
   title: string
   position: IFreeCanvasPosition

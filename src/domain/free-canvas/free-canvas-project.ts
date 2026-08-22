@@ -976,6 +976,7 @@ const normalizeNode = (node: Partial<IFreeCanvasNode>, timestamp: number): IFree
       sourceNodeId: node.sourceNodeId || null,
       crop: node.crop || null,
       annotations: normalizeImageAnnotations(node.annotations, timestamp),
+      ...(typeof node.referenceCode === 'string' ? { referenceCode: node.referenceCode } : {}),
       meta: node.meta || {}
     }
   }
@@ -1004,6 +1005,7 @@ const normalizeNode = (node: Partial<IFreeCanvasNode>, timestamp: number): IFree
     height: Number(textNode.height || 180),
     fontSize: textNode.fontSize || 'large',
     segments: Array.isArray(textNode.segments) ? textNode.segments.map(normalizeTextSegment) : [],
+    ...(typeof textNode.referenceCode === 'string' ? { referenceCode: textNode.referenceCode } : {}),
     meta: textNode.meta || {}
   }
 }
