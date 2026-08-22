@@ -158,12 +158,15 @@ describe('PromptPresetPreviewDialog', () => {
     vi.useFakeTimers()
     const writeText = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('navigator', { clipboard: { writeText } })
-    const renderer = create(
-      <PromptPresetPreviewDialog
-        preset={createPreset({ referenceCode: 'PLP-01M0N7FTG1PKB2AV2P8S62N6H8' })}
-        onClose={() => undefined}
-      />
-    )
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <PromptPresetPreviewDialog
+          preset={createPreset({ referenceCode: 'PLP-01M0N7FTG1PKB2AV2P8S62N6H8' })}
+          onClose={() => undefined}
+        />
+      )
+    })
     const getCodeButton = () => renderer.root.findByProps({ title: '复制 Prompt 编码' })
 
     await act(async () => {
@@ -182,12 +185,15 @@ describe('PromptPresetPreviewDialog', () => {
   it('clears feedback timers on unmount and when the preset code changes', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
-    const renderer = create(
-      <PromptPresetPreviewDialog
-        preset={createPreset({ referenceCode: 'PLP-01M0N7FTG1PKB2AV2P8S62N6H8' })}
-        onClose={() => undefined}
-      />
-    )
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <PromptPresetPreviewDialog
+          preset={createPreset({ referenceCode: 'PLP-01M0N7FTG1PKB2AV2P8S62N6H8' })}
+          onClose={() => undefined}
+        />
+      )
+    })
 
     await act(async () => {
       await renderer.root.findByProps({ title: '复制 Prompt 编码' }).props.onClick()

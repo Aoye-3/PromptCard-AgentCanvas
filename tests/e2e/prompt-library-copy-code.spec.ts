@@ -83,6 +83,13 @@ test('Prompt Library copies prompt and media reference codes without exposing in
   await page.keyboard.press('Enter')
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(preset.referenceCode)
   await expect(page.getByRole('button', { name: '关闭预览' })).toHaveCount(0)
+  await listCodeButton.focus()
+  await page.keyboard.press('Space')
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(preset.referenceCode)
+  await expect(page.getByRole('button', { name: '关闭预览' })).toHaveCount(0)
+  await listCodeButton.click()
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(preset.referenceCode)
+  await expect(page.getByRole('button', { name: '关闭预览' })).toHaveCount(0)
 
   await card.click()
   const firstMediaCodeButton = page.getByRole('button', { name: '复制媒体编码：Reference frame' })
@@ -91,8 +98,50 @@ test('Prompt Library copies prompt and media reference codes without exposing in
   await expect(secondMediaCodeButton).toBeVisible()
   await firstMediaCodeButton.click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(mediaCodes[0])
+  await expect(page.getByRole('button', { name: '关闭预览' })).toBeVisible()
+
+  await page.evaluate(() => {
+    const originalWriteText = navigator.clipboard.writeText.bind(navigator.clipboard)
+    let failuresRemaining = 1
+    Object.defineProperty(globalThis, '__promptLibraryCopyFailures', {
+      configurable: true,
+      get: () => failuresRemaining,
+      set: (value: number) => {
+        failuresRemaining = value
+      }
+    })
+    Object.defineProperty(navigator.clipboard, 'writeText', {
+      configurable: true,
+      value: async (text: string) => {
+        if (failuresRemaining > 0) {
+          failuresRemaining -= 1
+          throw new DOMException('clipboard denied', 'NotAllowedError')
+        }
+        return originalWriteText(text)
+      }
+    })
+  })
+
+  await firstMediaCodeButton.click()
+  const firstRetry = page.getByRole('button', { name: '重试复制媒体编码：Reference frame' })
+  await expect(page.getByRole('alert')).toContainText('复制媒体编码失败')
+  await firstRetry.focus()
+  await page.keyboard.press('Enter')
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(mediaCodes[0])
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '关闭预览' })).toBeVisible()
+
+  await page.evaluate(() => {
+    (globalThis as typeof globalThis & { __promptLibraryCopyFailures: number }).__promptLibraryCopyFailures = 1
+  })
   await secondMediaCodeButton.click()
+  const secondRetry = page.getByRole('button', { name: '重试复制媒体编码：Second reference' })
+  await expect(page.getByRole('alert')).toContainText('复制媒体编码失败')
+  await secondRetry.focus()
+  await page.keyboard.press('Space')
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(mediaCodes[1])
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '关闭预览' })).toBeVisible()
 
   for (const width of [320, 768]) {
     await page.setViewportSize({ width, height: 720 })
