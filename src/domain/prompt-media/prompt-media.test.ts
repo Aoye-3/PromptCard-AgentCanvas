@@ -78,6 +78,32 @@ describe('prompt media metadata', () => {
     ])
   })
 
+  it('keeps string reference codes but removes malformed reference codes without dropping media', () => {
+    const media = getPresetMedia(preset({
+      media: [
+        {
+          id: 'media-image',
+          kind: 'image',
+          source: 'asset',
+          assetId: 'image.png',
+          referenceCode: 'PLM-0001'
+        },
+        {
+          id: 'media-video',
+          kind: 'video',
+          source: 'asset',
+          assetId: 'clip.mp4',
+          referenceCode: 42
+        }
+      ]
+    }))
+
+    expect(media).toEqual([
+      expect.objectContaining({ assetId: 'image.png', referenceCode: 'PLM-0001' }),
+      expect.not.objectContaining({ referenceCode: expect.anything() })
+    ])
+  })
+
   it('formats sizes and exposes media search text', () => {
     const media = createPromptMediaItem({
       id: 'clip.webm',

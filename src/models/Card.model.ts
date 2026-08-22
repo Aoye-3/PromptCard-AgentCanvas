@@ -39,6 +39,7 @@ export interface ICard {
 // 预制内容类型
 export interface IPreset {
   id: string
+  referenceCode?: string
   type: CardType
   revision?: number
   category: string

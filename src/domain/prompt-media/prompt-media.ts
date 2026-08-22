@@ -4,6 +4,7 @@ export type PromptPresetMediaKind = 'image' | 'video'
 
 export interface PromptPresetMediaItem {
   id: string
+  referenceCode?: string
   kind: PromptPresetMediaKind
   source: 'asset'
   assetId: string
@@ -57,7 +58,7 @@ export const getPresetMedia = (presetOrMeta: Pick<IPreset, 'meta'> | Record<stri
 
   if (!Array.isArray(media)) return []
 
-  return media.filter(isPromptPresetMediaItem)
+  return media.flatMap(normalizePromptPresetMediaItem)
 }
 
 export const withPresetMedia = (
@@ -89,4 +90,11 @@ const isPromptPresetMediaItem = (value: unknown): value is PromptPresetMediaItem
     typeof item.assetId === 'string' &&
     item.assetId.length > 0
   )
+}
+
+const normalizePromptPresetMediaItem = (value: unknown): PromptPresetMediaItem[] => {
+  if (!isPromptPresetMediaItem(value)) return []
+  const item = { ...value }
+  if (typeof item.referenceCode !== 'string') delete item.referenceCode
+  return [item]
 }

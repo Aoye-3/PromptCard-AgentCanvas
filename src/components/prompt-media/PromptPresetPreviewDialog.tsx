@@ -12,13 +12,22 @@ export const PromptPresetPreviewDialog = ({
   onClose: () => void
 }) => {
   const media = getPresetMedia(preset)
-  const [copied, setCopied] = useState(false)
+  const [copyFeedback, setCopyFeedback] = useState<{ target: string; status: 'success' | 'error' } | null>(null)
 
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(preset.content)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1200)
+  const copyText = async (text: string, target: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopyFeedback({ target, status: 'success' })
+      setTimeout(() => {
+        setCopyFeedback(current => current?.target === target && current.status === 'success' ? null : current)
+      }, 1200)
+    } catch {
+      setCopyFeedback({ target, status: 'error' })
+    }
   }
+
+  const isCopied = (target: string) => copyFeedback?.target === target && copyFeedback.status === 'success'
+  const copyFailed = (target: string) => copyFeedback?.target === target && copyFeedback.status === 'error'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 px-4 py-6" onClick={onClose}>
@@ -64,13 +73,44 @@ export const PromptPresetPreviewDialog = ({
                 <div className="space-y-4">
                   {media.map(item => (
                     <figure key={item.id} className="overflow-hidden rounded-[8px] border border-gray-200 bg-white shadow-sm">
-                      <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-3 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3 text-sm">
                         <div className="flex min-w-0 items-center gap-2 font-semibold text-gray-800">
                           {item.kind === 'image' ? <Image className="h-4 w-4 text-gray-500" /> : <PlaySquare className="h-4 w-4 text-gray-500" />}
                           <span className="truncate">{item.title || item.filename || item.assetId}</span>
                         </div>
-                        {formatMediaSize(item.size) && <span className="shrink-0 text-xs text-gray-400">{formatMediaSize(item.size)}</span>}
+                        <div className="flex items-center gap-2">
+                          {item.referenceCode ? (
+                            <>
+                              <code className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-600">{item.referenceCode}</code>
+                              <button
+                                type="button"
+                                className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 transition hover:bg-gray-200"
+                                aria-label={`复制媒体编码：${item.title || item.filename || item.assetId}`}
+                                title="复制媒体编码"
+                                onClick={() => void copyText(item.referenceCode as string, `media:${item.id}`)}
+                              >
+                                {isCopied(`media:${item.id}`) ? '媒体编码已复制' : '复制媒体编码'}
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-xs text-gray-400" title="该媒体没有可复制的媒体编码">媒体编码不可用</span>
+                          )}
+                          {formatMediaSize(item.size) && <span className="shrink-0 text-xs text-gray-400">{formatMediaSize(item.size)}</span>}
+                        </div>
                       </div>
+                      {copyFailed(`media:${item.id}`) && (
+                        <div role="alert" className="flex items-center justify-between gap-3 border-b border-red-100 bg-red-50 px-4 py-2 text-xs text-red-700">
+                          <span>复制媒体编码失败，请重试。</span>
+                          <button
+                            type="button"
+                            className="rounded-full bg-white px-3 py-1 font-semibold text-red-700"
+                            aria-label={`重试复制媒体编码：${item.title || item.filename || item.assetId}`}
+                            onClick={() => void copyText(item.referenceCode as string, `media:${item.id}`)}
+                          >
+                            重试
+                          </button>
+                        </div>
+                      )}
                       {item.kind === 'image' ? (
                         <img
                           src={storage.assets.url(item.assetId)}
@@ -92,7 +132,7 @@ export const PromptPresetPreviewDialog = ({
           </section>
 
           <section className="flex min-h-0 min-w-0 flex-col bg-white">
-            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-100 px-5 py-4">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4">
               <div>
                 <h4 className="text-sm font-black text-gray-950">提示词</h4>
                 <p className="mt-1 text-xs font-semibold text-gray-400">Prompt content</p>
@@ -100,12 +140,56 @@ export const PromptPresetPreviewDialog = ({
               <button
                 type="button"
                 className="inline-flex items-center gap-2 rounded-full bg-gray-950 px-4 py-2 text-xs font-black text-white transition hover:bg-gray-800"
-                onClick={handleCopy}
+                aria-label="复制 Prompt content"
+                onClick={() => void copyText(preset.content, 'content')}
               >
-                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                {copied ? '已复制' : '复制'}
+                {isCopied('content') ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                {isCopied('content') ? '已复制' : '复制'}
               </button>
+              {preset.referenceCode ? (
+                <div className="flex items-center gap-2">
+                  <code className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-600">{preset.referenceCode}</code>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-2 rounded-full bg-gray-100 px-4 py-2 text-xs font-black text-gray-700 transition hover:bg-gray-200"
+                    aria-label="复制 Prompt 编码"
+                    title="复制 Prompt 编码"
+                    onClick={() => void copyText(preset.referenceCode as string, 'prompt-code')}
+                  >
+                    {isCopied('prompt-code') ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    {isCopied('prompt-code') ? 'Prompt 编码已复制' : '复制 Prompt 编码'}
+                  </button>
+                </div>
+              ) : (
+                <span className="text-xs text-gray-400" title="该 Prompt 没有可复制的 Prompt 编码">Prompt 编码不可用</span>
+              )}
             </div>
+            {copyFailed('prompt-code') && (
+              <div role="alert" className="flex items-center justify-between gap-3 border-b border-red-100 bg-red-50 px-5 py-2 text-xs text-red-700">
+                <span>复制 Prompt 编码失败，请重试。</span>
+                <button
+                  type="button"
+                  className="rounded-full bg-white px-3 py-1 font-semibold text-red-700"
+                  aria-label="重试复制 Prompt 编码"
+                  onClick={() => void copyText(preset.referenceCode as string, 'prompt-code')}
+                >
+                  重试
+                </button>
+              </div>
+            )}
+            {copyFailed('content') && (
+              <div role="alert" className="flex items-center justify-between gap-3 border-b border-red-100 bg-red-50 px-5 py-2 text-xs text-red-700">
+                <span>复制 Prompt content 失败，请重试。</span>
+                <button
+                  type="button"
+                  className="rounded-full bg-white px-3 py-1 font-semibold text-red-700"
+                  aria-label="重试复制 Prompt content"
+                  onClick={() => void copyText(preset.content, 'content')}
+                >
+                  重试
+                </button>
+              </div>
+            )}
             <div className="min-h-0 flex-1 overflow-hidden p-5">
               <div className="h-full overflow-y-auto whitespace-pre-wrap rounded-[8px] bg-gray-50 p-4 text-sm leading-7 text-gray-800">
                 {preset.content}

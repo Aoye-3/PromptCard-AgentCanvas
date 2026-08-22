@@ -539,19 +539,37 @@ const PromptLibraryPreviewMode = ({
   </div>
 )
 
-const PromptPreviewCard = ({ preset, onPreview }: { preset: IPreset; onPreview: () => void }) => {
+export const PromptPreviewCard = ({ preset, onPreview }: { preset: IPreset; onPreview: () => void }) => {
   const { cardTypeLabel } = useI18n()
-  const [copied, setCopied] = useState(false)
+  const [copyFeedback, setCopyFeedback] = useState<{ target: 'content' | 'prompt-code'; status: 'success' | 'error' } | null>(null)
   const media = getPresetMedia(preset)
+  const referenceCode = preset.referenceCode
   const imageCount = media.filter(item => item.kind === 'image').length
   const videoCount = media.filter(item => item.kind === 'video').length
   const typeLabel = isQuickMessagePreset(preset) ? QUICK_MESSAGE_LABEL : cardTypeLabel(preset.type)
-  const copyPresetContent = async (event: MouseEvent<HTMLButtonElement>) => {
+  const copyText = async (
+    text: string,
+    target: 'content' | 'prompt-code',
+    event: MouseEvent<HTMLButtonElement>
+  ) => {
     event.stopPropagation()
-    await navigator.clipboard.writeText(preset.content)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1200)
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopyFeedback({ target, status: 'success' })
+      setTimeout(() => {
+        setCopyFeedback(current => current?.target === target && current.status === 'success' ? null : current)
+      }, 1200)
+    } catch {
+      setCopyFeedback({ target, status: 'error' })
+    }
   }
+  const copyPresetContent = (event: MouseEvent<HTMLButtonElement>) => void copyText(preset.content, 'content', event)
+  const copyPresetCode = (event: MouseEvent<HTMLButtonElement>) => {
+    if (!referenceCode) return
+    void copyText(referenceCode, 'prompt-code', event)
+  }
+  const isCopied = (target: 'content' | 'prompt-code') => copyFeedback?.target === target && copyFeedback.status === 'success'
+  const copyFailed = (target: 'content' | 'prompt-code') => copyFeedback?.target === target && copyFeedback.status === 'error'
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Enter' && event.key !== ' ') return
     event.preventDefault()
@@ -562,7 +580,7 @@ const PromptPreviewCard = ({ preset, onPreview }: { preset: IPreset; onPreview: 
     <div
       role="button"
       tabIndex={0}
-      className="group grid w-full grid-cols-[72px_minmax(150px,220px)_minmax(0,1fr)_110px_40px] items-center gap-4 rounded-xl border border-gray-100 bg-white px-4 py-3 text-left shadow-sm transition hover:border-gray-300 hover:bg-gray-50 hover:shadow-md max-lg:grid-cols-[56px_minmax(120px,180px)_minmax(0,1fr)_40px] max-sm:grid-cols-[48px_minmax(0,1fr)_40px]"
+      className="group grid w-full grid-cols-[72px_minmax(150px,220px)_minmax(0,1fr)_auto] items-center gap-4 rounded-xl border border-gray-100 bg-white px-4 py-3 text-left shadow-sm transition hover:border-gray-300 hover:bg-gray-50 hover:shadow-md max-lg:grid-cols-[56px_minmax(120px,180px)_minmax(0,1fr)_auto] max-sm:grid-cols-[48px_minmax(0,1fr)]"
       onClick={onPreview}
       onKeyDown={handleKeyDown}
     >
@@ -579,16 +597,44 @@ const PromptPreviewCard = ({ preset, onPreview }: { preset: IPreset; onPreview: 
         <h3 className="mt-1 line-clamp-2 text-base font-black leading-5 text-gray-950">{preset.label}</h3>
       </div>
       <p className="line-clamp-2 text-sm leading-6 text-gray-600 max-sm:hidden">{preset.content}</p>
-      <button
-        type="button"
-        className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 transition hover:bg-gray-950 hover:text-white"
-        title={copied ? '已复制' : '复制'}
-        aria-label={copied ? '已复制' : '复制'}
-        onClick={copyPresetContent}
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
       <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-gray-500 max-lg:col-start-3 max-lg:row-start-1 max-sm:col-span-2 max-sm:col-start-auto max-sm:row-start-auto max-sm:justify-start">
+        {referenceCode ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-200"
+            title="复制 Prompt 编码"
+            aria-label="复制 Prompt 编码"
+            onClick={copyPresetCode}
+          >
+            {isCopied('prompt-code') ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            {isCopied('prompt-code') ? '编码已复制' : '复制 Prompt 编码'}
+          </button>
+        ) : (
+          <span title="该 Prompt 没有可复制的 Prompt 编码" className="text-gray-400">Prompt 编码不可用</span>
+        )}
+        <button
+          type="button"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 transition hover:bg-gray-950 hover:text-white"
+          title={isCopied('content') ? '已复制' : '复制'}
+          aria-label="复制 Prompt content"
+          onClick={copyPresetContent}
+        >
+          {isCopied('content') ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        </button>
+        {copyFailed('prompt-code') && (
+          <span role="alert" className="inline-flex items-center gap-1 text-red-700">
+            复制 Prompt 编码失败
+            <button
+              type="button"
+              className="rounded-full bg-red-50 px-2 py-1 font-semibold"
+              aria-label="重试复制 Prompt 编码"
+              onClick={copyPresetCode}
+            >
+              重试
+            </button>
+          </span>
+        )}
+        {copyFailed('content') && <span role="alert" className="text-red-700">复制 Prompt content 失败，请重试。</span>}
         {imageCount > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-1"><Image className="h-3 w-3" />{imageCount}</span>}
         {videoCount > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-1"><PlaySquare className="h-3 w-3" />{videoCount}</span>}
         {media.length === 0 && <span className="rounded-full bg-gray-50 px-2 py-1 text-gray-400">纯文本</span>}
