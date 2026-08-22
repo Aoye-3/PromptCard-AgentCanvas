@@ -19,6 +19,8 @@ const createPreset = (overrides: Partial<IPreset> = {}): IPreset => ({
 
 describe('PromptPresetPreviewDialog', () => {
   afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
 
@@ -71,7 +73,7 @@ describe('PromptPresetPreviewDialog', () => {
     vi.stubGlobal('navigator', { clipboard: { writeText } })
     const renderer = create(
       <PromptPresetPreviewDialog
-        preset={createPreset({ id: 'internal-preset-id', referenceCode: 'PLP-0001', content: 'Prompt content only.' })}
+        preset={createPreset({ id: 'internal-preset-id', referenceCode: 'PLP-01M0N7FTG1PKB2AV2P8S62N6H8', content: 'Prompt content only.' })}
         onClose={() => undefined}
       />
     )
@@ -81,7 +83,7 @@ describe('PromptPresetPreviewDialog', () => {
       await codeButton.props.onClick()
     })
 
-    expect(writeText).toHaveBeenCalledWith('PLP-0001')
+    expect(writeText).toHaveBeenCalledWith('PLP-01M0N7FTG1PKB2AV2P8S62N6H8')
     expect(writeText).not.toHaveBeenCalledWith('Prompt content only.')
     expect(writeText).not.toHaveBeenCalledWith('internal-preset-id')
 
@@ -96,35 +98,114 @@ describe('PromptPresetPreviewDialog', () => {
       .mockRejectedValueOnce(new Error('clipboard denied'))
       .mockResolvedValueOnce(undefined)
     vi.stubGlobal('navigator', { clipboard: { writeText } })
-    const renderer = create(
-      <PromptPresetPreviewDialog
-        preset={createPreset({
-          meta: {
-            media: [{
-              id: 'internal-media-id',
-              kind: 'image',
-              source: 'asset',
-              assetId: 'internal-asset-id',
-              referenceCode: 'PLM-0001',
-              title: 'Reference frame'
-            }]
-          }
-        })}
-        onClose={() => undefined}
-      />
-    )
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <PromptPresetPreviewDialog
+          preset={createPreset({
+            meta: {
+              media: [{
+                id: 'internal-media-id',
+                kind: 'image',
+                source: 'asset',
+                assetId: 'internal-asset-id',
+                referenceCode: 'PLM-01M0N7FTG1PKB2AV2P8S62N6H8',
+                title: 'Reference frame'
+              }]
+            }
+          })}
+          onClose={() => undefined}
+        />
+      )
+    })
     const codeButton = renderer.root.findByProps({ 'aria-label': '复制媒体编码：Reference frame' })
 
     await act(async () => {
       await codeButton.props.onClick()
     })
-    expect(writeText).toHaveBeenCalledWith('PLM-0001')
+    expect(writeText).toHaveBeenCalledWith('PLM-01M0N7FTG1PKB2AV2P8S62N6H8')
     expect(renderer.root.findByProps({ role: 'alert' }).findByType('span').children.join('')).toContain('复制媒体编码失败')
 
     await act(async () => {
       await renderer.root.findByProps({ 'aria-label': '重试复制媒体编码：Reference frame' }).props.onClick()
     })
-    expect(writeText).toHaveBeenLastCalledWith('PLM-0001')
+    expect(writeText).toHaveBeenLastCalledWith('PLM-01M0N7FTG1PKB2AV2P8S62N6H8')
     expect(renderer.root.findAllByProps({ role: 'alert' })).toHaveLength(0)
+  })
+
+  it.each([
+    'PLM-01M0N7FTG1PKB2AV2P8S62N6H8',
+    'plp-01M0N7FTG1PKB2AV2P8S62N6H8',
+    'PLP-81M0N7FTG1PKB2AV2P8S62N6H8',
+    'PLP-01M0N7FTG1PKB2AV2P8S62N6HI',
+    'internal-preset-id',
+    42,
+    { code: 'PLP-01M0N7FTG1PKB2AV2P8S62N6H8' }
+  ])('does not render or copy invalid Prompt code %o', (referenceCode) => {
+    const markup = renderToStaticMarkup(
+      <PromptPresetPreviewDialog
+        preset={createPreset({ referenceCode: referenceCode as string })}
+        onClose={() => undefined}
+      />
+    )
+
+    expect(markup).toContain('Prompt 编码不可用')
+    expect(markup).not.toContain('复制 Prompt 编码')
+    expect(markup).not.toContain(String(referenceCode))
+  })
+
+  it('keeps the latest success feedback visible when the same target is copied quickly', async () => {
+    vi.useFakeTimers()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const renderer = create(
+      <PromptPresetPreviewDialog
+        preset={createPreset({ referenceCode: 'PLP-01M0N7FTG1PKB2AV2P8S62N6H8' })}
+        onClose={() => undefined}
+      />
+    )
+    const getCodeButton = () => renderer.root.findByProps({ title: '复制 Prompt 编码' })
+
+    await act(async () => {
+      await getCodeButton().props.onClick()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+      await getCodeButton().props.onClick()
+      await vi.advanceTimersByTimeAsync(201)
+    })
+
+    expect(getCodeButton().children.join('')).toContain('已复制')
+    expect(writeText).toHaveBeenCalledTimes(2)
+  })
+
+  it('clears feedback timers on unmount and when the preset code changes', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+    const renderer = create(
+      <PromptPresetPreviewDialog
+        preset={createPreset({ referenceCode: 'PLP-01M0N7FTG1PKB2AV2P8S62N6H8' })}
+        onClose={() => undefined}
+      />
+    )
+
+    await act(async () => {
+      await renderer.root.findByProps({ title: '复制 Prompt 编码' }).props.onClick()
+    })
+    expect(vi.getTimerCount()).toBe(1)
+
+    await act(async () => {
+      renderer.update(
+        <PromptPresetPreviewDialog
+          preset={createPreset({ referenceCode: 'PLP-01M0N7FTG1PKB2AV2P8S62N6H9' })}
+          onClose={() => undefined}
+        />
+      )
+    })
+    expect(renderer.root.findByProps({ title: '复制 Prompt 编码' }).children.join('')).not.toContain('已复制')
+    expect(vi.getTimerCount()).toBe(0)
+
+    renderer.unmount()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

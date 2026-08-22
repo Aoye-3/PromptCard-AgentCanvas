@@ -1,8 +1,9 @@
-import { useState } from 'react'
 import { Check, Copy, Image, PlaySquare, X } from 'lucide-react'
 import type { IPreset } from '@/models/Card.model'
 import { formatMediaSize, getPresetMedia } from '@/domain/prompt-media/prompt-media'
+import { getPromptMediaReferenceCode, getPromptReferenceCode } from '@/domain/reference-codes/reference-code'
 import { storage } from '@/utils/storage'
+import { useClipboardCopyFeedback } from './useClipboardCopyFeedback'
 
 export const PromptPresetPreviewDialog = ({
   preset,
@@ -12,22 +13,9 @@ export const PromptPresetPreviewDialog = ({
   onClose: () => void
 }) => {
   const media = getPresetMedia(preset)
-  const [copyFeedback, setCopyFeedback] = useState<{ target: string; status: 'success' | 'error' } | null>(null)
-
-  const copyText = async (text: string, target: string) => {
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopyFeedback({ target, status: 'success' })
-      setTimeout(() => {
-        setCopyFeedback(current => current?.target === target && current.status === 'success' ? null : current)
-      }, 1200)
-    } catch {
-      setCopyFeedback({ target, status: 'error' })
-    }
-  }
-
-  const isCopied = (target: string) => copyFeedback?.target === target && copyFeedback.status === 'success'
-  const copyFailed = (target: string) => copyFeedback?.target === target && copyFeedback.status === 'error'
+  const promptReferenceCode = getPromptReferenceCode(preset.referenceCode)
+  const mediaScope = media.map(item => `${item.id}:${getPromptMediaReferenceCode(item.referenceCode) || ''}`).join('|')
+  const { copyText, copyFailed, isCopied } = useClipboardCopyFeedback(`prompt-dialog:${preset.id}:${promptReferenceCode || ''}:${mediaScope}`)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 px-4 py-6" onClick={onClose}>
@@ -71,25 +59,28 @@ export const PromptPresetPreviewDialog = ({
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {media.map(item => (
+                  {media.map(item => {
+                    const referenceCode = getPromptMediaReferenceCode(item.referenceCode)
+                    const target = `media:${item.id}`
+                    return (
                     <figure key={item.id} className="overflow-hidden rounded-[8px] border border-gray-200 bg-white shadow-sm">
                       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3 text-sm">
                         <div className="flex min-w-0 items-center gap-2 font-semibold text-gray-800">
                           {item.kind === 'image' ? <Image className="h-4 w-4 text-gray-500" /> : <PlaySquare className="h-4 w-4 text-gray-500" />}
                           <span className="truncate">{item.title || item.filename || item.assetId}</span>
                         </div>
-                        <div className="flex items-center gap-2">
-                          {item.referenceCode ? (
+                        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+                          {referenceCode ? (
                             <>
-                              <code className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-600">{item.referenceCode}</code>
+                              <code className="max-w-full break-all rounded bg-gray-100 px-2 py-1 text-xs text-gray-600">{referenceCode}</code>
                               <button
                                 type="button"
-                                className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 transition hover:bg-gray-200"
+                                className="shrink-0 whitespace-nowrap rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 transition hover:bg-gray-200"
                                 aria-label={`复制媒体编码：${item.title || item.filename || item.assetId}`}
                                 title="复制媒体编码"
-                                onClick={() => void copyText(item.referenceCode as string, `media:${item.id}`)}
+                                onClick={() => void copyText(referenceCode, target)}
                               >
-                                {isCopied(`media:${item.id}`) ? '媒体编码已复制' : '复制媒体编码'}
+                                {isCopied(target) ? '媒体编码已复制' : '复制媒体编码'}
                               </button>
                             </>
                           ) : (
@@ -98,14 +89,14 @@ export const PromptPresetPreviewDialog = ({
                           {formatMediaSize(item.size) && <span className="shrink-0 text-xs text-gray-400">{formatMediaSize(item.size)}</span>}
                         </div>
                       </div>
-                      {copyFailed(`media:${item.id}`) && (
+                      {copyFailed(target) && referenceCode && (
                         <div role="alert" className="flex items-center justify-between gap-3 border-b border-red-100 bg-red-50 px-4 py-2 text-xs text-red-700">
                           <span>复制媒体编码失败，请重试。</span>
                           <button
                             type="button"
                             className="rounded-full bg-white px-3 py-1 font-semibold text-red-700"
                             aria-label={`重试复制媒体编码：${item.title || item.filename || item.assetId}`}
-                            onClick={() => void copyText(item.referenceCode as string, `media:${item.id}`)}
+                            onClick={() => void copyText(referenceCode, target)}
                           >
                             重试
                           </button>
@@ -125,7 +116,8 @@ export const PromptPresetPreviewDialog = ({
                         />
                       )}
                     </figure>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -146,15 +138,15 @@ export const PromptPresetPreviewDialog = ({
                 {isCopied('content') ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
                 {isCopied('content') ? '已复制' : '复制'}
               </button>
-              {preset.referenceCode ? (
-                <div className="flex items-center gap-2">
-                  <code className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-600">{preset.referenceCode}</code>
+              {promptReferenceCode ? (
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <code className="max-w-full break-all rounded bg-gray-100 px-2 py-1 text-xs text-gray-600">{promptReferenceCode}</code>
                   <button
                     type="button"
-                    className="inline-flex items-center gap-2 rounded-full bg-gray-100 px-4 py-2 text-xs font-black text-gray-700 transition hover:bg-gray-200"
+                    className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full bg-gray-100 px-4 py-2 text-xs font-black text-gray-700 transition hover:bg-gray-200"
                     aria-label="复制 Prompt 编码"
                     title="复制 Prompt 编码"
-                    onClick={() => void copyText(preset.referenceCode as string, 'prompt-code')}
+                    onClick={() => void copyText(promptReferenceCode, 'prompt-code')}
                   >
                     {isCopied('prompt-code') ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
                     {isCopied('prompt-code') ? 'Prompt 编码已复制' : '复制 Prompt 编码'}
@@ -164,14 +156,14 @@ export const PromptPresetPreviewDialog = ({
                 <span className="text-xs text-gray-400" title="该 Prompt 没有可复制的 Prompt 编码">Prompt 编码不可用</span>
               )}
             </div>
-            {copyFailed('prompt-code') && (
+            {copyFailed('prompt-code') && promptReferenceCode && (
               <div role="alert" className="flex items-center justify-between gap-3 border-b border-red-100 bg-red-50 px-5 py-2 text-xs text-red-700">
                 <span>复制 Prompt 编码失败，请重试。</span>
                 <button
                   type="button"
                   className="rounded-full bg-white px-3 py-1 font-semibold text-red-700"
                   aria-label="重试复制 Prompt 编码"
-                  onClick={() => void copyText(preset.referenceCode as string, 'prompt-code')}
+                  onClick={() => void copyText(promptReferenceCode, 'prompt-code')}
                 >
                   重试
                 </button>

@@ -13,6 +13,8 @@ import { useI18n } from '@/i18n'
 import { storage } from '@/utils/storage'
 import type { TrashEntry } from '@/storage/storage-service-client'
 import { getPresetMedia } from '@/domain/prompt-media/prompt-media'
+import { getPromptReferenceCode } from '@/domain/reference-codes/reference-code'
+import { useClipboardCopyFeedback } from './prompt-media/useClipboardCopyFeedback'
 import {
   PROMPT_LIBRARY_AGENT_PANEL_KEYBOARD_STEP,
   PROMPT_LIBRARY_AGENT_PANEL_SETTINGS_KEY,
@@ -541,36 +543,23 @@ const PromptLibraryPreviewMode = ({
 
 export const PromptPreviewCard = ({ preset, onPreview }: { preset: IPreset; onPreview: () => void }) => {
   const { cardTypeLabel } = useI18n()
-  const [copyFeedback, setCopyFeedback] = useState<{ target: 'content' | 'prompt-code'; status: 'success' | 'error' } | null>(null)
   const media = getPresetMedia(preset)
-  const referenceCode = preset.referenceCode
+  const referenceCode = getPromptReferenceCode(preset.referenceCode)
+  const { copyText, copyFailed, isCopied } = useClipboardCopyFeedback(`prompt-card:${preset.id}:${referenceCode || ''}`)
   const imageCount = media.filter(item => item.kind === 'image').length
   const videoCount = media.filter(item => item.kind === 'video').length
   const typeLabel = isQuickMessagePreset(preset) ? QUICK_MESSAGE_LABEL : cardTypeLabel(preset.type)
-  const copyText = async (
-    text: string,
-    target: 'content' | 'prompt-code',
-    event: MouseEvent<HTMLButtonElement>
-  ) => {
+  const copyTextWithPropagationStopped = async (text: string, target: 'content' | 'prompt-code', event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation()
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopyFeedback({ target, status: 'success' })
-      setTimeout(() => {
-        setCopyFeedback(current => current?.target === target && current.status === 'success' ? null : current)
-      }, 1200)
-    } catch {
-      setCopyFeedback({ target, status: 'error' })
-    }
+    await copyText(text, target)
   }
-  const copyPresetContent = (event: MouseEvent<HTMLButtonElement>) => void copyText(preset.content, 'content', event)
+  const copyPresetContent = (event: MouseEvent<HTMLButtonElement>) => void copyTextWithPropagationStopped(preset.content, 'content', event)
   const copyPresetCode = (event: MouseEvent<HTMLButtonElement>) => {
     if (!referenceCode) return
-    void copyText(referenceCode, 'prompt-code', event)
+    void copyTextWithPropagationStopped(referenceCode, 'prompt-code', event)
   }
-  const isCopied = (target: 'content' | 'prompt-code') => copyFeedback?.target === target && copyFeedback.status === 'success'
-  const copyFailed = (target: 'content' | 'prompt-code') => copyFeedback?.target === target && copyFeedback.status === 'error'
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return
     if (event.key !== 'Enter' && event.key !== ' ') return
     event.preventDefault()
     onPreview()

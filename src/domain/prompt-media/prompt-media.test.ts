@@ -86,7 +86,7 @@ describe('prompt media metadata', () => {
           kind: 'image',
           source: 'asset',
           assetId: 'image.png',
-          referenceCode: 'PLM-0001'
+          referenceCode: 'PLM-01M0N7FTG1PKB2AV2P8S62N6H8'
         },
         {
           id: 'media-video',
@@ -99,9 +99,29 @@ describe('prompt media metadata', () => {
     }))
 
     expect(media).toEqual([
-      expect.objectContaining({ assetId: 'image.png', referenceCode: 'PLM-0001' }),
+      expect.objectContaining({ assetId: 'image.png', referenceCode: 'PLM-01M0N7FTG1PKB2AV2P8S62N6H8' }),
       expect.not.objectContaining({ referenceCode: expect.anything() })
     ])
+  })
+
+  it.each([
+    'PLP-01M0N7FTG1PKB2AV2P8S62N6H8',
+    'plm-01M0N7FTG1PKB2AV2P8S62N6H8',
+    'PLM-81M0N7FTG1PKB2AV2P8S62N6H8',
+    'PLM-01M0N7FTG1PKB2AV2P8S62N6HI',
+    'internal-asset-id'
+  ])('removes non-canonical media reference code %s without dropping the media binding', (referenceCode) => {
+    const media = getPresetMedia(preset({
+      media: [{
+        id: 'media-image',
+        kind: 'image',
+        source: 'asset',
+        assetId: 'image.png',
+        referenceCode
+      }]
+    }))
+
+    expect(media).toEqual([expect.not.objectContaining({ referenceCode: expect.anything() })])
   })
 
   it('formats sizes and exposes media search text', () => {

@@ -1,4 +1,5 @@
 import type { IPreset } from '@/models/Card.model'
+import { getPromptMediaReferenceCode } from '@/domain/reference-codes/reference-code'
 
 export type PromptPresetMediaKind = 'image' | 'video'
 
@@ -95,6 +96,8 @@ const isPromptPresetMediaItem = (value: unknown): value is PromptPresetMediaItem
 const normalizePromptPresetMediaItem = (value: unknown): PromptPresetMediaItem[] => {
   if (!isPromptPresetMediaItem(value)) return []
   const item = { ...value }
-  if (typeof item.referenceCode !== 'string') delete item.referenceCode
+  const referenceCode = getPromptMediaReferenceCode(item.referenceCode)
+  if (referenceCode) item.referenceCode = referenceCode
+  else delete item.referenceCode
   return [item]
 }
