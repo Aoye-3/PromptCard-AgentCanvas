@@ -19,7 +19,9 @@
     "build": "tsc && vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 30",
     "preview": "vite preview",
+    "pretest": "npm run test:contracts",
     "test": "vitest",
+    "test:contracts": "node --test --test-isolation=none tests/contracts/promptcard-bridge-contract.test.mjs",
     "test:frontend": "powershell -ExecutionPolicy Bypass -File scripts/run-frontend-tests.ps1",
     "test:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-e2e-tests.ps1"
   },

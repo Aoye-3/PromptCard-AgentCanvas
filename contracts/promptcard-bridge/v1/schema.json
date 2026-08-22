@@ -6,72 +6,72 @@
     "ProjectCode": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/project-code.schema.json",
       "type": "string",
-      "pattern": "^PRJ-[0-9A-HJKMNP-TV-Z]{26}$"
+      "pattern": "^PRJ-[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     },
     "PromptBundleCode": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/prompt-bundle-code.schema.json",
       "type": "string",
-      "pattern": "^PLP-[0-9A-HJKMNP-TV-Z]{26}$"
+      "pattern": "^PLP-[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     },
     "PromptMediaCode": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/prompt-media-code.schema.json",
       "type": "string",
-      "pattern": "^PLM-[0-9A-HJKMNP-TV-Z]{26}$"
+      "pattern": "^PLM-[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     },
     "CanvasTemplateCode": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-template-code.schema.json",
       "type": "string",
-      "pattern": "^CVT-[0-9A-HJKMNP-TV-Z]{26}$"
+      "pattern": "^CVT-[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     },
     "CanvasMediaCode": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-media-code.schema.json",
       "type": "string",
-      "pattern": "^CVM-[0-9A-HJKMNP-TV-Z]{26}$"
+      "pattern": "^CVM-[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     },
     "CanvasCode": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-code.schema.json",
       "type": "string",
-      "pattern": "^CVC-[0-9A-HJKMNP-TV-Z]{26}$"
+      "pattern": "^CVC-[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     },
     "SkillCode": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-code.schema.json",
       "type": "string",
-      "pattern": "^SKL-[0-9A-HJKMNP-TV-Z]{26}$"
+      "pattern": "^SKL-[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     },
     "ProjectCodeInput": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/project-code-input.schema.json",
       "type": "string",
-      "pattern": "^[Pp][Rr][Jj]-[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$"
+      "pattern": "^[Pp][Rr][Jj]-[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$"
     },
     "PromptBundleCodeInput": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/prompt-bundle-code-input.schema.json",
       "type": "string",
-      "pattern": "^[Pp][Ll][Pp]-[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$"
+      "pattern": "^[Pp][Ll][Pp]-[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$"
     },
     "PromptMediaCodeInput": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/prompt-media-code-input.schema.json",
       "type": "string",
-      "pattern": "^[Pp][Ll][Mm]-[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$"
+      "pattern": "^[Pp][Ll][Mm]-[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$"
     },
     "CanvasTemplateCodeInput": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-template-code-input.schema.json",
       "type": "string",
-      "pattern": "^[Cc][Vv][Tt]-[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$"
+      "pattern": "^[Cc][Vv][Tt]-[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$"
     },
     "CanvasMediaCodeInput": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-media-code-input.schema.json",
       "type": "string",
-      "pattern": "^[Cc][Vv][Mm]-[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$"
+      "pattern": "^[Cc][Vv][Mm]-[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$"
     },
     "CanvasCodeInput": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-code-input.schema.json",
       "type": "string",
-      "pattern": "^[Cc][Vv][Cc]-[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$"
+      "pattern": "^[Cc][Vv][Cc]-[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$"
     },
     "SkillCodeInput": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-code-input.schema.json",
       "type": "string",
-      "pattern": "^[Ss][Kk][Ll]-[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$"
+      "pattern": "^[Ss][Kk][Ll]-[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$"
     },
     "CanonicalReferenceCode": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/canonical-reference-code.schema.json",
@@ -503,18 +503,138 @@
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/additive-kind.schema.json",
       "enum": ["canvas.media.add", "canvas.node.add", "skill.projection.add"]
     },
-    "AdditiveItem": {
-      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/additive-item.schema.json",
+    "CanvasMediaAddItem": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-media-add-item.schema.json",
       "type": "object",
       "properties": {
-        "clientItemId": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "contentDigest": {
-          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/digest.schema.json"
-        },
-        "label": { "type": "string" }
+        "kind": { "const": "canvas.media.add" },
+        "mediaResource": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/media-resource.schema.json"
+        }
       },
-      "required": ["clientItemId", "contentDigest", "label"],
+      "required": ["kind", "mediaResource"],
       "additionalProperties": false
+    },
+    "CanvasNodeAddItem": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-node-add-item.schema.json",
+      "type": "object",
+      "properties": {
+        "kind": { "const": "canvas.node.add" },
+        "canvasTemplateCode": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-template-code-input.schema.json"
+        },
+        "nodeContent": {
+          "type": "object",
+          "properties": {
+            "nodeType": { "enum": ["prompt", "media", "group"] },
+            "content": { "type": "string" },
+            "position": {
+              "type": "object",
+              "properties": {
+                "x": { "type": "number" },
+                "y": { "type": "number" }
+              },
+              "required": ["x", "y"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["nodeType", "content", "position"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["kind", "canvasTemplateCode", "nodeContent"],
+      "additionalProperties": false
+    },
+    "SkillProjectionAddItem": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-projection-add-item.schema.json",
+      "type": "object",
+      "properties": {
+        "kind": { "const": "skill.projection.add" },
+        "skillRevision": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-revision.schema.json"
+        },
+        "hostPin": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-host-pin.schema.json"
+        }
+      },
+      "required": ["kind", "skillRevision", "hostPin"],
+      "additionalProperties": false
+    },
+    "AdditiveItem": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/additive-item.schema.json",
+      "oneOf": [
+        {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-media-add-item.schema.json"
+        },
+        {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-node-add-item.schema.json"
+        },
+        {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-projection-add-item.schema.json"
+        }
+      ]
+    },
+    "AdditiveKindItemsMatch": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/additive-kind-items-match.schema.json",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": { "kind": { "const": "canvas.media.add" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-media-add-item.schema.json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": { "kind": { "const": "canvas.node.add" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-node-add-item.schema.json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": { "const": "skill.projection.add" }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-projection-add-item.schema.json"
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "Proposal": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/proposal.schema.json",
@@ -553,6 +673,11 @@
         "sourceCodeLists",
         "summary",
         "items"
+      ],
+      "allOf": [
+        {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/additive-kind-items-match.schema.json"
+        }
       ],
       "additionalProperties": false
     },
@@ -594,6 +719,11 @@
         "provenance",
         "items"
       ],
+      "allOf": [
+        {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/additive-kind-items-match.schema.json"
+        }
+      ],
       "additionalProperties": false
     },
     "Status": {
@@ -609,6 +739,7 @@
         "state": {
           "enum": ["accepted", "pending", "applied", "rejected", "failed"]
         },
+        "disposition": { "enum": ["original", "replay", "conflict"] },
         "message": { "type": "string" },
         "resultCodes": {
           "type": "array",
@@ -622,6 +753,7 @@
         "clientRequestId",
         "normalizedRequestDigest",
         "state",
+        "disposition",
         "message",
         "resultCodes"
       ],
@@ -631,11 +763,25 @@
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v1/structured-error.schema.json",
       "type": "object",
       "properties": {
-        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "code": {
+          "enum": [
+            "validation_error",
+            "not_found",
+            "permission_denied",
+            "delivery_conflict",
+            "internal_error"
+          ]
+        },
         "message": { "type": "string", "minLength": 1 },
         "retryable": { "type": "boolean" },
         "clientRequestId": {
           "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/client-request-id.schema.json"
+        },
+        "normalizedRequestDigest": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/digest.schema.json"
+        },
+        "existingRequestDigest": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/digest.schema.json"
         },
         "details": {
           "type": "array",
@@ -651,6 +797,28 @@
         }
       },
       "required": ["code", "message", "retryable", "details"],
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": { "code": { "const": "delivery_conflict" } },
+            "required": ["code"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "clientRequestId": true,
+              "normalizedRequestDigest": true,
+              "existingRequestDigest": true
+            },
+            "required": [
+              "clientRequestId",
+              "normalizedRequestDigest",
+              "existingRequestDigest"
+            ]
+          }
+        }
+      ],
       "additionalProperties": false
     }
   }
