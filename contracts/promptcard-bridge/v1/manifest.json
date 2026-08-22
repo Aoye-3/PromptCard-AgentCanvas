@@ -1,0 +1,21 @@
+{
+  "name": "promptcard-bridge",
+  "contractVersion": "1.0.0",
+  "schemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "schemaFile": "schema.json",
+  "entryPoints": {
+    "typedReference": "https://schemas.promptcard.dev/promptcard-bridge/v1/typed-reference.schema.json",
+    "exactReferenceInput": "https://schemas.promptcard.dev/promptcard-bridge/v1/exact-reference-input.schema.json",
+    "searchResult": "https://schemas.promptcard.dev/promptcard-bridge/v1/search-result.schema.json",
+    "promptBundle": "https://schemas.promptcard.dev/promptcard-bridge/v1/prompt-bundle.schema.json",
+    "mediaResource": "https://schemas.promptcard.dev/promptcard-bridge/v1/media-resource.schema.json",
+    "contextPack": "https://schemas.promptcard.dev/promptcard-bridge/v1/context-pack.schema.json",
+    "skillPackage": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-package.schema.json",
+    "skillRevision": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-revision.schema.json",
+    "skillHostPin": "https://schemas.promptcard.dev/promptcard-bridge/v1/skill-host-pin.schema.json",
+    "proposal": "https://schemas.promptcard.dev/promptcard-bridge/v1/proposal.schema.json",
+    "delivery": "https://schemas.promptcard.dev/promptcard-bridge/v1/delivery.schema.json",
+    "status": "https://schemas.promptcard.dev/promptcard-bridge/v1/status.schema.json",
+    "structuredError": "https://schemas.promptcard.dev/promptcard-bridge/v1/structured-error.schema.json"
+  }
+}

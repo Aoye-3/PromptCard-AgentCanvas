@@ -153,6 +153,7 @@ NewVison/Prompt Guide/
 *.csv
 *.tsv
 *.json
+!contracts/promptcard-bridge/**/*.json
 !package.json
 !package-lock.json
 !tsconfig.json
