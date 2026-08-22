@@ -42,7 +42,7 @@ class ImageRunBackupTest(unittest.TestCase):
 
         manifest = self.store.backup(destination)
 
-        self.assertEqual(manifest["schemaVersion"], 9)
+        self.assertEqual(manifest["schemaVersion"], 10)
         self.assertEqual((destination / "assets" / asset["id"]).read_bytes(), content)
         connection = sqlite3.connect(destination / "promptcard.sqlite3")
         try:
@@ -54,7 +54,7 @@ class ImageRunBackupTest(unittest.TestCase):
             connection.close()
         self.assertEqual(row[0], "succeeded")
         self.assertIn(asset["id"], row[1])
-        self.assertEqual(version, 9)
+        self.assertEqual(version, 10)
 
     def test_backup_preserves_original_derived_assets_and_relationship(self) -> None:
         source = self.store.save_asset(

@@ -31,10 +31,14 @@ from .image_runs import (
     transition_image_run,
 )
 from .migration import MigrationError, StorageInitializer
+from .reference_codes import (
+    ReferenceNamespace,
+    generate_reference_code,
+)
 
 Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 DATABASE_NAME = "promptcard.sqlite3"
 JSON_SOURCES = (
     "projects.json",
@@ -142,6 +146,25 @@ class SqliteStore:
                 "skillHub": True,
             },
         }
+
+    def ensure_public_reference(
+        self,
+        namespace: ReferenceNamespace | str,
+        internal_id: str,
+        *,
+        owner_scope: str = "",
+    ) -> str:
+        with self._transaction() as connection:
+            return self._ensure_public_reference(
+                connection,
+                namespace,
+                internal_id,
+                owner_scope=owner_scope,
+            )
+
+    def reconcile_public_references(self) -> None:
+        with self._transaction() as connection:
+            self._reconcile_public_references(connection)
 
     def create_agent_conversation(self, item: dict[str, Any]) -> dict[str, Any]:
         project_id = str(item.get("projectId") or "").strip()
@@ -2316,9 +2339,24 @@ class SqliteStore:
                 except Exception:
                     connection.rollback()
                     raise
+            if current_version == 9:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self._create_public_references_v10_schema(connection)
+                    self._reconcile_public_references(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (10, "add-public-reference-registry", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 10
+                except Exception:
+                    connection.rollback()
+                    raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
             self._seed_builtin_skills(connection)
+            self._reconcile_public_references(connection)
             connection.commit()
 
     def _create_schema(self, connection: sqlite3.Connection) -> None:
@@ -2353,6 +2391,133 @@ class SqliteStore:
         self._create_image_asset_derivations_v5_schema(connection)
         self._create_project_resources_v7_schema(connection)
         self._create_agent_conversations_v9_schema(connection)
+        self._create_public_references_v10_schema(connection)
+
+    def _create_public_references_v10_schema(self, connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS public_references(
+                public_code TEXT PRIMARY KEY COLLATE NOCASE,
+                namespace TEXT NOT NULL
+                    CHECK(namespace IN ('PRJ','PLP','PLM','CVT','CVM','CVC','SKL')),
+                owner_scope TEXT NOT NULL DEFAULT '',
+                internal_id TEXT NOT NULL CHECK(length(trim(internal_id)) > 0),
+                created_at INTEGER NOT NULL,
+                CHECK(public_code = upper(public_code)),
+                CHECK(length(public_code) = 30),
+                CHECK(substr(public_code, 1, 4) = namespace || '-'),
+                CHECK(namespace NOT IN ('CVT','CVM') OR length(trim(owner_scope)) > 0),
+                UNIQUE(namespace, owner_scope, internal_id)
+            )
+        """)
+
+    def _reconcile_public_references(self, connection: sqlite3.Connection) -> None:
+        candidates: set[tuple[str, str, str]] = set()
+        for project_id, payload_json in connection.execute(
+            "SELECT id, payload_json FROM projects ORDER BY id"
+        ):
+            candidates.add(("PRJ", "", project_id))
+            payload = json.loads(payload_json)
+            free_canvas = payload.get("freeCanvas")
+            nodes = free_canvas.get("nodes") if isinstance(free_canvas, dict) else None
+            if not isinstance(nodes, list):
+                continue
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                node_id = node.get("id")
+                if not isinstance(node_id, str) or not node_id:
+                    continue
+                kind = node.get("kind")
+                if kind == "text":
+                    candidates.add(("CVT", project_id, node_id))
+                elif kind == "image" or (
+                    kind is None
+                    and isinstance(node.get("assetId"), str)
+                    and bool(node["assetId"])
+                ):
+                    candidates.add(("CVM", project_id, node_id))
+
+        for preset_id, payload_json in connection.execute(
+            "SELECT id, payload_json FROM presets ORDER BY id"
+        ):
+            candidates.add(("PLP", "", preset_id))
+            payload = json.loads(payload_json)
+            meta = payload.get("meta")
+            media = meta.get("media") if isinstance(meta, dict) else None
+            if not isinstance(media, list):
+                continue
+            for binding in media:
+                binding_id = binding.get("id") if isinstance(binding, dict) else None
+                if isinstance(binding_id, str) and binding_id:
+                    candidates.add(("PLM", preset_id, binding_id))
+
+        for (skill_id,) in connection.execute("SELECT id FROM skills ORDER BY id"):
+            candidates.add(("SKL", "", skill_id))
+
+        for namespace, owner_scope, internal_id in sorted(candidates):
+            self._ensure_public_reference(
+                connection,
+                namespace,
+                internal_id,
+                owner_scope=owner_scope,
+            )
+
+    def _ensure_public_reference(
+        self,
+        connection: sqlite3.Connection,
+        namespace: ReferenceNamespace | str,
+        internal_id: str,
+        *,
+        owner_scope: str,
+    ) -> str:
+        canonical_namespace = (
+            namespace
+            if isinstance(namespace, ReferenceNamespace)
+            else ReferenceNamespace(str(namespace).upper())
+        )
+        normalized_internal_id = str(internal_id).strip()
+        normalized_owner_scope = str(owner_scope).strip()
+        if not normalized_internal_id:
+            raise ValueError("Public reference internal ID is required")
+        if canonical_namespace in {
+            ReferenceNamespace.CANVAS_TEMPLATE,
+            ReferenceNamespace.CANVAS_MEDIA,
+        } and not normalized_owner_scope:
+            raise ValueError("Canvas public reference owner scope is required")
+
+        row = connection.execute(
+            """SELECT public_code FROM public_references
+               WHERE namespace=? AND owner_scope=? AND internal_id=?""",
+            (
+                canonical_namespace.value,
+                normalized_owner_scope,
+                normalized_internal_id,
+            ),
+        ).fetchone()
+        if row is not None:
+            return row[0]
+
+        public_code = generate_reference_code(
+            canonical_namespace,
+            timestamp_ms=now_ms(),
+            collision_predicate=lambda candidate: connection.execute(
+                "SELECT 1 FROM public_references WHERE public_code=?",
+                (candidate,),
+            ).fetchone() is not None,
+        )
+        connection.execute(
+            """INSERT INTO public_references(
+                   public_code, namespace, owner_scope, internal_id, created_at
+               ) VALUES (?, ?, ?, ?, ?)""",
+            (
+                public_code,
+                canonical_namespace.value,
+                normalized_owner_scope,
+                normalized_internal_id,
+                now_ms(),
+            ),
+        )
+        return public_code
 
     def _create_agent_conversations_v9_schema(self, connection: sqlite3.Connection) -> None:
         connection.executescript("""

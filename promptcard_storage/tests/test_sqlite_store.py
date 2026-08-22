@@ -171,7 +171,7 @@ class SqliteStoreTest(unittest.TestCase):
         store = JsonCollectionStore(self.data_dir)
         health = store.health()
 
-        self.assertEqual(health["schemaVersion"], 9)
+        self.assertEqual(health["schemaVersion"], 10)
         self.assertEqual(health["serviceVersion"], "2.0.0")
         self.assertTrue(health["capabilities"]["sqlite"])
         self.assertTrue(health["capabilities"]["presetBatch"])
@@ -195,7 +195,7 @@ class SqliteStoreTest(unittest.TestCase):
 
         manifest = store.backup(destination)
 
-        self.assertEqual(manifest["schemaVersion"], 9)
+        self.assertEqual(manifest["schemaVersion"], 10)
         self.assertTrue((destination / "promptcard.sqlite3").is_file())
         self.assertTrue((destination / "manifest.json").is_file())
         self.assertEqual(len(list((destination / "assets").iterdir())), 1)
@@ -275,7 +275,7 @@ class SqliteStoreTest(unittest.TestCase):
         connection = sqlite3.connect(database_path)
         try:
             connection.execute("ALTER TABLE agent_conversations DROP COLUMN model_binding_json")
-            connection.execute("DELETE FROM schema_migrations WHERE version=9")
+            connection.execute("DELETE FROM schema_migrations WHERE version=10")
             connection.execute(
                 "INSERT INTO schema_migrations(version, name, applied_at) VALUES (8, 'legacy-v8', 1)"
             )
@@ -284,7 +284,7 @@ class SqliteStoreTest(unittest.TestCase):
             connection.close()
 
         migrated = JsonCollectionStore(self.data_dir)
-        self.assertEqual(migrated.health()["schemaVersion"], 9)
+        self.assertEqual(migrated.health()["schemaVersion"], 10)
         self.assertIsNone(migrated.get_agent_conversation("conversation-v8", "p1")["modelBinding"])
 
     def test_agent_conversation_trash_restore_and_permanent_delete_are_project_scoped(self) -> None:

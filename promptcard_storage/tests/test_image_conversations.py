@@ -124,7 +124,7 @@ class ImageConversationMigrationTest(unittest.TestCase):
         }
         conversations = migrated.list_image_generation_conversations(project_id="project-one")
 
-        self.assertEqual(migrated.health()["schemaVersion"], 9)
+        self.assertEqual(migrated.health()["schemaVersion"], 10)
         self.assertEqual(len(first_ids), 1)
         self.assertEqual(len(conversations["conversations"]), 2)
         self.assertEqual(migrated.list_image_generation_placements(project_id="project-one")["placements"], [])
