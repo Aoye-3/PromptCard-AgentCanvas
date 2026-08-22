@@ -254,7 +254,9 @@ class SqliteStore:
                 )
 
             prompt = json.loads(prompt_row[1])
-            media_items = self._preset_media(prompt)
+            media_items = self._resolvable_preset_media(
+                connection, prompt, requested_reference
+            )
             if (
                 parsed.namespace is ReferenceNamespace.PROMPT_MEDIA
                 and not any(item.get("id") == internal_id for item in media_items)
@@ -1381,7 +1383,35 @@ class SqliteStore:
             ]
 
     def delete_preset_trash(self, ids: list[str]) -> None:
-        self._delete_trash("presets", ids)
+        if not ids:
+            return
+        with self._transaction() as connection:
+            placeholders = ",".join("?" for _ in ids)
+            retired_ids = [
+                row[0]
+                for row in connection.execute(
+                    f"SELECT id FROM presets WHERE status='trash' AND id IN ({placeholders})",
+                    tuple(ids),
+                )
+            ]
+            if not retired_ids:
+                return
+            retired_placeholders = ",".join("?" for _ in retired_ids)
+            connection.execute(
+                f"""DELETE FROM public_references
+                    WHERE namespace='PLM' AND owner_scope IN ({retired_placeholders})""",
+                tuple(retired_ids),
+            )
+            connection.execute(
+                f"""DELETE FROM public_references
+                    WHERE namespace='PLP' AND owner_scope=''
+                      AND internal_id IN ({retired_placeholders})""",
+                tuple(retired_ids),
+            )
+            connection.execute(
+                f"DELETE FROM presets WHERE status='trash' AND id IN ({retired_placeholders})",
+                tuple(retired_ids),
+            )
 
     def migrate_browser_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         migration_id = str(payload.get("migrationId") or "browser-cache-v1")
@@ -2799,6 +2829,51 @@ class SqliteStore:
             return []
         return [item for item in media if isinstance(item, dict)]
 
+    def _resolvable_preset_media(
+        self,
+        connection: sqlite3.Connection,
+        prompt: dict[str, Any],
+        requested_reference: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        meta = prompt.get("meta")
+        if not isinstance(meta, dict) or "media" not in meta:
+            return []
+        media = meta.get("media")
+        if not isinstance(media, list):
+            self._raise_prompt_reference_error(
+                "prompt_media_invalid", requested_reference, status_code=410
+            )
+        prompt_id = str(prompt.get("id") or "")
+        seen_ids: set[str] = set()
+        for binding in media:
+            reference = requested_reference
+            binding_id = binding.get("id") if isinstance(binding, dict) else None
+            binding_kind = binding.get("kind") if isinstance(binding, dict) else None
+            if isinstance(binding_id, str) and binding_id:
+                row = connection.execute(
+                    """SELECT public_code FROM public_references
+                       WHERE namespace='PLM' AND owner_scope=? AND internal_id=?""",
+                    (prompt_id, binding_id),
+                ).fetchone()
+                if row is not None:
+                    reference = {"namespace": "promptMedia", "code": row[0]}
+            is_valid = (
+                isinstance(binding, dict)
+                and isinstance(binding_id, str)
+                and bool(binding_id)
+                and binding_id
+                == binding_id.strip(_PUBLIC_REFERENCE_EDGE_WHITESPACE)
+                and binding_id not in seen_ids
+                and isinstance(binding_kind, str)
+                and binding_kind in {"image", "video"}
+            )
+            if not is_valid or reference is requested_reference:
+                self._raise_prompt_reference_error(
+                    "prompt_media_invalid", reference, status_code=410
+                )
+            seen_ids.add(binding_id)
+        return media
+
     def _resolved_prompt_media(
         self,
         connection: sqlite3.Connection,
@@ -2861,6 +2936,7 @@ class SqliteStore:
             "prompt_bundle_trashed": "Prompt bundle is in Trash",
             "prompt_media_owner_trashed": "Prompt media owner is in Trash",
             "prompt_media_detached": "Prompt media binding is detached",
+            "prompt_media_invalid": "Prompt media binding is invalid",
             "prompt_media_asset_missing": "Prompt media asset is missing",
             "prompt_media_asset_trashed": "Prompt media asset is in Trash",
             "prompt_media_asset_deleted": "Prompt media asset was permanently deleted",
@@ -3586,7 +3662,33 @@ def normalize_preset(item: dict[str, Any]) -> dict[str, Any]:
     preset.setdefault("createdAt", now)
     preset.setdefault("updatedAt", preset.get("createdAt") or now)
     preset["revision"] = int(preset.get("revision") or 1)
+    _validate_preset_media_bindings(preset)
     return preset
+
+
+def _validate_preset_media_bindings(item: dict[str, Any]) -> None:
+    meta = item.get("meta")
+    if not isinstance(meta, dict) or "media" not in meta:
+        return
+    media = meta.get("media")
+    if not isinstance(media, list):
+        raise ValueError("Prompt media bindings are invalid")
+    seen_ids: set[str] = set()
+    for binding in media:
+        if not isinstance(binding, dict):
+            raise ValueError("Prompt media bindings are invalid")
+        binding_id = binding.get("id")
+        binding_kind = binding.get("kind")
+        if (
+            not isinstance(binding_id, str)
+            or not binding_id
+            or binding_id != binding_id.strip(_PUBLIC_REFERENCE_EDGE_WHITESPACE)
+            or binding_id in seen_ids
+            or not isinstance(binding_kind, str)
+            or binding_kind not in {"image", "video"}
+        ):
+            raise ValueError("Prompt media bindings are invalid")
+        seen_ids.add(binding_id)
 
 
 def _strip_preset_reference_codes(item: dict[str, Any]) -> dict[str, Any]:

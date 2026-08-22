@@ -67,6 +67,21 @@ class PromptReferenceResolutionTest(unittest.TestCase):
     def connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.data_dir / "promptcard.sqlite3")
 
+    @staticmethod
+    def database_state(data_dir: Path) -> tuple[list[tuple], list[tuple], list[tuple]]:
+        with sqlite3.connect(data_dir / "promptcard.sqlite3") as connection:
+            prompts = connection.execute(
+                "SELECT id, status, revision, payload_json FROM presets ORDER BY id"
+            ).fetchall()
+            references = connection.execute(
+                """SELECT public_code, namespace, owner_scope, internal_id
+                   FROM public_references ORDER BY public_code"""
+            ).fetchall()
+            imports = connection.execute(
+                "SELECT migration_id, applied_at FROM browser_imports ORDER BY migration_id"
+            ).fetchall()
+        return prompts, references, imports
+
     def create_prompt(self, item_id: str = "prompt-one") -> tuple[dict, dict, dict]:
         first_asset = self.store.save_asset("first.png", "image/png", PNG + b"-first")
         second_asset = self.store.save_asset("second.png", "image/png", PNG + b"-second")
@@ -220,6 +235,195 @@ class PromptReferenceResolutionTest(unittest.TestCase):
             first["meta"]["media"][0]["referenceCode"],
             duplicate["meta"]["media"][0]["referenceCode"],
         )
+
+    def test_permanent_delete_retires_codes_before_same_internal_ids_are_recreated(self) -> None:
+        created, first_asset, second_asset = self.create_prompt("reusable-prompt")
+        old_prompt_code = created["referenceCode"]
+        old_media_codes = [
+            item["referenceCode"] for item in created["meta"]["media"]
+        ]
+        self.store.trash_presets([created["id"]])
+
+        self.store.delete_preset_trash([created["id"]])
+
+        unknown = (
+            (old_prompt_code, "prompt_bundle_reference_not_found"),
+            (old_media_codes[0], "prompt_media_reference_not_found"),
+            (old_media_codes[1], "prompt_media_reference_not_found"),
+        )
+        for code, expected_error in unknown:
+            with self.subTest(stage="deleted", code=code):
+                with self.assertRaises(store_module.PromptReferenceError) as caught:
+                    self.store.resolve_prompt_reference(code)
+                self.assertEqual(caught.exception.code, expected_error)
+        with self.connect() as connection:
+            self.assertEqual(
+                connection.execute(
+                    """SELECT public_code FROM public_references
+                       WHERE (namespace='PLP' AND internal_id='reusable-prompt')
+                          OR owner_scope='reusable-prompt'"""
+                ).fetchall(),
+                [],
+            )
+
+        recreated = self.store.create_preset(preset("reusable-prompt", [
+            media("binding-first", first_asset, "First recreated"),
+            media("binding-second", second_asset, "Second recreated"),
+        ]))
+        new_media_codes = [
+            item["referenceCode"] for item in recreated["meta"]["media"]
+        ]
+        self.assertNotEqual(recreated["referenceCode"], old_prompt_code)
+        self.assertTrue(set(new_media_codes).isdisjoint(old_media_codes))
+        self.assertEqual(
+            self.store.resolve_prompt_reference(recreated["referenceCode"])["prompt"]["content"],
+            "Hand-written prompt content",
+        )
+        for code, expected_error in unknown:
+            with self.subTest(stage="recreated", code=code):
+                with self.assertRaises(store_module.PromptReferenceError) as caught:
+                    self.store.resolve_prompt_reference(code)
+                self.assertEqual(caught.exception.code, expected_error)
+
+    def test_permanent_delete_rolls_back_registry_retirement_when_prompt_delete_fails(self) -> None:
+        created, _first_asset, _second_asset = self.create_prompt("atomic-delete")
+        self.store.trash_presets([created["id"]])
+        before = self.database_state(self.data_dir)
+        with self.connect() as connection:
+            connection.execute("""
+                CREATE TRIGGER reject_task6_preset_delete
+                BEFORE DELETE ON presets
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected preset delete failure');
+                END
+            """)
+            connection.commit()
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "injected preset delete failure"):
+            self.store.delete_preset_trash([created["id"]])
+
+        self.assertEqual(self.database_state(self.data_dir), before)
+        with self.assertRaises(store_module.PromptReferenceError) as caught:
+            self.store.resolve_prompt_reference(created["referenceCode"])
+        self.assertEqual(caught.exception.code, "prompt_bundle_trashed")
+
+    def test_all_prompt_write_boundaries_reject_invalid_media_identity_and_kind_atomically(self) -> None:
+        boundary_names = ("create", "update", "replace", "browser-import")
+        malformed_names = (
+            "duplicate-id", "missing-id", "empty-id", "non-string-id", "invalid-kind"
+        )
+        for boundary_name in boundary_names:
+            for malformed_name in malformed_names:
+                with self.subTest(boundary=boundary_name, malformed=malformed_name):
+                    case_dir = (
+                        TEST_ROOT / self._testMethodName / boundary_name / malformed_name
+                    )
+                    case_dir.mkdir(parents=True)
+                    store = JsonCollectionStore(case_dir)
+                    asset = store.save_asset(
+                        "boundary.png", "image/png", PNG + boundary_name.encode()
+                    )
+                    existing = store.create_preset(preset("existing", [
+                        media("existing-binding", asset, "Existing")
+                    ]))
+                    valid = media("candidate-binding", asset, "Candidate")
+                    malformed_media = {
+                        "duplicate-id": [valid, {**valid, "title": "Duplicate"}],
+                        "missing-id": [{
+                            key: value for key, value in valid.items() if key != "id"
+                        }],
+                        "empty-id": [{**valid, "id": ""}],
+                        "non-string-id": [{**valid, "id": ["nested-id"]}],
+                        "invalid-kind": [{
+                            **valid,
+                            "kind": {
+                                "assetId": "must-not-leak",
+                                "path": "F:/secret",
+                                "credentials": ["token"],
+                            },
+                        }],
+                    }[malformed_name]
+                    before = self.database_state(case_dir)
+                    invalid_prompt = preset("invalid-target", malformed_media)
+
+                    with self.assertRaisesRegex(
+                        ValueError, "Prompt media bindings are invalid"
+                    ):
+                        if boundary_name == "create":
+                            store.create_preset(invalid_prompt)
+                        elif boundary_name == "update":
+                            store.update_preset(
+                                existing["id"],
+                                {"meta": {"media": malformed_media}},
+                                existing["revision"],
+                            )
+                        elif boundary_name == "replace":
+                            store.replace_presets([{**existing, "meta": {"media": malformed_media}}])
+                        else:
+                            store.migrate_browser_payload({
+                                "migrationId": f"invalid-{malformed_name}",
+                                "projects": [],
+                                "presets": [invalid_prompt],
+                            })
+
+                    self.assertEqual(self.database_state(case_dir), before)
+
+    def test_malformed_persisted_media_returns_structured_redacted_store_and_http_errors(self) -> None:
+        created, _first_asset, _second_asset = self.create_prompt("malformed-persisted")
+        prompt_code = created["referenceCode"]
+        first_media_code = created["meta"]["media"][0]["referenceCode"]
+        with self.connect() as connection:
+            raw_prompt = json.loads(connection.execute(
+                "SELECT payload_json FROM presets WHERE id=?", (created["id"],)
+            ).fetchone()[0])
+        first = raw_prompt["meta"]["media"][0]
+        malformed_cases = {
+            "missing-id": ([{
+                key: value for key, value in first.items() if key != "id"
+            }], "promptBundle", prompt_code),
+            "empty-id": ([{**first, "id": ""}], "promptBundle", prompt_code),
+            "non-string-id": ([{**first, "id": ["nested-id"]}], "promptBundle", prompt_code),
+            "duplicate-id": ([first, {**first, "title": "Duplicate"}], "promptMedia", first_media_code),
+            "invalid-kind": ([{
+                **first,
+                "kind": {
+                    "assetId": "must-not-leak",
+                    "path": "F:/secret",
+                    "credentials": {"token": "secret-value"},
+                },
+            }], "promptMedia", first_media_code),
+        }
+        client = TestClient(create_app(self.store))
+
+        for malformed_name, (bindings, namespace, expected_code) in malformed_cases.items():
+            with self.subTest(malformed=malformed_name):
+                injected = {**raw_prompt, "meta": {"media": bindings}}
+                with self.connect() as connection:
+                    connection.execute(
+                        "UPDATE presets SET payload_json=? WHERE id=?",
+                        (json.dumps(injected), created["id"]),
+                    )
+                    connection.commit()
+
+                with self.assertRaises(store_module.PromptReferenceError) as caught:
+                    self.store.resolve_prompt_reference(prompt_code)
+                self.assertEqual(caught.exception.code, "prompt_media_invalid")
+                self.assertEqual(caught.exception.reference, {
+                    "namespace": namespace,
+                    "code": expected_code,
+                })
+                response = client.get(
+                    f"/api/prompt-library/references/{prompt_code}"
+                )
+                self.assertEqual(response.status_code, 410)
+                self.assertEqual(
+                    response.json()["detail"]["code"], "prompt_media_invalid"
+                )
+                serialized = json.dumps(response.json())
+                for secret in (
+                    "must-not-leak", "F:/secret", "credentials", "secret-value", "nested-id"
+                ):
+                    self.assertNotIn(secret, serialized)
 
     def test_prompt_trash_and_restore_preserve_codes_and_return_typed_lifecycle_errors(self) -> None:
         created, _first_asset, _second_asset = self.create_prompt()
