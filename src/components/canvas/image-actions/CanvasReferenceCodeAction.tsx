@@ -36,7 +36,7 @@ export const CanvasNodeReferenceCodeAction = ({ node }: { node: IFreeCanvasNode 
   const state = nodeReferenceState(node)
   return (
     <ReferenceCodeCopyAction
-      referenceCode={node.referenceCode}
+      referenceCode={state.code}
       expectedPrefix={state.expectedPrefix}
       scopeKey={`canvas-node:${node.id}:${state.code || ''}`}
       label="复制节点代码"
@@ -184,17 +184,17 @@ const nodeReferenceState = (node: IFreeCanvasNode): {
   }
   const expectedPrefix = node.kind === 'text' ? 'CVT' : 'CVM'
   const kindLabel = node.kind === 'text' ? '文字节点' : '图片节点'
-  const code = validatePublicReferenceCode(node.referenceCode, expectedPrefix)
-  if (code) return { expectedPrefix, code, kindLabel, unavailableReason: '' }
   if (node.kind === 'image' && node.meta.generationState === 'running') {
     return { expectedPrefix, code: null, kindLabel, unavailableReason: '图片节点仍在生成，节点代码暂不可用' }
   }
-  if (node.kind === 'image' && (
-    node.meta.generationState === 'failed'
-    || (node as IFreeCanvasNode & { transient?: unknown }).transient === true
-  )) {
-    return { expectedPrefix, code: null, kindLabel, unavailableReason: '临时或未完成的图片节点没有节点代码' }
+  if (node.kind === 'image' && node.meta.generationState === 'failed') {
+    return { expectedPrefix, code: null, kindLabel, unavailableReason: '图片生成失败，节点代码不可用' }
   }
+  if (node.kind === 'image' && (node as IFreeCanvasNode & { transient?: unknown }).transient === true) {
+    return { expectedPrefix, code: null, kindLabel, unavailableReason: '临时图片节点没有节点代码' }
+  }
+  const code = validatePublicReferenceCode(node.referenceCode, expectedPrefix)
+  if (code) return { expectedPrefix, code, kindLabel, unavailableReason: '' }
   return {
     expectedPrefix,
     code: null,

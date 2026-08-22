@@ -28,6 +28,8 @@ Response DTO fields are additive and optional. Canvas normalization preserves su
 - `src/storage/storage-service-client.ts`
 - `src/storage/storage-service-client.test.ts`
 - `tests/e2e/free-canvas-copy-code.spec.ts`
+- `scripts/e2e-fixture-cleanup.ts`
+- `scripts/e2e-fixture-cleanup.test.ts`
 - `.superpowers/sdd/2026-08-22-plan-008-execution/task-9-report.md`
 
 ## TDD evidence
@@ -84,6 +86,20 @@ The first sandboxed Vitest launch also failed before test collection with `spawn
 Single implementation commit subject: `feat(canvas): copy public reference codes`. This report is part of that commit; the resolved commit hash is recorded in the parent handoff because a commit cannot contain its own final hash.
 
 Browser-gate fix commit subject: `fix(canvas): keep reference menus reachable`.
+
+Review fix round 1 commit subject: `fix(canvas): reject transient image references`.
+
+## Review fix round 1
+
+- RED command: `npm.cmd test -- --run src/components/canvas/image-actions/CanvasReferenceCodeAction.test.tsx scripts/e2e-fixture-cleanup.test.ts`.
+  - Result: the three valid-CVM `running`/`failed`/top-level-`transient` cases all failed because their buttons were enabled; the cleanup suite failed to load because the helper did not exist. The first sandboxed attempt was blocked by `esbuild spawn EPERM`, so the same command was rerun with workspace process permission to record the application RED.
+- Fix: image lifecycle/transient state is now evaluated before CVM validation, and the validated state result—not the raw projection—is passed into the shared copy action. Running, failed, and transient images expose distinct reasons and never call the clipboard even if a canonical CVM is present.
+- Fixture hardening: the image browser fixture acquires nullable asset/project handles inside `try`; `cleanupAcquiredFixtures` uses `Promise.allSettled`, attempts project and asset cleanup independently, and throws an `AggregateError` containing every cleanup failure. Unit tests prove asset cleanup still runs after project acquisition failure and after project cleanup rejection.
+- GREEN focused command: `npm.cmd test -- --run src/domain/reference-codes/reference-code.test.ts src/domain/free-canvas/free-canvas-project.test.ts src/storage/storage-service-client.test.ts src/components/canvas/image-actions/CanvasReferenceCodeAction.test.tsx src/components/canvas/image-actions/ImageActionMenu.test.tsx src/components/canvas/FreeCanvasBuilderScreen.image-generation.test.tsx scripts/e2e-fixture-cleanup.test.ts`.
+  - Result: 7 files passed; 124/124 tests passed. Only the existing duplicate `item-left` React-key warning remains.
+- Browser command: repository-local Chromium, `npx.cmd playwright test tests/e2e/free-canvas-copy-code.spec.ts --workers=1`.
+  - Result: the original three required scenarios passed in 42.7s (16.0s project/text, 17.0s image retry/menu, 1.5s unsupported/responsive). A proposed route-injected running/CVM scenario was removed after review; the malicious valid-code/state combination is deterministically covered by the focused component tests, while the browser spec retains real Storage projections and no test route infrastructure.
+- Production build: `npm.cmd run build` passed with 1,908 modules; only the previously recorded CSS, Tauri import, and large-chunk warnings remain.
 
 ## Concerns
 

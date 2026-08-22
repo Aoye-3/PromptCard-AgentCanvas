@@ -96,6 +96,27 @@ describe('Canvas reference-code copy actions', () => {
     expect(html.match(/disabled=""/g)).toHaveLength(5)
   })
 
+  it.each([
+    ['running', { meta: { generationState: 'running' } }, '仍在生成'],
+    ['failed', { meta: { generationState: 'failed' } }, '生成失败'],
+    ['transient', { transient: true }, '临时图片节点']
+  ])('never copies a valid image code while the node is %s', async (_state, overrides, reason) => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const renderer = create(
+      <CanvasNodeReferenceCodeAction
+        node={imageNode({ referenceCode: `CVM-${validUlid}`, ...overrides })}
+      />
+    )
+    const button = renderer.root.findByType('button')
+
+    await act(async () => button.props.onClick({ stopPropagation: vi.fn() }))
+
+    expect(button.props.disabled).toBe(true)
+    expect(renderer.root.findByProps({ role: 'status' }).children.join('')).toContain(reason)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
   it('shows retryable errors, ignores stale settlement after scope change and stops copy activation bubbling', async () => {
     let resolveFirst!: () => void
     const first = new Promise<void>(resolve => { resolveFirst = resolve })

@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type BrowserContext, type Page } from '@playwright/test'
+import { cleanupAcquiredFixtures } from '../../scripts/e2e-fixture-cleanup'
 
 const storageUrl = 'http://127.0.0.1:38102'
 const fixturePng = Buffer.from(
@@ -38,9 +39,11 @@ test('copies project and text-node codes by keyboard without mutating the Canvas
 
 test('copies an image-node code by mouse with retry and a fully reachable long menu', async ({ context, page, request }) => {
   test.setTimeout(60_000)
-  const assetId = await createImageAsset(request)
-  const fixture = await createProjectFixture(request, 'image', [imageNode(assetId)])
+  let assetId: string | null = null
+  let fixture: Awaited<ReturnType<typeof createProjectFixture>> | null = null
   try {
+    assetId = await createImageAsset(request)
+    fixture = await createProjectFixture(request, 'image', [imageNode(assetId)])
     const consoleErrors = await preparePage(context, page, fixture.title)
     const writes = captureProjectWrites(page)
     const image = page.getByTestId('rf__node-task9-image')
@@ -76,8 +79,13 @@ test('copies an image-node code by mouse with retry and a fully reachable long m
     await expect.poll(() => writes).toEqual([])
     expect(consoleErrors).toEqual([])
   } finally {
-    await deleteProjectFixture(request, fixture.id)
-    await deleteImageAsset(request, assetId)
+    await cleanupAcquiredFixtures(
+      { projectId: fixture?.id || null, assetId },
+      {
+        deleteProject: id => deleteProjectFixture(request, id),
+        deleteAsset: id => deleteImageAsset(request, id)
+      }
+    )
   }
 })
 
