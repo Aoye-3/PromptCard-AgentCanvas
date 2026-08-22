@@ -529,6 +529,23 @@ def create_app(
         storage.delete_project_trash(payload.ids)
         return {"ok": True}
 
+    @application.get("/api/projects/references/{reference_code}")
+    def resolve_project_reference(reference_code: str) -> dict[str, Any]:
+        return _handle(lambda: storage.resolve_project_reference(reference_code))
+
+    @application.get(
+        "/api/projects/references/{project_reference_code}/nodes/{node_reference_code}"
+    )
+    def resolve_canvas_reference(
+        project_reference_code: str,
+        node_reference_code: str,
+    ) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.resolve_canvas_reference(
+                project_reference_code, node_reference_code
+            )
+        )
+
     @application.get("/api/presets")
     def list_presets() -> dict[str, Any]:
         return {"presets": storage.list_presets()}

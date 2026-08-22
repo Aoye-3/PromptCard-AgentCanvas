@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import os
 import shutil
 import sqlite3
@@ -51,6 +52,8 @@ _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
     )
     + ")"
 )
+_PROJECT_REFERENCE_TITLE_LIMIT = 120
+_CANVAS_REFERENCE_TEXT_LIMIT = 4000
 JSON_SOURCES = (
     "projects.json",
     "project-trash.json",
@@ -283,6 +286,136 @@ class SqliteStore:
                     "content": projected["content"],
                 },
                 "media": resolved_media,
+            }
+
+    def resolve_project_reference(self, reference_code: str) -> dict[str, Any]:
+        parsed = parse_reference_code(
+            reference_code, expected_namespace=ReferenceNamespace.PROJECT
+        )
+        reference = {"namespace": "project", "code": parsed.code}
+        with self._connect() as connection:
+            registry_row = connection.execute(
+                """SELECT internal_id FROM public_references
+                   WHERE public_code=? AND namespace='PRJ' AND owner_scope=''""",
+                (parsed.code,),
+            ).fetchone()
+            if registry_row is None:
+                self._raise_canvas_reference_error(
+                    "project_reference_not_found", reference, status_code=404
+                )
+            row = connection.execute(
+                "SELECT revision, status, payload_json FROM projects WHERE id=?",
+                (registry_row[0],),
+            ).fetchone()
+            if row is None:
+                self._raise_canvas_reference_error(
+                    "project_missing", reference, status_code=410
+                )
+            if row[1] == "trash":
+                self._raise_canvas_reference_error(
+                    "project_trashed", reference, status_code=410
+                )
+            project = json.loads(row[2])
+            title = project.get("title")
+            project_type = project.get("type")
+            if not isinstance(title, str) or not isinstance(project_type, str):
+                self._raise_canvas_reference_error(
+                    "project_invalid", reference, status_code=410
+                )
+            return {
+                "reference": reference,
+                "project": {
+                    "referenceCode": parsed.code,
+                    "revision": row[0],
+                    "type": project_type[:_PROJECT_REFERENCE_TITLE_LIMIT],
+                    "title": title[:_PROJECT_REFERENCE_TITLE_LIMIT],
+                },
+            }
+
+    def resolve_canvas_reference(
+        self,
+        project_reference_code: str,
+        node_reference_code: str,
+    ) -> dict[str, Any]:
+        parsed_project = parse_reference_code(
+            project_reference_code,
+            expected_namespace=ReferenceNamespace.PROJECT,
+        )
+        parsed_node = parse_reference_code(node_reference_code)
+        if parsed_node.namespace not in {
+            ReferenceNamespace.CANVAS_TEMPLATE,
+            ReferenceNamespace.CANVAS_MEDIA,
+        }:
+            raise ReferenceCodeError("reference_namespace_mismatch")
+        namespace_name = (
+            "canvasText"
+            if parsed_node.namespace is ReferenceNamespace.CANVAS_TEMPLATE
+            else "canvasMedia"
+        )
+        project_reference = {
+            "namespace": "project",
+            "code": parsed_project.code,
+        }
+        node_reference = {
+            "namespace": namespace_name,
+            "code": parsed_node.code,
+        }
+        with self._connect() as connection:
+            project_registry = connection.execute(
+                """SELECT internal_id FROM public_references
+                   WHERE public_code=? AND namespace='PRJ' AND owner_scope=''""",
+                (parsed_project.code,),
+            ).fetchone()
+            if project_registry is None:
+                self._raise_canvas_reference_error(
+                    "project_reference_not_found",
+                    project_reference,
+                    status_code=404,
+                )
+            node_registry = connection.execute(
+                """SELECT owner_scope, internal_id FROM public_references
+                   WHERE public_code=? AND namespace=?""",
+                (parsed_node.code, parsed_node.namespace.value),
+            ).fetchone()
+            if node_registry is None:
+                self._raise_canvas_reference_error(
+                    "canvas_node_reference_not_found",
+                    node_reference,
+                    status_code=404,
+                )
+            project_id = project_registry[0]
+            if node_registry[0] != project_id:
+                self._raise_canvas_reference_error(
+                    "canvas_reference_project_mismatch",
+                    node_reference,
+                    status_code=409,
+                )
+            project_row = connection.execute(
+                "SELECT revision, status, payload_json FROM projects WHERE id=?",
+                (project_id,),
+            ).fetchone()
+            if project_row is None:
+                self._raise_canvas_reference_error(
+                    "project_missing", project_reference, status_code=410
+                )
+            if project_row[1] == "trash":
+                self._raise_canvas_reference_error(
+                    "project_trashed", project_reference, status_code=410
+                )
+            project = json.loads(project_row[2])
+            node = self._resolve_current_canvas_node(
+                project,
+                node_registry[1],
+                parsed_node.namespace,
+                node_reference,
+            )
+            return {
+                "reference": node_reference,
+                "project": {
+                    "referenceCode": parsed_project.code,
+                    "revision": project_row[0],
+                },
+                "node": self._resolved_canvas_node(node, parsed_node.code),
             }
 
     def create_agent_conversation(self, item: dict[str, Any]) -> dict[str, Any]:
@@ -691,10 +824,15 @@ class SqliteStore:
             rows = connection.execute(
                 "SELECT payload_json FROM projects WHERE status = 'active' ORDER BY last_opened_at DESC, updated_at DESC"
             ).fetchall()
-        return [json.loads(row[0]) for row in rows]
+            return [
+                self._with_project_public_references(connection, json.loads(row[0]))
+                for row in rows
+            ]
 
     def get_project(self, item_id: str) -> dict[str, Any]:
-        return self._get_payload("projects", item_id, "active")
+        with self._connect() as connection:
+            project = self._get_row_payload(connection, "projects", item_id, "active")
+            return self._with_project_public_references(connection, project)
 
     def create_project(self, item: dict[str, Any]) -> dict[str, Any]:
         now = now_ms()
@@ -709,9 +847,10 @@ class SqliteStore:
         with self._transaction() as connection:
             try:
                 self._insert_project(connection, created, "active")
+                self._ensure_project_public_references(connection, created)
             except sqlite3.IntegrityError as exc:
                 raise DuplicateItem(created["id"]) from exc
-        return created
+            return self._with_project_public_references(connection, created)
 
     def update_project(self, item_id: str, updates: dict[str, Any], revision: int) -> dict[str, Any]:
         with self._transaction() as connection:
@@ -730,19 +869,69 @@ class SqliteStore:
                 "UPDATE projects SET revision=?, created_at=?, updated_at=?, last_opened_at=?, payload_json=? WHERE id=? AND status='active'",
                 (updated["revision"], updated["createdAt"], updated["updatedAt"], updated["lastOpenedAt"], _json(updated), item_id),
             )
-        return updated
+            self._ensure_project_public_references(connection, updated)
+            return self._with_project_public_references(connection, updated)
 
     def trash_projects(self, ids: list[str], deleted_by: Actor = "user", delete_reason: str | None = None) -> list[dict[str, Any]]:
-        return self._set_status("projects", ids, "active", "trash", deleted_by, delete_reason)
+        moved = self._set_status("projects", ids, "active", "trash", deleted_by, delete_reason)
+        with self._connect() as connection:
+            return [
+                self._with_project_public_references(connection, item)
+                for item in moved
+            ]
 
     def list_project_trash(self) -> list[dict[str, Any]]:
-        return self._list_trash("projects")
+        items = self._list_trash("projects")
+        with self._connect() as connection:
+            return [
+                {
+                    **item,
+                    "payload": self._with_project_public_references(
+                        connection, item["payload"]
+                    ),
+                }
+                for item in items
+            ]
 
     def restore_projects(self, ids: list[str]) -> list[dict[str, Any]]:
-        return self._restore("projects", ids)
+        restored = self._restore("projects", ids)
+        with self._connect() as connection:
+            return [
+                self._with_project_public_references(connection, item)
+                for item in restored
+            ]
 
     def delete_project_trash(self, ids: list[str]) -> None:
-        self._delete_trash("projects", ids)
+        if not ids:
+            return
+        with self._transaction() as connection:
+            placeholders = ",".join("?" for _ in ids)
+            retired_ids = [
+                row[0]
+                for row in connection.execute(
+                    f"SELECT id FROM projects WHERE status='trash' AND id IN ({placeholders})",
+                    tuple(ids),
+                )
+            ]
+            if not retired_ids:
+                return
+            retired_placeholders = ",".join("?" for _ in retired_ids)
+            connection.execute(
+                f"""DELETE FROM public_references
+                    WHERE namespace IN ('CVT','CVM')
+                      AND owner_scope IN ({retired_placeholders})""",
+                tuple(retired_ids),
+            )
+            connection.execute(
+                f"""DELETE FROM public_references
+                    WHERE namespace='PRJ' AND owner_scope=''
+                      AND internal_id IN ({retired_placeholders})""",
+                tuple(retired_ids),
+            )
+            connection.execute(
+                f"DELETE FROM projects WHERE status='trash' AND id IN ({retired_placeholders})",
+                tuple(retired_ids),
+            )
 
     def list_project_resources(self, project_id: str) -> dict[str, list[dict[str, Any]]]:
         with self._connect() as connection:
@@ -1424,6 +1613,7 @@ class SqliteStore:
                 item = normalize_project(raw)
                 if not connection.execute("SELECT 1 FROM projects WHERE id=?", (item["id"],)).fetchone():
                     self._insert_project(connection, item, "active")
+                    self._ensure_project_public_references(connection, item)
                     imported_projects += 1
             workspace = payload.get("workspace")
             if workspace and workspace.get("pages"):
@@ -1437,6 +1627,7 @@ class SqliteStore:
                         "meta": {"source": "browser-workspace"},
                     })
                     self._insert_project(connection, item, "active")
+                    self._ensure_project_public_references(connection, item)
                     imported_projects += 1
             next_order = connection.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM presets").fetchone()[0]
             for raw in payload.get("presets") or []:
@@ -2673,11 +2864,7 @@ class SqliteStore:
                 kind = node.get("kind")
                 if kind == "text":
                     candidates.add(("CVT", project_id, node_id))
-                elif kind == "image" or (
-                    kind is None
-                    and isinstance(node.get("assetId"), str)
-                    and bool(node["assetId"])
-                ):
+                elif kind == "image" and self._is_stable_canvas_image(node):
                     candidates.add(("CVM", project_id, node_id))
 
         for preset_id, payload_json in connection.execute(
@@ -2769,6 +2956,171 @@ class SqliteStore:
             ),
         )
         return public_code
+
+    def _ensure_project_public_references(
+        self,
+        connection: sqlite3.Connection,
+        project: dict[str, Any],
+    ) -> None:
+        project_id = str(project.get("id") or "")
+        self._ensure_public_reference(
+            connection,
+            ReferenceNamespace.PROJECT,
+            project_id,
+            owner_scope="",
+        )
+        for node in self._project_canvas_nodes(project):
+            namespace = self._canvas_node_namespace(node)
+            if namespace is None:
+                continue
+            self._ensure_public_reference(
+                connection,
+                namespace,
+                node["id"],
+                owner_scope=project_id,
+            )
+
+    def _with_project_public_references(
+        self,
+        connection: sqlite3.Connection,
+        project: dict[str, Any],
+    ) -> dict[str, Any]:
+        projected = deepcopy(project)
+        project_id = str(projected.get("id") or "")
+        project_row = connection.execute(
+            """SELECT public_code FROM public_references
+               WHERE namespace='PRJ' AND owner_scope='' AND internal_id=?""",
+            (project_id,),
+        ).fetchone()
+        if project_row is None:
+            raise MigrationError("Project public reference is missing")
+        projected["referenceCode"] = project_row[0]
+        nodes = self._project_canvas_nodes(projected)
+        supported_counts: dict[str, int] = {}
+        for node in nodes:
+            node.pop("referenceCode", None)
+            namespace = self._canvas_node_namespace(node)
+            node_id = node.get("id")
+            if namespace is not None and isinstance(node_id, str):
+                supported_counts[node_id] = supported_counts.get(node_id, 0) + 1
+        for node in nodes:
+            namespace = self._canvas_node_namespace(node)
+            node_id = node.get("id")
+            if namespace is None or not isinstance(node_id, str):
+                continue
+            if supported_counts.get(node_id) != 1:
+                continue
+            node_row = connection.execute(
+                """SELECT public_code FROM public_references
+                   WHERE namespace=? AND owner_scope=? AND internal_id=?""",
+                (namespace.value, project_id, node_id),
+            ).fetchone()
+            if node_row is not None:
+                node["referenceCode"] = node_row[0]
+        return projected
+
+    def _resolve_current_canvas_node(
+        self,
+        project: dict[str, Any],
+        node_id: str,
+        expected_namespace: ReferenceNamespace,
+        reference: dict[str, str],
+    ) -> dict[str, Any]:
+        free_canvas = project.get("freeCanvas")
+        nodes = free_canvas.get("nodes") if isinstance(free_canvas, dict) else None
+        if not isinstance(nodes, list):
+            self._raise_canvas_reference_error(
+                "canvas_node_invalid", reference, status_code=410
+            )
+        matching = [
+            node
+            for node in nodes
+            if isinstance(node, dict) and node.get("id") == node_id
+        ]
+        if not matching:
+            self._raise_canvas_reference_error(
+                "canvas_node_detached", reference, status_code=410
+            )
+        if len(matching) != 1:
+            self._raise_canvas_reference_error(
+                "canvas_node_invalid", reference, status_code=410
+            )
+        node = matching[0]
+        try:
+            _validate_canvas_node(node)
+            if not isinstance(node.get("title"), str):
+                raise ValueError("Canvas nodes are invalid")
+            if node.get("kind") == "image" and (
+                "width" not in node or "height" not in node
+            ):
+                raise ValueError("Canvas nodes are invalid")
+        except ValueError:
+            self._raise_canvas_reference_error(
+                "canvas_node_invalid", reference, status_code=410
+            )
+        if self._canvas_node_namespace(node) is not expected_namespace:
+            self._raise_canvas_reference_error(
+                "canvas_node_detached", reference, status_code=410
+            )
+        return node
+
+    @staticmethod
+    def _resolved_canvas_node(node: dict[str, Any], reference_code: str) -> dict[str, Any]:
+        title = node["title"][:_PROJECT_REFERENCE_TITLE_LIMIT]
+        if node["kind"] == "text":
+            text = "".join(segment["text"] for segment in node["segments"])
+            return {
+                "referenceCode": reference_code,
+                "kind": "text",
+                "title": title,
+                "text": text[:_CANVAS_REFERENCE_TEXT_LIMIT],
+                "truncated": len(text) > _CANVAS_REFERENCE_TEXT_LIMIT,
+            }
+        resolved: dict[str, Any] = {
+            "referenceCode": reference_code,
+            "kind": "image",
+            "title": title,
+            "width": node["width"],
+            "height": node["height"],
+        }
+        content_type = node.get("contentType")
+        if isinstance(content_type, str):
+            resolved["contentType"] = content_type[:255]
+        size = node.get("size")
+        if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+            resolved["size"] = size
+        return resolved
+
+    @staticmethod
+    def _project_canvas_nodes(project: dict[str, Any]) -> list[dict[str, Any]]:
+        free_canvas = project.get("freeCanvas")
+        nodes = free_canvas.get("nodes") if isinstance(free_canvas, dict) else None
+        return [node for node in nodes if isinstance(node, dict)] if isinstance(nodes, list) else []
+
+    @staticmethod
+    def _is_stable_canvas_image(node: dict[str, Any]) -> bool:
+        if node.get("transient") is True:
+            return False
+        meta = node.get("meta")
+        generation_state = meta.get("generationState") if isinstance(meta, dict) else None
+        return generation_state is None or generation_state == "succeeded"
+
+    def _canvas_node_namespace(
+        self, node: dict[str, Any]
+    ) -> ReferenceNamespace | None:
+        kind = node.get("kind")
+        node_id = node.get("id")
+        if (
+            not isinstance(node_id, str)
+            or not node_id
+            or node_id != node_id.strip(_PUBLIC_REFERENCE_EDGE_WHITESPACE)
+        ):
+            return None
+        if kind == "text":
+            return ReferenceNamespace.CANVAS_TEMPLATE
+        if kind == "image" and self._is_stable_canvas_image(node):
+            return ReferenceNamespace.CANVAS_MEDIA
+        return None
 
     def _ensure_preset_public_references(
         self,
@@ -2940,6 +3292,30 @@ class SqliteStore:
             "prompt_media_asset_missing": "Prompt media asset is missing",
             "prompt_media_asset_trashed": "Prompt media asset is in Trash",
             "prompt_media_asset_deleted": "Prompt media asset was permanently deleted",
+        }
+        raise PromptReferenceError(
+            code,
+            messages[code],
+            reference,
+            status_code=status_code,
+        )
+
+    @staticmethod
+    def _raise_canvas_reference_error(
+        code: str,
+        reference: dict[str, str],
+        *,
+        status_code: int,
+    ) -> None:
+        messages = {
+            "project_reference_not_found": "Project reference was not found",
+            "canvas_node_reference_not_found": "Canvas node reference was not found",
+            "project_missing": "Project is no longer available",
+            "project_trashed": "Project is in Trash",
+            "project_invalid": "Project metadata is invalid",
+            "canvas_reference_project_mismatch": "Canvas node reference belongs to another project",
+            "canvas_node_detached": "Canvas node is detached",
+            "canvas_node_invalid": "Canvas node is invalid",
         }
         raise PromptReferenceError(
             code,
@@ -3635,7 +4011,7 @@ def _legacy_image_conversation_id(project_id: str, node_id: str) -> str:
 
 def normalize_project(item: dict[str, Any]) -> dict[str, Any]:
     now = now_ms()
-    project = deepcopy(item)
+    project = _strip_project_reference_codes(item)
     project.setdefault("id", str(now))
     project.setdefault("title", "Untitled project")
     project.setdefault("type", "card")
@@ -3646,6 +4022,7 @@ def normalize_project(item: dict[str, Any]) -> dict[str, Any]:
     project.setdefault("lastOpenedAt", project.get("updatedAt") or now)
     project.setdefault("meta", {})
     project["revision"] = int(project.get("revision") or 1)
+    _validate_project_canvas_nodes(project)
     return project
 
 
@@ -3704,6 +4081,90 @@ def _strip_preset_reference_codes(item: dict[str, Any]) -> dict[str, Any]:
         if isinstance(binding, dict):
             binding.pop("referenceCode", None)
     return stripped
+
+
+def _strip_project_reference_codes(item: dict[str, Any]) -> dict[str, Any]:
+    stripped = deepcopy(item)
+    stripped.pop("referenceCode", None)
+    free_canvas = stripped.get("freeCanvas")
+    if not isinstance(free_canvas, dict):
+        return stripped
+    nodes = free_canvas.get("nodes")
+    if not isinstance(nodes, list):
+        return stripped
+    for node in nodes:
+        if isinstance(node, dict):
+            node.pop("referenceCode", None)
+    return stripped
+
+
+def _validate_project_canvas_nodes(project: dict[str, Any]) -> None:
+    if "freeCanvas" not in project:
+        return
+    free_canvas = project.get("freeCanvas")
+    if not isinstance(free_canvas, dict):
+        raise ValueError("Canvas nodes are invalid")
+    if "nodes" not in free_canvas:
+        return
+    nodes = free_canvas.get("nodes")
+    if not isinstance(nodes, list):
+        raise ValueError("Canvas nodes are invalid")
+    seen_ids: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise ValueError("Canvas nodes are invalid")
+        kind = node.get("kind")
+        if kind is not None and not isinstance(kind, str):
+            raise ValueError("Canvas nodes are invalid")
+        if kind not in {"text", "image"}:
+            continue
+        _validate_canvas_node(node)
+        node_id = node["id"]
+        if node_id in seen_ids:
+            raise ValueError("Canvas nodes are invalid")
+        seen_ids.add(node_id)
+
+
+def _validate_canvas_node(node: dict[str, Any]) -> None:
+    node_id = node.get("id")
+    title = node.get("title")
+    width = node.get("width")
+    height = node.get("height")
+    if (
+        not isinstance(node_id, str)
+        or not node_id
+        or node_id != node_id.strip(_PUBLIC_REFERENCE_EDGE_WHITESPACE)
+    ):
+        raise ValueError("Canvas nodes are invalid")
+    if title is not None and not isinstance(title, str):
+        raise ValueError("Canvas nodes are invalid")
+    for dimension in (width, height):
+        if dimension is not None and (
+            isinstance(dimension, bool)
+            or not isinstance(dimension, (int, float))
+            or not math.isfinite(dimension)
+            or dimension <= 0
+        ):
+            raise ValueError("Canvas nodes are invalid")
+    if node.get("kind") == "text":
+        segments = node.get("segments")
+        if not isinstance(segments, list) or any(
+            not isinstance(segment, dict)
+            or not isinstance(segment.get("text"), str)
+            for segment in segments
+        ):
+            raise ValueError("Canvas nodes are invalid")
+        return
+    if node.get("kind") != "image":
+        raise ValueError("Canvas nodes are invalid")
+    content_type = node.get("contentType")
+    size = node.get("size")
+    if content_type is not None and not isinstance(content_type, str):
+        raise ValueError("Canvas nodes are invalid")
+    if size is not None and (
+        isinstance(size, bool) or not isinstance(size, int) or size < 0
+    ):
+        raise ValueError("Canvas nodes are invalid")
 
 
 def normalize_recent_capture(item: dict[str, Any]) -> dict[str, Any]:
