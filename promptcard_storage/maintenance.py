@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .backup import BackupManager
+from .reference_codes import ReferenceCodeError, ReferenceNamespace, parse_reference_code
 from .store import (
     DATABASE_NAME,
     SCHEMA_VERSION,
@@ -19,32 +21,9 @@ from .store import (
     JsonCollectionStore,
     MigrationError,
     SqliteStore,
-    _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL,
+    _PUBLIC_REFERENCE_EDGE_WHITESPACE,
     iso_now,
 )
-
-
-_V10_TABLES = {
-    "agent_conversation_messages",
-    "agent_conversation_proposals",
-    "agent_conversation_turns",
-    "agent_conversations",
-    "assets",
-    "browser_imports",
-    "image_asset_derivations",
-    "image_generation_canvas_placements",
-    "image_generation_conversations",
-    "image_generation_runs",
-    "presets",
-    "project_resource_folders",
-    "project_resources",
-    "projects",
-    "public_references",
-    "recent_captures",
-    "schema_migrations",
-    "skill_revisions",
-    "skills",
-}
 
 
 def main() -> None:
@@ -70,17 +49,27 @@ def main() -> None:
 def restore_backup(data_dir: Path, source: Path) -> None:
     if not (source / "manifest.json").is_file() or not (source / DATABASE_NAME).is_file():
         raise MigrationError("Backup is missing manifest.json or promptcard.sqlite3")
+    _validate_assets_path(source / "assets")
     data_dir.parent.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex
     staging_dir = data_dir.parent / f".{data_dir.name}.restore-{token}"
+    validation_dir = data_dir.parent / f".{data_dir.name}.validation-{token}"
     try:
         shutil.copytree(source, staging_dir)
+        _validate_assets_path(staging_dir / "assets")
         manifest_version = _read_manifest_version(staging_dir / "manifest.json")
         _validate_database(
             staging_dir / DATABASE_NAME,
             expected_version=manifest_version,
-            require_strong_v10_registry=manifest_version == SCHEMA_VERSION,
         )
+        JsonCollectionStore(validation_dir)
+        _checkpoint_database(validation_dir / DATABASE_NAME)
+        if manifest_version == SCHEMA_VERSION:
+            _validate_schema_matches(
+                staging_dir / DATABASE_NAME,
+                validation_dir / DATABASE_NAME,
+            )
+            _validate_reference_rows(staging_dir / DATABASE_NAME)
         try:
             JsonCollectionStore(staging_dir)
         except Exception as exc:
@@ -91,9 +80,12 @@ def restore_backup(data_dir: Path, source: Path) -> None:
         _validate_database(
             staging_dir / DATABASE_NAME,
             expected_version=SCHEMA_VERSION,
-            require_strong_v10_registry=True,
-            require_v10_tables=True,
         )
+        _validate_schema_matches(
+            staging_dir / DATABASE_NAME,
+            validation_dir / DATABASE_NAME,
+        )
+        _validate_reference_rows(staging_dir / DATABASE_NAME)
 
         data_dir.mkdir(parents=True, exist_ok=True)
         if (data_dir / DATABASE_NAME).exists():
@@ -104,7 +96,8 @@ def restore_backup(data_dir: Path, source: Path) -> None:
     except Exception as exc:
         raise MigrationError("Backup staging validation failed") from exc
     finally:
-        _remove_path(staging_dir)
+        _remove_path_best_effort(staging_dir)
+        _remove_path_best_effort(validation_dir)
 
 
 def _read_manifest_version(manifest_path: Path) -> int:
@@ -124,8 +117,6 @@ def _validate_database(
     database_path: Path,
     *,
     expected_version: int,
-    require_strong_v10_registry: bool,
-    require_v10_tables: bool = False,
 ) -> None:
     connection: sqlite3.Connection | None = None
     try:
@@ -160,18 +151,8 @@ def _validate_database(
             or not 1 <= versions[0] <= expected_version <= SCHEMA_VERSION
         ):
             raise MigrationError("Backup migration history is invalid")
-        if require_v10_tables:
-            tables = {
-                row[0] for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                )
-            }
-            if not _V10_TABLES.issubset(tables):
-                raise MigrationError("Backup schema v10 structure is incomplete")
-            if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
-                raise MigrationError("Backup schema v10 foreign keys are invalid")
-        if require_strong_v10_registry:
-            _validate_strong_v10_registry(connection)
+        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise MigrationError("Backup schema foreign keys are invalid")
     except sqlite3.DatabaseError as exc:
         raise MigrationError("Backup database schema metadata is invalid") from exc
     finally:
@@ -179,23 +160,103 @@ def _validate_database(
             connection.close()
 
 
-def _validate_strong_v10_registry(connection: sqlite3.Connection) -> None:
-    columns = {
-        row[1]: row for row in connection.execute(
-            "PRAGMA table_info(public_references)"
-        )
+def _validate_schema_matches(database_path: Path, canonical_path: Path) -> None:
+    if _schema_fingerprint(database_path) != _schema_fingerprint(canonical_path):
+        raise MigrationError("Backup schema does not match canonical schema v10")
+
+
+def _schema_fingerprint(database_path: Path) -> tuple[object, ...]:
+    connection = sqlite3.connect(database_path)
+    try:
+        table_rows = connection.execute(
+            """SELECT name, sql FROM sqlite_master
+               WHERE type='table' AND name NOT LIKE 'sqlite_%'
+               ORDER BY name"""
+        ).fetchall()
+        fingerprint: list[object] = []
+        for table_name, table_sql in table_rows:
+            quoted_table = table_name.replace("'", "''")
+            indexes = []
+            for index_row in connection.execute(
+                f"PRAGMA index_list('{quoted_table}')"
+            ).fetchall():
+                index_name = index_row[1]
+                quoted_index = index_name.replace("'", "''")
+                index_sql_row = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+                    (index_name,),
+                ).fetchone()
+                indexes.append((
+                    tuple(index_row[1:]),
+                    tuple(connection.execute(
+                        f"PRAGMA index_xinfo('{quoted_index}')"
+                    ).fetchall()),
+                    _normalize_schema_sql(
+                        index_sql_row[0] if index_sql_row else None
+                    ),
+                ))
+            fingerprint.append((
+                table_name,
+                _normalize_schema_sql(table_sql),
+                tuple(connection.execute(
+                    f"PRAGMA table_info('{quoted_table}')"
+                ).fetchall()),
+                tuple(connection.execute(
+                    f"PRAGMA foreign_key_list('{quoted_table}')"
+                ).fetchall()),
+                tuple(sorted(indexes, key=lambda item: item[0][0])),
+            ))
+        return tuple(fingerprint)
+    finally:
+        connection.close()
+
+
+def _normalize_schema_sql(sql: str | None) -> str | None:
+    return "".join(sql.lower().split()) if isinstance(sql, str) else None
+
+
+def _validate_reference_rows(database_path: Path) -> None:
+    connection = sqlite3.connect(database_path)
+    try:
+        rows = connection.execute(
+            """SELECT public_code, namespace, owner_scope, internal_id, created_at
+               FROM public_references"""
+        ).fetchall()
+    except sqlite3.DatabaseError as exc:
+        raise MigrationError("Backup public reference registry is invalid") from exc
+    finally:
+        connection.close()
+    global_namespaces = {
+        ReferenceNamespace.PROJECT,
+        ReferenceNamespace.PROMPT_BUNDLE,
+        ReferenceNamespace.SKILL,
     }
-    public_code = columns.get("public_code")
-    schema_row = connection.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='public_references'"
-    ).fetchone()
-    schema_sql = schema_row[0] if schema_row and schema_row[0] else ""
-    if (
-        public_code is None
-        or not public_code[3]
-        or _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL not in schema_sql
+    for public_code, namespace_value, owner_scope, internal_id, created_at in rows:
+        try:
+            namespace = ReferenceNamespace(namespace_value)
+            parsed = parse_reference_code(public_code, expected_namespace=namespace)
+        except (TypeError, ValueError, ReferenceCodeError) as exc:
+            raise MigrationError("Backup public reference row is invalid") from exc
+        if (
+            not isinstance(public_code, str)
+            or parsed.code != public_code
+            or not isinstance(owner_scope, str)
+            or not isinstance(internal_id, str)
+            or not internal_id
+            or internal_id != internal_id.strip(_PUBLIC_REFERENCE_EDGE_WHITESPACE)
+            or owner_scope != owner_scope.strip(_PUBLIC_REFERENCE_EDGE_WHITESPACE)
+            or (namespace in global_namespaces) != (owner_scope == "")
+            or type(created_at) is not int
+            or created_at < 0
+        ):
+            raise MigrationError("Backup public reference row is invalid")
+
+
+def _validate_assets_path(assets_path: Path) -> None:
+    if assets_path.is_symlink() or (
+        assets_path.exists() and not assets_path.is_dir()
     ):
-        raise MigrationError("Backup schema v10 public reference registry is weak")
+        raise MigrationError("Backup assets entry must be a directory")
 
 
 def _checkpoint_database(database_path: Path) -> None:
@@ -239,26 +300,99 @@ def _commit_staged_restore(data_dir: Path, staging_dir: Path, token: str) -> Non
             os.replace(staged_assets, target_assets)
             assets_installed = True
     except Exception as exc:
+        recovery_failures: list[str] = []
         if database_moved:
-            try:
-                os.replace(rollback_database, target_database)
-            except OSError:
-                pass
+            database_error = _restore_file_with_fallback(
+                rollback_database, target_database
+            )
+            if database_error is not None:
+                recovery_failures.append(f"database: {database_error}")
         elif database_installed:
-            target_database.unlink(missing_ok=True)
-        if assets_moved:
             try:
-                if assets_installed:
-                    _remove_path(target_assets)
-                os.replace(rollback_assets, target_assets)
-            except OSError:
-                pass
+                _remove_path(target_database)
+            except OSError as recovery_error:
+                recovery_failures.append(f"database cleanup: {recovery_error}")
+        if assets_moved:
+            assets_error = _restore_tree_with_fallback(
+                rollback_assets, target_assets
+            )
+            if assets_error is not None:
+                recovery_failures.append(f"assets: {assets_error}")
         elif assets_installed:
-            _remove_path(target_assets)
+            try:
+                _remove_path(target_assets)
+            except OSError as recovery_error:
+                recovery_failures.append(f"assets cleanup: {recovery_error}")
+        if recovery_failures:
+            rescue_paths = [
+                str(path) for path in (rollback_database, rollback_assets)
+                if path.exists()
+            ]
+            raise MigrationError(
+                "Backup restore recovery failed; rollback retained for manual "
+                f"recovery at {rescue_paths}: {'; '.join(recovery_failures)}"
+            ) from exc
         raise MigrationError("Backup restore commit failed") from exc
     else:
-        _remove_path(rollback_database)
-        _remove_path(rollback_assets)
+        _remove_path_best_effort(rollback_database)
+        _remove_path_best_effort(rollback_assets)
+
+
+def _restore_file_with_fallback(rollback_path: Path, target_path: Path) -> str | None:
+    try:
+        os.replace(rollback_path, target_path)
+        return None
+    except OSError as replace_error:
+        try:
+            if not rollback_path.is_file():
+                raise OSError("database rollback rescue file is missing")
+            expected_digest = _file_digest(rollback_path)
+            _remove_path(target_path)
+            shutil.copy2(rollback_path, target_path)
+            if not target_path.is_file() or _file_digest(target_path) != expected_digest:
+                raise OSError("database fallback verification failed")
+            _remove_path_best_effort(rollback_path)
+            return None
+        except OSError as fallback_error:
+            return f"replace failed ({replace_error}); fallback failed ({fallback_error})"
+
+
+def _restore_tree_with_fallback(rollback_path: Path, target_path: Path) -> str | None:
+    try:
+        os.replace(rollback_path, target_path)
+        return None
+    except OSError as replace_error:
+        try:
+            if not rollback_path.is_dir():
+                raise OSError("assets rollback rescue directory is missing")
+            expected_fingerprint = _tree_fingerprint(rollback_path)
+            _remove_path(target_path)
+            shutil.copytree(rollback_path, target_path)
+            if (
+                not target_path.is_dir()
+                or _tree_fingerprint(target_path) != expected_fingerprint
+            ):
+                raise OSError("assets fallback verification failed")
+            _remove_path_best_effort(rollback_path)
+            return None
+        except OSError as fallback_error:
+            return f"replace failed ({replace_error}); fallback failed ({fallback_error})"
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _tree_fingerprint(root: Path) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (str(path.relative_to(root)), _file_digest(path))
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    )
 
 
 def _backup_rollback_copy(
@@ -296,6 +430,13 @@ def _remove_path(path: Path) -> None:
         shutil.rmtree(path)
     else:
         path.unlink(missing_ok=True)
+
+
+def _remove_path_best_effort(path: Path) -> None:
+    try:
+        _remove_path(path)
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":

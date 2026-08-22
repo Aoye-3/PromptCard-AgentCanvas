@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from promptcard_storage import maintenance as maintenance_module
+from promptcard_storage import store as store_module
 from promptcard_storage.maintenance import restore_backup
 from promptcard_storage.store import (
     DATABASE_NAME,
@@ -335,6 +337,177 @@ class BackupRestoreValidationTest(unittest.TestCase):
         with self.subTest(case="weak-v10"):
             self.assert_restore_rejected_without_touching_target(weak_v10, "weak-v10")
 
+    def test_restore_rejects_noncanonical_v10_tables_and_registry_rows(self) -> None:
+        bad_browser_imports = self.root / "bad-browser-imports"
+        self.store.backup(bad_browser_imports)
+        connection = sqlite3.connect(bad_browser_imports / DATABASE_NAME)
+        try:
+            connection.execute("DROP TABLE browser_imports")
+            connection.execute("CREATE TABLE browser_imports(foo TEXT)")
+            connection.commit()
+        finally:
+            connection.close()
+        with self.subTest(case="browser-imports-foo"):
+            self.assert_restore_rejected_without_touching_target(
+                bad_browser_imports, "browser-imports-foo"
+            )
+
+        substring_weak_registry = self.root / "substring-weak-registry"
+        self.store.backup(substring_weak_registry)
+        connection = sqlite3.connect(substring_weak_registry / DATABASE_NAME)
+        try:
+            connection.execute("DROP TABLE public_references")
+            connection.execute(f"""CREATE TABLE public_references(
+                public_code TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                owner_scope TEXT NOT NULL,
+                internal_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                CHECK(length({store_module._PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL}) > 0)
+            )""")
+            connection.commit()
+        finally:
+            connection.close()
+        with self.subTest(case="substring-weak-registry"):
+            self.assert_restore_rejected_without_touching_target(
+                substring_weak_registry, "substring-weak-registry"
+            )
+
+        bad_registry_rows = self.root / "bad-registry-rows"
+        self.store.backup(bad_registry_rows)
+        connection = sqlite3.connect(bad_registry_rows / DATABASE_NAME)
+        try:
+            connection.execute("PRAGMA ignore_check_constraints=ON")
+            connection.executemany(
+                """INSERT INTO public_references(
+                       public_code, namespace, owner_scope, internal_id, created_at
+                   ) VALUES (?, ?, ?, ?, ?)""",
+                [
+                    ("BAD-00000000000000000000000001", "PRJ", "", "bad-prefix", 1),
+                    ("PRJ-00000000000000000000000002", "BAD", "", "bad-kind", 1),
+                    ("PRJ-00000000000000000000000003", "PRJ", "scoped", "bad-scope", 1),
+                ],
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        with self.subTest(case="bad-registry-rows"):
+            self.assert_restore_rejected_without_touching_target(
+                bad_registry_rows, "bad-registry-rows"
+            )
+
+    def test_restore_rejects_assets_file_without_touching_target(self) -> None:
+        source = self.root / "assets-file"
+        self.store.backup(source)
+        (source / "assets").write_bytes(b"not-a-directory")
+
+        self.assert_restore_rejected_without_touching_target(source, "assets-file")
+
+    def test_secondary_database_rollback_failure_uses_copy_fallback(self) -> None:
+        case_root = self.root / "rollback-fallback"
+        source_store = JsonCollectionStore(case_root / "source-data")
+        source_store.create_project({
+            "id": "replacement", "title": "Replacement", "type": "free-canvas",
+            "pages": [], "currentPage": 0, "meta": {},
+        })
+        source_store.save_asset("replacement.png", "image/png", REPLACEMENT_PNG)
+        source = case_root / "source-backup"
+        source_store.backup(source)
+        target = case_root / "target"
+        target_store = JsonCollectionStore(target)
+        target_store.create_project({
+            "id": "original", "title": "Original", "type": "free-canvas",
+            "pages": [], "currentPage": 0, "meta": {},
+        })
+        target_store.save_asset("original.png", "image/png", ORIGINAL_PNG)
+        before = self.storage_snapshot(target)
+        real_replace = os.replace
+        replace_calls = 0
+
+        def fail_install_and_database_rollback(
+            source_path: object, target_path: object
+        ) -> None:
+            nonlocal replace_calls
+            if (
+                Path(source_path).parent != target
+                and Path(target_path).parent != target
+            ):
+                real_replace(source_path, target_path)
+                return
+            replace_calls += 1
+            if replace_calls in {4, 5}:
+                raise OSError(f"injected replace failure {replace_calls}")
+            real_replace(source_path, target_path)
+
+        with patch.object(
+            maintenance_module.os,
+            "replace",
+            side_effect=fail_install_and_database_rollback,
+        ):
+            with self.assertRaisesRegex(MigrationError, "commit failed"):
+                restore_backup(target, source)
+
+        self.assertEqual(self.storage_snapshot(target), before)
+        self.assert_no_restore_artifacts(target)
+
+    def test_failed_rollback_fallback_reports_disaster_and_keeps_rescue_copy(self) -> None:
+        case_root = self.root / "rollback-disaster"
+        source_store = JsonCollectionStore(case_root / "source-data")
+        source_store.save_asset("replacement.png", "image/png", REPLACEMENT_PNG)
+        source = case_root / "source-backup"
+        source_store.backup(source)
+        source_before = self.storage_snapshot(source)
+        target = case_root / "target"
+        target_store = JsonCollectionStore(target)
+        target_store.create_project({
+            "id": "original", "title": "Original", "type": "free-canvas",
+            "pages": [], "currentPage": 0, "meta": {},
+        })
+        target_store.save_asset("original.png", "image/png", ORIGINAL_PNG)
+        real_replace = os.replace
+        real_copy2 = shutil.copy2
+        replace_calls = 0
+
+        def fail_install_and_database_rollback(
+            source_path: object, target_path: object
+        ) -> None:
+            nonlocal replace_calls
+            if (
+                Path(source_path).parent != target
+                and Path(target_path).parent != target
+            ):
+                real_replace(source_path, target_path)
+                return
+            replace_calls += 1
+            if replace_calls in {4, 5}:
+                raise OSError(f"injected replace failure {replace_calls}")
+            real_replace(source_path, target_path)
+
+        def fail_database_fallback(
+            source_path: object, target_path: object, *args: object, **kwargs: object
+        ) -> object:
+            source_name = Path(str(source_path)).name
+            if ".rollback-" in source_name and DATABASE_NAME in source_name:
+                raise OSError("injected database fallback failure")
+            return real_copy2(source_path, target_path, *args, **kwargs)
+
+        with patch.object(
+            maintenance_module.os,
+            "replace",
+            side_effect=fail_install_and_database_rollback,
+        ), patch.object(
+            maintenance_module.shutil,
+            "copy2",
+            side_effect=fail_database_fallback,
+        ):
+            with self.assertRaisesRegex(MigrationError, "recovery failed"):
+                restore_backup(target, source)
+
+        rollback_databases = list(target.glob(f".{DATABASE_NAME}.rollback-*"))
+        self.assertEqual(len(rollback_databases), 1)
+        self.assertTrue(rollback_databases[0].is_file())
+        self.assertEqual(self.storage_snapshot(source), source_before)
+
     def test_restore_commit_failures_roll_back_database_and_assets_without_artifacts(self) -> None:
         for fail_at in range(1, 5):
             with self.subTest(replace_call=fail_at):
@@ -364,6 +537,12 @@ class BackupRestoreValidationTest(unittest.TestCase):
 
                 def fail_one_replace(source_path: object, target_path: object) -> None:
                     nonlocal replace_calls
+                    if (
+                        Path(source_path).parent != target
+                        and Path(target_path).parent != target
+                    ):
+                        real_replace(source_path, target_path)
+                        return
                     replace_calls += 1
                     if replace_calls == fail_at:
                         raise OSError(f"injected replace failure {fail_at}")

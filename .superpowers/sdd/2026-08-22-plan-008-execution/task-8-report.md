@@ -237,3 +237,54 @@ $env:PYTHONPATH = (Resolve-Path '.test-tmp/task8-python-deps').Path; python -m p
 ```
 
 The only warning remains the pre-existing `.pytest_cache` ACL restriction. This round changes only `promptcard_storage/maintenance.py`, `promptcard_storage/tests/test_backup.py`, and this report; unrelated environment fixture deletions and the untracked plan draft remain excluded.
+
+## Independent review fix round 4
+
+This restore-only follow-up closes the three latest Important findings:
+
+1. Restore now builds a second, current production-initialized validation database beside the target and compares its complete application-schema fingerprint with the staged database. The fingerprint is derived dynamically from every non-SQLite table's normalized `sqlite_master` DDL, columns, foreign keys, indexes, and index columns; it does not maintain another hand-written table/column list. A malformed `browser_imports(foo)` table and a `public_references` table that merely embeds the old marker substring are both rejected before target mutation. Existing public-reference rows are additionally parsed against the current namespace/code contract and checked for canonical case, scope, nonblank internal ID, edge whitespace, and integer timestamp validity.
+2. A backup `assets` entry is accepted only when absent or a real directory. A regular file or symlink is rejected before staging/target mutation.
+3. If the primary rollback `os.replace` fails, database and asset recovery independently fall back to a same-volume copy from the retained rollback source after removing the newly installed target. SHA-256 fingerprints verify the restored database and every asset file before the rescue source is cleaned up. A fallback failure raises an explicit recovery-disaster `MigrationError` and preserves the rollback path for manual recovery. Cleanup after a successful commit or recovery is best-effort and cannot turn an already successful restore into a false failure.
+
+### Fix-round-4 RED
+
+Before the production changes, the new focused regressions produced:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py -q
+5 failed, 9 passed, 2 warnings, 18 subtests passed in 11.05s
+```
+
+The failures independently demonstrated acceptance of noncanonical `browser_imports` and weak registry DDL, acceptance of a file-valued assets entry, a torn target after secondary database rollback failure, and the lack of an explicit retained-rescue disaster path when fallback also failed.
+
+### Fix-round-4 GREEN
+
+Focused backup/maintenance verification:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py -q
+12 passed, 1 warning, 20 subtests passed in 14.26s
+```
+
+Backup plus Canvas exact-resolution verification:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_canvas_reference_resolution.py -q
+34 passed, 1 warning, 59 subtests passed in 25.36s
+```
+
+Relevant v3-v10 migration, SQLite initializer, assets/resources, v10 registry, and storage-artifact verification:
+
+```text
+$env:PYTHONPATH = (Resolve-Path '.test-tmp/task8-python-deps').Path; python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_image_runs.py promptcard_storage/tests/test_image_conversations.py promptcard_storage/tests/test_image_assets_v5.py promptcard_storage/tests/test_project_resources.py promptcard_storage/tests/test_storage_artifacts.py promptcard_storage/tests/test_public_references_v10.py promptcard_storage/tests/test_sqlite_store.py -q
+96 passed, 1 warning, 95 subtests passed in 40.45s
+```
+
+AST parsing passed for the two changed Python files, and `git diff --check` exited 0 with only LF-to-CRLF notices. The sole pytest warning remains the existing workspace ACL preventing `.pytest_cache` writes. This round changes only `promptcard_storage/maintenance.py`, `promptcard_storage/tests/test_backup.py`, and this report; unrelated environment fixture deletions and the untracked plan draft remain excluded.
+
+The final pre-commit union of every focused and relevant suite above also passed freshly:
+
+```text
+$env:PYTHONPATH = (Resolve-Path '.test-tmp/task8-python-deps').Path; python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_canvas_reference_resolution.py promptcard_storage/tests/test_image_runs.py promptcard_storage/tests/test_image_conversations.py promptcard_storage/tests/test_image_assets_v5.py promptcard_storage/tests/test_project_resources.py promptcard_storage/tests/test_storage_artifacts.py promptcard_storage/tests/test_public_references_v10.py promptcard_storage/tests/test_sqlite_store.py -q
+118 passed, 1 warning, 134 subtests passed in 56.01s
+```
