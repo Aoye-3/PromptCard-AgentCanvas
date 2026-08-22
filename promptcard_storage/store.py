@@ -40,6 +40,15 @@ Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
 SCHEMA_VERSION = 10
 DATABASE_NAME = "promptcard.sqlite3"
+_PUBLIC_REFERENCE_EDGE_WHITESPACE = " \t\n\v\f\r"
+_PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
+    "char("
+    + ",".join(
+        str(ord(character))
+        for character in _PUBLIC_REFERENCE_EDGE_WHITESPACE
+    )
+    + ")"
+)
 JSON_SOURCES = (
     "projects.json",
     "project-trash.json",
@@ -2400,7 +2409,7 @@ class SqliteStore:
         self._create_public_references_v10_schema(connection)
 
     def _create_public_references_v10_schema(self, connection: sqlite3.Connection) -> None:
-        connection.execute("""
+        connection.execute(f"""
             CREATE TABLE IF NOT EXISTS public_references(
                 public_code TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
                 namespace TEXT NOT NULL
@@ -2415,8 +2424,10 @@ class SqliteStore:
                 CHECK(substr(public_code, 5, 26)
                     NOT GLOB '*[^0123456789ABCDEFGHJKMNPQRSTVWXYZ]*'),
                 CHECK(length(internal_id) > 0),
-                CHECK((internal_id COLLATE BINARY) = trim(internal_id)),
-                CHECK((owner_scope COLLATE BINARY) = trim(owner_scope)),
+                CHECK((internal_id COLLATE BINARY) =
+                    trim(internal_id, {_PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL})),
+                CHECK((owner_scope COLLATE BINARY) =
+                    trim(owner_scope, {_PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL})),
                 CHECK(
                     (namespace IN ('PRJ','PLP','SKL') AND owner_scope = '')
                     OR
@@ -2437,7 +2448,11 @@ class SqliteStore:
         public_code = columns.get("public_code")
         if public_code is None:
             raise MigrationError("Schema v10 public reference registry is missing")
-        if public_code[3]:
+        schema_row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='public_references'"
+        ).fetchone()
+        schema_sql = schema_row[0] if schema_row and schema_row[0] else ""
+        if public_code[3] and _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL in schema_sql:
             return
 
         connection.execute(
@@ -2523,8 +2538,12 @@ class SqliteStore:
             if isinstance(namespace, ReferenceNamespace)
             else ReferenceNamespace(str(namespace).upper())
         )
-        normalized_internal_id = str(internal_id).strip()
-        normalized_owner_scope = str(owner_scope).strip()
+        normalized_internal_id = str(internal_id).strip(
+            _PUBLIC_REFERENCE_EDGE_WHITESPACE
+        )
+        normalized_owner_scope = str(owner_scope).strip(
+            _PUBLIC_REFERENCE_EDGE_WHITESPACE
+        )
         if not normalized_internal_id:
             raise ValueError("Public reference internal ID is required")
         global_namespaces = {

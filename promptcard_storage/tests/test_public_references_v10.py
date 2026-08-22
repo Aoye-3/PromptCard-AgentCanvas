@@ -215,10 +215,61 @@ class PublicReferencesV10Test(unittest.TestCase):
                 with self.subTest(label=label):
                     self.assert_reference_insert_rejected(connection, row)
 
+    def test_registry_ddl_rejects_all_ascii_edge_whitespace_without_partial_rows(self) -> None:
+        JsonCollectionStore(self.data_dir)
+        edge_whitespace = (
+            ("space", " "),
+            ("tab", "\t"),
+            ("lf", "\n"),
+            ("vt", "\v"),
+            ("ff", "\f"),
+            ("cr", "\r"),
+        )
+        with self.connect() as connection:
+            for whitespace_name, character in edge_whitespace:
+                invalid_rows = (
+                    ("internal-leading", (
+                        "PRJ-00000000000000000000000021", "PRJ", "",
+                        f"{character}entity", 10,
+                    )),
+                    ("internal-trailing", (
+                        "PRJ-00000000000000000000000022", "PRJ", "",
+                        f"entity{character}", 10,
+                    )),
+                    ("scope-leading", (
+                        "PLM-00000000000000000000000021", "PLM",
+                        f"{character}prompt", "binding", 10,
+                    )),
+                    ("scope-trailing", (
+                        "PLM-00000000000000000000000022", "PLM",
+                        f"prompt{character}", "binding", 10,
+                    )),
+                    ("scope-only", (
+                        "PLM-00000000000000000000000023", "PLM",
+                        character, "binding", 10,
+                    )),
+                )
+                for position, row in invalid_rows:
+                    with self.subTest(
+                        whitespace=whitespace_name,
+                        position=position,
+                    ):
+                        self.assert_reference_insert_rejected(connection, row)
+
     def test_python_normalizes_identity_and_enforces_namespace_scope_rules(self) -> None:
         store = JsonCollectionStore(self.data_dir)
         first = store.ensure_public_reference("PRJ", " normalized-project ")
         second = store.ensure_public_reference("prj", "normalized-project")
+        ascii_trimmed = store.ensure_public_reference(
+            "PLM",
+            " \t\n\v\f\rbinding \t\n\v\f\r",
+            owner_scope=" \t\n\v\f\rprompt \t\n\v\f\r",
+        )
+        unicode_preserved = store.ensure_public_reference(
+            "PLM",
+            "\u00a0binding\u00a0",
+            owner_scope="\u00a0prompt\u00a0",
+        )
 
         self.assertEqual(first, second)
         with self.connect() as connection:
@@ -228,6 +279,22 @@ class PublicReferencesV10Test(unittest.TestCase):
                     """SELECT namespace, owner_scope, internal_id
                        FROM public_references WHERE public_code=?""",
                     (first,),
+                ).fetchone(),
+            )
+            self.assertEqual(
+                ("prompt", "binding"),
+                connection.execute(
+                    """SELECT owner_scope, internal_id
+                       FROM public_references WHERE public_code=?""",
+                    (ascii_trimmed,),
+                ).fetchone(),
+            )
+            self.assertEqual(
+                ("\u00a0prompt\u00a0", "\u00a0binding\u00a0"),
+                connection.execute(
+                    """SELECT owner_scope, internal_id
+                       FROM public_references WHERE public_code=?""",
+                    (unicode_preserved,),
                 ).fetchone(),
             )
         for namespace in ("PRJ", "PLP", "SKL"):
@@ -273,6 +340,57 @@ class PublicReferencesV10Test(unittest.TestCase):
             self.assert_reference_insert_rejected(
                 connection,
                 (None, "PRJ", "", "null-after-reopen", 10),
+            )
+
+    def test_current_space_trim_v10_schema_is_hardened_on_reopen(self) -> None:
+        JsonCollectionStore(self.data_dir)
+        with self.connect() as connection:
+            connection.execute("DROP TABLE public_references")
+            connection.execute("""
+                CREATE TABLE public_references(
+                    public_code TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
+                    namespace TEXT NOT NULL
+                        CHECK(namespace IN ('PRJ','PLP','PLM','CVT','CVM','CVC','SKL')),
+                    owner_scope TEXT NOT NULL DEFAULT '',
+                    internal_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    CHECK((public_code COLLATE BINARY) = upper(public_code)),
+                    CHECK(length(public_code) = 30),
+                    CHECK(substr(public_code, 1, 4) = namespace || '-'),
+                    CHECK(substr(public_code, 5, 1) BETWEEN '0' AND '7'),
+                    CHECK(substr(public_code, 5, 26)
+                        NOT GLOB '*[^0123456789ABCDEFGHJKMNPQRSTVWXYZ]*'),
+                    CHECK(length(internal_id) > 0),
+                    CHECK((internal_id COLLATE BINARY) = trim(internal_id)),
+                    CHECK((owner_scope COLLATE BINARY) = trim(owner_scope)),
+                    CHECK(
+                        (namespace IN ('PRJ','PLP','SKL') AND owner_scope = '')
+                        OR
+                        (namespace IN ('PLM','CVT','CVM','CVC') AND length(owner_scope) > 0)
+                    ),
+                    UNIQUE(namespace, owner_scope, internal_id)
+                )
+            """)
+            connection.execute(
+                """INSERT INTO public_references(
+                       public_code, namespace, owner_scope, internal_id, created_at
+                   ) VALUES ('PLM-00000000000000000000000024', 'PLM', 'prompt-a', 'binding-a', 10)"""
+            )
+            connection.commit()
+
+        JsonCollectionStore(self.data_dir)
+
+        with self.connect() as connection:
+            self.assertEqual(
+                "PLM-00000000000000000000000024",
+                connection.execute(
+                    """SELECT public_code FROM public_references
+                       WHERE namespace='PLM' AND owner_scope='prompt-a' AND internal_id='binding-a'"""
+                ).fetchone()[0],
+            )
+            self.assert_reference_insert_rejected(
+                connection,
+                ("PLM-00000000000000000000000025", "PLM", "\t", "binding-b", 10),
             )
 
     def test_manual_v9_migration_backfills_active_trash_and_business_identities(self) -> None:
