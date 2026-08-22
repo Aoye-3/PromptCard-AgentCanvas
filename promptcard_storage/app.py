@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import unquote
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
@@ -431,6 +431,36 @@ def create_app(
             return {"ok": True}
 
         return _handle(delete)
+
+    @application.post("/api/context-packs")
+    def create_context_pack(payload: Any = Body(None)) -> dict[str, Any]:
+        return _handle(lambda: storage.create_context_pack(payload))
+
+    @application.get("/api/context-packs")
+    def list_context_packs(projectCode: str | None = None) -> dict[str, Any]:
+        return _handle(lambda: {
+            "contextPacks": storage.list_context_packs(projectCode)
+        })
+
+    @application.get("/api/context-packs/{cvc_code}/resolve")
+    def resolve_context_pack(cvc_code: str) -> dict[str, Any]:
+        return _handle(lambda: storage.resolve_context_pack(cvc_code))
+
+    @application.get("/api/context-packs/{cvc_code}")
+    def inspect_context_pack(cvc_code: str) -> dict[str, Any]:
+        return _handle(lambda: storage.inspect_context_pack(cvc_code))
+
+    @application.post("/api/context-packs/{cvc_code}/revoke")
+    def revoke_context_pack(
+        cvc_code: str, payload: Any = Body(None)
+    ) -> dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) != {"actor", "reason"}:
+            raise _http_error(
+                400, "invalid_payload", "Context pack revocation payload fields are invalid"
+            )
+        return _handle(lambda: storage.revoke_context_pack(
+            cvc_code, payload.get("actor"), payload.get("reason")
+        ))
 
     @application.get("/api/projects")
     def list_projects() -> dict[str, Any]:

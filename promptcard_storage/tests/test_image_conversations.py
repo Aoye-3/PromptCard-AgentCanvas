@@ -11,7 +11,7 @@ except ModuleNotFoundError:
     TestClient = None
     create_app = None
 
-from promptcard_storage.store import JsonCollectionStore, MissingItem
+from promptcard_storage.store import SCHEMA_VERSION, JsonCollectionStore, MissingItem
 
 
 TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / ".test-tmp" / "image-conversations"
@@ -124,7 +124,7 @@ class ImageConversationMigrationTest(unittest.TestCase):
         }
         conversations = migrated.list_image_generation_conversations(project_id="project-one")
 
-        self.assertEqual(migrated.health()["schemaVersion"], 10)
+        self.assertEqual(migrated.health()["schemaVersion"], SCHEMA_VERSION)
         self.assertEqual(len(first_ids), 1)
         self.assertEqual(len(conversations["conversations"]), 2)
         self.assertEqual(migrated.list_image_generation_placements(project_id="project-one")["placements"], [])

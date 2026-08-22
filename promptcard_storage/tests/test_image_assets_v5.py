@@ -14,7 +14,12 @@ except ModuleNotFoundError:
     TestClient = None
     create_app = None
 
-from promptcard_storage.store import AssetValidationError, JsonCollectionStore, MissingItem
+from promptcard_storage.store import (
+    SCHEMA_VERSION,
+    AssetValidationError,
+    JsonCollectionStore,
+    MissingItem,
+)
 
 
 TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / ".test-tmp" / "image-assets-v5"
@@ -63,7 +68,7 @@ class ImageAssetV5StoreTest(unittest.TestCase):
         finally:
             connection.close()
 
-        self.assertEqual(version, 10)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertEqual(
             columns,
             {

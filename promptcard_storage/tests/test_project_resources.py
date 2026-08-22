@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from promptcard_storage.store import (
+    SCHEMA_VERSION,
     FolderCycle,
     FolderNotEmpty,
     MissingItem,
@@ -55,7 +56,7 @@ class ProjectResourcesTest(unittest.TestCase):
     def test_health_and_fresh_schema_expose_project_resources(self) -> None:
         health = self.store.health()
 
-        self.assertEqual(health["schemaVersion"], 10)
+        self.assertEqual(health["schemaVersion"], SCHEMA_VERSION)
         self.assertTrue(health["capabilities"]["projectResources"])
 
     def test_schema_v6_is_upgraded_transactionally(self) -> None:
@@ -74,7 +75,7 @@ class ProjectResourcesTest(unittest.TestCase):
 
         migrated = SqliteStore(Path(self.temp_dir.name))
 
-        self.assertEqual(migrated.health()["schemaVersion"], 10)
+        self.assertEqual(migrated.health()["schemaVersion"], SCHEMA_VERSION)
         self.assertEqual(migrated.list_project_resources("project-a"), {"folders": [], "resources": []})
 
     def test_resources_are_isolated_by_active_project(self) -> None:

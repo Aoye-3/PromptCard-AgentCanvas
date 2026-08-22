@@ -42,7 +42,7 @@ from .reference_codes import (
 
 Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 DATABASE_NAME = "promptcard.sqlite3"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE = " \t\n\v\f\r"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
@@ -175,6 +175,7 @@ class SqliteStore:
                 "projectResources": True,
                 "agentConversations": True,
                 "skillHub": True,
+                "contextPacks": True,
             },
         }
 
@@ -418,6 +419,279 @@ class SqliteStore:
                 },
                 "node": self._resolved_canvas_node(node, parsed_node.code),
             }
+
+    def create_context_pack(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("Context pack payload must be an object")
+        allowed_keys = {
+            "projectCode", "projectRevision", "nodeCodes", "placementHint", "creator"
+        }
+        if set(payload) != allowed_keys:
+            raise ValueError("Context pack payload fields are invalid")
+
+        parsed_project = parse_reference_code(
+            payload.get("projectCode"), expected_namespace=ReferenceNamespace.PROJECT
+        )
+        project_revision = payload.get("projectRevision")
+        if type(project_revision) is not int or project_revision < 1:
+            raise ValueError("Context pack projectRevision is invalid")
+        creator = payload.get("creator")
+        if not isinstance(creator, str) or not creator.strip() or len(creator.strip()) > 120:
+            raise ValueError("Context pack creator is invalid")
+        creator = creator.strip()
+
+        node_codes = payload.get("nodeCodes")
+        if not isinstance(node_codes, list) or not node_codes:
+            raise ValueError("Context pack nodeCodes must be a non-empty array")
+        parsed_nodes = []
+        for code in node_codes:
+            parsed = parse_reference_code(code)
+            if parsed.namespace not in {
+                ReferenceNamespace.CANVAS_TEMPLATE,
+                ReferenceNamespace.CANVAS_MEDIA,
+            }:
+                raise ReferenceCodeError("reference_namespace_mismatch")
+            parsed_nodes.append(parsed)
+        canonical_node_codes = [parsed.code for parsed in parsed_nodes]
+        if len(canonical_node_codes) != len(set(canonical_node_codes)):
+            raise ValueError("Context pack nodeCodes must be unique")
+        placement_hint = self._normalize_context_placement_hint(
+            payload.get("placementHint"), canonical_node_codes
+        )
+
+        with self._transaction() as connection:
+            project_registry = connection.execute(
+                """SELECT internal_id FROM public_references
+                   WHERE public_code=? AND namespace='PRJ' AND owner_scope=''""",
+                (parsed_project.code,),
+            ).fetchone()
+            project_reference = {"namespace": "project", "code": parsed_project.code}
+            if project_registry is None:
+                self._raise_context_pack_error(
+                    "project_reference_not_found", project_reference, status_code=404
+                )
+            project_id = project_registry[0]
+            project_row = connection.execute(
+                "SELECT revision, status, payload_json FROM projects WHERE id=?",
+                (project_id,),
+            ).fetchone()
+            if project_row is None:
+                self._raise_context_pack_error(
+                    "project_missing", project_reference, status_code=410
+                )
+            if project_row[1] == "trash":
+                self._raise_context_pack_error(
+                    "project_trashed", project_reference, status_code=410
+                )
+            if project_row[0] != project_revision:
+                raise RevisionConflict({
+                    "projectCode": parsed_project.code,
+                    "projectRevision": project_row[0],
+                })
+            project = json.loads(project_row[2])
+
+            entries: list[dict[str, Any]] = []
+            source_codes: list[str] = []
+            source_boundaries: list[dict[str, Any]] = []
+            for parsed_node in parsed_nodes:
+                namespace_name = (
+                    "canvasTemplate"
+                    if parsed_node.namespace is ReferenceNamespace.CANVAS_TEMPLATE
+                    else "canvasMedia"
+                )
+                node_reference = {"namespace": namespace_name, "code": parsed_node.code}
+                registry_row = connection.execute(
+                    """SELECT owner_scope, internal_id FROM public_references
+                       WHERE public_code=? AND namespace=?""",
+                    (parsed_node.code, parsed_node.namespace.value),
+                ).fetchone()
+                if registry_row is None:
+                    self._raise_context_pack_error(
+                        "canvas_node_reference_not_found", node_reference, status_code=404
+                    )
+                if registry_row[0] != project_id:
+                    self._raise_context_pack_error(
+                        "canvas_reference_project_mismatch", node_reference, status_code=409
+                    )
+                node = self._resolve_current_canvas_node(
+                    project, registry_row[1], parsed_node.namespace, node_reference
+                )
+                if parsed_node.namespace is ReferenceNamespace.CANVAS_MEDIA:
+                    self._require_context_media_available(
+                        connection, project_id, parsed_node.code, project
+                    )
+                content = self._context_entry_content(node)
+                entries.append({
+                    "reference": node_reference,
+                    "content": content,
+                    "contentDigest": _sha256_text(content),
+                })
+                boundary = self._context_source_boundary(
+                    connection, node, project_id, project
+                )
+                source_boundaries.append({"nodeCode": parsed_node.code, **boundary})
+                for source_code in (
+                    boundary["promptLibraryReferences"]
+                    + boundary["canvasMediaReferences"]
+                ):
+                    if source_code not in source_codes:
+                        source_codes.append(source_code)
+
+            created_at = now_ms()
+            internal_id = uuid.uuid4().hex
+            cvc_code = self._ensure_public_reference(
+                connection,
+                ReferenceNamespace.CANVAS_CONTEXT,
+                internal_id,
+                owner_scope=project_id,
+            )
+            snapshot = {
+                "projectCode": parsed_project.code,
+                "cvcCode": cvc_code,
+                "projectRevision": project_revision,
+                "createdAt": created_at,
+                "creator": creator,
+                "entries": entries,
+                "sourceCodes": source_codes,
+                "sourceBoundaries": source_boundaries,
+                "placementHint": placement_hint,
+            }
+            connection.execute(
+                """INSERT INTO context_packs(
+                       cvc_code, project_code, project_revision, created_at, creator,
+                       entries_json, source_codes_json, source_boundaries_json,
+                       placement_hint_json, snapshot_digest
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    cvc_code,
+                    parsed_project.code,
+                    project_revision,
+                    created_at,
+                    creator,
+                    _json(entries),
+                    _json(source_codes),
+                    _json(source_boundaries),
+                    _json(placement_hint),
+                    _sha256_text(_canonical_json(snapshot)),
+                ),
+            )
+            row = self._context_pack_row(connection, cvc_code)
+            if row is None:
+                raise MigrationError("Context pack insert failed")
+            return self._context_pack_inspection(row)
+
+    def resolve_context_pack(self, cvc_code: str) -> dict[str, Any]:
+        parsed = parse_reference_code(
+            cvc_code, expected_namespace=ReferenceNamespace.CANVAS_CONTEXT
+        )
+        reference = {"namespace": "canvasContext", "code": parsed.code}
+        with self._connect() as connection:
+            row = self._context_pack_row(connection, parsed.code)
+            if row is None:
+                self._raise_context_pack_error(
+                    "context_not_found", reference, status_code=404
+                )
+            if row[10] is not None:
+                self._raise_context_pack_error(
+                    "context_revoked", reference, status_code=410
+                )
+            project_row = connection.execute(
+                """SELECT project.id, project.status, project.payload_json
+                   FROM public_references AS reference
+                   JOIN projects AS project ON project.id=reference.internal_id
+                   WHERE reference.public_code=? AND reference.namespace='PRJ'
+                     AND reference.owner_scope=''""",
+                (row[1],),
+            ).fetchone()
+            project_reference = {"namespace": "project", "code": row[1]}
+            if project_row is None:
+                self._raise_context_pack_error(
+                    "project_missing", project_reference, status_code=410
+                )
+            if project_row[1] == "trash":
+                self._raise_context_pack_error(
+                    "project_trashed", project_reference, status_code=410
+                )
+            project = json.loads(project_row[2])
+            entries = json.loads(row[5])
+            source_codes = json.loads(row[6])
+            media_codes = [
+                entry["reference"]["code"]
+                for entry in entries
+                if entry["reference"]["namespace"] == "canvasMedia"
+            ]
+            for source_code in source_codes:
+                parsed_source = parse_reference_code(source_code)
+                if parsed_source.namespace is ReferenceNamespace.CANVAS_MEDIA:
+                    media_codes.append(parsed_source.code)
+            for media_code in dict.fromkeys(media_codes):
+                self._require_context_media_available(
+                    connection, project_row[0], media_code, project
+                )
+            return {
+                "projectCode": row[1],
+                "cvcCode": row[0],
+                "entries": entries,
+                "sourceCodes": source_codes,
+            }
+
+    def inspect_context_pack(self, cvc_code: str) -> dict[str, Any]:
+        parsed = parse_reference_code(
+            cvc_code, expected_namespace=ReferenceNamespace.CANVAS_CONTEXT
+        )
+        with self._connect() as connection:
+            row = self._context_pack_row(connection, parsed.code)
+        if row is None:
+            self._raise_context_pack_error(
+                "context_not_found",
+                {"namespace": "canvasContext", "code": parsed.code},
+                status_code=404,
+            )
+        return self._context_pack_inspection(row)
+
+    def list_context_packs(self, project_code: str | None = None) -> list[dict[str, Any]]:
+        canonical_project = None
+        if project_code is not None:
+            canonical_project = parse_reference_code(
+                project_code, expected_namespace=ReferenceNamespace.PROJECT
+            ).code
+        with self._connect() as connection:
+            query = self._context_pack_select()
+            parameters: tuple[Any, ...] = ()
+            if canonical_project is not None:
+                query += " WHERE project_code=?"
+                parameters = (canonical_project,)
+            query += " ORDER BY created_at DESC, cvc_code DESC"
+            rows = connection.execute(query, parameters).fetchall()
+        return [self._context_pack_inspection(row) for row in rows]
+
+    def revoke_context_pack(
+        self, cvc_code: str, actor: str, reason: str
+    ) -> dict[str, Any]:
+        parsed = parse_reference_code(
+            cvc_code, expected_namespace=ReferenceNamespace.CANVAS_CONTEXT
+        )
+        if not isinstance(actor, str) or not actor.strip() or len(actor.strip()) > 120:
+            raise ValueError("Context pack revocation actor is invalid")
+        if not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 500:
+            raise ValueError("Context pack revocation reason is invalid")
+        with self._transaction() as connection:
+            row = self._context_pack_row(connection, parsed.code)
+            if row is None:
+                self._raise_context_pack_error(
+                    "context_not_found",
+                    {"namespace": "canvasContext", "code": parsed.code},
+                    status_code=404,
+                )
+            if row[10] is None:
+                connection.execute(
+                    """UPDATE context_packs
+                       SET revoked_at=?, revoked_by=?, revocation_reason=?
+                       WHERE cvc_code=?""",
+                    (now_ms(), actor.strip(), reason.strip(), parsed.code),
+                )
+                row = self._context_pack_row(connection, parsed.code)
+            return self._context_pack_inspection(row)
 
     def create_agent_conversation(self, item: dict[str, Any]) -> dict[str, Any]:
         project_id = str(item.get("projectId") or "").strip()
@@ -2736,6 +3010,20 @@ class SqliteStore:
                 except Exception:
                     connection.rollback()
                     raise
+            if current_version == 10:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self._harden_weak_public_references_v10_schema(connection)
+                    self._create_context_packs_v11_schema(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (11, "add-canvas-context-packs", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 11
+                except Exception:
+                    connection.rollback()
+                    raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
             connection.execute("BEGIN IMMEDIATE")
@@ -2781,6 +3069,7 @@ class SqliteStore:
         self._create_project_resources_v7_schema(connection)
         self._create_agent_conversations_v9_schema(connection)
         self._create_public_references_v10_schema(connection)
+        self._create_context_packs_v11_schema(connection)
 
     def _create_public_references_v10_schema(self, connection: sqlite3.Connection) -> None:
         connection.execute(f"""
@@ -2809,6 +3098,73 @@ class SqliteStore:
                 ),
                 UNIQUE(namespace, owner_scope, internal_id)
             )
+        """)
+
+    def _create_context_packs_v11_schema(self, connection: sqlite3.Connection) -> None:
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS context_packs(
+                cvc_code TEXT NOT NULL PRIMARY KEY COLLATE NOCASE
+                    REFERENCES public_references(public_code) ON DELETE RESTRICT,
+                project_code TEXT NOT NULL COLLATE NOCASE,
+                project_revision INTEGER NOT NULL CHECK(project_revision >= 1),
+                created_at INTEGER NOT NULL CHECK(created_at >= 0),
+                creator TEXT NOT NULL CHECK(length(creator) BETWEEN 1 AND 120),
+                entries_json TEXT NOT NULL
+                    CHECK(json_valid(entries_json) AND json_type(entries_json)='array'
+                          AND json_array_length(entries_json) > 0),
+                source_codes_json TEXT NOT NULL
+                    CHECK(json_valid(source_codes_json) AND json_type(source_codes_json)='array'),
+                source_boundaries_json TEXT NOT NULL
+                    CHECK(json_valid(source_boundaries_json)
+                          AND json_type(source_boundaries_json)='array'),
+                placement_hint_json TEXT NOT NULL
+                    CHECK(json_valid(placement_hint_json)
+                          AND json_type(placement_hint_json)='object'),
+                snapshot_digest TEXT NOT NULL
+                    CHECK(length(snapshot_digest)=71
+                          AND substr(snapshot_digest, 1, 7)='sha256:'
+                          AND substr(snapshot_digest, 8)
+                              NOT GLOB '*[^0123456789abcdef]*'),
+                revoked_at INTEGER,
+                revoked_by TEXT,
+                revocation_reason TEXT,
+                CHECK((cvc_code COLLATE BINARY)=upper(cvc_code)
+                      AND length(cvc_code)=30 AND substr(cvc_code, 1, 4)='CVC-'),
+                CHECK((project_code COLLATE BINARY)=upper(project_code)
+                      AND length(project_code)=30 AND substr(project_code, 1, 4)='PRJ-'),
+                CHECK(
+                    (revoked_at IS NULL AND revoked_by IS NULL AND revocation_reason IS NULL)
+                    OR
+                    (revoked_at IS NOT NULL AND revoked_at >= 0
+                     AND length(revoked_by) BETWEEN 1 AND 120
+                     AND length(revocation_reason) BETWEEN 1 AND 500)
+                )
+            );
+            CREATE INDEX IF NOT EXISTS context_packs_project_created
+                ON context_packs(project_code, created_at DESC, cvc_code DESC);
+            CREATE TRIGGER IF NOT EXISTS context_packs_snapshot_immutable
+            BEFORE UPDATE OF
+                cvc_code, project_code, project_revision, created_at, creator,
+                entries_json, source_codes_json, source_boundaries_json,
+                placement_hint_json, snapshot_digest
+            ON context_packs
+            BEGIN
+                SELECT RAISE(ABORT, 'context pack snapshot is immutable');
+            END;
+            CREATE TRIGGER IF NOT EXISTS context_packs_revocation_once
+            BEFORE UPDATE OF revoked_at, revoked_by, revocation_reason ON context_packs
+            WHEN OLD.revoked_at IS NOT NULL
+                 OR NEW.revoked_at IS NULL
+                 OR NEW.revoked_by IS NULL
+                 OR NEW.revocation_reason IS NULL
+            BEGIN
+                SELECT RAISE(ABORT, 'context pack revocation may only be set once');
+            END;
+            CREATE TRIGGER IF NOT EXISTS context_packs_no_delete
+            BEFORE DELETE ON context_packs
+            BEGIN
+                SELECT RAISE(ABORT, 'context pack snapshots cannot be deleted');
+            END;
         """)
 
     def _harden_weak_public_references_v10_schema(
@@ -3092,6 +3448,249 @@ class SqliteStore:
         if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
             resolved["size"] = size
         return resolved
+
+    @staticmethod
+    def _normalize_context_placement_hint(
+        value: Any, selected_codes: list[str]
+    ) -> dict[str, Any]:
+        if not isinstance(value, dict) or set(value) != {"mode", "anchorNodeCodes"}:
+            raise ValueError("Context pack placementHint is invalid")
+        if value.get("mode") != "after-selection":
+            raise ValueError("Context pack placementHint mode is invalid")
+        anchors = value.get("anchorNodeCodes")
+        if not isinstance(anchors, list) or not anchors:
+            raise ValueError("Context pack placement anchors must be non-empty")
+        canonical: list[str] = []
+        for anchor in anchors:
+            parsed = parse_reference_code(anchor)
+            if parsed.namespace not in {
+                ReferenceNamespace.CANVAS_TEMPLATE,
+                ReferenceNamespace.CANVAS_MEDIA,
+            }:
+                raise ReferenceCodeError("reference_namespace_mismatch")
+            canonical.append(parsed.code)
+        if len(canonical) != len(set(canonical)):
+            raise ValueError("Context pack placement anchors must be unique")
+        if any(anchor not in selected_codes for anchor in canonical):
+            raise ValueError("Context pack placement anchors must be selected nodes")
+        return {"mode": "after-selection", "anchorNodeCodes": canonical}
+
+    @staticmethod
+    def _context_entry_content(node: dict[str, Any]) -> str:
+        title = node["title"][:_PROJECT_REFERENCE_TITLE_LIMIT]
+        if node["kind"] == "text":
+            text = "".join(segment["text"] for segment in node["segments"])
+            content: dict[str, Any] = {
+                "kind": "text",
+                "text": text[:_CANVAS_REFERENCE_TEXT_LIMIT],
+                "title": title,
+                "truncated": len(text) > _CANVAS_REFERENCE_TEXT_LIMIT,
+            }
+        else:
+            content = {
+                "height": node["height"],
+                "kind": "image",
+                "title": title,
+                "width": node["width"],
+            }
+            if isinstance(node.get("contentType"), str):
+                content["contentType"] = node["contentType"]
+            size = node.get("size")
+            if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+                content["size"] = size
+        return _canonical_json(content)
+
+    def _context_source_boundary(
+        self,
+        connection: sqlite3.Connection,
+        node: dict[str, Any],
+        project_id: str,
+        project: dict[str, Any],
+    ) -> dict[str, list[str]]:
+        prompt_codes = self._normalize_context_source_list(
+            node, "promptLibraryReferences"
+        )
+        canvas_codes = self._normalize_context_source_list(
+            node, "canvasMediaReferences"
+        )
+        for code in prompt_codes:
+            parsed = parse_reference_code(code)
+            if parsed.namespace not in {
+                ReferenceNamespace.PROMPT_BUNDLE,
+                ReferenceNamespace.PROMPT_MEDIA,
+            }:
+                raise ReferenceCodeError("reference_namespace_mismatch")
+            row = connection.execute(
+                """SELECT owner_scope, internal_id FROM public_references
+                   WHERE public_code=? AND namespace=?""",
+                (parsed.code, parsed.namespace.value),
+            ).fetchone()
+            if row is None:
+                self._raise_context_pack_error(
+                    "source_reference_not_found",
+                    {
+                        "namespace": (
+                            "promptBundle"
+                            if parsed.namespace is ReferenceNamespace.PROMPT_BUNDLE
+                            else "promptMedia"
+                        ),
+                        "code": parsed.code,
+                    },
+                    status_code=404,
+                )
+            prompt_id = row[1] if parsed.namespace is ReferenceNamespace.PROMPT_BUNDLE else row[0]
+            prompt_row = connection.execute(
+                "SELECT status, payload_json FROM presets WHERE id=?", (prompt_id,)
+            ).fetchone()
+            valid = prompt_row is not None and prompt_row[0] == "active"
+            if valid and parsed.namespace is ReferenceNamespace.PROMPT_MEDIA:
+                prompt = json.loads(prompt_row[1])
+                valid = any(
+                    binding.get("id") == row[1]
+                    for binding in self._preset_media(prompt)
+                )
+            if not valid:
+                self._raise_context_pack_error(
+                    "source_unavailable",
+                    {
+                        "namespace": (
+                            "promptBundle"
+                            if parsed.namespace is ReferenceNamespace.PROMPT_BUNDLE
+                            else "promptMedia"
+                        ),
+                        "code": parsed.code,
+                    },
+                    status_code=410,
+                )
+        for code in canvas_codes:
+            parsed = parse_reference_code(
+                code, expected_namespace=ReferenceNamespace.CANVAS_MEDIA
+            )
+            self._require_context_media_available(
+                connection, project_id, parsed.code, project
+            )
+        return {
+            "promptLibraryReferences": prompt_codes,
+            "canvasMediaReferences": canvas_codes,
+        }
+
+    @staticmethod
+    def _normalize_context_source_list(
+        node: dict[str, Any], field: str
+    ) -> list[str]:
+        value = node.get(field, [])
+        if not isinstance(value, list):
+            raise ValueError(f"Canvas node {field} must be an array")
+        normalized: list[str] = []
+        for item in value:
+            parsed = parse_reference_code(item)
+            if parsed.code not in normalized:
+                normalized.append(parsed.code)
+        return normalized
+
+    def _require_context_media_available(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+        media_code: str,
+        project: dict[str, Any],
+    ) -> None:
+        reference = {"namespace": "canvasMedia", "code": media_code}
+        registry = connection.execute(
+            """SELECT owner_scope, internal_id FROM public_references
+               WHERE public_code=? AND namespace='CVM'""",
+            (media_code,),
+        ).fetchone()
+        if registry is None or registry[0] != project_id:
+            self._raise_context_pack_error(
+                "media_unavailable", reference, status_code=410
+            )
+        try:
+            node = self._resolve_current_canvas_node(
+                project,
+                registry[1],
+                ReferenceNamespace.CANVAS_MEDIA,
+                reference,
+            )
+        except PromptReferenceError:
+            self._raise_context_pack_error(
+                "media_unavailable", reference, status_code=410
+            )
+        asset_id = node.get("assetId")
+        asset = (
+            connection.execute(
+                """SELECT relative_path, lifecycle_status FROM assets
+                   WHERE asset_id=?""",
+                (asset_id,),
+            ).fetchone()
+            if isinstance(asset_id, str) and asset_id
+            else None
+        )
+        if (
+            asset is None
+            or asset[1] != "active"
+            or not (self.data_dir / asset[0]).is_file()
+        ):
+            self._raise_context_pack_error(
+                "media_unavailable", reference, status_code=410
+            )
+
+    @staticmethod
+    def _context_pack_select() -> str:
+        return (
+            "SELECT cvc_code, project_code, project_revision, created_at, creator, "
+            "entries_json, source_codes_json, source_boundaries_json, "
+            "placement_hint_json, snapshot_digest, revoked_at, revoked_by, "
+            "revocation_reason FROM context_packs"
+        )
+
+    def _context_pack_row(
+        self, connection: sqlite3.Connection, cvc_code: str
+    ) -> tuple[Any, ...] | None:
+        return connection.execute(
+            self._context_pack_select() + " WHERE cvc_code=?", (cvc_code,)
+        ).fetchone()
+
+    @staticmethod
+    def _context_pack_inspection(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {
+            "cvcCode": row[0],
+            "projectCode": row[1],
+            "projectRevision": row[2],
+            "createdAt": row[3],
+            "creator": row[4],
+            "entries": json.loads(row[5]),
+            "sourceCodes": json.loads(row[6]),
+            "sourceBoundaries": json.loads(row[7]),
+            "placementHint": json.loads(row[8]),
+            "snapshotDigest": row[9],
+            "revokedAt": row[10],
+            "revokedBy": row[11],
+            "revocationReason": row[12],
+        }
+
+    @staticmethod
+    def _raise_context_pack_error(
+        code: str,
+        reference: dict[str, str],
+        *,
+        status_code: int,
+    ) -> None:
+        messages = {
+            "context_not_found": "Canvas context pack was not found",
+            "context_revoked": "The canvas context has been revoked",
+            "project_reference_not_found": "Project reference was not found",
+            "project_missing": "Project is no longer available",
+            "project_trashed": "Project is in Trash",
+            "canvas_node_reference_not_found": "Canvas node reference was not found",
+            "canvas_reference_project_mismatch": "Canvas node reference belongs to another project",
+            "source_reference_not_found": "Context source reference was not found",
+            "source_unavailable": "Context source is unavailable",
+            "media_unavailable": "Canvas media is unavailable",
+        }
+        raise PromptReferenceError(
+            code, messages[code], reference, status_code=status_code
+        )
 
     @staticmethod
     def _project_canvas_nodes(project: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3986,6 +4585,16 @@ def _ensure_unique_ids(items: list[dict[str, Any]], label: str) -> None:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+
+
+def _sha256_text(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def normalize_model_binding(value: Any) -> dict[str, str] | None:

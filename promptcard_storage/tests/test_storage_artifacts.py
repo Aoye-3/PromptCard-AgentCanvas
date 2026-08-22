@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from promptcard_storage.store import AssetInUse, DeletedAsset, SqliteStore
+from promptcard_storage.store import SCHEMA_VERSION, AssetInUse, DeletedAsset, SqliteStore
 
 
 PNG = b"\x89PNG\r\n\x1a\nasset"
@@ -58,7 +58,7 @@ class StorageArtifactLifecycleTest(unittest.TestCase):
         finally:
             connection.close()
 
-        self.assertEqual(version, 10)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertEqual(row, ("active", "legacy.png", len(PNG)))
 
     def test_schema_v5_migrates_existing_asset_to_active_without_changing_metadata(self) -> None:
@@ -99,7 +99,7 @@ class StorageArtifactLifecycleTest(unittest.TestCase):
             version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         finally:
             connection.close()
-        self.assertEqual(version, 10)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertEqual(row, ("active", "legacy-v5.png", len(PNG)))
         self.assertTrue(migrated.get_asset(asset["id"])[0].is_file())
 

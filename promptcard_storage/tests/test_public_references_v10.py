@@ -125,7 +125,7 @@ class PublicReferencesV10Test(unittest.TestCase):
     def test_fresh_schema_is_v10_and_registry_enforces_uniqueness_and_scope(self) -> None:
         store = JsonCollectionStore(self.data_dir)
 
-        self.assertEqual(10, store.health()["schemaVersion"])
+        self.assertEqual(store_module.SCHEMA_VERSION, store.health()["schemaVersion"])
         with self.connect() as connection:
             columns = [
                 row[1]
@@ -424,7 +424,7 @@ class PublicReferencesV10Test(unittest.TestCase):
 
         migrated = JsonCollectionStore(self.data_dir)
 
-        self.assertEqual(10, migrated.health()["schemaVersion"])
+        self.assertEqual(store_module.SCHEMA_VERSION, migrated.health()["schemaVersion"])
         rows = self.registry_rows()
         identities = {(namespace, scope, internal_id) for _, namespace, scope, internal_id in rows}
         self.assertTrue({
