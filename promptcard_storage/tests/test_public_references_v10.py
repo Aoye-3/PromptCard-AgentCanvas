@@ -68,6 +68,33 @@ class PublicReferencesV10Test(unittest.TestCase):
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
+    def assert_reference_insert_rejected(
+        self,
+        connection: sqlite3.Connection,
+        row: tuple[str | None, str, str, str, int],
+    ) -> None:
+        count_before = connection.execute(
+            "SELECT COUNT(*) FROM public_references"
+        ).fetchone()[0]
+        connection.execute("SAVEPOINT invalid_public_reference")
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    """INSERT INTO public_references(
+                           public_code, namespace, owner_scope, internal_id, created_at
+                       ) VALUES (?, ?, ?, ?, ?)""",
+                    row,
+                )
+            self.assertEqual(
+                count_before,
+                connection.execute(
+                    "SELECT COUNT(*) FROM public_references"
+                ).fetchone()[0],
+            )
+        finally:
+            connection.execute("ROLLBACK TO invalid_public_reference")
+            connection.execute("RELEASE invalid_public_reference")
+
     def registry_rows(self) -> list[tuple[str, str, str, str]]:
         with self.connect() as connection:
             return connection.execute(
@@ -148,6 +175,105 @@ class PublicReferencesV10Test(unittest.TestCase):
             store.ensure_public_reference("CVT", "text-node")
         with self.assertRaisesRegex(ValueError, "owner scope"):
             store.ensure_public_reference("CVM", "image-node", owner_scope="")
+
+    def test_registry_ddl_rejects_noncanonical_codes_without_partial_rows(self) -> None:
+        JsonCollectionStore(self.data_dir)
+        invalid_rows = (
+            ("null-code-one", (None, "PRJ", "", "null-code-one", 10)),
+            ("null-code-two", (None, "PRJ", "", "null-code-two", 10)),
+            ("lowercase-body", ("PRJ-0000000000000000000000000a", "PRJ", "", "lowercase", 10)),
+            ("prohibited-I", ("PRJ-0000000000000000000000000I", "PRJ", "", "letter-i", 10)),
+            ("prohibited-L", ("PRJ-0000000000000000000000000L", "PRJ", "", "letter-l", 10)),
+            ("prohibited-O", ("PRJ-0000000000000000000000000O", "PRJ", "", "letter-o", 10)),
+            ("prohibited-U", ("PRJ-0000000000000000000000000U", "PRJ", "", "letter-u", 10)),
+            ("punctuation", ("PRJ-0000000000000000000000000!", "PRJ", "", "punctuation", 10)),
+            ("overflow", ("PRJ-80000000000000000000000000", "PRJ", "", "overflow", 10)),
+            ("namespace-mismatch", ("PLP-00000000000000000000000001", "PRJ", "", "mismatch", 10)),
+        )
+        with self.connect() as connection:
+            for label, row in invalid_rows:
+                with self.subTest(label=label):
+                    self.assert_reference_insert_rejected(connection, row)
+
+    def test_registry_ddl_rejects_noncanonical_identities_and_wrong_scopes(self) -> None:
+        JsonCollectionStore(self.data_dir)
+        invalid_rows = (
+            ("blank-identity", ("PRJ-00000000000000000000000010", "PRJ", "", "", 10)),
+            ("whitespace-identity", ("PRJ-00000000000000000000000011", "PRJ", "", "   ", 10)),
+            ("padded-identity", ("PRJ-00000000000000000000000012", "PRJ", "", " same-id ", 10)),
+            ("padded-scope", ("CVM-00000000000000000000000010", "CVM", " project-a ", "image-node", 10)),
+            ("project-global-scope", ("PRJ-00000000000000000000000013", "PRJ", "project-a", "project-a", 10)),
+            ("prompt-global-scope", ("PLP-00000000000000000000000010", "PLP", "prompt-a", "prompt-a", 10)),
+            ("skill-global-scope", ("SKL-00000000000000000000000010", "SKL", "skill-owner", "skill-a", 10)),
+            ("prompt-media-blank-scope", ("PLM-00000000000000000000000010", "PLM", "", "binding-a", 10)),
+            ("canvas-text-blank-scope", ("CVT-00000000000000000000000010", "CVT", "", "text-a", 10)),
+            ("canvas-media-blank-scope", ("CVM-00000000000000000000000011", "CVM", "", "image-a", 10)),
+            ("canvas-context-blank-scope", ("CVC-00000000000000000000000010", "CVC", "", "context-a", 10)),
+        )
+        with self.connect() as connection:
+            for label, row in invalid_rows:
+                with self.subTest(label=label):
+                    self.assert_reference_insert_rejected(connection, row)
+
+    def test_python_normalizes_identity_and_enforces_namespace_scope_rules(self) -> None:
+        store = JsonCollectionStore(self.data_dir)
+        first = store.ensure_public_reference("PRJ", " normalized-project ")
+        second = store.ensure_public_reference("prj", "normalized-project")
+
+        self.assertEqual(first, second)
+        with self.connect() as connection:
+            self.assertEqual(
+                ("PRJ", "", "normalized-project"),
+                connection.execute(
+                    """SELECT namespace, owner_scope, internal_id
+                       FROM public_references WHERE public_code=?""",
+                    (first,),
+                ).fetchone(),
+            )
+        for namespace in ("PRJ", "PLP", "SKL"):
+            with self.subTest(namespace=namespace, rule="global"):
+                with self.assertRaisesRegex(ValueError, "owner scope"):
+                    store.ensure_public_reference(namespace, "entity", owner_scope="wrong-owner")
+        for namespace in ("PLM", "CVT", "CVM", "CVC"):
+            with self.subTest(namespace=namespace, rule="scoped"):
+                with self.assertRaisesRegex(ValueError, "owner scope"):
+                    store.ensure_public_reference(namespace, "entity", owner_scope="")
+
+    def test_current_weak_v10_schema_is_hardened_without_replacing_codes(self) -> None:
+        JsonCollectionStore(self.data_dir)
+        with self.connect() as connection:
+            connection.execute("DROP TABLE public_references")
+            connection.execute("""
+                CREATE TABLE public_references(
+                    public_code TEXT PRIMARY KEY COLLATE NOCASE,
+                    namespace TEXT NOT NULL,
+                    owner_scope TEXT NOT NULL DEFAULT '',
+                    internal_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(namespace, owner_scope, internal_id)
+                )
+            """)
+            connection.execute(
+                """INSERT INTO public_references(
+                       public_code, namespace, owner_scope, internal_id, created_at
+                   ) VALUES ('PRJ-00000000000000000000000020', 'PRJ', '', 'preserved-project', 10)"""
+            )
+            connection.commit()
+
+        JsonCollectionStore(self.data_dir)
+
+        with self.connect() as connection:
+            self.assertEqual(
+                "PRJ-00000000000000000000000020",
+                connection.execute(
+                    """SELECT public_code FROM public_references
+                       WHERE namespace='PRJ' AND owner_scope='' AND internal_id='preserved-project'"""
+                ).fetchone()[0],
+            )
+            self.assert_reference_insert_rejected(
+                connection,
+                (None, "PRJ", "", "null-after-reopen", 10),
+            )
 
     def test_manual_v9_migration_backfills_active_trash_and_business_identities(self) -> None:
         store = JsonCollectionStore(self.data_dir)

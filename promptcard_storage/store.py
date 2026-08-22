@@ -2355,9 +2355,15 @@ class SqliteStore:
                     raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
-            self._seed_builtin_skills(connection)
-            self._reconcile_public_references(connection)
-            connection.commit()
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._harden_weak_public_references_v10_schema(connection)
+                self._seed_builtin_skills(connection)
+                self._reconcile_public_references(connection)
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
     def _create_schema(self, connection: sqlite3.Connection) -> None:
         connection.executescript("""
@@ -2396,19 +2402,61 @@ class SqliteStore:
     def _create_public_references_v10_schema(self, connection: sqlite3.Connection) -> None:
         connection.execute("""
             CREATE TABLE IF NOT EXISTS public_references(
-                public_code TEXT PRIMARY KEY COLLATE NOCASE,
+                public_code TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
                 namespace TEXT NOT NULL
                     CHECK(namespace IN ('PRJ','PLP','PLM','CVT','CVM','CVC','SKL')),
                 owner_scope TEXT NOT NULL DEFAULT '',
-                internal_id TEXT NOT NULL CHECK(length(trim(internal_id)) > 0),
+                internal_id TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
-                CHECK(public_code = upper(public_code)),
+                CHECK((public_code COLLATE BINARY) = upper(public_code)),
                 CHECK(length(public_code) = 30),
                 CHECK(substr(public_code, 1, 4) = namespace || '-'),
-                CHECK(namespace NOT IN ('CVT','CVM') OR length(trim(owner_scope)) > 0),
+                CHECK(substr(public_code, 5, 1) BETWEEN '0' AND '7'),
+                CHECK(substr(public_code, 5, 26)
+                    NOT GLOB '*[^0123456789ABCDEFGHJKMNPQRSTVWXYZ]*'),
+                CHECK(length(internal_id) > 0),
+                CHECK((internal_id COLLATE BINARY) = trim(internal_id)),
+                CHECK((owner_scope COLLATE BINARY) = trim(owner_scope)),
+                CHECK(
+                    (namespace IN ('PRJ','PLP','SKL') AND owner_scope = '')
+                    OR
+                    (namespace IN ('PLM','CVT','CVM','CVC') AND length(owner_scope) > 0)
+                ),
                 UNIQUE(namespace, owner_scope, internal_id)
             )
         """)
+
+    def _harden_weak_public_references_v10_schema(
+        self,
+        connection: sqlite3.Connection,
+    ) -> None:
+        columns = {
+            row[1]: row
+            for row in connection.execute("PRAGMA table_info(public_references)")
+        }
+        public_code = columns.get("public_code")
+        if public_code is None:
+            raise MigrationError("Schema v10 public reference registry is missing")
+        if public_code[3]:
+            return
+
+        connection.execute(
+            "ALTER TABLE public_references RENAME TO public_references_v10_weak"
+        )
+        self._create_public_references_v10_schema(connection)
+        try:
+            connection.execute(
+                """INSERT INTO public_references(
+                       public_code, namespace, owner_scope, internal_id, created_at
+                   )
+                   SELECT public_code, namespace, owner_scope, internal_id, created_at
+                   FROM public_references_v10_weak"""
+            )
+        except sqlite3.IntegrityError as exc:
+            raise MigrationError(
+                "Schema v10 public reference registry contains invalid rows"
+            ) from exc
+        connection.execute("DROP TABLE public_references_v10_weak")
 
     def _reconcile_public_references(self, connection: sqlite3.Connection) -> None:
         candidates: set[tuple[str, str, str]] = set()
@@ -2479,11 +2527,15 @@ class SqliteStore:
         normalized_owner_scope = str(owner_scope).strip()
         if not normalized_internal_id:
             raise ValueError("Public reference internal ID is required")
-        if canonical_namespace in {
-            ReferenceNamespace.CANVAS_TEMPLATE,
-            ReferenceNamespace.CANVAS_MEDIA,
-        } and not normalized_owner_scope:
-            raise ValueError("Canvas public reference owner scope is required")
+        global_namespaces = {
+            ReferenceNamespace.PROJECT,
+            ReferenceNamespace.PROMPT_BUNDLE,
+            ReferenceNamespace.SKILL,
+        }
+        if canonical_namespace in global_namespaces and normalized_owner_scope:
+            raise ValueError("Public reference owner scope must be empty")
+        if canonical_namespace not in global_namespaces and not normalized_owner_scope:
+            raise ValueError("Public reference owner scope is required")
 
         row = connection.execute(
             """SELECT public_code FROM public_references
