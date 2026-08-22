@@ -1,6 +1,7 @@
 import type { CardType, IPreset } from '@/models/Card.model'
 import type { IPromptProject } from '@/models/PromptHistory.model'
 import type { ImageOperationRecipeSnapshot } from '@/domain/image-actions/image-operations'
+import { validatePublicReferenceCode } from '@/domain/reference-codes/reference-code'
 
 export interface TrashEntry<T> {
   id: string
@@ -456,6 +457,50 @@ const projectWritePayload = (project: Partial<IPromptProject>): Partial<IPromptP
   return payload
 }
 
+export interface ContextPackEntry {
+  reference: {
+    namespace: 'canvasTemplate' | 'canvasMedia'
+    code: string
+  }
+  content: string
+  contentDigest: string
+}
+
+export interface ContextPackSourceBoundary {
+  nodeCode: string
+  promptLibraryReferences: string[]
+  canvasMediaReferences: string[]
+}
+
+export interface ContextPackPlacementHint {
+  mode: 'after-selection'
+  anchorNodeCodes: string[]
+}
+
+export interface ContextPackInspection {
+  cvcCode: string
+  projectCode: string
+  projectRevision: number
+  createdAt: number
+  creator: string
+  entries: ContextPackEntry[]
+  sourceCodes: string[]
+  sourceBoundaries: ContextPackSourceBoundary[]
+  placementHint: ContextPackPlacementHint
+  snapshotDigest: string
+  revokedAt: number | null
+  revokedBy: string | null
+  revocationReason: string | null
+}
+
+export interface ContextPackCreateRequest {
+  projectCode: string
+  projectRevision: number
+  nodeCodes: string[]
+  placementHint: ContextPackPlacementHint
+  creator: 'promptcard-ui'
+}
+
 export const storageServiceClient = {
   health: isHealthy,
 
@@ -801,6 +846,29 @@ export const storageServiceClient = {
         method: 'PUT',
         body: JSON.stringify(layout)
       })
+    }
+  },
+  contextPacks: {
+    async create(payload: ContextPackCreateRequest): Promise<ContextPackInspection> {
+      return parseContextPackInspection(await request<unknown>('/storage-api/context-packs', {
+        method: 'POST', body: JSON.stringify(payload)
+      }))
+    },
+    async inspect(cvcCode: string): Promise<ContextPackInspection> {
+      const code = requireContextPackCode(cvcCode)
+      return parseContextPackInspection(await request<unknown>(
+        `/storage-api/context-packs/${encodeURIComponent(code)}`
+      ))
+    },
+    async revoke(
+      cvcCode: string,
+      payload: { actor: 'promptcard-ui'; reason: 'user-revoked' }
+    ): Promise<ContextPackInspection> {
+      const code = requireContextPackCode(cvcCode)
+      return parseContextPackInspection(await request<unknown>(
+        `/storage-api/context-packs/${encodeURIComponent(code)}/revoke`,
+        { method: 'POST', body: JSON.stringify(payload) }
+      ))
     }
   },
   projects: {
@@ -1156,6 +1224,188 @@ const normalizeRunRegion = (candidate: unknown): Array<Record<string, string | n
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object')
+
+const CONTEXT_PACK_INSPECTION_KEYS = [
+  'cvcCode', 'projectCode', 'projectRevision', 'createdAt', 'creator', 'entries',
+  'sourceCodes', 'sourceBoundaries', 'placementHint', 'snapshotDigest',
+  'revokedAt', 'revokedBy', 'revocationReason'
+] as const
+
+const parseContextPackInspection = (value: unknown): ContextPackInspection => {
+  const invalid = () => {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid context pack response.')
+  }
+  if (!isClosedRecord(value, CONTEXT_PACK_INSPECTION_KEYS)) return invalid()
+  const cvcCode = validatePublicReferenceCode(value.cvcCode, 'CVC')
+  const projectCode = validatePublicReferenceCode(value.projectCode, 'PRJ')
+  if (
+    !cvcCode
+    || !projectCode
+    || !isPositiveInteger(value.projectRevision)
+    || !isNonNegativeInteger(value.createdAt)
+    || typeof value.creator !== 'string'
+    || !value.creator
+    || !Array.isArray(value.entries)
+    || !Array.isArray(value.sourceCodes)
+    || !Array.isArray(value.sourceBoundaries)
+    || !isClosedRecord(value.placementHint, ['mode', 'anchorNodeCodes'])
+    || value.placementHint.mode !== 'after-selection'
+    || !Array.isArray(value.placementHint.anchorNodeCodes)
+    || !isSha256(value.snapshotDigest)
+  ) return invalid()
+
+  const entries = value.entries.flatMap(parseContextPackEntry)
+  const sourceCodes = value.sourceCodes.flatMap(parseContextSourceCode)
+  const sourceBoundaries = value.sourceBoundaries.flatMap(parseContextSourceBoundary)
+  const anchorNodeCodes = value.placementHint.anchorNodeCodes.flatMap(parseContextNodeCode)
+  if (
+    entries.length !== value.entries.length
+    || sourceCodes.length !== value.sourceCodes.length
+    || sourceBoundaries.length !== value.sourceBoundaries.length
+    || anchorNodeCodes.length !== value.placementHint.anchorNodeCodes.length
+    || anchorNodeCodes.length === 0
+    || !anchorNodeCodes.every(code => entries.some(entry => entry.reference.code === code))
+  ) return invalid()
+
+  const active = value.revokedAt === null && value.revokedBy === null && value.revocationReason === null
+  const revoked = isNonNegativeInteger(value.revokedAt)
+    && typeof value.revokedBy === 'string' && Boolean(value.revokedBy)
+    && typeof value.revocationReason === 'string' && Boolean(value.revocationReason)
+  if (!active && !revoked) return invalid()
+
+  return {
+    cvcCode,
+    projectCode,
+    projectRevision: value.projectRevision,
+    createdAt: value.createdAt,
+    creator: value.creator,
+    entries,
+    sourceCodes,
+    sourceBoundaries,
+    placementHint: { mode: 'after-selection', anchorNodeCodes },
+    snapshotDigest: value.snapshotDigest,
+    revokedAt: active ? null : value.revokedAt as number,
+    revokedBy: active ? null : value.revokedBy as string,
+    revocationReason: active ? null : value.revocationReason as string
+  }
+}
+
+const parseContextPackEntry = (value: unknown): ContextPackEntry[] => {
+  if (
+    !isClosedRecord(value, ['reference', 'content', 'contentDigest'])
+    || !isClosedRecord(value.reference, ['namespace', 'code'])
+    || typeof value.content !== 'string'
+    || !isSha256(value.contentDigest)
+  ) return []
+  const namespace = value.reference.namespace
+  const expectedPrefix = namespace === 'canvasTemplate'
+    ? 'CVT'
+    : namespace === 'canvasMedia'
+      ? 'CVM'
+      : null
+  const code = expectedPrefix ? validatePublicReferenceCode(value.reference.code, expectedPrefix) : null
+  if (!code || (namespace !== 'canvasTemplate' && namespace !== 'canvasMedia') || !isSafeContextEntryContent(value.content, namespace)) return []
+  return [{
+    reference: { namespace, code },
+    content: value.content,
+    contentDigest: value.contentDigest
+  }]
+}
+
+const parseContextSourceBoundary = (value: unknown): ContextPackSourceBoundary[] => {
+  if (
+    !isClosedRecord(value, ['nodeCode', 'promptLibraryReferences', 'canvasMediaReferences'])
+    || !Array.isArray(value.promptLibraryReferences)
+    || !Array.isArray(value.canvasMediaReferences)
+  ) return []
+  const nodeCode = parseContextNodeCode(value.nodeCode)[0]
+  const promptLibraryReferences = value.promptLibraryReferences.flatMap(parsePromptSourceCode)
+  const canvasMediaReferences = value.canvasMediaReferences.flatMap(code => parseReferenceCode(code, 'CVM'))
+  if (
+    !nodeCode
+    || promptLibraryReferences.length !== value.promptLibraryReferences.length
+    || canvasMediaReferences.length !== value.canvasMediaReferences.length
+  ) return []
+  return [{ nodeCode, promptLibraryReferences, canvasMediaReferences }]
+}
+
+const parseContextNodeCode = (value: unknown): string[] => (
+  parseReferenceCode(value, 'CVT').concat(parseReferenceCode(value, 'CVM'))
+)
+
+const parsePromptSourceCode = (value: unknown): string[] => (
+  parseReferenceCode(value, 'PLP').concat(parseReferenceCode(value, 'PLM'))
+)
+
+const parseContextSourceCode = (value: unknown): string[] => (
+  parsePromptSourceCode(value).concat(parseReferenceCode(value, 'CVM'))
+)
+
+const parseReferenceCode = (
+  value: unknown,
+  prefix: 'PLP' | 'PLM' | 'CVT' | 'CVM'
+): string[] => {
+  const code = validatePublicReferenceCode(value, prefix)
+  return code ? [code] : []
+}
+
+const isSafeContextEntryContent = (
+  content: string,
+  namespace: 'canvasTemplate' | 'canvasMedia'
+): boolean => {
+  let value: unknown
+  try {
+    value = JSON.parse(content)
+  } catch {
+    return false
+  }
+  if (namespace === 'canvasTemplate') {
+    return isClosedRecord(value, ['kind', 'text', 'title', 'truncated'])
+      && value.kind === 'text'
+      && typeof value.text === 'string'
+      && typeof value.title === 'string'
+      && typeof value.truncated === 'boolean'
+  }
+  if (!isRecord(value)) return false
+  const required = ['height', 'kind', 'title', 'width']
+  const optional = ['contentType', 'size']
+  if (!hasOnlyKeys(value, required, optional)) return false
+  return value.kind === 'image'
+    && typeof value.title === 'string'
+    && typeof value.width === 'number' && Number.isFinite(value.width) && value.width > 0
+    && typeof value.height === 'number' && Number.isFinite(value.height) && value.height > 0
+    && (value.contentType === undefined || typeof value.contentType === 'string')
+    && (value.size === undefined || isNonNegativeInteger(value.size))
+}
+
+const requireContextPackCode = (value: string): string => {
+  const code = validatePublicReferenceCode(value, 'CVC')
+  if (code) return code
+  throw new StorageHttpError(400, 'invalid_context_code', 'Canvas context code is invalid.')
+}
+
+const isClosedRecord = <K extends string>(
+  value: unknown,
+  keys: readonly K[]
+): value is Record<K, unknown> => (
+  isRecord(value)
+  && !Array.isArray(value)
+  && Object.keys(value).length === keys.length
+  && Object.keys(value).every(key => keys.includes(key as K))
+)
+
+const hasOnlyKeys = (
+  value: Record<string, unknown>,
+  required: string[],
+  optional: string[]
+): boolean => (
+  required.every(key => Object.prototype.hasOwnProperty.call(value, key))
+  && Object.keys(value).every(key => required.includes(key) || optional.includes(key))
+)
+
+const isSha256 = (value: unknown): value is string => (
+  typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value)
+)
 const hasStrings = (value: Record<string, unknown>, keys: string[]): boolean => keys.every(key => typeof value[key] === 'string')
 const isNonNegativeInteger = (value: unknown): value is number => Number.isInteger(value) && Number(value) >= 0
 const isPositiveInteger = (value: unknown): value is number => Number.isInteger(value) && Number(value) > 0

@@ -41,6 +41,7 @@ import { ProjectResourceLibrary } from '@/components/canvas/ProjectResourceLibra
 import { ImageNodeActionBar } from '@/components/canvas/image-actions/ImageNodeActionBar'
 import { CanvasNodeContextMenu } from '@/components/canvas/image-actions/CanvasNodeContextMenu'
 import { CanvasProjectReferenceCodeAction } from '@/components/canvas/image-actions/CanvasReferenceCodeAction'
+import { CopyCodexContext } from '@/components/canvas/context-packs/CopyCodexContext'
 import { CanvasUnsupportedNodeContextMenu } from '@/components/canvas/image-actions/CanvasUnsupportedNodeContextMenu'
 import {
   CanvasTextNodeContextMenu,
@@ -2679,6 +2680,11 @@ const FreeCanvasBuilderInner = ({
           <div className="text-[11px] font-semibold text-gray-400">Free Canvas</div>
         </button>
         <CanvasProjectReferenceCodeAction project={activeProject} />
+        <CopyCodexContext
+          project={activeProject}
+          nodes={freeCanvas.nodes}
+          selectedNodeIds={selectedNodeIds}
+        />
         <ToolbarButton title="Save" onClick={onSave}><Save className="h-4 w-4" /></ToolbarButton>
       </header>
 

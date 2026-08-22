@@ -1,4 +1,4 @@
-export type PublicReferenceCodePrefix = 'PLP' | 'PLM' | 'PRJ' | 'CVT' | 'CVM'
+export type PublicReferenceCodePrefix = 'PLP' | 'PLM' | 'PRJ' | 'CVT' | 'CVM' | 'CVC'
 
 const CANONICAL_ULID = /^[0-7][0-9ABCDEFGHJKMNPQRSTVWXYZ]{25}$/
 

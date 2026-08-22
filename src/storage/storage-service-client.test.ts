@@ -9,6 +9,70 @@ afterEach(() => {
 })
 
 describe('storageServiceClient', () => {
+  test('creates, inspects and idempotently revokes a closed context-pack inspection', async () => {
+    const inspection = contextPackInspection()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(inspection))
+      .mockResolvedValueOnce(jsonResponse(inspection))
+      .mockResolvedValueOnce(jsonResponse({
+        ...inspection,
+        revokedAt: 10,
+        revokedBy: 'promptcard-ui',
+        revocationReason: 'user-revoked'
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const payload = {
+      projectCode: inspection.projectCode,
+      projectRevision: inspection.projectRevision,
+      nodeCodes: [inspection.entries[0].reference.code],
+      placementHint: inspection.placementHint,
+      creator: 'promptcard-ui' as const
+    }
+
+    await expect(storageServiceClient.contextPacks.create(payload)).resolves.toEqual(inspection)
+    await expect(storageServiceClient.contextPacks.inspect(inspection.cvcCode)).resolves.toEqual(inspection)
+    await expect(storageServiceClient.contextPacks.revoke(inspection.cvcCode, {
+      actor: 'promptcard-ui', reason: 'user-revoked'
+    })).resolves.toMatchObject({ cvcCode: inspection.cvcCode, revokedAt: 10 })
+
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1]?.method, call[1]?.body])).toEqual([
+      ['/storage-api/context-packs', 'POST', JSON.stringify(payload)],
+      [`/storage-api/context-packs/${inspection.cvcCode}`, undefined, undefined],
+      [`/storage-api/context-packs/${inspection.cvcCode}/revoke`, 'POST', JSON.stringify({
+        actor: 'promptcard-ui', reason: 'user-revoked'
+      })]
+    ])
+  })
+
+  test.each([
+    ['an unknown root field', { internalId: 'secret-id' }],
+    ['a malformed typed reference', { entries: [{
+      reference: { namespace: 'canvasTemplate', code: 'CVT-invalid' },
+      content: '{}',
+      contentDigest: 'a'.repeat(64)
+    }] }],
+    ['a hidden nested URL field', { entries: [{
+      ...contextPackInspection().entries[0],
+      url: 'file:///secret/project.json'
+    }] }]
+  ])('fails closed when a context-pack response contains %s', async (_label, override) => {
+    const payload = { ...contextPackInspection(), ...override }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(payload)))
+
+    await expect(storageServiceClient.contextPacks.inspect(contextPackInspection().cvcCode))
+      .rejects.toMatchObject({ code: 'invalid_storage_response' })
+  })
+
+  test('rejects a malformed inspection code before issuing a context-pack request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(storageServiceClient.contextPacks.inspect('CVC-invalid'))
+      .rejects.toMatchObject({ code: 'invalid_context_code' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   test('reports storage health without throwing', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -666,4 +730,36 @@ describe('storageServiceClient', () => {
       '/storage-api/image-generation-runs/missing?projectId=project%2F1'
     ])
   })
+})
+
+const jsonResponse = (payload: unknown): Response => new Response(JSON.stringify(payload), {
+  status: 200,
+  headers: { 'Content-Type': 'application/json' }
+})
+
+const contextPackInspection = () => ({
+  cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+  projectCode: 'PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+  projectRevision: 7,
+  createdAt: 9,
+  creator: 'promptcard-ui',
+  entries: [{
+    reference: { namespace: 'canvasTemplate' as const, code: 'CVT-01ARZ3NDEKTSV4RRFFQ69G5FAW' },
+    content: '{"kind":"text","text":"First content","title":"First","truncated":false}',
+    contentDigest: `sha256:${'a'.repeat(64)}`
+  }],
+  sourceCodes: [],
+  sourceBoundaries: [{
+    nodeCode: 'CVT-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    promptLibraryReferences: [],
+    canvasMediaReferences: []
+  }],
+  placementHint: {
+    mode: 'after-selection' as const,
+    anchorNodeCodes: ['CVT-01ARZ3NDEKTSV4RRFFQ69G5FAW']
+  },
+  snapshotDigest: `sha256:${'b'.repeat(64)}`,
+  revokedAt: null,
+  revokedBy: null,
+  revocationReason: null
 })
