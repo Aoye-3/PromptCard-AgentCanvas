@@ -190,7 +190,7 @@ const nodeReferenceState = (node: IFreeCanvasNode): {
   if (node.kind === 'image' && node.meta.generationState === 'failed') {
     return { expectedPrefix, code: null, kindLabel, unavailableReason: '图片生成失败，节点代码不可用' }
   }
-  if (node.kind === 'image' && (node as IFreeCanvasNode & { transient?: unknown }).transient === true) {
+  if (node.kind === 'image' && node.transient === true) {
     return { expectedPrefix, code: null, kindLabel, unavailableReason: '临时图片节点没有节点代码' }
   }
   const code = validatePublicReferenceCode(node.referenceCode, expectedPrefix)

@@ -118,6 +118,7 @@ export interface IFreeCanvasTextNode extends IFreeCanvasBaseNode {
 
 export interface IFreeCanvasImageNode extends IFreeCanvasBaseNode {
   kind: 'image'
+  transient?: boolean
   assetId?: string | null
   imageUrl?: string
   imagePrompt?: string

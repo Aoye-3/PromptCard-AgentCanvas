@@ -15,6 +15,7 @@ import {
   fitFreeCanvasImageNodeFrameToContent,
   completeFreeCanvasImageGeneration,
   migrateLegacyThreeStageFreeCanvasProject,
+  normalizeFreeCanvasProject,
   replaceFreeCanvasTextRange,
   replaceFreeCanvasImageAnnotations,
   removeFreeCanvasImageAnnotation,
@@ -263,6 +264,20 @@ describe('free canvas project domain', () => {
     const project = createFreeCanvasProject(102, { nodes: [text, image] })
 
     expect(project.nodes.map(node => node.referenceCode)).toEqual(['CVT-response', 'CVM-response'])
+  })
+
+  test('preserves only strict boolean transient markers while normalizing image nodes', () => {
+    const image = createFreeCanvasImageNodeFromMedia(createFreeCanvasMediaNode('imageAsset', { x: 20, y: 40 }, 100), 101)
+    const nodes = [
+      { ...image, id: 'transient-true', transient: true },
+      { ...image, id: 'transient-false', transient: false },
+      { ...image, id: 'transient-malformed', transient: 'true' }
+    ]
+
+    const normalized = normalizeFreeCanvasProject({ nodes: nodes as never, edges: [], meta: {} }, 102)
+
+    expect(normalized.nodes.map(node => node.kind === 'image' ? node.transient : undefined))
+      .toEqual([true, false, undefined])
   })
 
   test('creates a stable running image generation placeholder', () => {

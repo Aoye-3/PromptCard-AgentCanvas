@@ -111,6 +111,9 @@ describe('storageServiceClient', () => {
         nodes: [{
           id: 'text-1', kind: 'text', title: 'Text', position: { x: 0, y: 0 }, width: 420, height: 180,
           fontSize: 'large', segments: [], meta: {}, referenceCode: 'CVT-01M0N7FTG1PKB2AV2P8S62N6H8'
+        }, {
+          id: 'image-1', kind: 'image', title: 'Transient image', position: { x: 0, y: 0 }, width: 320, height: 240,
+          transient: true, assetId: null, annotations: [], meta: {}, referenceCode: 'CVM-01M0N7FTG1PKB2AV2P8S62N6H8'
         }],
         edges: [], meta: {}
       },
@@ -124,7 +127,10 @@ describe('storageServiceClient', () => {
 
     await expect(storageServiceClient.projects.getById('project-1')).resolves.toMatchObject({
       referenceCode: projected.referenceCode,
-      freeCanvas: { nodes: [{ referenceCode: projected.freeCanvas!.nodes[0].referenceCode }] }
+      freeCanvas: { nodes: [
+        { referenceCode: projected.freeCanvas!.nodes[0].referenceCode },
+        { referenceCode: projected.freeCanvas!.nodes[1].referenceCode, transient: true }
+      ] }
     })
     await storageServiceClient.projects.create(projected)
     await storageServiceClient.projects.update('project-1', 1, projected)
@@ -134,7 +140,9 @@ describe('storageServiceClient', () => {
     for (const payload of [createPayload, updatePayload]) {
       expect(payload.referenceCode).toBeUndefined()
       expect(payload.freeCanvas.nodes[0].referenceCode).toBeUndefined()
+      expect(payload.freeCanvas.nodes[1].referenceCode).toBeUndefined()
       expect(payload.freeCanvas.nodes[0].id).toBe('text-1')
+      expect(payload.freeCanvas.nodes[1].transient).toBe(true)
     }
   })
 

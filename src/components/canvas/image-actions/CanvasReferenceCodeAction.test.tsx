@@ -2,6 +2,7 @@ import { act, create } from 'react-test-renderer'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { IFreeCanvasNode, IPromptProject } from '@/models/PromptHistory.model'
+import { normalizeFreeCanvasProject } from '@/domain/free-canvas/free-canvas-project'
 import {
   CanvasNodeReferenceCodeAction,
   CanvasProjectReferenceCodeAction
@@ -115,6 +116,34 @@ describe('Canvas reference-code copy actions', () => {
     expect(button.props.disabled).toBe(true)
     expect(renderer.root.findByProps({ role: 'status' }).children.join('')).toContain(reason)
     expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('keeps normalized transient images disabled before code validation while stable images still copy', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const normalized = normalizeFreeCanvasProject({
+      nodes: [
+        imageNode({ id: 'transient-valid', transient: true, referenceCode: `CVM-${validUlid}` }),
+        imageNode({ id: 'transient-malformed-code', transient: true, referenceCode: 'CVM-malformed' }),
+        imageNode({ id: 'stable-valid', transient: false, referenceCode: `CVM-${validUlid}` })
+      ],
+      edges: [],
+      meta: {}
+    }, 1)
+    const renderer = create(<>{normalized.nodes.map(node => (
+      <CanvasNodeReferenceCodeAction key={node.id} node={node} />
+    ))}</>)
+    const buttons = renderer.root.findAllByType('button')
+
+    for (const button of buttons) {
+      await act(async () => button.props.onClick({ stopPropagation: vi.fn() }))
+    }
+
+    expect(buttons.map(button => button.props.disabled)).toEqual([true, true, false])
+    expect(renderer.root.findAllByProps({ role: 'status' }).slice(0, 2).map(status => status.children.join('')))
+      .toEqual(['临时图片节点没有节点代码', '临时图片节点没有节点代码'])
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(writeText).toHaveBeenCalledWith(`CVM-${validUlid}`)
   })
 
   it('shows retryable errors, ignores stale settlement after scope change and stops copy activation bubbling', async () => {

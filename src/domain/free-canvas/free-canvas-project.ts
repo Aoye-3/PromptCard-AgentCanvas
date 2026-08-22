@@ -970,6 +970,7 @@ const normalizeNode = (node: Partial<IFreeCanvasNode>, timestamp: number): IFree
       position: normalizePosition(node.position),
       width: Number(node.width || 300),
       height: Number(node.height || 220),
+      ...(typeof node.transient === 'boolean' ? { transient: node.transient } : {}),
       assetId: node.assetId || null,
       imageUrl: node.imageUrl || '',
       imagePrompt: node.imagePrompt || '',

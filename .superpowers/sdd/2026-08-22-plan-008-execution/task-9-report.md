@@ -89,6 +89,8 @@ Browser-gate fix commit subject: `fix(canvas): keep reference menus reachable`.
 
 Review fix round 1 commit subject: `fix(canvas): reject transient image references`.
 
+Review fix round 2 commit subject: `fix(canvas): preserve transient image state`.
+
 ## Review fix round 1
 
 - RED command: `npm.cmd test -- --run src/components/canvas/image-actions/CanvasReferenceCodeAction.test.tsx scripts/e2e-fixture-cleanup.test.ts`.
@@ -99,6 +101,19 @@ Review fix round 1 commit subject: `fix(canvas): reject transient image referenc
   - Result: 7 files passed; 124/124 tests passed. Only the existing duplicate `item-left` React-key warning remains.
 - Browser command: repository-local Chromium, `npx.cmd playwright test tests/e2e/free-canvas-copy-code.spec.ts --workers=1`.
   - Result: the original three required scenarios passed in 42.7s (16.0s project/text, 17.0s image retry/menu, 1.5s unsupported/responsive). A proposed route-injected running/CVM scenario was removed after review; the malicious valid-code/state combination is deterministically covered by the focused component tests, while the browser spec retains real Storage projections and no test route infrastructure.
+- Production build: `npm.cmd run build` passed with 1,908 modules; only the previously recorded CSS, Tauri import, and large-chunk warnings remain.
+
+## Review fix round 2
+
+- Storage authority check: `promptcard_storage/store.py::_is_stable_canvas_image` reads top-level `node.transient is True`, and the Task 8 Storage test supplies it in the create payload. It is therefore a persisted business field, not a response-only projection; create/update payloads must retain it while continuing to strip `referenceCode`.
+- RED command: `npm.cmd test -- --run src/domain/free-canvas/free-canvas-project.test.ts src/components/canvas/image-actions/CanvasReferenceCodeAction.test.tsx`.
+  - Result: 2 tests failed and 47 passed. Image normalization produced `[undefined, undefined, undefined]` for strict `true`, strict `false`, and malformed string markers; after real normalization the transient image with a valid CVM was incorrectly enabled.
+- Fix: `IFreeCanvasImageNode` now models optional `transient: boolean`; image normalization preserves only strict boolean values and ignores malformed values. Existing image transforms spread the normalized node, so subsequent frame/annotation/generation updates retain the marker. The component reads the typed field directly.
+- Regression coverage: after `normalizeFreeCanvasProject`, valid-CVM and malformed-CVM transient images are both disabled with the lifecycle reason and make zero clipboard calls, while a stable valid-CVM image still copies. Storage client tests prove `transient: true` survives create/update serialization while node/project reference projections remain stripped.
+- GREEN focused command: `npm.cmd test -- --run src/domain/reference-codes/reference-code.test.ts src/domain/free-canvas/free-canvas-project.test.ts src/storage/storage-service-client.test.ts src/components/canvas/image-actions/CanvasReferenceCodeAction.test.tsx src/components/canvas/image-actions/ImageActionMenu.test.tsx src/components/canvas/FreeCanvasBuilderScreen.image-generation.test.tsx scripts/e2e-fixture-cleanup.test.ts`.
+  - Result: 7 files passed; 126/126 tests passed. Only the existing duplicate `item-left` React-key warning remains.
+- Browser command: repository-local Chromium, `npx.cmd playwright test tests/e2e/free-canvas-copy-code.spec.ts --workers=1`.
+  - Result: 3/3 scenarios passed in 49.2s (24.1s project/text, 14.9s image retry/menu, 1.6s unsupported/responsive).
 - Production build: `npm.cmd run build` passed with 1,908 modules; only the previously recorded CSS, Tauri import, and large-chunk warnings remain.
 
 ## Concerns
