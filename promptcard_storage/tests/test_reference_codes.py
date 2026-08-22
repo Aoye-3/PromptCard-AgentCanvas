@@ -29,12 +29,23 @@ class ParseReferenceCodeTests(unittest.TestCase):
                 self.assertEqual(expected_namespace, parsed.namespace)
                 self.assertEqual(supplied.upper(), parsed.code)
 
-    def test_invalid_alphabet_has_stable_error_code(self):
-        # Catches accepting prohibited Crockford letters such as I, L, O, or U.
-        with self.assertRaisesRegex(ReferenceCodeError, "invalid_reference_code_alphabet") as caught:
-            parse_reference_code("PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAI")
+    def test_each_prohibited_crockford_letter_has_stable_error_code(self):
+        # Catches accepting any ambiguous Crockford letter, not only I.
+        cases = (
+            "PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAI",
+            "PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAL",
+            "PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAO",
+            "PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAU",
+        )
 
-        self.assertEqual("invalid_reference_code_alphabet", caught.exception.code)
+        for supplied in cases:
+            with self.subTest(supplied=supplied):
+                with self.assertRaisesRegex(
+                    ReferenceCodeError, "invalid_reference_code_alphabet"
+                ) as caught:
+                    parse_reference_code(supplied)
+
+                self.assertEqual("invalid_reference_code_alphabet", caught.exception.code)
 
     def test_wrong_length_has_stable_error_code(self):
         # Catches accepting a truncated public code that cannot identify a ULID.
@@ -72,6 +83,16 @@ class GenerateReferenceCodeTests(unittest.TestCase):
 
         self.assertEqual("PRJ-00000000000000000000000000", code)
 
+    def test_maximum_timestamp_and_entropy_preserve_the_ulid_bit_boundary(self):
+        # Catches a wrong timestamp shift or an overlap between timestamp and entropy bits.
+        code = generate_reference_code(
+            ReferenceNamespace.PROJECT,
+            timestamp_ms=281474976710655,
+            entropy_source=lambda: b"\xff" * 10,
+        )
+
+        self.assertEqual("PRJ-7ZZZZZZZZZZZZZZZZZZZZZZZZZ", code)
+
     def test_prefix_dispatch_keeps_canvas_media_separate_from_prompt_media(self):
         # Catches a generator that conflates PLM and CVM namespaces.
         code = generate_reference_code(
@@ -106,6 +127,25 @@ class GenerateReferenceCodeTests(unittest.TestCase):
             ],
             seen,
         )
+
+    def test_continuous_collisions_stop_after_sixteen_attempts(self):
+        # Catches an unbounded collision loop or an attempt budget that silently changes.
+        attempts = []
+
+        def is_collision(code):
+            attempts.append(code)
+            return True
+
+        with self.assertRaisesRegex(ReferenceCodeError, "reference_code_collision") as caught:
+            generate_reference_code(
+                ReferenceNamespace.SKILL,
+                timestamp_ms=0,
+                entropy_source=lambda: b"\x00" * 10,
+                collision_predicate=is_collision,
+            )
+
+        self.assertEqual("reference_code_collision", caught.exception.code)
+        self.assertEqual(16, len(attempts))
 
 
 if __name__ == "__main__":
