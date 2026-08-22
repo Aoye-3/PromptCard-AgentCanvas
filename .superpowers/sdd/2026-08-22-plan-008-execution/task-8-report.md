@@ -182,3 +182,58 @@ $env:PYTHONPATH = (Resolve-Path '.test-tmp/task8-python-deps').Path; python -m p
 ```
 
 The only warning remains the pre-existing `.pytest_cache` ACL restriction. No environment fixtures, dependency directories, plan drafts, frontend, contracts, Gateway, or schema-version files are included in this fix round.
+
+## Independent review fix round 3
+
+This restore-only follow-up replaced direct source-to-target copying with validation and migration on a complete same-volume staging copy, followed by a rollback-capable DB/assets commit:
+
+1. The complete backup directory is copied to a UUID-named sibling staging directory on the target data directory's volume. The staged manifest requires a strict integer `schemaVersion` in `1..SCHEMA_VERSION`; bool, float, string, object, and future values are rejected.
+2. Before production initialization, the staged SQLite database must pass integrity checking and expose the canonical `schema_migrations` table. Its versions must be integer, unique, contiguous, in range, and end exactly at the manifest version. Missing tables/rows, missing history links, duplicate/non-integer rows, and manifest mismatch fail before any target rename.
+3. A manifest claiming v10 must already contain the hardened v10 public-reference registry; weak registries are rejected instead of silently normalized. The full staged copy is then opened through production `JsonCollectionStore`, so real legacy schemas migrate in isolation. The migrated copy is checkpointed and revalidated at v10 for the complete business-table set, foreign keys, integrity, migration history, and hardened registry before commit.
+4. Tests reuse the repository's real v5 asset-table rebuild and manual-v9 registry migration shapes. Both restore as already-migrated v10 databases, with data/assets and exact PRJ resolution preserved where applicable. Tests no longer treat a current database with only its version number changed as a valid legacy fixture.
+5. Commit renames the current DB and, when the source supplies assets, current assets to UUID rollback names before installing the staged DB/assets. Each of the four `os.replace` steps has a one-shot injected-failure regression. Every failure returns `MigrationError`, restores the original logical DB dump and exact asset bytes, and removes staging/rollback artifacts.
+6. Pre-restore backups are created directly from the rollback DB/assets through the existing `BackupManager`, avoiding `SqliteStore` initialization that would mutate built-in skill timestamps before a failed restore. Same-second pre-restore backup names use the repository's existing numeric suffix pattern.
+7. A backup without an assets directory preserves existing target assets; a backup with assets atomically replaces the target asset tree. Successful and failed paths leave no `.restore-*` or `.rollback-*` artifacts.
+
+### Fix-round-3 RED
+
+After correcting test-only PNG signatures and before production changes:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py -q
+10 failed, 5 passed, 2 warnings, 7 subtests passed in 16.97s
+```
+
+The failures proved that v5/v9 were copied without staging migration, history corruption and fake/weak v10 databases were accepted, `os.replace` failures escaped or were not reached, and no rollback transaction protected DB/assets.
+
+The five structural rejection cases were also run alone to prove every subcase independently failed against the old implementation:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py::BackupRestoreValidationTest::test_restore_rejects_corrupt_history_fake_v10_and_weak_registry -q
+5 failed, 1 passed, 1 warning in 4.37s
+```
+
+### Fix-round-3 GREEN
+
+Final backup/maintenance focused verification:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py -q
+8 passed, 1 warning, 17 subtests passed in 16.99s
+```
+
+Final backup + Canvas exact-resolution verification:
+
+```text
+python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_canvas_reference_resolution.py -q
+30 passed, 1 warning, 56 subtests passed in 18.24s
+```
+
+Relevant v3–v10 migration, SQLite initializer, assets/resources, v10 registry, and storage-artifact verification:
+
+```text
+$env:PYTHONPATH = (Resolve-Path '.test-tmp/task8-python-deps').Path; python -m pytest promptcard_storage/tests/test_backup.py promptcard_storage/tests/test_image_runs.py promptcard_storage/tests/test_image_conversations.py promptcard_storage/tests/test_image_assets_v5.py promptcard_storage/tests/test_project_resources.py promptcard_storage/tests/test_storage_artifacts.py promptcard_storage/tests/test_public_references_v10.py promptcard_storage/tests/test_sqlite_store.py -q
+92 passed, 1 warning, 92 subtests passed in 37.12s
+```
+
+The only warning remains the pre-existing `.pytest_cache` ACL restriction. This round changes only `promptcard_storage/maintenance.py`, `promptcard_storage/tests/test_backup.py`, and this report; unrelated environment fixture deletions and the untracked plan draft remain excluded.
