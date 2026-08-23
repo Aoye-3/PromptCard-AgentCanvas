@@ -382,12 +382,12 @@ flowchart TD
 
 This is an additional human-review stop before Task 15. Do not begin the Skill Hub management UI until the user accepts the Task 14 evidence package.
 
-- [ ] Codex and local-Agent enablement/pins are independent and bind the exact canonical `SKL`, revision, and digest.
-- [ ] Concurrent publish/publish and publish/unpublish operations, database failure, and process restart cannot leave the durable pin and repository projection silently divergent.
-- [ ] Codex collision, full-manifest drift, missing files, extra files, unsafe paths, and symlink/junction/reparse escape fail visibly without overwriting or deleting user-owned content.
-- [ ] Local-Agent resolution rechecks lifecycle and trust for every run, filters scripts and disallowed resources, enforces fixed content/capability budgets in both Storage and Gateway, and cannot add tools beyond the validated run scope.
-- [ ] Focused adversarial tests and the full Storage, Gateway/backend, Ruff, TypeScript, and production-build gates pass.
-- [ ] The acceptance handoff lists commits, automated evidence, remaining risks, and the exact manual/API probes available before Task 15.
+- [x] Codex and local-Agent enablement/pins are independent and bind the exact canonical `SKL`, revision, and digest.
+- [x] Concurrent publish/publish and publish/unpublish operations, database failure, and process restart cannot leave the durable pin and repository projection silently divergent.
+- [x] Codex collision, full-manifest drift, missing files, extra files, unsafe paths, and symlink/junction/reparse escape fail visibly without overwriting or deleting user-owned content.
+- [x] Local-Agent resolution rechecks lifecycle and trust for every run, filters scripts and disallowed resources, enforces fixed content/capability budgets in both Storage and Gateway, and cannot add tools beyond the validated run scope.
+- [x] Focused adversarial tests and the full Storage, Gateway/backend, Ruff, TypeScript, and production-build gates pass.
+- [x] The acceptance handoff lists commits, automated evidence, remaining risks, and the exact manual/API probes available before Task 15.
 
 ### Task 15: Complete Skill Hub management UI
 
