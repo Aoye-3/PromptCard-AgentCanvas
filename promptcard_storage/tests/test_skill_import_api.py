@@ -104,6 +104,34 @@ class SkillImportApiTests(unittest.TestCase):
         self.assertEqual(stored, SKILL)
         self.assertNotIn("contentBase64", repr(imported.json()))
 
+    def test_folder_filesystem_error_returns_closed_sanitized_inspection(self) -> None:
+        folder = self.data_dir / "source-error"
+        folder.mkdir()
+        (folder / "SKILL.md").write_bytes(SKILL)
+
+        with (
+            patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=False),
+            patch(
+                "promptcard_storage.skill_importer.os.scandir",
+                side_effect=OSError("C:\\private\\credential-folder"),
+            ),
+        ):
+            response = self.client.post(
+                "/api/skill-package-inspections/folder",
+                json={"path": str(folder)},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["clean"])
+        self.assertEqual(
+            [finding["code"] for finding in payload["findings"]],
+            ["folder.root_changed"],
+        )
+        self.assertEqual(payload["manifest"]["entries"], [])
+        self.assertNotIn("credential-folder", repr(payload))
+        self.assertNotIn(str(folder), repr(payload))
+
     def test_dirty_unknown_expired_and_consumed_inspections_fail_closed(self) -> None:
         dirty = self.inspect_archive(archive_bytes(
             b"---\nname: dirty\ndescription: Dirty.\n---\npassword=raw-secret-value"

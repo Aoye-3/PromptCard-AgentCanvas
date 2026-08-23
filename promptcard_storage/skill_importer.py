@@ -280,23 +280,31 @@ def inspect_folder(
     if _supports_anchored_folder_walk():
         return _inspect_folder_anchored(absolute_root, root_stat, limits)
 
-    pending: list[tuple[Path, int]] = [(absolute_root, 0)]
+    pending: list[tuple[Path, int, os.stat_result]] = [(absolute_root, 0, root_stat)]
     while pending:
-        directory, depth = pending.pop()
-        if not _root_is_unchanged(absolute_root, root_stat):
+        directory, depth, expected_directory = pending.pop()
+        if (
+            not _root_is_unchanged(absolute_root, root_stat)
+            or not _directory_path_is_unchanged(directory, expected_directory)
+        ):
             return _root_changed_result(limits)
         if depth > limits.max_directory_depth:
             collector.add("path.limit_exceeded")
             continue
         try:
             scanned = sorted(os.scandir(directory), key=lambda item: (item.name.casefold(), item.name))
-        except OSError:
-            collector.add("folder.file_changed")
-            continue
-        if not _root_is_unchanged(absolute_root, root_stat):
+        except (OSError, ValueError):
+            return _root_changed_result(limits)
+        if (
+            not _root_is_unchanged(absolute_root, root_stat)
+            or not _directory_path_is_unchanged(directory, expected_directory)
+        ):
             return _root_changed_result(limits)
         for directory_entry in scanned:
-            if not _root_is_unchanged(absolute_root, root_stat):
+            if (
+                not _root_is_unchanged(absolute_root, root_stat)
+                or not _directory_path_is_unchanged(directory, expected_directory)
+            ):
                 return _root_changed_result(limits)
             member_count += 1
             if member_count > limits.max_members:
@@ -306,9 +314,10 @@ def inspect_folder(
             try:
                 enumerated_stat = directory_entry.stat(follow_symlinks=False)
                 item_stat = os.lstat(directory_entry.path)
-            except OSError:
-                collector.add("folder.file_changed")
-                continue
+            except (OSError, ValueError):
+                return _root_changed_result(limits)
+            if not _directory_path_is_unchanged(directory, expected_directory):
+                return _root_changed_result(limits)
             if not _same_enumerated_metadata(enumerated_stat, item_stat):
                 return _root_changed_result(limits)
             try:
@@ -332,7 +341,7 @@ def inspect_folder(
                 if depth >= limits.max_directory_depth:
                     collector.add("path.limit_exceeded", path=canonical)
                     continue
-                pending.append((Path(directory_entry.path), depth + 1))
+                pending.append((Path(directory_entry.path), depth + 1, item_stat))
                 continue
             if not stat.S_ISREG(item_stat.st_mode):
                 collector.add("path.unsafe_link", path=canonical)
@@ -347,17 +356,22 @@ def inspect_folder(
             if total_bytes + item_stat.st_size > limits.max_total_bytes:
                 collector.add("inspection.total_too_large", path=canonical)
                 continue
-            if not _root_is_unchanged(absolute_root, root_stat):
+            if (
+                not _root_is_unchanged(absolute_root, root_stat)
+                or not _directory_path_is_unchanged(directory, expected_directory)
+            ):
                 return _root_changed_result(limits)
             try:
                 content = _read_folder_file(Path(directory_entry.path), item_stat, limits.max_file_bytes)
             except _FileChanged:
                 collector.add("folder.file_changed", path=canonical)
                 continue
-            except OSError:
-                collector.add("folder.file_changed", path=canonical)
-                continue
-            if not _root_is_unchanged(absolute_root, root_stat):
+            except (OSError, ValueError):
+                return _root_changed_result(limits)
+            if (
+                not _root_is_unchanged(absolute_root, root_stat)
+                or not _directory_path_is_unchanged(directory, expected_directory)
+            ):
                 return _root_changed_result(limits)
             total_bytes += len(content)
             entry = _snapshot_entry(canonical, content, collector)
@@ -377,6 +391,17 @@ def _supports_anchored_folder_walk() -> bool:
     )
 
 
+class _FolderRootChanged(Exception):
+    pass
+
+
+def _folder_filesystem_call(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    try:
+        return operation(*args, **kwargs)
+    except (OSError, ValueError):
+        raise _FolderRootChanged from None
+
+
 def _inspect_folder_anchored(
     absolute_root: Path,
     root_stat: os.stat_result,
@@ -393,111 +418,134 @@ def _inspect_folder_anchored(
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_CLOEXEC", 0)
     )
+    opened_fds: list[int] = []
+    result: InspectionResult | None = None
+    close_failed = False
     try:
-        root_fd = os.open(absolute_root, directory_flags)
-    except OSError:
-        return _root_changed_result(limits)
-    pending: list[tuple[int, str, int]] = []
-    try:
-        if _root_identity(os.fstat(root_fd)) != _root_identity(root_stat):
-            return _root_changed_result(limits)
-        pending.append((root_fd, "", 0))
+        root_fd = _folder_filesystem_call(os.open, absolute_root, directory_flags)
+        opened_fds.append(root_fd)
+        root_handle_stat = _folder_filesystem_call(os.fstat, root_fd)
+        if not _same_directory_identity(root_handle_stat, root_stat):
+            raise _FolderRootChanged
+        pending: list[tuple[int, str, int, os.stat_result]] = [(root_fd, "", 0, root_stat)]
         while pending:
-            directory_fd, prefix, depth = pending.pop()
-            close_directory = directory_fd != root_fd
-            try:
-                if not _root_is_unchanged(absolute_root, root_stat):
-                    return _root_changed_result(limits)
-                scanned = sorted(
-                    os.scandir(directory_fd), key=lambda item: (item.name.casefold(), item.name)
+            directory_fd, prefix, depth, expected_directory = pending.pop()
+            before_scan = _folder_filesystem_call(os.fstat, directory_fd)
+            if (
+                not _same_directory_identity(before_scan, expected_directory)
+                or not _root_is_unchanged(absolute_root, root_stat)
+            ):
+                raise _FolderRootChanged
+            scanned = sorted(
+                _folder_filesystem_call(os.scandir, directory_fd),
+                key=lambda item: (item.name.casefold(), item.name),
+            )
+            after_scan = _folder_filesystem_call(os.fstat, directory_fd)
+            if (
+                not _same_directory_identity(after_scan, expected_directory)
+                or not _root_is_unchanged(absolute_root, root_stat)
+            ):
+                raise _FolderRootChanged
+            for directory_entry in scanned:
+                current_directory = _folder_filesystem_call(os.fstat, directory_fd)
+                if not _same_directory_identity(current_directory, expected_directory):
+                    raise _FolderRootChanged
+                member_count += 1
+                if member_count > limits.max_members:
+                    collector.add("inspection.member_count_exceeded")
+                    result = _validate_and_finalize(entries, collector, limits)
+                    pending.clear()
+                    break
+                relative_raw = f"{prefix}/{directory_entry.name}" if prefix else directory_entry.name
+                canonical, error = _safe_package_path(relative_raw, limits)
+                if error:
+                    collector.add(error, path=canonical or "")
+                    continue
+                enumerated_stat = _folder_filesystem_call(
+                    directory_entry.stat,
+                    follow_symlinks=False,
                 )
-                if not _root_is_unchanged(absolute_root, root_stat):
-                    return _root_changed_result(limits)
-                for directory_entry in scanned:
-                    member_count += 1
-                    if member_count > limits.max_members:
-                        collector.add("inspection.member_count_exceeded")
-                        return _validate_and_finalize(entries, collector, limits)
-                    relative_raw = f"{prefix}/{directory_entry.name}" if prefix else directory_entry.name
-                    canonical, error = _safe_package_path(relative_raw, limits)
-                    if error:
-                        collector.add(error, path=canonical or "")
+                item_stat = _folder_filesystem_call(
+                    os.stat,
+                    directory_entry.name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                current_directory = _folder_filesystem_call(os.fstat, directory_fd)
+                if (
+                    not _same_directory_identity(current_directory, expected_directory)
+                    or not _same_enumerated_metadata(enumerated_stat, item_stat)
+                ):
+                    raise _FolderRootChanged
+                if stat.S_ISLNK(item_stat.st_mode) or is_windows_reparse_point(item_stat):
+                    collector.add("path.unsafe_link", path=canonical)
+                    continue
+                if stat.S_ISDIR(item_stat.st_mode):
+                    if directory_entry.name.casefold() in _EXCLUDED_DIRECTORIES:
                         continue
-                    try:
-                        enumerated_stat = directory_entry.stat(follow_symlinks=False)
-                        item_stat = os.stat(
-                            directory_entry.name,
-                            dir_fd=directory_fd,
-                            follow_symlinks=False,
-                        )
-                    except OSError:
-                        collector.add("folder.file_changed", path=canonical)
+                    if depth >= limits.max_directory_depth:
+                        collector.add("path.limit_exceeded", path=canonical)
                         continue
-                    if not _same_enumerated_metadata(enumerated_stat, item_stat):
-                        return _root_changed_result(limits)
-                    if stat.S_ISLNK(item_stat.st_mode) or is_windows_reparse_point(item_stat):
-                        collector.add("path.unsafe_link", path=canonical)
-                        continue
-                    if stat.S_ISDIR(item_stat.st_mode):
-                        if directory_entry.name.casefold() in _EXCLUDED_DIRECTORIES:
-                            continue
-                        if depth >= limits.max_directory_depth:
-                            collector.add("path.limit_exceeded", path=canonical)
-                            continue
-                        try:
-                            child_fd = os.open(
-                                directory_entry.name,
-                                directory_flags,
-                                dir_fd=directory_fd,
-                            )
-                        except OSError:
-                            collector.add("folder.file_changed", path=canonical)
-                            continue
-                        if _file_identity(os.fstat(child_fd)) != _file_identity(item_stat):
-                            os.close(child_fd)
-                            return _root_changed_result(limits)
-                        pending.append((child_fd, canonical, depth + 1))
-                        continue
-                    if not stat.S_ISREG(item_stat.st_mode):
-                        collector.add("path.unsafe_link", path=canonical)
-                        continue
-                    if not _reserve_path(canonical, seen, collector):
-                        continue
-                    if item_stat.st_size > limits.max_file_bytes or (
-                        canonical == "SKILL.md" and item_stat.st_size > limits.max_skill_md_bytes
-                    ):
-                        collector.add("inspection.file_too_large", path=canonical)
-                        continue
-                    if total_bytes + item_stat.st_size > limits.max_total_bytes:
-                        collector.add("inspection.total_too_large", path=canonical)
-                        continue
-                    try:
-                        content = _read_folder_file(
-                            directory_entry.name,
-                            item_stat,
-                            limits.max_file_bytes,
-                            dir_fd=directory_fd,
-                        )
-                    except (OSError, _FileChanged):
-                        collector.add("folder.file_changed", path=canonical)
-                        continue
-                    if not _root_is_unchanged(absolute_root, root_stat):
-                        return _root_changed_result(limits)
-                    total_bytes += len(content)
-                    entry = _snapshot_entry(canonical, content, collector)
-                    if entry is not None:
-                        entries.append(entry)
-            finally:
-                if close_directory:
-                    os.close(directory_fd)
+                    child_fd = _folder_filesystem_call(
+                        os.open,
+                        directory_entry.name,
+                        directory_flags,
+                        dir_fd=directory_fd,
+                    )
+                    opened_fds.append(child_fd)
+                    child_handle_stat = _folder_filesystem_call(os.fstat, child_fd)
+                    if not _same_directory_identity(child_handle_stat, item_stat):
+                        raise _FolderRootChanged
+                    pending.append((child_fd, canonical, depth + 1, item_stat))
+                    continue
+                if not stat.S_ISREG(item_stat.st_mode):
+                    collector.add("path.unsafe_link", path=canonical)
+                    continue
+                if not _reserve_path(canonical, seen, collector):
+                    continue
+                if item_stat.st_size > limits.max_file_bytes or (
+                    canonical == "SKILL.md" and item_stat.st_size > limits.max_skill_md_bytes
+                ):
+                    collector.add("inspection.file_too_large", path=canonical)
+                    continue
+                if total_bytes + item_stat.st_size > limits.max_total_bytes:
+                    collector.add("inspection.total_too_large", path=canonical)
+                    continue
+                content = _folder_filesystem_call(
+                    _read_folder_file,
+                    directory_entry.name,
+                    item_stat,
+                    limits.max_file_bytes,
+                    dir_fd=directory_fd,
+                )
+                current_directory = _folder_filesystem_call(os.fstat, directory_fd)
+                if (
+                    not _same_directory_identity(current_directory, expected_directory)
+                    or not _root_is_unchanged(absolute_root, root_stat)
+                ):
+                    raise _FolderRootChanged
+                total_bytes += len(content)
+                entry = _snapshot_entry(canonical, content, collector)
+                if entry is not None:
+                    entries.append(entry)
+            if result is not None:
+                break
         if not _root_is_unchanged(absolute_root, root_stat):
-            return _root_changed_result(limits)
-        return _validate_and_finalize(entries, collector, limits)
+            raise _FolderRootChanged
+        if result is None:
+            result = _validate_and_finalize(entries, collector, limits)
+    except (_FolderRootChanged, _FileChanged):
+        result = _root_changed_result(limits)
     finally:
-        for directory_fd, _prefix, _depth in pending:
-            if directory_fd != root_fd:
+        for directory_fd in reversed(opened_fds):
+            try:
                 os.close(directory_fd)
-        os.close(root_fd)
+            except (OSError, ValueError):
+                close_failed = True
+    if close_failed:
+        return _root_changed_result(limits)
+    assert result is not None
+    return result
 
 
 def _root_is_unchanged(root: Path, expected: os.stat_result) -> bool:
@@ -511,6 +559,39 @@ def _root_is_unchanged(root: Path, expected: os.stat_result) -> bool:
         and not is_windows_reparse_point(current)
         and _root_identity(current) == _root_identity(expected)
     )
+
+
+def _directory_path_is_unchanged(path: Path, expected: os.stat_result) -> bool:
+    try:
+        current = os.lstat(path)
+    except (OSError, ValueError):
+        return False
+    return _same_directory_identity(current, expected)
+
+
+def _same_directory_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    if (
+        not stat.S_ISDIR(left.st_mode)
+        or not stat.S_ISDIR(right.st_mode)
+        or stat.S_ISLNK(left.st_mode)
+        or stat.S_ISLNK(right.st_mode)
+        or is_windows_reparse_point(left)
+        or is_windows_reparse_point(right)
+    ):
+        return False
+    if (
+        stat.S_IFMT(left.st_mode),
+        getattr(left, "st_file_attributes", 0),
+    ) != (
+        stat.S_IFMT(right.st_mode),
+        getattr(right, "st_file_attributes", 0),
+    ):
+        return False
+    left_identity = (left.st_dev, left.st_ino)
+    right_identity = (right.st_dev, right.st_ino)
+    if 0 not in left_identity and 0 not in right_identity:
+        return left_identity == right_identity
+    return getattr(left, "st_ctime_ns", 0) == getattr(right, "st_ctime_ns", 0)
 
 
 def _root_changed_result(limits: InspectionLimits) -> InspectionResult:
@@ -532,10 +613,12 @@ def _same_enumerated_metadata(left: os.stat_result, right: os.stat_result) -> bo
     stable_metadata: tuple[int, ...] = (
         stat.S_IFMT(left.st_mode),
         getattr(left, "st_file_attributes", 0),
+        getattr(left, "st_ctime_ns", 0),
     )
     current_metadata: tuple[int, ...] = (
         stat.S_IFMT(right.st_mode),
         getattr(right, "st_file_attributes", 0),
+        getattr(right, "st_ctime_ns", 0),
     )
     if stat.S_ISREG(left.st_mode) and stat.S_ISREG(right.st_mode):
         stable_metadata += (

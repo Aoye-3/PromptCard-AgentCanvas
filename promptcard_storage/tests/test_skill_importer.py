@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import promptcard_storage.skill_importer as skill_importer_module
 from promptcard_storage.skill_importer import (
     DEFAULT_INSPECTION_LIMITS,
     InspectionLimits,
@@ -266,6 +267,226 @@ class SkillFolderInspectionTests(unittest.TestCase):
         self.assertFalse(result.clean)
         self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
         self.assertEqual(result.snapshot.entries, ())
+
+    def test_anchored_scandir_error_is_redacted_and_closes_root_fd(self) -> None:
+        self.write("SKILL.md", skill_markdown())
+        root_stat = os.lstat(self.root)
+        closed: list[int] = []
+
+        with (
+            patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=True),
+            patch("promptcard_storage.skill_importer.os.open", return_value=101),
+            patch("promptcard_storage.skill_importer.os.fstat", return_value=root_stat),
+            patch(
+                "promptcard_storage.skill_importer.os.scandir",
+                side_effect=OSError("C:\\private\\secret-folder"),
+            ),
+            patch("promptcard_storage.skill_importer.os.close", side_effect=closed.append),
+        ):
+            result = inspect_folder(self.root)
+
+        self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
+        self.assertEqual(result.snapshot.entries, ())
+        self.assertNotIn("secret-folder", repr(result.public_dict()))
+        self.assertEqual(closed, [101])
+
+    def test_anchored_child_fstat_error_closes_every_open_fd(self) -> None:
+        self.write("SKILL.md", skill_markdown())
+        child = self.root / "assets"
+        child.mkdir()
+        root_stat = os.lstat(self.root)
+        child_stat = os.lstat(child)
+        entry = SimpleNamespace(name="assets", stat=lambda **_kwargs: child_stat)
+        opened = [201, 202]
+        closed: list[int] = []
+
+        def child_fstat_fails(fd):
+            if fd == 202:
+                raise OSError("C:\\private\\child-secret")
+            return root_stat
+
+        with (
+            patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=True),
+            patch("promptcard_storage.skill_importer.os.open", side_effect=opened),
+            patch("promptcard_storage.skill_importer.os.fstat", side_effect=child_fstat_fails),
+            patch("promptcard_storage.skill_importer.os.scandir", return_value=iter([entry])),
+            patch("promptcard_storage.skill_importer.os.stat", return_value=child_stat),
+            patch("promptcard_storage.skill_importer.os.close", side_effect=closed.append),
+        ):
+            result = inspect_folder(self.root)
+
+        self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
+        self.assertEqual(result.snapshot.entries, ())
+        self.assertNotIn("child-secret", repr(result.public_dict()))
+        self.assertCountEqual(closed, [201, 202])
+
+    def test_anchored_child_open_error_is_closed(self) -> None:
+        self.write("SKILL.md", skill_markdown())
+        child = self.root / "assets"
+        child.mkdir()
+        root_stat = os.lstat(self.root)
+        child_stat = os.lstat(child)
+        entry = SimpleNamespace(name="assets", stat=lambda **_kwargs: child_stat)
+        closed: list[int] = []
+
+        with (
+            patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=True),
+            patch(
+                "promptcard_storage.skill_importer.os.open",
+                side_effect=[301, OSError("C:\\private\\open-secret")],
+            ),
+            patch("promptcard_storage.skill_importer.os.fstat", return_value=root_stat),
+            patch("promptcard_storage.skill_importer.os.scandir", return_value=iter([entry])),
+            patch("promptcard_storage.skill_importer.os.stat", return_value=child_stat),
+            patch("promptcard_storage.skill_importer.os.close", side_effect=closed.append),
+        ):
+            result = inspect_folder(self.root)
+
+        self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
+        self.assertEqual(result.snapshot.entries, ())
+        self.assertNotIn("open-secret", repr(result.public_dict()))
+        self.assertEqual(closed, [301])
+
+    def test_anchored_read_and_close_errors_fail_closed(self) -> None:
+        self.write("SKILL.md", skill_markdown())
+        root_stat = os.lstat(self.root)
+        file_stat = os.lstat(self.root / "SKILL.md")
+        entry = SimpleNamespace(name="SKILL.md", stat=lambda **_kwargs: file_stat)
+        close_attempts: list[int] = []
+
+        def fail_close(fd):
+            close_attempts.append(fd)
+            raise OSError("C:\\private\\close-secret")
+
+        with (
+            patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=True),
+            patch("promptcard_storage.skill_importer.os.open", return_value=401),
+            patch("promptcard_storage.skill_importer.os.fstat", return_value=root_stat),
+            patch("promptcard_storage.skill_importer.os.scandir", return_value=iter([entry])),
+            patch("promptcard_storage.skill_importer.os.stat", return_value=file_stat),
+            patch(
+                "promptcard_storage.skill_importer._read_folder_file",
+                side_effect=OSError("C:\\private\\read-secret"),
+            ),
+            patch("promptcard_storage.skill_importer.os.close", side_effect=fail_close),
+        ):
+            result = inspect_folder(self.root)
+
+        self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
+        self.assertEqual(result.snapshot.entries, ())
+        self.assertNotIn("private", repr(result.public_dict()))
+        self.assertEqual(close_attempts, [401])
+
+    def test_nested_directory_swap_discards_replacement_bytes(self) -> None:
+        self.write("SKILL.md", skill_markdown())
+        target = self.root / "assets" / "level-one" / "level-two"
+        target.mkdir(parents=True)
+        (target / "payload.bin").write_bytes(b"original-child")
+        parked = self.root.parent / f"{self.root.name}-child-parked"
+        replacement = self.root.parent / f"{self.root.name}-child-replacement"
+        replacement.mkdir()
+        (replacement / "payload.bin").write_bytes(b"replacement-marker-must-not-be-read")
+        real_scandir = os.scandir
+        real_read = skill_importer_module._read_folder_file
+        child_reads: list[Path] = []
+        swapped = False
+
+        def swap_child_before_scan(path):
+            nonlocal swapped
+            if not swapped and Path(path) == target:
+                os.replace(target, parked)
+                os.replace(replacement, target)
+                swapped = True
+            return real_scandir(path)
+
+        def record_child_read(path, expected, limit, *, dir_fd=None):
+            candidate = Path(path)
+            if candidate.name == "payload.bin":
+                child_reads.append(candidate)
+            return real_read(path, expected, limit, dir_fd=dir_fd)
+
+        try:
+            with (
+                patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=False),
+                patch("promptcard_storage.skill_importer.os.scandir", side_effect=swap_child_before_scan),
+                patch(
+                    "promptcard_storage.skill_importer._read_folder_file",
+                    side_effect=record_child_read,
+                ),
+            ):
+                result = inspect_folder(self.root)
+        finally:
+            if swapped:
+                os.replace(target, replacement)
+                os.replace(parked, target)
+            shutil.rmtree(replacement, ignore_errors=True)
+
+        self.assertFalse(result.clean)
+        self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
+        self.assertEqual(result.snapshot.entries, ())
+        self.assertEqual(child_reads, [])
+
+    def test_nested_directory_swap_then_revert_fails_closed(self) -> None:
+        self.write("SKILL.md", skill_markdown())
+        target = self.root / "assets" / "level-one" / "level-two"
+        target.mkdir(parents=True)
+        original_file = target / "payload.bin"
+        original_file.write_bytes(b"same-size-original")
+        parked = self.root.parent / f"{self.root.name}-child-parked"
+        replacement = self.root.parent / f"{self.root.name}-child-replacement"
+        replacement.mkdir()
+        replacement_file = replacement / "payload.bin"
+        replacement_file.write_bytes(b"same-size-marker-x")
+        fixed_mtime = 1_700_000_000_000_000_000
+        os.utime(original_file, ns=(fixed_mtime, fixed_mtime))
+        os.utime(replacement_file, ns=(fixed_mtime, fixed_mtime))
+        real_scandir = os.scandir
+        real_read = skill_importer_module._read_folder_file
+        child_reads: list[Path] = []
+        swapped = False
+
+        def enumerate_replacement_then_revert(path):
+            nonlocal swapped
+            if not swapped and Path(path) == target:
+                os.replace(target, parked)
+                os.replace(replacement, target)
+                entries = list(real_scandir(path))
+                for entry in entries:
+                    entry.stat(follow_symlinks=False)
+                os.replace(target, replacement)
+                os.replace(parked, target)
+                swapped = True
+                return iter(entries)
+            return real_scandir(path)
+
+        def record_child_read(path, expected, limit, *, dir_fd=None):
+            candidate = Path(path)
+            if candidate.name == "payload.bin":
+                child_reads.append(candidate)
+            return real_read(path, expected, limit, dir_fd=dir_fd)
+
+        try:
+            with (
+                patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=False),
+                patch(
+                    "promptcard_storage.skill_importer.os.scandir",
+                    side_effect=enumerate_replacement_then_revert,
+                ),
+                patch(
+                    "promptcard_storage.skill_importer._read_folder_file",
+                    side_effect=record_child_read,
+                ),
+            ):
+                result = inspect_folder(self.root)
+        finally:
+            if parked.exists():
+                os.replace(parked, target)
+            shutil.rmtree(replacement, ignore_errors=True)
+
+        self.assertFalse(result.clean)
+        self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
+        self.assertEqual(result.snapshot.entries, ())
+        self.assertEqual(child_reads, [])
 
     def test_windows_ambiguous_paths_and_canonical_collisions_fail_closed(self) -> None:
         cases = {"reserved": "assets/CON.txt"}
