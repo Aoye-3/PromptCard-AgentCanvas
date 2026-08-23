@@ -14,6 +14,7 @@ from .assets import MAX_IMAGE_IMPORT_BYTES
 from .reference_codes import ReferenceCodeError
 from .remote_images import RemoteImage, RemoteImageError, fetch_remote_image
 from .skill_importer import SkillPackageImportError, SkillPackageImportService
+from .skill_hosts import CodexProjectionAdapter, SkillHostConflict, SkillHostService
 from .store import (
     AssetInUse,
     AssetValidationError,
@@ -111,13 +112,29 @@ class RemoteImagePayload(BaseModel):
     url: str
 
 
+class SkillHostPinPayload(BaseModel):
+    enabled: bool
+    revision: int = Field(ge=1)
+    repositoryScope: str | None = None
+    publicationName: str | None = None
+
+
 def create_app(
     storage: SqliteStore,
     remote_image_fetcher: Callable[[str], RemoteImage] = fetch_remote_image,
     skill_import_service: SkillPackageImportService | None = None,
+    skill_host_service: SkillHostService | None = None,
 ) -> FastAPI:
     application = FastAPI(title="PromptCard Storage", version="1.0.0")
     skill_imports = skill_import_service or SkillPackageImportService(storage)
+    skill_hosts = skill_host_service or SkillHostService(
+        storage,
+        CodexProjectionAdapter({
+            os.environ.get("PROMPTCARD_REPOSITORY_SCOPE", "local-repository"): Path(
+                os.environ.get("PROMPTCARD_REPOSITORY_ROOT", ROOT_DIR)
+            )
+        }),
+    )
 
     @application.get("/health")
     def health() -> dict[str, Any]:
@@ -405,6 +422,31 @@ def create_app(
     def restore_skill(skill_id: str) -> dict[str, Any]:
         return _handle(lambda: storage.restore_skill(skill_id))
 
+    @application.put("/api/skills/{skill_id}/host-pins/{host}")
+    def update_skill_host_pin(
+        skill_id: str, host: str, payload: SkillHostPinPayload
+    ) -> dict[str, Any]:
+        return _handle(lambda: skill_hosts.update_pin(
+            skill_id,
+            host,
+            payload.repositoryScope,
+            payload.enabled,
+            payload.revision,
+            publication_name=payload.publicationName,
+        ))
+
+    @application.get("/api/skills/{skill_id}/host-pins/{host}")
+    def get_skill_host_pin(
+        skill_id: str,
+        host: str,
+        repositoryScope: str | None = None,
+    ) -> dict[str, Any]:
+        return _handle(lambda: skill_hosts.get_pin(skill_id, host, repositoryScope))
+
+    @application.get("/api/skill-host-snapshots/local-agent")
+    def get_local_agent_skill_snapshot(skillId: str) -> dict[str, Any]:
+        return _handle(lambda: skill_hosts.local_agent_snapshot(skillId))
+
     @application.post("/api/skill-package-inspections/folder")
     async def inspect_skill_package_folder(request: Request) -> dict[str, Any]:
         item = await _bounded_skill_json(request, skill_imports.control_request_body_limit)
@@ -662,6 +704,8 @@ def _handle(callback: Callable[[], Any]) -> Any:
     try:
         return callback()
     except SkillPackageImportError as exc:
+        raise _http_error(exc.status_code, exc.code, exc.message) from exc
+    except SkillHostConflict as exc:
         raise _http_error(exc.status_code, exc.code, exc.message) from exc
     except PromptReferenceError as exc:
         raise _http_error(

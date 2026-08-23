@@ -52,7 +52,7 @@ from .skill_packages import (
 
 Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 DATABASE_NAME = "promptcard.sqlite3"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE = " \t\n\v\f\r"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
@@ -1059,6 +1059,96 @@ class SqliteStore:
             "referenceCode": reference_code, "lifecycleStatus": row[9],
             "archivedAt": row[10], "revisions": revisions,
         }
+
+    def get_skill_revision(
+        self, skill_id: str, revision: int
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if type(revision) is not int or revision < 1:
+            raise ValueError("Skill revision must be a positive integer")
+        skill = self.get_skill(skill_id)
+        if skill["lifecycleStatus"] != "active":
+            raise ValueError("Archived Skills cannot be enabled for a host")
+        canonical = next(
+            (item for item in skill["revisions"] if item["revision"] == revision),
+            None,
+        )
+        if canonical is None:
+            raise MissingItem(f"{skill_id}@{revision}")
+        return skill, canonical
+
+    def get_skill_host_pin(self, skill_id: str, host: str, scope: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            resolved_id = self._resolve_skill_id(connection, skill_id)
+            row = connection.execute(
+                """SELECT pin.enabled, pin.pinned_revision, pin.pinned_digest,
+                          pin.projection_json, pin.updated_at
+                   FROM skill_host_pins AS pin
+                   WHERE skill_id=? AND host=? AND scope=?""",
+                (resolved_id, host, scope),
+            ).fetchone()
+            if row is None:
+                raise MissingItem(f"{skill_id}:{host}:{scope}")
+            reference_code = connection.execute(
+                """SELECT public_code FROM public_references
+                   WHERE namespace='SKL' AND owner_scope='' AND internal_id=?""",
+                (resolved_id,),
+            ).fetchone()[0]
+        return {
+            "skillId": resolved_id,
+            "skillReferenceCode": reference_code,
+            "host": host,
+            "scope": scope,
+            "enabled": bool(row[0]),
+            "revision": row[1],
+            "digest": row[2],
+            "projection": json.loads(row[3]) if row[3] is not None else None,
+            "updatedAt": row[4],
+        }
+
+    def set_skill_host_pin(
+        self,
+        skill_id: str,
+        host: str,
+        scope: str,
+        enabled: bool,
+        revision: int,
+        *,
+        projection: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if host not in {"codex", "local-agent"}:
+            raise ValueError("Skill host must be codex or local-agent")
+        if type(enabled) is not bool:
+            raise ValueError("Skill host enabled must be a boolean")
+        timestamp = now_ms()
+        with self._transaction() as connection:
+            resolved_id = self._resolve_skill_id(connection, skill_id)
+            available = connection.execute(
+                """SELECT revision.digest FROM skill_revisions AS revision
+                   JOIN skills AS skill ON skill.id=revision.skill_id
+                   WHERE revision.skill_id=? AND revision.revision=?
+                     AND skill.lifecycle_status='active'""",
+                (resolved_id, revision),
+            ).fetchone()
+            if available is None:
+                raise MissingItem(f"{skill_id}@{revision}")
+            connection.execute(
+                """INSERT INTO skill_host_pins(
+                       skill_id, host, scope, enabled, pinned_revision,
+                       pinned_digest, projection_json, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(skill_id, host, scope) DO UPDATE SET
+                       enabled=excluded.enabled,
+                       pinned_revision=excluded.pinned_revision,
+                       pinned_digest=excluded.pinned_digest,
+                       projection_json=excluded.projection_json,
+                       updated_at=excluded.updated_at""",
+                (
+                    resolved_id, host, scope, int(enabled), revision, available[0],
+                    _json(projection) if projection is not None else None,
+                    timestamp,
+                ),
+            )
+        return self.get_skill_host_pin(resolved_id, host, scope)
 
     def create_skill(self, item: dict[str, Any]) -> dict[str, Any]:
         source = str(item.get("source") or "external")
@@ -3256,12 +3346,26 @@ class SqliteStore:
                 except Exception:
                     connection.rollback()
                     raise
+            if current_version == 13:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self._create_skill_hosts_v14_schema(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (14, "add-independent-skill-host-pins", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 14
+                except Exception:
+                    connection.rollback()
+                    raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
             connection.execute("BEGIN IMMEDIATE")
             try:
                 self._harden_weak_public_references_v10_schema(connection)
                 self._seed_builtin_skills(connection)
+                self._seed_builtin_skill_host_pins_v14(connection)
                 self._reconcile_public_references(connection)
                 connection.commit()
             except Exception:
@@ -3304,6 +3408,71 @@ class SqliteStore:
         self._create_context_packs_v11_schema(connection)
         self._create_context_packs_v12_schema(connection)
         self._create_skill_packages_v13_schema(connection)
+        self._create_skill_hosts_v14_schema(connection)
+
+    @staticmethod
+    def _create_skill_hosts_v14_schema(connection: sqlite3.Connection) -> None:
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS skill_host_pins(
+                skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+                host TEXT NOT NULL CHECK(host IN ('codex','local-agent')),
+                scope TEXT NOT NULL,
+                enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+                pinned_revision INTEGER NOT NULL,
+                pinned_digest TEXT NOT NULL,
+                projection_json TEXT,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(skill_id, host, scope),
+                FOREIGN KEY(skill_id, pinned_revision)
+                    REFERENCES skill_revisions(skill_id, revision) ON DELETE RESTRICT,
+                CHECK(
+                    (host='codex') OR projection_json IS NULL
+                ),
+                CHECK(
+                    (host='local-agent' AND scope='') OR
+                    (host='codex' AND length(scope) BETWEEN 1 AND 200)
+                )
+            );
+            CREATE INDEX IF NOT EXISTS skill_host_pins_scope
+                ON skill_host_pins(host, scope, enabled, skill_id);
+            CREATE TRIGGER IF NOT EXISTS skill_host_pins_digest_insert
+            BEFORE INSERT ON skill_host_pins
+            WHEN NOT EXISTS(
+                SELECT 1 FROM skill_revisions
+                WHERE skill_id=NEW.skill_id AND revision=NEW.pinned_revision
+                  AND digest=NEW.pinned_digest
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'skill host pin digest mismatch');
+            END;
+            CREATE TRIGGER IF NOT EXISTS skill_host_pins_digest_update
+            BEFORE UPDATE ON skill_host_pins
+            WHEN NOT EXISTS(
+                SELECT 1 FROM skill_revisions
+                WHERE skill_id=NEW.skill_id AND revision=NEW.pinned_revision
+                  AND digest=NEW.pinned_digest
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'skill host pin digest mismatch');
+            END;
+        """)
+
+    @staticmethod
+    def _seed_builtin_skill_host_pins_v14(connection: sqlite3.Connection) -> None:
+        timestamp = now_ms()
+        connection.execute(
+            """INSERT OR IGNORE INTO skill_host_pins(
+                   skill_id, host, scope, enabled, pinned_revision, pinned_digest,
+                   projection_json, updated_at
+               )
+               SELECT skill.id, 'local-agent', '', 1, skill.current_revision,
+                      revision.digest, NULL, ?
+               FROM skills AS skill
+               JOIN skill_revisions AS revision
+                 ON revision.skill_id=skill.id AND revision.revision=skill.current_revision
+               WHERE skill.source='builtin'""",
+            (timestamp,),
+        )
 
     def _create_public_references_v10_schema(self, connection: sqlite3.Connection) -> None:
         connection.execute(f"""

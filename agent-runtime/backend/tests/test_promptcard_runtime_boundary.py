@@ -993,11 +993,18 @@ async def test_persistent_message_loads_history_skills_and_saves_turn(monkeypatc
                 "id": "SKL-canvas-prompt-editor", "slug": "canvas-prompt-editor",
                 "source": "builtin", "capabilityId": "canvas.prompt.edit",
                     "toolDependencies": ["emit_canvas_prompt_edit"], "revision": 1,
+                    "referenceCode": "SKL-canvas-prompt-editor",
             }]}
-        if method == "GET" and path == "/api/skills/SKL-canvas-prompt-editor":
+        if method == "GET" and path == "/api/skill-host-snapshots/local-agent":
             return {
-                "id": "SKL-canvas-prompt-editor", "currentRevision": 1,
-                "revisions": [{"revision": 1, "digest": "sha256:canvas", "instructions": "Protect templates.", "references": []}],
+                "skillId": "SKL-canvas-prompt-editor",
+                "skillReferenceCode": "SKL-canvas-prompt-editor",
+                "revision": 1, "digest": "sha256:" + "a" * 64,
+                "instructions": "Protect templates.", "references": [],
+                "declaredCapabilities": {
+                    "tools": ["emit_canvas_prompt_edit"], "network": [],
+                    "executables": [], "models": [], "other": [],
+                },
             }
         if method == "POST" and path.endswith("/turns"):
             return kwargs["json"]
@@ -1049,7 +1056,7 @@ async def test_persistent_message_loads_history_skills_and_saves_turn(monkeypatc
     assert result["conversationId"] == "conversation-1"
     saved = next(call for call in calls if call[0] == "POST" and call[1].endswith("/turns"))
     assert saved[2]["json"]["requestId"] == "request-1"
-    assert saved[2]["json"]["skillSnapshots"][0]["digest"] == "sha256:canvas"
+    assert saved[2]["json"]["skillSnapshots"][0]["digest"] == "sha256:" + "a" * 64
     assert saved[2]["json"]["modelSnapshot"] == {
         "connectionId": "connection-1", "providerId": "deepseek", "modelId": "deepseek-chat",
         "displayName": "DeepSeek Chat", "capabilities": {"input": ["text"], "toolCalling": True},
@@ -1287,8 +1294,18 @@ async def test_persistent_message_rejects_skill_with_disallowed_tool_dependency(
         if path == "/api/skills":
             return {"skills": [{
                 "id": "SKL-external", "source": "external",
-                "toolDependencies": ["delete_project"],
+                "referenceCode": "SKL-external",
             }]}
+        if path == "/api/skill-host-snapshots/local-agent":
+            return {
+                "skillId": "external", "skillReferenceCode": "SKL-external",
+                "revision": 2, "digest": "sha256:" + "b" * 64,
+                "instructions": "Unsafe exact revision", "references": [],
+                "declaredCapabilities": {
+                    "tools": ["delete_project"], "network": [], "executables": [],
+                    "models": [], "other": [],
+                },
+            }
         raise AssertionError((method, path, kwargs))
 
     monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", fake_storage)

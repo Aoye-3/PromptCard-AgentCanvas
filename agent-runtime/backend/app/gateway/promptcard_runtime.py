@@ -27,13 +27,13 @@ from app.gateway.model_management.connection_store import (
 )
 from app.gateway.model_management.contracts import ConnectionRequest
 from app.gateway.model_management.service import ConnectionProbeError, probe_connection
+from app.gateway.skill_snapshots import resolve_local_agent_skill_snapshot
 from app.gateway.text_generation.service import (
     agent_chat_model_catalog,
     assigned_text_model,
     complete_sdk_text,
     resolve_text_model,
 )
-
 
 MAX_CANVAS_AGENT_IMAGE_BYTES = 30 * 1024 * 1024
 
@@ -1049,24 +1049,24 @@ async def _resolve_skill_snapshots(body: PromptCardRuntimeMessageRequest) -> lis
     if not body.selected_skill_ids:
         return snapshots
     catalog = await _storage_request("GET", "/api/skills")
-    by_id = {
-        str(item.get("id")): item
-        for item in catalog.get("skills", [])
-        if isinstance(item, dict)
-    }
+    by_id: dict[str, dict[str, Any]] = {}
+    for item in catalog.get("skills", []):
+        if not isinstance(item, dict):
+            continue
+        by_id[str(item.get("id"))] = item
+        if item.get("referenceCode"):
+            by_id[str(item["referenceCode"])] = item
     for skill_id in body.selected_skill_ids:
         summary = by_id.get(skill_id)
         if not summary:
             raise HTTPException(status_code=404, detail="selected_skill_not_found")
         if summary.get("source") != "external":
             raise HTTPException(status_code=403, detail="selected_skill_not_user_triggerable")
-        dependencies = set(summary.get("toolDependencies") or [])
-        if not dependencies.issubset(allowed_tools):
-            raise HTTPException(status_code=403, detail="skill_tool_dependency_not_allowed")
-        detail = await _storage_request("GET", f"/api/skills/{quote(skill_id, safe='')}")
-        snapshot = _current_skill_revision(detail)
-        if not snapshot:
-            raise HTTPException(status_code=409, detail="selected_skill_revision_unavailable")
+        snapshot = await resolve_local_agent_skill_snapshot(
+            _storage_request,
+            skill_id=str(summary.get("referenceCode") or skill_id),
+            allowed_tools=allowed_tools,
+        )
         snapshots.append(snapshot)
     return snapshots[:8]
 
@@ -1076,12 +1076,18 @@ async def _builtin_skill_snapshot(capability_id: str, allowed_tools: set[str]) -
     for summary in catalog.get("skills", []):
         if not isinstance(summary, dict) or summary.get("capabilityId") != capability_id:
             continue
-        dependencies = set(summary.get("toolDependencies") or [])
-        if not dependencies.issubset(allowed_tools):
-            return []
-        detail = await _storage_request("GET", f"/api/skills/{quote(str(summary['id']), safe='')}")
-        snapshot = _current_skill_revision(detail)
-        return [snapshot] if snapshot else []
+        identifier = str(summary.get("referenceCode") or summary["id"])
+        try:
+            snapshot = await resolve_local_agent_skill_snapshot(
+                _storage_request,
+                skill_id=identifier,
+                allowed_tools=allowed_tools,
+            )
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                return []
+            raise
+        return [snapshot]
     return []
 
 
