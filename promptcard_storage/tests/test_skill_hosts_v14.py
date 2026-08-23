@@ -27,6 +27,7 @@ from promptcard_storage.skill_hosts import (
     SkillHostConflict,
     SkillHostService,
 )
+from promptcard_storage.skill_importer import _FolderRootChanged, _WindowsDirectoryLeases
 from promptcard_storage.store import SCHEMA_VERSION, SqliteStore
 
 
@@ -358,6 +359,143 @@ class SkillHostsV14Tests(unittest.TestCase):
         self.assertEqual((target / "SKILL.md").read_bytes(), b"# Revision one\n")
         self.assertEqual(self.store.get_skill_host_pin("host-skill", "codex", "repo-one")["revision"], 1)
 
+    def test_publish_restore_failure_keeps_journal_until_reopen_recovers(self) -> None:
+        self.assertEqual(self.pin("codex", 1).status_code, 200)
+        revision_two = self.store.add_skill_revision("host-skill", {
+            "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
+        })["currentRevision"]
+        target = self.repository / ".agents" / "skills" / "host-skill"
+        original_replace = os.replace
+        install_failed = False
+
+        def fail_install_and_restore(source, destination) -> None:
+            nonlocal install_failed
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if source_path.parent.name == ".promptcard-projection-staging" and destination_path == target:
+                install_failed = True
+                raise OSError("forced projection install failure")
+            if (
+                install_failed
+                and source_path.parent.name == ".promptcard-projection-backups"
+                and destination_path == target
+            ):
+                raise OSError("forced projection restore failure")
+            original_replace(source, destination)
+
+        with patch("promptcard_storage.skill_hosts.os.replace", side_effect=fail_install_and_restore):
+            rejected = self.pin("codex", revision_two)
+
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(
+            rejected.json()["detail"]["code"], "codex_projection_recovery_required"
+        )
+        journals = self.repository / ".agents" / ".promptcard-projection-journal"
+        self.assertEqual(len(list(journals.glob("*.json"))), 1)
+        self.assertFalse(target.exists())
+
+        reopened = SkillHostService(
+            SqliteStore(self.root / "storage"),
+            CodexProjectionAdapter({"repo-one": self.repository}),
+        )
+        recovered = reopened.get_pin(self.skill["referenceCode"], "codex", "repo-one")
+        self.assertEqual(recovered["revision"], 1)
+        self.assertEqual(recovered["projectionHealth"]["state"], "healthy")
+        self.assertEqual((target / "SKILL.md").read_bytes(), b"# Revision one\n")
+        self.assertEqual(list(journals.glob("*.json")), [])
+
+    def test_unpublish_restore_failure_keeps_journal_until_reopen_recovers(self) -> None:
+        self.assertEqual(self.pin("codex", 1).status_code, 200)
+        target = self.repository / ".agents" / "skills" / "host-skill"
+        original_replace = os.replace
+        original_verify = self.service.codex._verify_exact_projection
+
+        def fail_unpublish_backup_verify(path, expected) -> None:
+            if path.parent.name == ".promptcard-projection-backups" and path.name.endswith("-old"):
+                raise SkillHostConflict("codex_projection_drift", "forced backup verify failure")
+            original_verify(path, expected)
+
+        def fail_unpublish_restore(source, destination) -> None:
+            source_path = Path(source)
+            if (
+                source_path.parent.name == ".promptcard-projection-backups"
+                and source_path.name.endswith("-old")
+                and Path(destination) == target
+            ):
+                raise OSError("forced unpublish restore failure")
+            original_replace(source, destination)
+
+        with (
+            patch.object(
+                self.service.codex,
+                "_verify_exact_projection",
+                side_effect=fail_unpublish_backup_verify,
+            ),
+            patch("promptcard_storage.skill_hosts.os.replace", side_effect=fail_unpublish_restore),
+        ):
+            rejected = self.pin("codex", 1, enabled=False)
+
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(
+            rejected.json()["detail"]["code"], "codex_projection_recovery_required"
+        )
+        journals = self.repository / ".agents" / ".promptcard-projection-journal"
+        self.assertEqual(len(list(journals.glob("*.json"))), 1)
+        self.assertFalse(target.exists())
+
+        reopened = SkillHostService(
+            SqliteStore(self.root / "storage"),
+            CodexProjectionAdapter({"repo-one": self.repository}),
+        )
+        recovered = reopened.get_pin(self.skill["referenceCode"], "codex", "repo-one")
+        self.assertTrue(recovered["enabled"])
+        self.assertEqual(recovered["projectionHealth"]["state"], "healthy")
+        self.assertEqual((target / "SKILL.md").read_bytes(), b"# Revision one\n")
+        self.assertEqual(list(journals.glob("*.json")), [])
+
+    def test_staging_cleanup_failure_keeps_journal_until_reopen_cleans_it(self) -> None:
+        self.assertEqual(self.pin("codex", 1).status_code, 200)
+        revision_two = self.store.add_skill_revision("host-skill", {
+            "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
+        })["currentRevision"]
+        original_write = Path.write_bytes
+        original_rmtree = shutil.rmtree
+
+        def fail_staging_write(path: Path, content: bytes) -> int:
+            if ".promptcard-projection-staging" in path.parts:
+                raise OSError("forced staging write failure")
+            return original_write(path, content)
+
+        def leave_staging(path, *args, **kwargs) -> None:
+            if Path(path).parent.name == ".promptcard-projection-staging":
+                return
+            original_rmtree(path, *args, **kwargs)
+
+        with (
+            patch.object(Path, "write_bytes", fail_staging_write),
+            patch("promptcard_storage.skill_hosts.shutil.rmtree", side_effect=leave_staging),
+        ):
+            rejected = self.pin("codex", revision_two)
+
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(
+            rejected.json()["detail"]["code"], "codex_projection_recovery_required"
+        )
+        journals = self.repository / ".agents" / ".promptcard-projection-journal"
+        staging = self.repository / ".agents" / ".promptcard-projection-staging"
+        self.assertEqual(len(list(journals.glob("*.json"))), 1)
+        self.assertEqual(len(list(staging.glob("*-new"))), 1)
+
+        reopened = SkillHostService(
+            SqliteStore(self.root / "storage"),
+            CodexProjectionAdapter({"repo-one": self.repository}),
+        )
+        recovered = reopened.get_pin(self.skill["referenceCode"], "codex", "repo-one")
+        self.assertEqual(recovered["revision"], 1)
+        self.assertEqual(recovered["projectionHealth"]["state"], "healthy")
+        self.assertEqual(list(journals.glob("*.json")), [])
+        self.assertEqual(list(staging.glob("*-new")), [])
+
     def test_cross_instance_publish_publish_is_serialized_and_consistent(self) -> None:
         revision_two = self.store.add_skill_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
@@ -659,6 +797,47 @@ class SkillHostsV14Tests(unittest.TestCase):
             pin = self.service.get_pin(self.skill["referenceCode"], "codex", "repo-one")
         self.assertEqual(pin["projectionHealth"]["state"], "drifted")
 
+    @unittest.skipUnless(os.name == "nt", "Windows directory lease boundary")
+    def test_get_pin_maps_windows_lease_acquire_failure_to_drift(self) -> None:
+        self.assertEqual(self.pin("codex", 1).status_code, 200)
+
+        with patch.object(
+            _WindowsDirectoryLeases,
+            "acquire",
+            side_effect=_FolderRootChanged,
+        ):
+            response = self.client.get(
+                f"/api/skills/{self.skill['referenceCode']}/host-pins/codex",
+                params={"repositoryScope": "repo-one"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["projectionHealth"], {
+            "state": "drifted",
+            "code": "codex_projection_drift",
+        })
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory lease boundary")
+    def test_get_pin_maps_windows_lease_close_failure_to_drift(self) -> None:
+        self.assertEqual(self.pin("codex", 1).status_code, 200)
+        original_exit = _WindowsDirectoryLeases.__exit__
+
+        def close_then_fail(leases, *args) -> bool:
+            original_exit(leases, *args)
+            raise _FolderRootChanged
+
+        with patch.object(_WindowsDirectoryLeases, "__exit__", close_then_fail):
+            response = self.client.get(
+                f"/api/skills/{self.skill['referenceCode']}/host-pins/codex",
+                params={"repositoryScope": "repo-one"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["projectionHealth"], {
+            "state": "drifted",
+            "code": "codex_projection_drift",
+        })
+
     def test_unrecoverable_journal_is_reported_unhealthy(self) -> None:
         self.assertEqual(self.pin("codex", 1).status_code, 200)
         journal_root = self.repository / ".agents" / ".promptcard-projection-journal"
@@ -860,6 +1039,31 @@ class SkillHostsV14Tests(unittest.TestCase):
             "/api/skill-host-snapshots/local-agent",
             params={"skillId": "SKL-00000000000000000000000001"},
         ).status_code, 404)
+
+    def test_local_snapshot_rejects_oversized_declared_capabilities(self) -> None:
+        unsafe_capabilities = (
+            {"tools": [f"tool-{index}" for index in range(65)]},
+            {"tools": ["界" * 43]},
+        )
+        for capabilities in unsafe_capabilities:
+            with self.subTest(capabilities=capabilities):
+                revision = self.store.add_skill_revision("host-skill", {
+                    "entries": [entry(
+                        "instruction",
+                        "SKILL.md",
+                        f"# Capability test {capabilities!r}\n".encode(),
+                    )],
+                    "declaredCapabilities": capabilities,
+                })["currentRevision"]
+                self.assertEqual(self.pin("local-agent", revision).status_code, 200)
+                rejected = self.client.get(
+                    "/api/skill-host-snapshots/local-agent",
+                    params={"skillId": self.skill["referenceCode"]},
+                )
+                self.assertEqual(rejected.status_code, 409)
+                self.assertEqual(
+                    rejected.json()["detail"]["code"], "skill_snapshot_invalid"
+                )
 
     def test_v13_migrates_to_v14_without_changing_canonical_revisions(self) -> None:
         before = self.store.get_skill("host-skill")["revisions"]

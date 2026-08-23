@@ -21,11 +21,14 @@ MANIFEST_NAME = ".promptcard-skill.json"
 MANIFEST_FORMAT = "promptcard-codex-projection-v1"
 MAX_LOCAL_SNAPSHOT_BYTES = 512 * 1024
 MAX_LOCAL_REFERENCES = 64
+MAX_LOCAL_CAPABILITY_ITEMS = 64
+MAX_LOCAL_CAPABILITY_ITEM_BYTES = 128
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 _OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _HOSTS = frozenset({"codex", "local-agent"})
 _TEXT_TYPES = frozenset({"text/plain", "text/markdown", "application/json"})
+_CAPABILITY_KEYS = frozenset({"tools", "network", "executables", "models", "other"})
 _JOURNAL_FORMAT = "promptcard-codex-operation-v1"
 _MAX_PROJECTION_FILES = 512
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
@@ -644,11 +647,39 @@ class SkillHostService:
                 skill["id"], "codex", scope, enabled, canonical["revision"],
                 projection=desired_projection,
             )
-        except Exception:
-            for change in reversed(changes):
-                change.rollback()
-            journal.unlink(missing_ok=True)
-            raise
+        except Exception as operation_error:
+            recovery_paths = self.codex.recovery_paths(scope, record)
+            try:
+                self._rollback_recovered(record, recovery_paths)
+                journal.unlink(missing_ok=True)
+            except Exception as recovery_error:
+                operation_artifacts = (
+                    recovery_paths["oldBackup"],
+                    recovery_paths["newBackup"],
+                    recovery_paths["staging"],
+                )
+                if (
+                    isinstance(operation_error, SkillHostConflict)
+                    and operation_error.code
+                    in {"codex_projection_collision", "codex_projection_drift"}
+                    and not any(
+                        path is not None and path.exists()
+                        for path in operation_artifacts
+                    )
+                ):
+                    try:
+                        journal.unlink(missing_ok=True)
+                    except OSError:
+                        raise SkillHostConflict(
+                            "codex_projection_recovery_required",
+                            "The Codex projection journal could not be cleared",
+                        ) from recovery_error
+                    raise operation_error
+                raise SkillHostConflict(
+                    "codex_projection_recovery_required",
+                    "The prior Codex projection could not be restored",
+                ) from recovery_error
+            raise operation_error
         for change in changes:
             change.finalize()
         journal.unlink(missing_ok=True)
@@ -777,6 +808,11 @@ class SkillHostService:
         staging = paths["staging"]
         if staging is not None and staging.exists():
             shutil.rmtree(staging)
+            if staging.exists():
+                raise SkillHostConflict(
+                    "codex_projection_recovery_required",
+                    "Staged projection files could not be removed",
+                )
         if prior is not None and prior["enabled"]:
             prior_target = self.codex._repository(record["repositoryScope"]) / ".agents" / "skills" / prior["projection"]["publicationName"]
             self.codex._verify_exact_projection(
@@ -846,6 +882,9 @@ class SkillHostService:
                     raise SkillHostConflict("skill_snapshot_too_large", "The local-Agent Skill has too many references")
         if instructions is None:
             raise SkillHostConflict("skill_snapshot_invalid", "The Skill snapshot has no approved instructions")
+        capabilities = _validated_local_capabilities(
+            revision["declaredCapabilities"]
+        )
         return {
             "skillId": skill["id"],
             "skillReferenceCode": skill["referenceCode"],
@@ -853,7 +892,7 @@ class SkillHostService:
             "digest": revision["digest"],
             "instructions": instructions,
             "references": references,
-            "declaredCapabilities": revision["declaredCapabilities"],
+            "declaredCapabilities": capabilities,
         }
 
 
@@ -1058,7 +1097,7 @@ def _read_stable_file(path: Path) -> bytes:
 
 
 def _scan_projection_files(target: Path) -> set[str]:
-    from .skill_importer import _WindowsDirectoryLeases
+    from .skill_importer import _FolderRootChanged, _WindowsDirectoryLeases
 
     root_stat = target.lstat()
     if target.is_symlink() or _is_reparse(root_stat) or not target.is_dir():
@@ -1067,6 +1106,7 @@ def _scan_projection_files(target: Path) -> set[str]:
     members: set[str] = set()
     member_count = 0
     pending: list[tuple[Path, os.stat_result]] = [(target, root_stat)]
+    scan_failed = False
     try:
         if leases is not None:
             leases.__enter__()
@@ -1112,10 +1152,55 @@ def _scan_projection_files(target: Path) -> set[str]:
                         members.add(relative)
             except OSError:
                 raise SkillHostConflict("codex_projection_drift", "The projection tree changed") from None
+    except _FolderRootChanged:
+        scan_failed = True
+        raise SkillHostConflict(
+            "codex_projection_drift", "The projection directory lease changed"
+        ) from None
+    except BaseException:
+        scan_failed = True
+        raise
     finally:
         if leases is not None:
-            leases.__exit__(None, None, None)
+            try:
+                leases.__exit__(None, None, None)
+            except _FolderRootChanged:
+                if not scan_failed:
+                    raise SkillHostConflict(
+                        "codex_projection_drift",
+                        "The projection directory lease changed",
+                    ) from None
     return members
+
+
+def _validated_local_capabilities(value: object) -> dict[str, list[str]]:
+    invalid = (
+        not isinstance(value, dict)
+        or not set(value).issubset(_CAPABILITY_KEYS)
+        or any(not isinstance(items, list) for items in value.values())
+    )
+    if not invalid:
+        items = [item for group in value.values() for item in group]
+        invalid = len(items) > MAX_LOCAL_CAPABILITY_ITEMS or any(
+            not isinstance(item, str)
+            or not item
+            or _utf8_size(item) is None
+            or _utf8_size(item) > MAX_LOCAL_CAPABILITY_ITEM_BYTES
+            for item in items
+        )
+    if invalid:
+        raise SkillHostConflict(
+            "skill_snapshot_invalid",
+            "The Skill snapshot declares invalid capabilities",
+        )
+    return {str(key): list(items) for key, items in value.items()}
+
+
+def _utf8_size(value: str) -> int | None:
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None
 
 
 @contextmanager

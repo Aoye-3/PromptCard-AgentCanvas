@@ -14,10 +14,55 @@ from app.gateway.promptcard_runtime import (
     PromptCardRuntimeMessageRequest,
     _allowed_tool_names,
     _resolve_canvas_node_context,
+    _resolve_skill_snapshots,
     validate_agent_canvas_edits,
     validate_agent_proposals,
 )
 from app.gateway.routers import promptcard_runtime
+
+
+@pytest.mark.anyio
+async def test_selected_public_skill_lookup_is_casefolded_before_snapshot_resolution(
+    monkeypatch,
+):
+    canonical = "SKL-00000000000000000000000002"
+    calls = []
+
+    async def fake_storage(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/skills":
+            return {"skills": [{
+                "id": "external-skill-id",
+                "referenceCode": canonical,
+                "source": "external",
+            }]}
+        if path == "/api/skill-host-snapshots/local-agent":
+            assert kwargs["params"] == {"skillId": canonical}
+            return {
+                "skillId": "external-skill-id",
+                "skillReferenceCode": canonical,
+                "revision": 1,
+                "digest": "sha256:" + "a" * 64,
+                "instructions": "Pinned",
+                "references": [],
+                "declaredCapabilities": {},
+            }
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", fake_storage)
+    body = PromptCardRuntimeMessageRequest.model_validate({
+        "content": "Use the selected skill",
+        "selectedSkillIds": [canonical.lower()],
+        "canvasNodeContext": {"mode": "prompt-library"},
+    })
+
+    snapshots = await _resolve_skill_snapshots(body)
+
+    assert snapshots[0]["skillReferenceCode"] == canonical
+    assert [call[1] for call in calls] == [
+        "/api/skills",
+        "/api/skill-host-snapshots/local-agent",
+    ]
 
 
 def test_prompt_library_search_tool_is_only_available_in_explicit_retrieval_mode():

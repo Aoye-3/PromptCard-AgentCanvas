@@ -1050,14 +1050,16 @@ async def _resolve_skill_snapshots(body: PromptCardRuntimeMessageRequest) -> lis
         return snapshots
     catalog = await _storage_request("GET", "/api/skills")
     by_id: dict[str, dict[str, Any]] = {}
+    by_public_code: dict[str, dict[str, Any]] = {}
     for item in catalog.get("skills", []):
         if not isinstance(item, dict):
             continue
         by_id[str(item.get("id"))] = item
-        if item.get("referenceCode"):
-            by_id[str(item["referenceCode"])] = item
+        reference_code = item.get("referenceCode")
+        if isinstance(reference_code, str) and reference_code:
+            by_public_code[reference_code.casefold()] = item
     for skill_id in body.selected_skill_ids:
-        summary = by_id.get(skill_id)
+        summary = by_id.get(skill_id) or by_public_code.get(skill_id.casefold())
         if not summary:
             raise HTTPException(status_code=404, detail="selected_skill_not_found")
         if summary.get("source") != "external":
