@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from .assets import MAX_IMAGE_IMPORT_BYTES
 from .reference_codes import ReferenceCodeError
 from .remote_images import RemoteImage, RemoteImageError, fetch_remote_image
+from .skill_importer import SkillPackageImportError, SkillPackageImportService
 from .store import (
     AssetInUse,
     AssetValidationError,
@@ -113,8 +114,10 @@ class RemoteImagePayload(BaseModel):
 def create_app(
     storage: SqliteStore,
     remote_image_fetcher: Callable[[str], RemoteImage] = fetch_remote_image,
+    skill_import_service: SkillPackageImportService | None = None,
 ) -> FastAPI:
     application = FastAPI(title="PromptCard Storage", version="1.0.0")
+    skill_imports = skill_import_service or SkillPackageImportService(storage)
 
     @application.get("/health")
     def health() -> dict[str, Any]:
@@ -402,6 +405,21 @@ def create_app(
     def restore_skill(skill_id: str) -> dict[str, Any]:
         return _handle(lambda: storage.restore_skill(skill_id))
 
+    @application.post("/api/skill-package-inspections/folder")
+    async def inspect_skill_package_folder(request: Request) -> dict[str, Any]:
+        item = await _bounded_skill_json(request, skill_imports.control_request_body_limit)
+        return _handle(lambda: skill_imports.inspect_folder_request(item))
+
+    @application.post("/api/skill-package-inspections/archive")
+    async def inspect_skill_package_archive(request: Request) -> dict[str, Any]:
+        item = await _bounded_skill_json(request, skill_imports.archive_request_body_limit)
+        return _handle(lambda: skill_imports.inspect_archive_request(item))
+
+    @application.post("/api/skill-package-imports")
+    async def import_inspected_skill_package(request: Request) -> dict[str, Any]:
+        item = await _bounded_skill_json(request, skill_imports.control_request_body_limit)
+        return _handle(lambda: skill_imports.import_request(item))
+
     @application.get("/api/image-generation-placements")
     def list_image_generation_placements(projectId: str, state: str | None = None) -> dict[str, Any]:
         return _handle(lambda: storage.list_image_generation_placements(
@@ -643,6 +661,8 @@ def create_app(
 def _handle(callback: Callable[[], Any]) -> Any:
     try:
         return callback()
+    except SkillPackageImportError as exc:
+        raise _http_error(exc.status_code, exc.code, exc.message) from exc
     except PromptReferenceError as exc:
         raise _http_error(
             exc.status_code,
@@ -668,6 +688,31 @@ def _handle(callback: Callable[[], Any]) -> Any:
         raise _http_error(410, "asset_deleted", "Asset was permanently deleted") from exc
     except ValueError as exc:
         raise _http_error(400, "invalid_payload", str(exc)) from exc
+
+
+async def _bounded_skill_json(request: Request, limit: int) -> Any:
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > limit:
+                raise _http_error(
+                    413, "request_too_large", "Skill package request exceeds the safety limit"
+                )
+        except ValueError:
+            raise _http_error(400, "invalid_inspection_request", "Skill package request is invalid")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            raise _http_error(
+                413, "request_too_large", "Skill package request exceeds the safety limit"
+            )
+        chunks.append(chunk)
+    try:
+        return json.loads(b"".join(chunks).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise _http_error(400, "invalid_inspection_request", "Skill package request is invalid")
 
 
 def _http_error(status: int, code: str, message: str, detail: Any = None, current: Any = None) -> HTTPException:
