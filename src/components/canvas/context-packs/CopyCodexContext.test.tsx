@@ -331,4 +331,155 @@ describe('CopyCodexContext', () => {
 
     expect(renderer.root.findAllByProps({ 'aria-label': '不可变快照检查' })).toHaveLength(0)
   })
+
+  it.each([true, false])(
+    'keeps inspect B authoritative when create starts first (first settlement: %s)',
+    async firstSettlesFirst => {
+      const pendingCreate = deferred<ContextPackInspection>()
+      const pendingInspect = deferred<ContextPackInspection>()
+      const inspectedB = inspection({ cvcCode: codes.contextB })
+      const client = contextClient({
+        create: vi.fn().mockReturnValue(pendingCreate.promise),
+        inspect: vi.fn().mockReturnValue(pendingInspect.promise)
+      })
+      vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+      const { renderer } = await renderComponent(['text'], client)
+      await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+      await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.contextB } }))
+      await act(async () => button(renderer, '创建并复制 CVC')?.props.onClick())
+      await act(async () => button(renderer, '检查快照')?.props.onClick())
+
+      await settlePair(firstSettlesFirst, pendingCreate, inspection(), pendingInspect, inspectedB)
+
+      expect(input(renderer, '检查 CVC').props.value).toBe(codes.contextB)
+      expect(textContent(renderer.root.findByProps({ 'aria-label': '不可变快照检查' }))).toContain(codes.contextB)
+      expect(renderer.root.findAllByProps({ 'data-testid': 'context-pack-code' })).toHaveLength(0)
+      expect(button(renderer, '创建并复制 CVC')?.props.disabled).toBe(false)
+      expect(button(renderer, '检查快照')?.props.disabled).toBe(false)
+    }
+  )
+
+  it.each([true, false])(
+    'keeps create authoritative when inspect starts first (first settlement: %s)',
+    async firstSettlesFirst => {
+      const pendingCreate = deferred<ContextPackInspection>()
+      const pendingInspect = deferred<ContextPackInspection>()
+      const client = contextClient({
+        create: vi.fn().mockReturnValue(pendingCreate.promise),
+        inspect: vi.fn().mockReturnValue(pendingInspect.promise)
+      })
+      vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+      const { renderer } = await renderComponent(['text'], client)
+      await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+      await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.contextB } }))
+      await act(async () => button(renderer, '检查快照')?.props.onClick())
+      await act(async () => button(renderer, '创建并复制 CVC')?.props.onClick())
+
+      await settlePair(firstSettlesFirst, pendingInspect, inspection({ cvcCode: codes.contextB }), pendingCreate, inspection())
+
+      expect(input(renderer, '检查 CVC').props.value).toBe(codes.context)
+      expect(renderer.root.findByProps({ 'data-testid': 'context-pack-code' }).children.join('')).toBe(codes.context)
+      expect(renderer.root.findAllByProps({ 'aria-label': '不可变快照检查' })).toHaveLength(0)
+      expect(button(renderer, '检查快照')?.props.disabled).toBe(false)
+    }
+  )
+
+  it.each([true, false])(
+    'keeps revoke A authoritative when create starts first (first settlement: %s)',
+    async firstSettlesFirst => {
+      const pendingCreate = deferred<ContextPackInspection>()
+      const pendingRevoke = deferred<ContextPackInspection>()
+      const revokedA = inspection({ revokedAt: 12, revokedBy: 'promptcard-ui', revocationReason: 'user-revoked' })
+      const client = contextClient({
+        create: vi.fn().mockReturnValue(pendingCreate.promise),
+        inspect: vi.fn().mockResolvedValue(inspection()),
+        revoke: vi.fn().mockReturnValue(pendingRevoke.promise)
+      })
+      vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+      const { renderer } = await renderComponent(['text'], client)
+      await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+      await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
+      await act(async () => button(renderer, '检查快照')?.props.onClick())
+      await act(async () => button(renderer, '创建并复制 CVC')?.props.onClick())
+      await act(async () => button(renderer, '撤销此 CVC')?.props.onClick())
+
+      await settlePair(firstSettlesFirst, pendingCreate, inspection(), pendingRevoke, revokedA)
+
+      expect(input(renderer, '检查 CVC').props.value).toBe(codes.context)
+      expect(textContent(renderer.root.findByProps({ 'aria-label': '不可变快照检查' }))).toContain('已撤销')
+      expect(renderer.root.findAllByProps({ 'data-testid': 'context-pack-code' })).toHaveLength(0)
+      expect(button(renderer, '创建并复制 CVC')?.props.disabled).toBe(false)
+    }
+  )
+
+  it.each([true, false])(
+    'keeps create authoritative when revoke starts first (first settlement: %s)',
+    async firstSettlesFirst => {
+      const pendingCreate = deferred<ContextPackInspection>()
+      const pendingRevoke = deferred<ContextPackInspection>()
+      const client = contextClient({
+        create: vi.fn().mockReturnValue(pendingCreate.promise),
+        inspect: vi.fn().mockResolvedValue(inspection()),
+        revoke: vi.fn().mockReturnValue(pendingRevoke.promise)
+      })
+      vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+      const { renderer } = await renderComponent(['text'], client)
+      await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+      await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
+      await act(async () => button(renderer, '检查快照')?.props.onClick())
+      await act(async () => button(renderer, '撤销此 CVC')?.props.onClick())
+      await act(async () => button(renderer, '创建并复制 CVC')?.props.onClick())
+
+      await settlePair(
+        firstSettlesFirst,
+        pendingRevoke,
+        inspection({ revokedAt: 12, revokedBy: 'promptcard-ui', revocationReason: 'user-revoked' }),
+        pendingCreate,
+        inspection()
+      )
+
+      expect(input(renderer, '检查 CVC').props.value).toBe(codes.context)
+      expect(renderer.root.findByProps({ 'data-testid': 'context-pack-code' }).children.join('')).toBe(codes.context)
+      expect(renderer.root.findAllByProps({ 'aria-label': '不可变快照检查' })).toHaveLength(0)
+      expect(button(renderer, '检查快照')?.props.disabled).toBe(false)
+    }
+  )
+
+  it('ignores a revoke settlement after close and reopen without leaving a pending control', async () => {
+    const pendingRevoke = deferred<ContextPackInspection>()
+    const client = contextClient({
+      inspect: vi.fn().mockResolvedValue(inspection()),
+      revoke: vi.fn().mockReturnValue(pendingRevoke.promise)
+    })
+    vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn() } })
+    const { renderer } = await renderComponent([], client)
+    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
+    await act(async () => button(renderer, '检查快照')?.props.onClick())
+    await act(async () => button(renderer, '撤销此 CVC')?.props.onClick())
+    await act(async () => button(renderer, '关闭 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => pendingRevoke.resolve(inspection({
+      revokedAt: 12, revokedBy: 'promptcard-ui', revocationReason: 'user-revoked'
+    })))
+
+    expect(renderer.root.findAllByProps({ 'aria-label': '不可变快照检查' })).toHaveLength(0)
+    expect(button(renderer, '检查快照')?.props.disabled).toBe(false)
+  })
 })
+
+const settlePair = async <A, B>(
+  firstSettlesFirst: boolean,
+  first: ReturnType<typeof deferred<A>>,
+  firstValue: A,
+  second: ReturnType<typeof deferred<B>>,
+  secondValue: B
+) => {
+  if (firstSettlesFirst) {
+    await act(async () => first.resolve(firstValue))
+    await act(async () => second.resolve(secondValue))
+  } else {
+    await act(async () => second.resolve(secondValue))
+    await act(async () => first.resolve(firstValue))
+  }
+}

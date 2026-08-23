@@ -1,5 +1,5 @@
 import { Ban, Braces, Check, Copy, Loader2, RotateCcw, Search, ShieldCheck, X } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { useClipboardCopyFeedback } from '@/components/prompt-media/useClipboardCopyFeedback'
 import {
   buildContextPackCreateRequest,
@@ -32,6 +32,15 @@ interface PreviewSnapshot {
   disabledReason: string | null
 }
 
+type ContextOperationKind = 'create' | 'inspect' | 'revoke'
+
+interface ContextOperation {
+  generation: number
+  token: number
+  kind: ContextOperationKind
+  code: string | null
+}
+
 export const CopyCodexContext = ({
   project,
   nodes,
@@ -43,12 +52,7 @@ export const CopyCodexContext = ({
   const headingRef = useRef<HTMLHeadingElement>(null)
   const generationRef = useRef(0)
   const contextRequestSequenceRef = useRef(0)
-  const contextRequestRef = useRef<{
-    generation: number
-    token: number
-    operation: 'inspect' | 'revoke'
-    code: string
-  } | null>(null)
+  const contextRequestRef = useRef<ContextOperation | null>(null)
   const inspectionCodeRef = useRef('')
   const createPendingRef = useRef(false)
   const inspectPendingRef = useRef(false)
@@ -68,44 +72,79 @@ export const CopyCodexContext = ({
 
   const beginOperationGeneration = () => {
     generationRef.current += 1
-    createPendingRef.current = false
-    inspectPendingRef.current = false
-    revokePendingRef.current = false
+    contextRequestSequenceRef.current += 1
     contextRequestRef.current = null
+    clearPendingOperations()
     return generationRef.current
   }
 
-  const beginContextRequest = (operation: 'inspect' | 'revoke', code: string) => {
-    const request = {
+  const clearPendingOperations = () => {
+    createPendingRef.current = false
+    inspectPendingRef.current = false
+    revokePendingRef.current = false
+    setCreating(false)
+    setInspecting(false)
+    setRevoking(false)
+  }
+
+  const beginContextRequest = (kind: ContextOperationKind, code: string | null) => {
+    clearPendingOperations()
+    const request: ContextOperation = {
       generation: generationRef.current,
       token: ++contextRequestSequenceRef.current,
-      operation,
+      kind,
       code
     }
     contextRequestRef.current = request
+    if (kind === 'create') {
+      createPendingRef.current = true
+      setCreating(true)
+    } else if (kind === 'inspect') {
+      inspectPendingRef.current = true
+      setInspecting(true)
+      setInspected(null)
+    } else {
+      revokePendingRef.current = true
+      setRevoking(true)
+      if (code) {
+        inspectionCodeRef.current = code
+        setInspectionCode(code)
+      }
+    }
+    setError(null)
     return request
   }
 
-  const isCurrentContextRequest = (request: NonNullable<typeof contextRequestRef.current>) => (
-    contextRequestRef.current?.generation === request.generation
-    && contextRequestRef.current.token === request.token
-    && contextRequestRef.current.operation === request.operation
-    && contextRequestRef.current.code === request.code
-    && generationRef.current === request.generation
-    && normalizeContextPackCode(inspectionCodeRef.current) === request.code
-  )
+  const isCurrentContextRequest = (request: ContextOperation, settlementCode?: string): boolean => {
+    if (
+      contextRequestRef.current !== request
+      || generationRef.current !== request.generation
+      || contextRequestRef.current.token !== request.token
+      || contextRequestRef.current.kind !== request.kind
+    ) return false
+    const canonicalSettlement = settlementCode === undefined
+      ? undefined
+      : normalizeContextPackCode(settlementCode)
+    if (settlementCode !== undefined && !canonicalSettlement) return false
+    if (request.code && canonicalSettlement && request.code !== canonicalSettlement) return false
+    if (request.kind !== 'create' && normalizeContextPackCode(inspectionCodeRef.current) !== request.code) return false
+    if (request.kind === 'create' && canonicalSettlement && request.code === null) request.code = canonicalSettlement
+    return canonicalSettlement === undefined || request.code === canonicalSettlement
+  }
+
+  const invalidateContextRequest = () => {
+    contextRequestSequenceRef.current += 1
+    contextRequestRef.current = null
+    clearPendingOperations()
+  }
 
   const changeInspectionCode = (value: string) => {
     inspectionCodeRef.current = value
     setInspectionCode(value)
     const activeRequest = contextRequestRef.current
-    if (!activeRequest || normalizeContextPackCode(value) === activeRequest.code) return
-    contextRequestRef.current = null
-    contextRequestSequenceRef.current += 1
-    inspectPendingRef.current = false
-    revokePendingRef.current = false
-    setInspecting(false)
-    setRevoking(false)
+    if (!activeRequest) return
+    if (activeRequest.kind !== 'create' && normalizeContextPackCode(value) === activeRequest.code) return
+    invalidateContextRequest()
     setInspected(null)
     setError(null)
   }
@@ -125,14 +164,14 @@ export const CopyCodexContext = ({
     setOpen(true)
   }
 
-  const closeDialog = useCallback(() => {
+  const closeDialog = () => {
     beginOperationGeneration()
     setOpen(false)
     setCreating(false)
     setInspecting(false)
     setRevoking(false)
     globalThis.setTimeout(() => triggerRef.current?.focus(), 0)
-  }, [])
+  }
 
   useEffect(() => {
     if (open) headingRef.current?.focus()
@@ -140,21 +179,19 @@ export const CopyCodexContext = ({
 
   const createPack = async () => {
     if (!snapshot?.request || createPendingRef.current || created) return
-    const operation = generationRef.current
-    createPendingRef.current = true
-    setCreating(true)
-    setError(null)
+    const request = beginContextRequest('create', null)
     try {
       const result = await client.create(snapshot.request)
-      if (!open || generationRef.current !== operation) return
+      if (!open || !isCurrentContextRequest(request, result.cvcCode)) return
       setCreated(result)
+      setInspected(null)
       inspectionCodeRef.current = result.cvcCode
       setInspectionCode(result.cvcCode)
       await copyText(result.cvcCode, copyTarget)
     } catch (cause) {
-      if (open && generationRef.current === operation) setError(contextPackErrorMessage(cause, '创建上下文失败，请刷新预览后重试。'))
+      if (open && isCurrentContextRequest(request)) setError(contextPackErrorMessage(cause, '创建上下文失败，请刷新预览后重试。'))
     } finally {
-      if (generationRef.current === operation) {
+      if (isCurrentContextRequest(request)) {
         createPendingRef.current = false
         setCreating(false)
       }
@@ -170,14 +207,9 @@ export const CopyCodexContext = ({
     }
     if (inspectPendingRef.current) return
     const request = beginContextRequest('inspect', code)
-    inspectPendingRef.current = true
-    revokePendingRef.current = false
-    setInspecting(true)
-    setRevoking(false)
-    setError(null)
     try {
       const result = await client.inspect(code)
-      if (!open || !isCurrentContextRequest(request)) return
+      if (!open || !isCurrentContextRequest(request, result.cvcCode)) return
       inspectionCodeRef.current = code
       setInspectionCode(code)
       setInspected(result)
@@ -198,15 +230,12 @@ export const CopyCodexContext = ({
   const revokePack = async () => {
     if (!inspected || inspected.revokedAt !== null || revokePendingRef.current) return
     const request = beginContextRequest('revoke', inspected.cvcCode)
-    revokePendingRef.current = true
-    setRevoking(true)
-    setError(null)
     try {
       const result = await client.revoke(inspected.cvcCode, {
         actor: 'promptcard-ui',
         reason: 'user-revoked'
       })
-      if (!open || !isCurrentContextRequest(request)) return
+      if (!open || !isCurrentContextRequest(request, result.cvcCode)) return
       setInspected(result)
       if (created?.cvcCode === result.cvcCode) setCreated(result)
     } catch (cause) {

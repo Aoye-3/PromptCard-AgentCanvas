@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type BrowserContext, type Page } from '@playwright/test'
-import { cleanupAcquiredFixtures } from '../../scripts/e2e-fixture-cleanup'
+import { cleanupAcquiredFixtureGraph } from '../../scripts/e2e-fixture-cleanup'
 
 const storageUrl = 'http://127.0.0.1:38102'
 const fixturePng = Buffer.from(
@@ -134,15 +134,11 @@ test('previews, copies, inspects after focus change and revokes one immutable CV
     await page.setViewportSize({ width: 320, height: 720 })
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   } finally {
-    await cleanupAcquiredFixtures(
-      { projectId: first?.id || null, assetId },
+    await cleanupAcquiredFixtureGraph(
       {
-        deleteProject: id => deleteProjectFixture(request, id),
-        deleteAsset: id => deleteImageAsset(request, id)
-      }
-    )
-    await cleanupAcquiredFixtures(
-      { projectId: second?.id || null, assetId: null },
+        projectIds: [first?.id || null, second?.id || null],
+        assetIds: [assetId]
+      },
       {
         deleteProject: id => deleteProjectFixture(request, id),
         deleteAsset: id => deleteImageAsset(request, id)
