@@ -1,6 +1,6 @@
 # Local Storage Service
 
-`promptcard_storage` is the sole durable owner of projects, Prompt Library presets, Trash state, asset metadata/bytes, Recent Capture metadata, and image-generation runs. During editable development, `PROMPTCARD_STORAGE_DATA_DIR` resolves to the repository data root:
+`promptcard_storage` is the sole durable owner of projects, Prompt Library presets, Trash state, asset metadata/bytes, Recent Capture metadata, image-generation runs, public references, immutable context packs, canonical Skill packages, and host pins. During editable development, `PROMPTCARD_STORAGE_DATA_DIR` resolves to the repository data root:
 
 ```text
 data/
@@ -19,6 +19,10 @@ Every maintained launcher must use this same path and reject a healthy Storage S
 - Schema version `3` adds append-only `image_generation_runs` plus project/node pagination indexes. Existing version `2` databases migrate in place without rewriting projects, presets, captures, or assets.
 - Schema version `4` adds project image-generation conversations, nullable conversation/node run ownership, project/conversation indexes, and durable canvas placements. Existing version `3` runs are deterministically grouped without creating migration placements.
 - Schema version `5` adds permanent `image_asset_derivations` for previews, provider inputs, and rasterized visual annotations. Existing originals, derivatives, runs, conversations, and placements remain forward-only.
+- Schema version `6` adds asset lifecycle state and tombstones. Schema version `7` adds project resource folders/resources; version `8` adds durable project Agent conversations and the initial Skill registry; version `9` adds nullable per-conversation model binding.
+- Schema version `10` adds canonical public reference codes. Version `11` adds immutable Canvas context packs, and version `12` prevents replacement of an existing context snapshot.
+- Schema version `13` migrates Skills to immutable canonical package entries with provenance, lifecycle, declared capabilities, and versioned digests.
+- Schema version `14` adds independent exact-revision pins for `local-agent` and repository-scoped `codex` hosts. Codex projection files remain derived state coordinated through OS-backed locks and a prepared recovery journal.
 - Projects and presets retain their existing JSON payload. Indexed columns own revision, status, ordering, usage, and timestamps.
 - Recent Capture rows retain their full JSON payload while indexed columns own `asset_id`, `kind`, `status`, capture time, timestamps, and revision.
 - Image-generation rows retain the immutable normalized request snapshot and terminal result/error payload while indexed columns own project, optional conversation/node, connection, provider, model, state, and lifecycle timestamps. Conversation, placement, and derivation rows are permanent and have no ordinary delete path.
@@ -45,7 +49,7 @@ python -m promptcard_storage.maintenance --data-dir logs\desktop-profile\data di
 python -m promptcard_storage.maintenance --data-dir logs\desktop-profile\data restore logs\desktop-profile\backups\manual-backup
 ```
 
-Backups use the SQLite backup API and include the database, assets, and a manifest. Restore validates schema and database integrity and creates a pre-restore snapshot when current storage exists.
+Backups use the SQLite backup API and include the database, assets, and a manifest. Restore validates schema and database integrity and creates a pre-restore snapshot when current storage exists. Repository-local Codex projections are reproducible derived state and are not part of the Storage database/assets backup.
 
 ## Verification
 

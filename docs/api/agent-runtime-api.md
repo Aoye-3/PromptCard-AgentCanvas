@@ -425,7 +425,7 @@ Current proposal behavior:
 
 Persistent project calls use `conversationId + requestId`. Gateway loads up to 40 normalized messages from PromptCard Storage, validates the conversation's project, entrypoint, mode, and saved model binding, invokes the stateless Node runtime, and stores the new turn plus its model snapshot. Retrying the same `requestId` returns the first stored result and model snapshot instead of appending duplicates or switching models.
 
-`selectedSkillIds` accepts at most eight external Skill IDs. These selections affect only this request. The Gateway also binds the built-in Canvas Skill by capability, resolves immutable revisions, records `skillId + revision + digest`, and rejects any selected Skill whose declared tool dependencies exceed the request's allowed tool set.
+`selectedSkillIds` accepts at most eight external Skill IDs. These selections affect only this request. The Gateway also binds the built-in Canvas Skill by capability, resolves the exact enabled local-Agent host pin, and records `skillId + revision + digest`; it never falls back to the package's current revision. Storage and Gateway independently reject disabled, archived, untrusted, malformed, over-budget, non-tool-capability, or out-of-scope-tool snapshots before model invocation.
 
 The Python Gateway validates the browser request and returned proposals. The pi runtime owns prompt orchestration, the PI provider collection, and proposal tools. Gateway resolves the conversation's non-secret model descriptor for each request; PI-native models use PI's API implementation through the credential-injecting Gateway proxy, and SDK-backed models use the Gateway text-SDK registry. Provider credentials never enter the Node process.
 

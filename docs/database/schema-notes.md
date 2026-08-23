@@ -25,7 +25,7 @@ Core frontend schemas:
 - `ImageGenerationCanvasPlacement`
 - `ImageAssetDerivation`
 
-Schema changes should be documented with migration or normalization behavior. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
+Schema changes should be documented with migration or normalization behavior. The current PromptCard Storage schema is v14. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
 
 ## Three-stage Project Shape
 
@@ -100,6 +100,28 @@ Skill registry tables:
 - `agent_skill_revisions` stores immutable revision content, digest, instructions, allowed references, and creation metadata. A digest identifies the exact snapshot supplied to a run.
 
 Schema v9 keeps the trusted first-party `canvas-prompt-editor` and `media-prompt-reverse` Skills. `canvas-prompt-editor` revision 3 is current; revisions 1 and 2 remain immutable for audit and persisted-proposal compatibility. First-party Skills are read-only through the public Storage API. External Skills may be registered and revised, but the initial implementation supplies only their instructions and references to the local text Agent; it does not execute Skill scripts.
+
+## Public References, Context Packs, And Canonical Skill Packages
+
+Schema v10 adds `public_references`. Public `PREFIX-ULID` codes are stored uppercase with case-insensitive lookup and map a namespace plus owner scope to an existing internal identity. The public code is an adapter contract, not a replacement primary key. Startup reconciliation backfills and repairs required mappings without changing internal IDs.
+
+Schema v11 adds immutable `context_packs` addressed by `CVC`. A pack records its exact `PRJ`, project revision, entries, source codes/boundaries, placement hint, digest, and creator. Its snapshot fields cannot be updated or deleted; revocation is a one-way lifecycle transition. Schema v12 also prohibits `INSERT OR REPLACE` from replacing an existing pack.
+
+Schema v13 upgrades the Skill registry to canonical packages:
+
+- `skills` gains `active | archived` lifecycle and archive time;
+- `skill_revisions` gains digest version, legacy digest, provenance, and declared capabilities;
+- `skill_package_entries` stores ordered immutable `instruction`, `reference`, `script`, and `asset` bytes with canonical path, content type, size, and digest.
+
+Migration converts every legacy instruction/reference revision into canonical entries, retains its legacy digest for audit, and protects package/revision content with immutability triggers. Canonical storage does not authorize execution: local-Agent snapshots still omit scripts and assets.
+
+## Independent Skill Host Pins
+
+Schema v14 adds `skill_host_pins` with primary key `(skill_id, host, scope)`. Supported hosts are `codex` and `local-agent`. The local-Agent scope must be empty; a Codex scope is a non-empty configured repository key. Each row stores enabled state, exact pinned revision and digest, optional Codex projection metadata, and update time.
+
+The `(skill_id, pinned_revision)` foreign key prevents a pin from naming a missing immutable revision. Insert/update triggers additionally require `pinned_digest` to equal that revision's digest. Codex projection metadata is prohibited for local-Agent pins. Built-in Skills receive an exact enabled local-Agent pin during initialization; no host follows `skills.current_revision` implicitly.
+
+Codex files remain derived filesystem state rather than SQLite rows. Cross-instance lock files and a prepared filesystem journal compensate around the database commit; recovery finalizes when SQLite matches the desired pin, rolls back when it matches the prior pin, and retains evidence with `recovery-required` when neither state is provable. SQLite and filesystem rename are not claimed to be one hardware-atomic transaction. See [Skill Host Pins And Projections](../architecture/skill-host-projections.md).
 
 ## Recent Capture Shape
 

@@ -81,8 +81,9 @@ The Media Library's temporary collaboration dialog calls `POST /api/promptcard/r
 - Conversation list, rename, Trash, restore, and permanent deletion are project-scoped. Permanent deletion cascades its messages, turns, and proposals.
 - The current `localStorage` entry remembers only the selected conversation ID. Composer drafts are component state; browser storage is never a message-history authority.
 - Built-in Skills are selected by stable capability ID. External Skills are chosen explicitly and apply to one message only.
-- Every injected snapshot records `skillId`, immutable revision, and digest. Instructions and bounded references are allowed; scripts are never executed.
-- Skill tool dependencies must be a subset of tools already allowed by `permissionScope`. Missing, non-triggerable, or over-privileged selections fail closed in the Gateway.
+- Every injected snapshot resolves the enabled local-Agent host pin and records its exact `skillId`, immutable revision, and digest. It never falls back to the Skill's mutable current revision.
+- Storage rechecks active lifecycle, trust, content budget, and declared capabilities on every snapshot read. Instructions and bounded text references are allowed; scripts/assets are never sent to the model or executed.
+- Gateway independently validates the returned shape, public `SKL`, digest, UTF-8 budgets, reference paths/content types, and capabilities. Declared tools must be a subset of tools already allowed by `permissionScope`; any non-tool capability, missing pin, unavailable snapshot, or privilege expansion fails before model invocation.
 
 ## Safety And Coupling Rules
 
@@ -123,4 +124,4 @@ Neither path requires a Canvas contract change or an image-generation adapter ch
 
 The manifest includes `textAgentUrl` and `textAgentHealthUrl` in addition to the existing frontend, Gateway, and Storage URLs.
 
-The runtime-manifest schema and Storage schema are independent. The combined development and desktop launch path accepts PromptCard Storage schema v9; a healthy service reporting an older schema is rejected before the frontend is considered ready. `npm.cmd run agent:check` separately verifies schema v9 imports, the pinned Ark SDK, the maintained chat catalog, and the text-runtime TypeScript build.
+The runtime-manifest schema and Storage schema are independent. PromptCard Storage currently reports schema v14. The combined development launcher and `npm.cmd run agent:check` still contain legacy exact-v9 checks; until those launch scripts are migrated, they do not constitute a valid v14 readiness check. Direct Storage/Gateway test gates use the v14 implementation.

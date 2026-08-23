@@ -13,11 +13,12 @@ Every Canvas or Prompt Library `emit_*` tool creates a pending proposal. The fro
 
 ## Skill snapshots
 
-PromptCard Storage schema v9 is the canonical source for the minimal Skill registry. Each run receives a bounded snapshot rather than an editable package copy:
+PromptCard Storage schema v14 is the canonical source for canonical Skill packages and independent host pins. Each run receives the exact enabled local-Agent pin as a bounded snapshot rather than an editable package copy:
 
 ```json
 {
-  "skillId": "SKL-canvas-prompt-editor",
+  "skillId": "internal-skill-id",
+  "skillReferenceCode": "SKL-01K...",
   "revision": 3,
   "digest": "sha256:...",
   "instructions": "...",
@@ -30,11 +31,13 @@ Built-in Skills are bound by capability:
 - Canvas text editing binds `canvas.prompt.edit` / `canvas-prompt-editor` revision 3. Revisions 1 and 2 remain immutable for audit compatibility.
 - Media collaboration binds `media.prompt.reverse` / `media-prompt-reverse`.
 
-External Skills are explicitly selected by the user and apply only to the next project-Agent message. The Gateway resolves the current immutable revision and records `skillId`, revision, and digest with the turn. The selection is cleared after send.
+External Skills are explicitly selected by the user and apply only to the next project-Agent message. The Gateway resolves the exact immutable revision/digest pinned for local-Agent and records them with the turn; it never falls back to the package's mutable `currentRevision`. The selection is cleared after send.
 
-Skill instructions never grant permissions. The Gateway compares `toolDependencies` with the exact tool set already allowed by `permissionScope`; missing, built-in-as-external, unavailable-revision, and over-privileged selections fail closed. System rules, proposal validation, tool schemas, and user approval outrank Skill content.
+Skill instructions never grant permissions. Storage rechecks enabled state, active lifecycle, trust, snapshot size, and declared capabilities on every read. The Gateway then independently validates the public `SKL` identity, digest, instruction/reference budgets, content types and paths, and declared capabilities. Declared tools must be a subset of the exact tool set already allowed by `permissionScope`; non-tool capabilities and missing, unavailable, malformed, or over-privileged selections fail before model invocation. System rules, proposal validation, tool schemas, and user approval outrank Skill content.
 
-The first implementation exposes instructions and bounded references only. Skill scripts, hooks, package installers, archive import, Codex publication, and automatic semantic matching are not implemented.
+The model-facing snapshot exposes only root `SKILL.md` instructions and bounded UTF-8 `references/*` text. Canonically stored scripts/assets are never exposed or executed. Folder/archive inspection and import, lifecycle, independent host pins, and Codex publication are implemented in Storage; the Skill Hub management UI, hooks/package installers, and automatic semantic matching remain unimplemented.
+
+See [Skill Host Pins And Projections](../architecture/skill-host-projections.md) for the projection ownership, health, recovery, and budget contract.
 
 ## Canvas target and edit contracts
 

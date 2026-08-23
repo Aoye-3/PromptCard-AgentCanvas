@@ -90,7 +90,7 @@ Rejected because Plan 008 leaves the final choice between apply-required and tru
 - Canonical immutable Skill packages and independent host pins remain authoritative; local-Agent and Codex projections must be reproducible from them.
 - Codex delivery remains separately idempotent and auditable through `clientRequestId`, normalized request digests, its own ledger, and `codex-harness` provenance.
 - The initial apply-required delivery default remains subject to the Checkpoint 5 trusted-profile auto-place decision.
-- This ADR records the target contract and delivery boundary only. It does not claim that the Local Reference Bridge, MCP server, Skills projections, ledger, or runtime behavior has been implemented.
+- The public-reference registry, immutable Canvas context packs, canonical Skill packages, independent local-Agent/Codex host pins, Codex projection recovery/health, and bounded Gateway local-Agent snapshot validation are implemented through Storage schema v14. Task 15's Skill Hub management UI, the broader Local Reference Bridge/MCP read surface, and the Codex delivery ledger/runtime remain later work.
 
 ## Related Decisions
 
