@@ -330,20 +330,25 @@ class SqliteStoreTest(unittest.TestCase):
         self.assertIn("new node", current["instructions"])
         self.assertIn("read-only", current["instructions"])
 
-        original_revision_one = canvas["revisions"][2]
         connection = sqlite3.connect(self.data_dir / "promptcard.sqlite3")
-        connection.execute(
-            "UPDATE skills SET current_revision=1 WHERE id=?",
-            (canvas["id"],),
-        )
-        connection.execute("DELETE FROM skill_revisions WHERE skill_id=? AND revision=3", (canvas["id"],))
-        connection.commit()
-        connection.close()
+        try:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+                connection.execute(
+                    "UPDATE skill_revisions SET instructions='tampered' WHERE skill_id=? AND revision=1",
+                    (canvas["id"],),
+                )
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+                connection.execute(
+                    "DELETE FROM skill_revisions WHERE skill_id=? AND revision=3",
+                    (canvas["id"],),
+                )
+        finally:
+            connection.close()
 
         reopened = JsonCollectionStore(self.data_dir).get_skill(canvas["id"])
         self.assertEqual(reopened["currentRevision"], 3)
         self.assertEqual([revision["revision"] for revision in reopened["revisions"]], [3, 2, 1])
-        self.assertEqual(reopened["revisions"][2], original_revision_one)
+        self.assertEqual(reopened["revisions"], canvas["revisions"])
 
         reopened_again = JsonCollectionStore(self.data_dir).get_skill(canvas["id"])
         self.assertEqual(reopened_again["revisions"], reopened["revisions"])

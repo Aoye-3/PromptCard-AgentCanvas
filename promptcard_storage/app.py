@@ -394,6 +394,14 @@ def create_app(
     def add_skill_revision(skill_id: str, item: dict[str, Any]) -> dict[str, Any]:
         return _handle(lambda: storage.add_skill_revision(skill_id, item))
 
+    @application.post("/api/skills/{skill_id}/archive")
+    def archive_skill(skill_id: str) -> dict[str, Any]:
+        return _handle(lambda: storage.archive_skill(skill_id))
+
+    @application.post("/api/skills/{skill_id}/restore")
+    def restore_skill(skill_id: str) -> dict[str, Any]:
+        return _handle(lambda: storage.restore_skill(skill_id))
+
     @application.get("/api/image-generation-placements")
     def list_image_generation_placements(projectId: str, state: str | None = None) -> dict[str, Any]:
         return _handle(lambda: storage.list_image_generation_placements(

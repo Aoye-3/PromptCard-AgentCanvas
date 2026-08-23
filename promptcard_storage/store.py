@@ -39,10 +39,20 @@ from .reference_codes import (
     generate_reference_code,
     parse_reference_code,
 )
+from .skill_packages import (
+    DIGEST_VERSION as SKILL_DIGEST_VERSION,
+    canonical_package_digest,
+    compatibility_instruction,
+    entry_dto,
+    legacy_package_entries,
+    normalize_declared_capabilities,
+    normalize_package_entries,
+    normalize_provenance,
+)
 
 Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 DATABASE_NAME = "promptcard.sqlite3"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE = " \t\n\v\f\r"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
@@ -993,50 +1003,67 @@ class SqliteStore:
             rows = connection.execute(
                 """SELECT skill.id, skill.slug, skill.name, skill.description, skill.source,
                           skill.trust_state, skill.capability_id, skill.tool_dependencies_json,
-                          revision.revision, revision.digest
+                          revision.revision, revision.digest, reference.public_code,
+                          skill.lifecycle_status
                    FROM skills AS skill
                    JOIN skill_revisions AS revision
                      ON revision.skill_id=skill.id AND revision.revision=skill.current_revision
+                   JOIN public_references AS reference
+                     ON reference.namespace='SKL' AND reference.owner_scope=''
+                    AND reference.internal_id=skill.id
                    ORDER BY skill.name, skill.id"""
             ).fetchall()
         return {"skills": [self._skill_summary(row) for row in rows]}
 
     def get_skill(self, skill_id: str) -> dict[str, Any]:
         with self._connect() as connection:
+            resolved_id = self._resolve_skill_id(connection, skill_id)
             row = connection.execute(
                 """SELECT id, slug, name, description, source, trust_state, capability_id,
-                          tool_dependencies_json, current_revision
+                          tool_dependencies_json, current_revision, lifecycle_status,
+                          archived_at
                    FROM skills WHERE id=?""",
-                (skill_id,),
+                (resolved_id,),
             ).fetchone()
             if row is None:
                 raise MissingItem(skill_id)
+            reference_code = connection.execute(
+                """SELECT public_code FROM public_references
+                   WHERE namespace='SKL' AND owner_scope='' AND internal_id=?""",
+                (resolved_id,),
+            ).fetchone()[0]
             revisions = [
                 {
                     "revision": revision[0], "digest": revision[1],
                     "instructions": revision[2], "references": json.loads(revision[3]),
-                    "createdAt": revision[4],
+                    "createdAt": revision[4], "digestVersion": revision[5],
+                    "legacyDigest": revision[6],
+                    "provenance": json.loads(revision[7]),
+                    "declaredCapabilities": json.loads(revision[8]),
+                    "entries": self._skill_revision_entries(
+                        connection, resolved_id, revision[0]
+                    ),
                 }
                 for revision in connection.execute(
-                    """SELECT revision, digest, instructions, references_json, created_at
+                    """SELECT revision, digest, instructions, references_json, created_at,
+                              digest_version, legacy_digest, provenance_json,
+                              declared_capabilities_json
                        FROM skill_revisions WHERE skill_id=? ORDER BY revision DESC""",
-                    (skill_id,),
+                    (resolved_id,),
                 )
             ]
         return {
             "id": row[0], "slug": row[1], "name": row[2], "description": row[3],
             "source": row[4], "trustState": row[5], "capabilityId": row[6],
             "toolDependencies": json.loads(row[7]), "currentRevision": row[8],
-            "revisions": revisions,
+            "referenceCode": reference_code, "lifecycleStatus": row[9],
+            "archivedAt": row[10], "revisions": revisions,
         }
 
     def create_skill(self, item: dict[str, Any]) -> dict[str, Any]:
         source = str(item.get("source") or "external")
         if source != "external":
             raise ValueError("Only external Skills can be created through the registry API")
-        instructions = str(item.get("instructions") or "").strip()
-        if not instructions:
-            raise ValueError("Skill instructions are required")
         references = list(item.get("references") or [])
         skill_id = str(item.get("id") or f"SKL-{uuid.uuid4()}")
         slug = str(item.get("slug") or "").strip()
@@ -1044,9 +1071,24 @@ class SqliteStore:
         if not slug or not name:
             raise ValueError("Skill slug and name are required")
         timestamp = now_ms()
-        digest = _skill_digest(instructions, references)
+        entries = self._skill_entries_from_item(item, references)
+        instructions = compatibility_instruction(entries)
+        digest = canonical_package_digest(entries)
+        provenance = normalize_provenance(
+            item.get("provenance"), "external", "registry-api"
+        )
+        capabilities = normalize_declared_capabilities(
+            item.get("declaredCapabilities"), item.get("toolDependencies")
+        )
         with self._transaction() as connection:
             try:
+                collision = connection.execute(
+                    """SELECT 1 FROM skills
+                       WHERE id IN (?, ?) OR slug IN (?, ?)""",
+                    (skill_id, slug, skill_id, slug),
+                ).fetchone()
+                if collision is not None:
+                    raise DuplicateItem(skill_id)
                 connection.execute(
                     """INSERT INTO skills(
                            id, slug, name, description, source, trust_state, capability_id,
@@ -1060,45 +1102,160 @@ class SqliteStore:
                 )
                 connection.execute(
                     """INSERT INTO skill_revisions(
-                           skill_id, revision, digest, instructions, references_json, created_at
-                       ) VALUES (?, 1, ?, ?, ?, ?)""",
-                    (skill_id, digest, instructions, _json(references), timestamp),
+                           skill_id, revision, digest, instructions, references_json, created_at,
+                           digest_version, legacy_digest, provenance_json,
+                           declared_capabilities_json
+                       ) VALUES (?, 1, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+                    (
+                        skill_id, digest, instructions, _json(references), timestamp,
+                        SKILL_DIGEST_VERSION, _json(provenance), _json(capabilities),
+                    ),
+                )
+                self._insert_skill_package_entries(connection, skill_id, 1, entries)
+                self._ensure_public_reference(
+                    connection, ReferenceNamespace.SKILL, skill_id, owner_scope=""
                 )
             except sqlite3.IntegrityError as exc:
                 raise DuplicateItem(skill_id) from exc
         return self.get_skill(skill_id)
 
     def add_skill_revision(self, skill_id: str, item: dict[str, Any]) -> dict[str, Any]:
-        instructions = str(item.get("instructions") or "").strip()
-        if not instructions:
-            raise ValueError("Skill instructions are required")
         references = list(item.get("references") or [])
-        digest = _skill_digest(instructions, references)
         timestamp = now_ms()
         with self._transaction() as connection:
+            resolved_id = self._resolve_skill_id(connection, skill_id)
             row = connection.execute(
-                "SELECT source, current_revision FROM skills WHERE id=?",
-                (skill_id,),
+                """SELECT source, current_revision, tool_dependencies_json,
+                          lifecycle_status
+                   FROM skills WHERE id=?""",
+                (resolved_id,),
             ).fetchone()
             if row is None:
                 raise MissingItem(skill_id)
             if row[0] != "external":
                 raise ValueError("Builtin Skill revisions are managed by the application")
+            if row[3] == "archived":
+                raise ValueError("Archived Skills cannot receive revisions")
+            entries = self._skill_entries_from_item(item, references)
+            instructions = compatibility_instruction(entries)
+            digest = canonical_package_digest(entries)
+            provenance = normalize_provenance(
+                item.get("provenance"), "external", "registry-api"
+            )
+            capabilities = normalize_declared_capabilities(
+                item.get("declaredCapabilities"), json.loads(row[2])
+            )
             next_revision = int(row[1]) + 1
             try:
                 connection.execute(
                     """INSERT INTO skill_revisions(
-                           skill_id, revision, digest, instructions, references_json, created_at
-                       ) VALUES (?, ?, ?, ?, ?, ?)""",
-                    (skill_id, next_revision, digest, instructions, _json(references), timestamp),
+                           skill_id, revision, digest, instructions, references_json, created_at,
+                           digest_version, legacy_digest, provenance_json,
+                           declared_capabilities_json
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+                    (
+                        resolved_id, next_revision, digest, instructions, _json(references),
+                        timestamp, SKILL_DIGEST_VERSION, _json(provenance),
+                        _json(capabilities),
+                    ),
+                )
+                self._insert_skill_package_entries(
+                    connection, resolved_id, next_revision, entries
                 )
             except sqlite3.IntegrityError as exc:
                 raise DuplicateItem(digest) from exc
             connection.execute(
                 "UPDATE skills SET current_revision=?, updated_at=? WHERE id=?",
-                (next_revision, timestamp, skill_id),
+                (next_revision, timestamp, resolved_id),
             )
-        return self.get_skill(skill_id)
+        return self.get_skill(resolved_id)
+
+    def archive_skill(self, skill_id: str) -> dict[str, Any]:
+        with self._transaction() as connection:
+            resolved_id = self._resolve_skill_id(connection, skill_id)
+            connection.execute(
+                """UPDATE skills SET lifecycle_status='archived', archived_at=?, updated_at=?
+                   WHERE id=?""",
+                (now_ms(), now_ms(), resolved_id),
+            )
+        return self.get_skill(resolved_id)
+
+    def restore_skill(self, skill_id: str) -> dict[str, Any]:
+        with self._transaction() as connection:
+            resolved_id = self._resolve_skill_id(connection, skill_id)
+            connection.execute(
+                """UPDATE skills SET lifecycle_status='active', archived_at=NULL, updated_at=?
+                   WHERE id=?""",
+                (now_ms(), resolved_id),
+            )
+        return self.get_skill(resolved_id)
+
+    @staticmethod
+    def _resolve_skill_id(connection: sqlite3.Connection, identifier: str) -> str:
+        row = connection.execute(
+            """SELECT skill.id
+               FROM skills AS skill
+               LEFT JOIN public_references AS reference
+                 ON reference.namespace='SKL' AND reference.owner_scope=''
+                AND reference.internal_id=skill.id
+               WHERE skill.id=? OR skill.slug=? OR reference.public_code=? COLLATE NOCASE""",
+            (identifier, identifier, identifier),
+        ).fetchone()
+        if row is None:
+            raise MissingItem(identifier)
+        return row[0]
+
+    @staticmethod
+    def _skill_entries_from_item(
+        item: dict[str, Any], references: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if "entries" in item:
+            return normalize_package_entries(item["entries"])
+        instructions = str(item.get("instructions") or "").strip()
+        if not instructions:
+            raise ValueError("Skill instructions are required")
+        return legacy_package_entries(instructions, references)
+
+    @staticmethod
+    def _insert_skill_package_entries(
+        connection: sqlite3.Connection,
+        skill_id: str,
+        revision: int,
+        entries: list[dict[str, Any]],
+    ) -> None:
+        connection.executemany(
+            """INSERT INTO skill_package_entries(
+                   skill_id, revision, canonical_index, entry_type, canonical_path,
+                   content_type, size, entry_digest, content
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    skill_id, revision, index, entry["type"], entry["path"],
+                    entry["contentType"], entry["size"], entry["digest"],
+                    entry["content"],
+                )
+                for index, entry in enumerate(entries)
+            ],
+        )
+
+    @staticmethod
+    def _skill_revision_entries(
+        connection: sqlite3.Connection, skill_id: str, revision: int
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            """SELECT entry_type, canonical_path, content_type, size,
+                      entry_digest, content
+               FROM skill_package_entries
+               WHERE skill_id=? AND revision=? ORDER BY canonical_index""",
+            (skill_id, revision),
+        ).fetchall()
+        return [
+            entry_dto({
+                "type": row[0], "path": row[1], "contentType": row[2],
+                "size": row[3], "digest": row[4], "content": bytes(row[5]),
+            })
+            for row in rows
+        ]
 
     def list_projects(self) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -3043,6 +3200,19 @@ class SqliteStore:
                 except Exception:
                     connection.rollback()
                     raise
+            if current_version == 12:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self._migrate_skill_packages_v13(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (13, "add-canonical-skill-packages", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 13
+                except Exception:
+                    connection.rollback()
+                    raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
             connection.execute("BEGIN IMMEDIATE")
@@ -3090,6 +3260,7 @@ class SqliteStore:
         self._create_public_references_v10_schema(connection)
         self._create_context_packs_v11_schema(connection)
         self._create_context_packs_v12_schema(connection)
+        self._create_skill_packages_v13_schema(connection)
 
     def _create_public_references_v10_schema(self, connection: sqlite3.Connection) -> None:
         connection.execute(f"""
@@ -3198,6 +3369,158 @@ class SqliteStore:
             BEGIN
                 SELECT RAISE(ABORT, 'context pack snapshots cannot be replaced');
             END
+        """)
+
+    def _create_skill_packages_v13_schema(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        protect: bool = True,
+    ) -> None:
+        skill_columns = {row[1] for row in connection.execute("PRAGMA table_info(skills)")}
+        if "lifecycle_status" not in skill_columns:
+            connection.execute(
+                "ALTER TABLE skills ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'active' "
+                "CHECK(lifecycle_status IN ('active','archived'))"
+            )
+        if "archived_at" not in skill_columns:
+            connection.execute("ALTER TABLE skills ADD COLUMN archived_at INTEGER")
+
+        revision_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(skill_revisions)")
+        }
+        additions = (
+            ("digest_version", "TEXT NOT NULL DEFAULT 'legacy-v0'"),
+            ("legacy_digest", "TEXT"),
+            ("provenance_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("declared_capabilities_json", "TEXT NOT NULL DEFAULT '{}'"),
+        )
+        for name, declaration in additions:
+            if name not in revision_columns:
+                connection.execute(
+                    f"ALTER TABLE skill_revisions ADD COLUMN {name} {declaration}"
+                )
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS skill_package_entries(
+                skill_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                canonical_index INTEGER NOT NULL CHECK(canonical_index >= 0),
+                entry_type TEXT NOT NULL
+                    CHECK(entry_type IN ('instruction','reference','script','asset')),
+                canonical_path TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size INTEGER NOT NULL CHECK(size >= 0),
+                entry_digest TEXT NOT NULL,
+                content BLOB NOT NULL,
+                PRIMARY KEY(skill_id, revision, canonical_path),
+                UNIQUE(skill_id, revision, canonical_index),
+                FOREIGN KEY(skill_id, revision)
+                    REFERENCES skill_revisions(skill_id, revision) ON DELETE RESTRICT,
+                CHECK(length(content) = size)
+            );
+        """)
+        if protect:
+            self._create_skill_immutability_v13_triggers(connection)
+
+    def _migrate_skill_packages_v13(self, connection: sqlite3.Connection) -> None:
+        self._drop_skill_immutability_v13_triggers(connection)
+        self._create_skill_packages_v13_schema(connection, protect=False)
+        rows = connection.execute(
+            """SELECT revision.skill_id, revision.revision, revision.digest,
+                      revision.instructions, revision.references_json,
+                      skill.source, skill.tool_dependencies_json
+               FROM skill_revisions AS revision
+               JOIN skills AS skill ON skill.id=revision.skill_id
+               ORDER BY revision.skill_id, revision.revision"""
+        ).fetchall()
+        for row in rows:
+            existing = connection.execute(
+                "SELECT 1 FROM skill_package_entries WHERE skill_id=? AND revision=?",
+                (row[0], row[1]),
+            ).fetchone()
+            if existing is not None:
+                continue
+            entries = legacy_package_entries(row[3], json.loads(row[4]))
+            provenance = normalize_provenance(
+                None,
+                row[5],
+                "promptcard-builtin" if row[5] == "builtin" else "legacy-registry",
+                legacy_metadata={"revision": row[1], "digest": row[2]},
+            )
+            capabilities = normalize_declared_capabilities(None, json.loads(row[6]))
+            connection.execute(
+                """UPDATE skill_revisions
+                   SET digest=?, digest_version=?, legacy_digest=?,
+                       provenance_json=?, declared_capabilities_json=?
+                   WHERE skill_id=? AND revision=?""",
+                (
+                    canonical_package_digest(entries),
+                    SKILL_DIGEST_VERSION,
+                    row[2],
+                    _json(provenance),
+                    _json(capabilities),
+                    row[0],
+                    row[1],
+                ),
+            )
+            self._insert_skill_package_entries(connection, row[0], row[1], entries)
+        self._create_skill_immutability_v13_triggers(connection)
+
+    @staticmethod
+    def _drop_skill_immutability_v13_triggers(connection: sqlite3.Connection) -> None:
+        for name in (
+            "skill_revisions_prevent_replace",
+            "skill_revisions_immutable_update",
+            "skill_revisions_immutable_delete",
+            "skill_package_entries_prevent_replace",
+            "skill_package_entries_immutable_update",
+            "skill_package_entries_immutable_delete",
+        ):
+            connection.execute(f"DROP TRIGGER IF EXISTS {name}")
+
+    @staticmethod
+    def _create_skill_immutability_v13_triggers(connection: sqlite3.Connection) -> None:
+        connection.executescript("""
+            CREATE TRIGGER IF NOT EXISTS skill_revisions_prevent_replace
+            BEFORE INSERT ON skill_revisions
+            WHEN EXISTS(
+                SELECT 1 FROM skill_revisions
+                WHERE skill_id=NEW.skill_id
+                  AND (revision=NEW.revision OR digest=NEW.digest)
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'skill revision is immutable');
+            END;
+            CREATE TRIGGER IF NOT EXISTS skill_revisions_immutable_update
+            BEFORE UPDATE ON skill_revisions
+            BEGIN
+                SELECT RAISE(ABORT, 'skill revision is immutable');
+            END;
+            CREATE TRIGGER IF NOT EXISTS skill_revisions_immutable_delete
+            BEFORE DELETE ON skill_revisions
+            BEGIN
+                SELECT RAISE(ABORT, 'skill revision is immutable');
+            END;
+            CREATE TRIGGER IF NOT EXISTS skill_package_entries_prevent_replace
+            BEFORE INSERT ON skill_package_entries
+            WHEN EXISTS(
+                SELECT 1 FROM skill_package_entries
+                WHERE skill_id=NEW.skill_id AND revision=NEW.revision
+                  AND (canonical_path=NEW.canonical_path OR canonical_index=NEW.canonical_index)
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'skill package entry is immutable');
+            END;
+            CREATE TRIGGER IF NOT EXISTS skill_package_entries_immutable_update
+            BEFORE UPDATE ON skill_package_entries
+            BEGIN
+                SELECT RAISE(ABORT, 'skill package entry is immutable');
+            END;
+            CREATE TRIGGER IF NOT EXISTS skill_package_entries_immutable_delete
+            BEFORE DELETE ON skill_package_entries
+            BEGIN
+                SELECT RAISE(ABORT, 'skill package entry is immutable');
+            END;
         """)
 
     def _harden_weak_public_references_v10_schema(
@@ -4161,13 +4484,31 @@ class SqliteStore:
                 ),
             )
             for revision, instructions in skill["revisions"]:
-                digest = "sha256:" + hashlib.sha256(instructions.encode("utf-8")).hexdigest()
-                connection.execute(
-                    """INSERT OR IGNORE INTO skill_revisions(
-                           skill_id, revision, digest, instructions, references_json, created_at
-                       ) VALUES (?, ?, ?, ?, '[]', ?)""",
-                    (skill["id"], revision, digest, instructions, timestamp),
-                )
+                exists = connection.execute(
+                    "SELECT 1 FROM skill_revisions WHERE skill_id=? AND revision=?",
+                    (skill["id"], revision),
+                ).fetchone()
+                if exists is None:
+                    entries = legacy_package_entries(instructions, [])
+                    capabilities = normalize_declared_capabilities(None, skill["tools"])
+                    provenance = normalize_provenance(
+                        None, "builtin", "promptcard-builtin"
+                    )
+                    connection.execute(
+                        """INSERT INTO skill_revisions(
+                               skill_id, revision, digest, instructions, references_json,
+                               created_at, digest_version, legacy_digest, provenance_json,
+                               declared_capabilities_json
+                           ) VALUES (?, ?, ?, ?, '[]', ?, ?, NULL, ?, ?)""",
+                        (
+                            skill["id"], revision, canonical_package_digest(entries),
+                            instructions, timestamp, SKILL_DIGEST_VERSION,
+                            _json(provenance), _json(capabilities),
+                        ),
+                    )
+                    self._insert_skill_package_entries(
+                        connection, skill["id"], revision, entries
+                    )
             connection.execute(
                 """UPDATE skills SET tool_dependencies_json=?, current_revision=?, updated_at=?
                    WHERE id=? AND source='builtin'""",
@@ -4187,6 +4528,7 @@ class SqliteStore:
             "id": row[0], "slug": row[1], "name": row[2], "description": row[3],
             "source": row[4], "trustState": row[5], "capabilityId": row[6],
             "toolDependencies": json.loads(row[7]), "revision": row[8], "digest": row[9],
+            "referenceCode": row[10], "lifecycleStatus": row[11],
         }
 
     def _migrate_asset_lifecycle_v6(self, connection: sqlite3.Connection) -> None:
@@ -4693,16 +5035,6 @@ def normalize_model_binding(value: Any) -> dict[str, str] | None:
             raise ValueError(f"Agent conversation modelBinding {key} is required")
         binding[key] = item.strip()
     return binding
-
-
-def _skill_digest(instructions: str, references: list[dict[str, Any]]) -> str:
-    canonical = json.dumps(
-        {"instructions": instructions, "references": references},
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _legacy_image_conversation_id(project_id: str, node_id: str) -> str:

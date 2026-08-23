@@ -291,6 +291,19 @@ class StorageAppContractTest(unittest.TestCase):
         self.assertEqual(len(detail.json()["messages"]), 2)
         self.assertEqual(detail.json()["turns"][0]["modelSnapshot"]["connectionId"], "connection-a")
         self.assertEqual(len(skills.json()["skills"]), 2)
+        external = self.client.post("/api/skills", json={
+            "id": "legacy-api-skill", "slug": "api-skill", "name": "API Skill",
+            "source": "external", "instructions": "API instructions",
+        })
+        self.assertEqual(external.status_code, 200)
+        skill_code = external.json()["referenceCode"]
+        archived = self.client.post(f"/api/skills/{skill_code}/archive")
+        self.assertEqual(archived.status_code, 200)
+        self.assertEqual(archived.json()["lifecycleStatus"], "archived")
+        restored = self.client.post("/api/skills/legacy-api-skill/restore")
+        self.assertEqual(restored.status_code, 200)
+        self.assertEqual(restored.json()["referenceCode"], skill_code)
+        self.assertEqual(restored.json()["lifecycleStatus"], "active")
 
         updated_model = self.client.patch(
             "/api/projects/project-agent/agent-conversations/conversation-1/model",

@@ -181,13 +181,13 @@ class ContextPackV11Test(unittest.TestCase):
             "creator": "developer-001",
         }
 
-    def test_fresh_schema_and_real_v10_v11_databases_migrate_to_v12(self) -> None:
-        self.assertEqual(store_module.SCHEMA_VERSION, 12)
+    def test_fresh_schema_and_real_v10_v11_databases_migrate_to_current(self) -> None:
+        self.assertEqual(store_module.SCHEMA_VERSION, 13)
         self.assertTrue(self.store.health()["capabilities"]["contextPacks"])
         with self.store._connect() as connection:
             self.assertEqual(
                 connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
-                12,
+                store_module.SCHEMA_VERSION,
             )
             self.assertEqual(
                 connection.execute(
@@ -217,7 +217,7 @@ class ContextPackV11Test(unittest.TestCase):
         with reopened._connect() as connection:
             self.assertEqual(
                 connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
-                12,
+                store_module.SCHEMA_VERSION,
             )
             self.assertIsNotNone(connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='context_packs_snapshot_immutable'"
@@ -239,7 +239,7 @@ class ContextPackV11Test(unittest.TestCase):
         with reopened_v11._connect() as connection:
             self.assertEqual(
                 connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
-                12,
+                store_module.SCHEMA_VERSION,
             )
             self.assertIsNotNone(connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='context_packs_no_replace'"
@@ -655,7 +655,7 @@ class ContextPackV11Test(unittest.TestCase):
         backup_dir = self.data_dir / "backup"
         restored_dir = self.data_dir / "restored"
         manifest = self.store.backup(backup_dir)
-        self.assertEqual(manifest["schemaVersion"], 12)
+        self.assertEqual(manifest["schemaVersion"], store_module.SCHEMA_VERSION)
         restore_backup(restored_dir, backup_dir)
         restored = JsonCollectionStore(restored_dir)
         self.assertEqual(restored.resolve_context_pack(first["cvcCode"]), expected)

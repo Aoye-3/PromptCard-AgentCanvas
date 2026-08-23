@@ -313,6 +313,7 @@ export interface AgentConversationPage {
 
 export interface SkillSummary {
   id: string
+  referenceCode: string
   slug: string
   name: string
   description: string
@@ -322,6 +323,7 @@ export interface SkillSummary {
   toolDependencies: string[]
   revision: number
   digest: string
+  lifecycleStatus: 'active' | 'archived'
 }
 
 export type CreateProjectResourceFolder = Pick<ProjectResourceFolder, 'name'> &
