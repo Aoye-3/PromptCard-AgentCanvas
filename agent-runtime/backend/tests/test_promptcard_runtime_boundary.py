@@ -993,12 +993,12 @@ async def test_persistent_message_loads_history_skills_and_saves_turn(monkeypatc
                 "id": "SKL-canvas-prompt-editor", "slug": "canvas-prompt-editor",
                 "source": "builtin", "capabilityId": "canvas.prompt.edit",
                     "toolDependencies": ["emit_canvas_prompt_edit"], "revision": 1,
-                    "referenceCode": "SKL-canvas-prompt-editor",
+                    "referenceCode": "SKL-00000000000000000000000001",
             }]}
         if method == "GET" and path == "/api/skill-host-snapshots/local-agent":
             return {
                 "skillId": "SKL-canvas-prompt-editor",
-                "skillReferenceCode": "SKL-canvas-prompt-editor",
+                "skillReferenceCode": "SKL-00000000000000000000000001",
                 "revision": 1, "digest": "sha256:" + "a" * 64,
                 "instructions": "Protect templates.", "references": [],
                 "declaredCapabilities": {
@@ -1294,11 +1294,11 @@ async def test_persistent_message_rejects_skill_with_disallowed_tool_dependency(
         if path == "/api/skills":
             return {"skills": [{
                 "id": "SKL-external", "source": "external",
-                "referenceCode": "SKL-external",
+                "referenceCode": "SKL-00000000000000000000000002",
             }]}
         if path == "/api/skill-host-snapshots/local-agent":
             return {
-                "skillId": "external", "skillReferenceCode": "SKL-external",
+                "skillId": "external", "skillReferenceCode": "SKL-00000000000000000000000002",
                 "revision": 2, "digest": "sha256:" + "b" * 64,
                 "instructions": "Unsafe exact revision", "references": [],
                 "declaredCapabilities": {

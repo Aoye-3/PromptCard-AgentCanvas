@@ -13,6 +13,15 @@ _ALLOWED_KEYS = frozenset({
     "declaredCapabilities",
 })
 _CAPABILITY_KEYS = frozenset({"tools", "network", "executables", "models", "other"})
+_SKILL_CODE = re.compile(r"^SKL-[0-7][0-9A-HJKMNP-TV-Z]{25}$")
+_TEXT_TYPES = frozenset({"text/plain", "text/markdown", "application/json"})
+_MAX_TOTAL_BYTES = 512 * 1024
+_MAX_INSTRUCTION_BYTES = 256 * 1024
+_MAX_REFERENCE_BYTES = 128 * 1024
+_MAX_REFERENCE_PATH_BYTES = 220
+_MAX_REFERENCES = 64
+_MAX_CAPABILITY_ITEMS = 64
+_MAX_CAPABILITY_ITEM_BYTES = 128
 
 
 async def resolve_local_agent_skill_snapshot(
@@ -35,7 +44,9 @@ async def resolve_local_agent_skill_snapshot(
     references = payload.get("references")
     capabilities = payload.get("declaredCapabilities", {})
     if (
-        reference != skill_id
+        not isinstance(reference, str)
+        or _SKILL_CODE.fullmatch(reference) is None
+        or reference.casefold() != skill_id.casefold()
         or type(revision) is not int
         or revision < 1
         or not isinstance(digest, str)
@@ -45,6 +56,7 @@ async def resolve_local_agent_skill_snapshot(
         or not isinstance(references, list)
         or any(not _valid_reference(item) for item in references)
         or not _valid_capabilities(capabilities)
+        or not _within_snapshot_budget(instructions, references)
     ):
         raise HTTPException(status_code=502, detail="skill_snapshot_invalid")
     tools = set(capabilities.get("tools", []))
@@ -56,20 +68,70 @@ async def resolve_local_agent_skill_snapshot(
 
 
 def _valid_reference(item: object) -> bool:
+    if not isinstance(item, dict) or set(item) != {"path", "contentType", "content"}:
+        return False
+    content_size = _utf8_size(item["content"])
     return (
-        isinstance(item, dict)
-        and set(item) == {"path", "contentType", "content"}
-        and all(isinstance(item[key], str) for key in item)
+        isinstance(item["path"], str)
+        and _valid_reference_path(item["path"])
+        and isinstance(item["contentType"], str)
+        and item["contentType"] in _TEXT_TYPES
+        and content_size is not None
+        and content_size <= _MAX_REFERENCE_BYTES
     )
 
 
 def _valid_capabilities(value: object) -> bool:
-    return (
-        isinstance(value, dict)
-        and set(value).issubset(_CAPABILITY_KEYS)
-        and all(
-            isinstance(items, list)
-            and all(isinstance(item, str) and item for item in items)
-            for items in value.values()
-        )
+    if not isinstance(value, dict) or not set(value).issubset(_CAPABILITY_KEYS):
+        return False
+    if any(not isinstance(items, list) for items in value.values()):
+        return False
+    if sum(len(items) for items in value.values()) > _MAX_CAPABILITY_ITEMS:
+        return False
+    return all(
+        isinstance(item, str)
+        and bool(item)
+        and (size := _utf8_size(item)) is not None
+        and size <= _MAX_CAPABILITY_ITEM_BYTES
+        for items in value.values()
+        for item in items
     )
+
+
+def _valid_reference_path(value: str) -> bool:
+    parts = value.split("/")
+    size = _utf8_size(value)
+    return (
+        size is not None
+        and size <= _MAX_REFERENCE_PATH_BYTES
+        and len(parts) > 1
+        and parts[0] == "references"
+        and all(part not in {"", ".", ".."} and "\\" not in part and "\x00" not in part for part in parts)
+    )
+
+
+def _within_snapshot_budget(instructions: str, references: list[dict[str, Any]]) -> bool:
+    if len(references) > _MAX_REFERENCES:
+        return False
+    instruction_bytes = _utf8_size(instructions)
+    if instruction_bytes is None or instruction_bytes > _MAX_INSTRUCTION_BYTES:
+        return False
+    reference_sizes = [
+        (_utf8_size(item["path"]), _utf8_size(item["contentType"]), _utf8_size(item["content"]))
+        for item in references
+    ]
+    if any(size is None for sizes in reference_sizes for size in sizes):
+        return False
+    total = instruction_bytes + sum(
+        size for sizes in reference_sizes for size in sizes if size is not None
+    )
+    return total <= _MAX_TOTAL_BYTES
+
+
+def _utf8_size(value: object) -> int | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None
