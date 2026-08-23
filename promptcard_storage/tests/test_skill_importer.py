@@ -169,6 +169,104 @@ class SkillFolderInspectionTests(unittest.TestCase):
         self.assertFalse(result.clean)
         self.assertIn("folder.file_changed", [finding.code for finding in result.findings])
 
+    def test_root_identity_swap_discards_replacement_bytes(self) -> None:
+        original_content = skill_markdown(body=b"original-body")
+        replacement_content = skill_markdown(body=b"replacement-marker-must-not-be-read")
+        self.write("SKILL.md", original_content)
+        parked = self.root.with_name(f"{self.root.name}-parked")
+        replacement = self.root.with_name(f"{self.root.name}-replacement")
+        replacement.mkdir()
+        (replacement / "SKILL.md").write_bytes(replacement_content)
+        real_scandir = os.scandir
+        swapped = False
+
+        def swap_before_scan(path):
+            nonlocal swapped
+            if not swapped and Path(path) == self.root:
+                os.replace(self.root, parked)
+                os.replace(replacement, self.root)
+                swapped = True
+            return real_scandir(path)
+
+        try:
+            with (
+                patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=False),
+                patch("promptcard_storage.skill_importer.os.scandir", side_effect=swap_before_scan),
+                patch(
+                    "promptcard_storage.skill_importer._read_folder_file",
+                    side_effect=AssertionError("replacement bytes were read"),
+                ),
+            ):
+                result = inspect_folder(self.root)
+        finally:
+            if swapped:
+                os.replace(self.root, replacement)
+                os.replace(parked, self.root)
+            shutil.rmtree(replacement, ignore_errors=True)
+
+        self.assertFalse(result.clean)
+        self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
+        self.assertEqual(result.snapshot.entries, ())
+        self.assertNotIn(b"replacement-marker", repr(result.public_dict()).encode())
+
+    def test_root_swap_then_revert_during_scandir_fails_closed(self) -> None:
+        original_content = skill_markdown(body=b"original")
+        replacement_content = skill_markdown(body=b"replacement-marker-must-not-be-read")
+        self.write("SKILL.md", original_content)
+        parked = self.root.with_name(f"{self.root.name}-parked")
+        replacement = self.root.with_name(f"{self.root.name}-replacement")
+        replacement.mkdir()
+        (replacement / "SKILL.md").write_bytes(replacement_content)
+        real_scandir = os.scandir
+        swapped = False
+
+        def enumerate_replacement_then_revert(path):
+            nonlocal swapped
+            if not swapped and Path(path) == self.root:
+                os.replace(self.root, parked)
+                os.replace(replacement, self.root)
+                entries = list(real_scandir(path))
+                os.replace(self.root, replacement)
+                os.replace(parked, self.root)
+                swapped = True
+                return iter(entries)
+            return real_scandir(path)
+
+        try:
+            with (
+                patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=False),
+                patch(
+                    "promptcard_storage.skill_importer.os.scandir",
+                    side_effect=enumerate_replacement_then_revert,
+                ),
+                patch(
+                    "promptcard_storage.skill_importer._read_folder_file",
+                    side_effect=AssertionError("replacement bytes were read"),
+                ),
+            ):
+                result = inspect_folder(self.root)
+        finally:
+            if parked.exists():
+                os.replace(parked, self.root)
+            shutil.rmtree(replacement, ignore_errors=True)
+
+        self.assertFalse(result.clean)
+        self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
+        self.assertEqual(result.snapshot.entries, ())
+
+    def test_anchored_root_open_race_fails_closed(self) -> None:
+        self.write("SKILL.md", skill_markdown())
+
+        with (
+            patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=True),
+            patch("promptcard_storage.skill_importer.os.open", side_effect=OSError),
+        ):
+            result = inspect_folder(self.root)
+
+        self.assertFalse(result.clean)
+        self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
+        self.assertEqual(result.snapshot.entries, ())
+
     def test_windows_ambiguous_paths_and_canonical_collisions_fail_closed(self) -> None:
         cases = {"reserved": "assets/CON.txt"}
         for label, relative in cases.items():
@@ -318,6 +416,49 @@ class SkillArchiveInspectionTests(unittest.TestCase):
         )
         strict_ratio = replace(DEFAULT_INSPECTION_LIMITS, max_compression_ratio=2)
         self.assertFalse(inspect_archive(compressed, "x.zip", strict_ratio).clean)
+
+    def test_tar_hard_limit_stops_before_requesting_the_next_header(self) -> None:
+        content = io.BytesIO()
+        with tarfile.open(fileobj=content, mode="w:gz") as archive:
+            oversized = tarfile.TarInfo("assets/oversized.bin")
+            oversized.size = 5
+            archive.addfile(oversized, io.BytesIO(b"12345"))
+            instruction = tarfile.TarInfo("SKILL.md")
+            instruction.size = len(skill_markdown())
+            archive.addfile(instruction, io.BytesIO(skill_markdown()))
+
+        real_archive = tarfile.open(fileobj=io.BytesIO(content.getvalue()), mode="r:gz")
+        requested_headers: list[str] = []
+        extracted: list[str] = []
+        closed = False
+
+        class InstrumentedArchive:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                nonlocal closed
+                real_archive.close()
+                closed = True
+
+            def __iter__(self):
+                for member in real_archive:
+                    requested_headers.append(member.name)
+                    yield member
+
+            def extractfile(self, member):
+                extracted.append(member.name)
+                return real_archive.extractfile(member)
+
+        limits = replace(DEFAULT_INSPECTION_LIMITS, max_file_bytes=4)
+        with patch("promptcard_storage.skill_importer.tarfile.open", return_value=InstrumentedArchive()):
+            result = inspect_archive(content.getvalue(), "fixture.tar.gz", limits)
+
+        self.assertFalse(result.clean)
+        self.assertEqual(requested_headers, ["assets/oversized.bin"])
+        self.assertEqual(extracted, [])
+        self.assertTrue(closed)
+        self.assertEqual(result.snapshot.entries, ())
 
 
 class SkillMetadataAndCredentialTests(unittest.TestCase):

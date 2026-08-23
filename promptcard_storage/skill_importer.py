@@ -102,6 +102,7 @@ _FIXED_MESSAGES = {
     "credential.detected": "Potential credential material was detected",
     "folder.file_changed": "A package file changed while it was being inspected",
     "folder.invalid_root": "The selected folder is not a safe regular directory",
+    "folder.root_changed": "The selected folder changed while it was being inspected",
     "inspection.file_too_large": "A package file exceeds the safety limit",
     "inspection.findings_truncated": "Additional findings were omitted at the safety limit",
     "inspection.member_count_exceeded": "The package contains too many entries",
@@ -276,9 +277,14 @@ def inspect_folder(
         collector.add("folder.invalid_root")
         return _finalize(entries, collector, limits)
 
+    if _supports_anchored_folder_walk():
+        return _inspect_folder_anchored(absolute_root, root_stat, limits)
+
     pending: list[tuple[Path, int]] = [(absolute_root, 0)]
     while pending:
         directory, depth = pending.pop()
+        if not _root_is_unchanged(absolute_root, root_stat):
+            return _root_changed_result(limits)
         if depth > limits.max_directory_depth:
             collector.add("path.limit_exceeded")
             continue
@@ -287,17 +293,24 @@ def inspect_folder(
         except OSError:
             collector.add("folder.file_changed")
             continue
+        if not _root_is_unchanged(absolute_root, root_stat):
+            return _root_changed_result(limits)
         for directory_entry in scanned:
+            if not _root_is_unchanged(absolute_root, root_stat):
+                return _root_changed_result(limits)
             member_count += 1
             if member_count > limits.max_members:
                 collector.add("inspection.member_count_exceeded")
                 pending.clear()
                 break
             try:
+                enumerated_stat = directory_entry.stat(follow_symlinks=False)
                 item_stat = os.lstat(directory_entry.path)
             except OSError:
                 collector.add("folder.file_changed")
                 continue
+            if not _same_enumerated_metadata(enumerated_stat, item_stat):
+                return _root_changed_result(limits)
             try:
                 relative_raw = os.path.relpath(directory_entry.path, absolute_root)
             except ValueError:
@@ -334,6 +347,8 @@ def inspect_folder(
             if total_bytes + item_stat.st_size > limits.max_total_bytes:
                 collector.add("inspection.total_too_large", path=canonical)
                 continue
+            if not _root_is_unchanged(absolute_root, root_stat):
+                return _root_changed_result(limits)
             try:
                 content = _read_folder_file(Path(directory_entry.path), item_stat, limits.max_file_bytes)
             except _FileChanged:
@@ -342,11 +357,199 @@ def inspect_folder(
             except OSError:
                 collector.add("folder.file_changed", path=canonical)
                 continue
+            if not _root_is_unchanged(absolute_root, root_stat):
+                return _root_changed_result(limits)
             total_bytes += len(content)
             entry = _snapshot_entry(canonical, content, collector)
             if entry is not None:
                 entries.append(entry)
+    if not _root_is_unchanged(absolute_root, root_stat):
+        return _root_changed_result(limits)
     return _validate_and_finalize(entries, collector, limits)
+
+
+def _supports_anchored_folder_walk() -> bool:
+    return (
+        os.name != "nt"
+        and os.open in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.scandir in os.supports_fd
+    )
+
+
+def _inspect_folder_anchored(
+    absolute_root: Path,
+    root_stat: os.stat_result,
+    limits: InspectionLimits,
+) -> InspectionResult:
+    collector = _FindingCollector(limits.max_findings)
+    entries: list[SnapshotEntry] = []
+    seen: dict[str, str] = {}
+    member_count = 0
+    total_bytes = 0
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        root_fd = os.open(absolute_root, directory_flags)
+    except OSError:
+        return _root_changed_result(limits)
+    pending: list[tuple[int, str, int]] = []
+    try:
+        if _root_identity(os.fstat(root_fd)) != _root_identity(root_stat):
+            return _root_changed_result(limits)
+        pending.append((root_fd, "", 0))
+        while pending:
+            directory_fd, prefix, depth = pending.pop()
+            close_directory = directory_fd != root_fd
+            try:
+                if not _root_is_unchanged(absolute_root, root_stat):
+                    return _root_changed_result(limits)
+                scanned = sorted(
+                    os.scandir(directory_fd), key=lambda item: (item.name.casefold(), item.name)
+                )
+                if not _root_is_unchanged(absolute_root, root_stat):
+                    return _root_changed_result(limits)
+                for directory_entry in scanned:
+                    member_count += 1
+                    if member_count > limits.max_members:
+                        collector.add("inspection.member_count_exceeded")
+                        return _validate_and_finalize(entries, collector, limits)
+                    relative_raw = f"{prefix}/{directory_entry.name}" if prefix else directory_entry.name
+                    canonical, error = _safe_package_path(relative_raw, limits)
+                    if error:
+                        collector.add(error, path=canonical or "")
+                        continue
+                    try:
+                        enumerated_stat = directory_entry.stat(follow_symlinks=False)
+                        item_stat = os.stat(
+                            directory_entry.name,
+                            dir_fd=directory_fd,
+                            follow_symlinks=False,
+                        )
+                    except OSError:
+                        collector.add("folder.file_changed", path=canonical)
+                        continue
+                    if not _same_enumerated_metadata(enumerated_stat, item_stat):
+                        return _root_changed_result(limits)
+                    if stat.S_ISLNK(item_stat.st_mode) or is_windows_reparse_point(item_stat):
+                        collector.add("path.unsafe_link", path=canonical)
+                        continue
+                    if stat.S_ISDIR(item_stat.st_mode):
+                        if directory_entry.name.casefold() in _EXCLUDED_DIRECTORIES:
+                            continue
+                        if depth >= limits.max_directory_depth:
+                            collector.add("path.limit_exceeded", path=canonical)
+                            continue
+                        try:
+                            child_fd = os.open(
+                                directory_entry.name,
+                                directory_flags,
+                                dir_fd=directory_fd,
+                            )
+                        except OSError:
+                            collector.add("folder.file_changed", path=canonical)
+                            continue
+                        if _file_identity(os.fstat(child_fd)) != _file_identity(item_stat):
+                            os.close(child_fd)
+                            return _root_changed_result(limits)
+                        pending.append((child_fd, canonical, depth + 1))
+                        continue
+                    if not stat.S_ISREG(item_stat.st_mode):
+                        collector.add("path.unsafe_link", path=canonical)
+                        continue
+                    if not _reserve_path(canonical, seen, collector):
+                        continue
+                    if item_stat.st_size > limits.max_file_bytes or (
+                        canonical == "SKILL.md" and item_stat.st_size > limits.max_skill_md_bytes
+                    ):
+                        collector.add("inspection.file_too_large", path=canonical)
+                        continue
+                    if total_bytes + item_stat.st_size > limits.max_total_bytes:
+                        collector.add("inspection.total_too_large", path=canonical)
+                        continue
+                    try:
+                        content = _read_folder_file(
+                            directory_entry.name,
+                            item_stat,
+                            limits.max_file_bytes,
+                            dir_fd=directory_fd,
+                        )
+                    except (OSError, _FileChanged):
+                        collector.add("folder.file_changed", path=canonical)
+                        continue
+                    if not _root_is_unchanged(absolute_root, root_stat):
+                        return _root_changed_result(limits)
+                    total_bytes += len(content)
+                    entry = _snapshot_entry(canonical, content, collector)
+                    if entry is not None:
+                        entries.append(entry)
+            finally:
+                if close_directory:
+                    os.close(directory_fd)
+        if not _root_is_unchanged(absolute_root, root_stat):
+            return _root_changed_result(limits)
+        return _validate_and_finalize(entries, collector, limits)
+    finally:
+        for directory_fd, _prefix, _depth in pending:
+            if directory_fd != root_fd:
+                os.close(directory_fd)
+        os.close(root_fd)
+
+
+def _root_is_unchanged(root: Path, expected: os.stat_result) -> bool:
+    try:
+        current = os.lstat(root)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(current.st_mode)
+        and not stat.S_ISLNK(current.st_mode)
+        and not is_windows_reparse_point(current)
+        and _root_identity(current) == _root_identity(expected)
+    )
+
+
+def _root_changed_result(limits: InspectionLimits) -> InspectionResult:
+    collector = _FindingCollector(limits.max_findings)
+    collector.add("folder.root_changed")
+    return _finalize([], collector, limits)
+
+
+def _root_identity(value: os.stat_result) -> tuple[int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        stat.S_IFMT(value.st_mode),
+        getattr(value, "st_file_attributes", 0),
+    )
+
+
+def _same_enumerated_metadata(left: os.stat_result, right: os.stat_result) -> bool:
+    stable_metadata: tuple[int, ...] = (
+        stat.S_IFMT(left.st_mode),
+        getattr(left, "st_file_attributes", 0),
+    )
+    current_metadata: tuple[int, ...] = (
+        stat.S_IFMT(right.st_mode),
+        getattr(right, "st_file_attributes", 0),
+    )
+    if stat.S_ISREG(left.st_mode) and stat.S_ISREG(right.st_mode):
+        stable_metadata += (
+            left.st_size,
+            getattr(left, "st_mtime_ns", int(left.st_mtime * 1_000_000_000)),
+        )
+        current_metadata += (
+            right.st_size,
+            getattr(right, "st_mtime_ns", int(right.st_mtime * 1_000_000_000)),
+        )
+    left_identity = (left.st_dev, left.st_ino)
+    right_identity = (right.st_dev, right.st_ino)
+    identity_matches = 0 in left_identity or 0 in right_identity or left_identity == right_identity
+    return stable_metadata == current_metadata and identity_matches
 
 
 def inspect_archive(
@@ -447,46 +650,50 @@ def _inspect_tar(
         for index, member in enumerate(archive, start=1):
             if index > limits.max_members:
                 collector.add("archive.member_count_exceeded")
-                break
+                return []
             canonical, error = _safe_package_path(member.name.rstrip("/") if member.isdir() else member.name, limits)
             if error:
                 collector.add(error, path=canonical or "")
-                continue
+                return []
             if not _reserve_path(canonical, seen, collector):
-                continue
+                return []
             if member.isdir():
                 continue
             if not member.isreg() or getattr(member, "sparse", None):
                 collector.add("archive.unsafe_member", path=canonical)
+                if collector.truncated:
+                    return []
                 continue
             declared_total += member.size
             if member.size > limits.max_file_bytes or (
                 canonical == "SKILL.md" and member.size > limits.max_skill_md_bytes
             ):
                 collector.add("inspection.file_too_large", path=canonical)
-                continue
+                return []
             if declared_total > limits.max_total_bytes:
                 collector.add("inspection.total_too_large", path=canonical)
-                continue
+                return []
             if declared_total / max(len(content), 1) > limits.max_compression_ratio:
                 collector.add("archive.ratio_exceeded", path=canonical)
-                continue
+                return []
             source = archive.extractfile(member)
             if source is None:
                 collector.add("archive.metadata_inconsistent", path=canonical)
-                continue
+                return []
             with source:
                 member_content = _read_stream_bounded(source, limits.max_file_bytes)
             if len(member_content) != member.size:
                 collector.add("archive.metadata_inconsistent", path=canonical)
-                continue
+                return []
             actual_total += len(member_content)
             if actual_total > limits.max_total_bytes:
                 collector.add("inspection.total_too_large", path=canonical)
-                continue
+                return []
             entry = _snapshot_entry(canonical, member_content, collector)
             if entry is not None:
                 entries.append(entry)
+            if collector.truncated:
+                return []
     return entries
 
 
@@ -494,9 +701,18 @@ class _FileChanged(Exception):
     pass
 
 
-def _read_folder_file(path: Path, expected: os.stat_result, limit: int) -> bytes:
+def _read_folder_file(
+    path: str | Path,
+    expected: os.stat_result,
+    limit: int,
+    *,
+    dir_fd: int | None = None,
+) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+    if dir_fd is None:
+        descriptor = os.open(path, flags)
+    else:
+        descriptor = os.open(path, flags, dir_fd=dir_fd)
     try:
         before = os.fstat(descriptor)
         if _file_identity(before) != _file_identity(expected) or not stat.S_ISREG(before.st_mode):
@@ -512,7 +728,10 @@ def _read_folder_file(path: Path, expected: os.stat_result, limit: int) -> bytes
             if size > limit:
                 raise _FileChanged
         after_handle = os.fstat(descriptor)
-        after_path = os.stat(path, follow_symlinks=False)
+        if dir_fd is None:
+            after_path = os.stat(path, follow_symlinks=False)
+        else:
+            after_path = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
         if _file_identity(before) != _file_identity(after_handle) or _file_identity(before) != _file_identity(after_path):
             raise _FileChanged
         return b"".join(chunks)
@@ -945,23 +1164,17 @@ class SkillPackageImportService:
                 raise
             except Exception:
                 self._raise(500, "skill_import_failed", "Skill import could not be persisted")
-            current = next(
-                revision for revision in stored["revisions"]
-                if revision["revision"] == stored["currentRevision"]
-            )
             session.snapshot = None
             session.cached_bytes = 0
             session.consumed = True
-            return {
-                "inspectionId": inspection_id,
-                "skill": {
-                    "id": stored["id"],
-                    "referenceCode": stored["referenceCode"],
-                    "revision": current["revision"],
-                    "digest": current["digest"],
-                    "lifecycleStatus": stored["lifecycleStatus"],
-                },
-            }
+            try:
+                return self._import_response(inspection_id, stored)
+            except Exception:
+                self._raise(
+                    500,
+                    "skill_import_failed",
+                    "Skill import was persisted but its response was invalid",
+                )
 
     def _register(self, result: InspectionResult) -> dict[str, Any]:
         now = self._clock()
@@ -984,6 +1197,37 @@ class SkillPackageImportService:
                 cached_bytes=cached_bytes,
             )
             return public
+
+    @staticmethod
+    def _import_response(inspection_id: str, stored: object) -> dict[str, Any]:
+        if not isinstance(stored, dict):
+            raise TypeError
+        current_revision = stored["currentRevision"]
+        revisions = stored["revisions"]
+        if type(current_revision) is not int or not isinstance(revisions, list):
+            raise TypeError
+        current = next(
+            revision for revision in revisions
+            if isinstance(revision, dict) and revision.get("revision") == current_revision
+        )
+        values = {
+            "id": stored["id"],
+            "referenceCode": stored["referenceCode"],
+            "digest": current["digest"],
+            "lifecycleStatus": stored["lifecycleStatus"],
+        }
+        if any(not isinstance(value, str) or not value for value in values.values()):
+            raise ValueError
+        return {
+            "inspectionId": inspection_id,
+            "skill": {
+                "id": values["id"],
+                "referenceCode": values["referenceCode"],
+                "revision": current_revision,
+                "digest": values["digest"],
+                "lifecycleStatus": values["lifecycleStatus"],
+            },
+        }
 
     def _new_id(self) -> str:
         for _ in range(self._limits.max_inspection_id_attempts):

@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -207,6 +208,95 @@ class SkillImportApiTests(unittest.TestCase):
         })
         self.assertNotIn("raw-secret", repr(failed.json()))
         self.assertEqual(retried.status_code, 200)
+
+    def test_post_commit_malformed_store_result_consumes_snapshot_once(self) -> None:
+        inspected = self.inspect_archive().json()
+        inspection_id = inspected["inspectionId"]
+        baseline = self.raw_skill_counts()
+        original = self.store.create_skill
+        calls = 0
+
+        def commit_then_malformed(payload):
+            nonlocal calls
+            calls += 1
+            original(payload)
+            return {"malformed": True}
+
+        self.store.create_skill = commit_then_malformed
+        response = self.import_create(inspection_id, id="post-commit-once")
+        retry = self.import_create(inspection_id, id="post-commit-once")
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], {
+            "code": "skill_import_failed",
+            "message": "Skill import was persisted but its response was invalid",
+        })
+        self.assertEqual(retry.status_code, 409)
+        self.assertEqual(retry.json()["detail"]["code"], "inspection_consumed")
+        self.assertEqual(calls, 1)
+        after = self.raw_skill_counts()
+        self.assertEqual(tuple(after[index] - baseline[index] for index in range(4)), (1, 1, 1, 1))
+
+    def test_post_commit_summary_exception_consumes_snapshot_once(self) -> None:
+        inspected = self.inspect_archive().json()
+        inspection_id = inspected["inspectionId"]
+        original = self.store.create_skill
+        calls = 0
+
+        def counted_create(payload):
+            nonlocal calls
+            calls += 1
+            return original(payload)
+
+        self.store.create_skill = counted_create
+        with patch.object(
+            self.service,
+            "_import_response",
+            side_effect=RuntimeError("unsafe response detail"),
+        ):
+            response = self.import_create(inspection_id, id="post-commit-summary-once")
+        retry = self.import_create(inspection_id, id="post-commit-summary-once")
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], {
+            "code": "skill_import_failed",
+            "message": "Skill import was persisted but its response was invalid",
+        })
+        self.assertNotIn("unsafe response detail", repr(response.json()))
+        self.assertEqual(retry.status_code, 409)
+        self.assertEqual(retry.json()["detail"]["code"], "inspection_consumed")
+        self.assertEqual(calls, 1)
+
+    def test_concurrent_import_consumes_one_snapshot_once(self) -> None:
+        inspected = self.inspect_archive().json()
+        payload = {
+            "inspectionId": inspected["inspectionId"],
+            "operation": "create",
+            "skill": {"id": "concurrent-once"},
+        }
+        original = self.store.create_skill
+        calls = 0
+
+        def counted_create(item):
+            nonlocal calls
+            calls += 1
+            return original(item)
+
+        self.store.create_skill = counted_create
+
+        def invoke():
+            try:
+                return self.service.import_request(payload)
+            except Exception as error:
+                return error
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _index: invoke(), range(2)))
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(sum(isinstance(result, dict) for result in results), 1)
+        errors = [result for result in results if not isinstance(result, dict)]
+        self.assertEqual([getattr(error, "code", None) for error in errors], ["inspection_consumed"])
 
     def test_failed_inspection_and_import_create_no_skill_revision_or_public_skl(self) -> None:
         baseline = self.raw_skill_counts()
