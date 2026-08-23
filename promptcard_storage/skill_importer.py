@@ -264,9 +264,6 @@ def inspect_folder(
 ) -> InspectionResult:
     collector = _FindingCollector(limits.max_findings)
     entries: list[SnapshotEntry] = []
-    seen: dict[str, str] = {}
-    member_count = 0
-    total_bytes = 0
     root_path = Path(root)
     try:
         root_stat = os.lstat(root_path)
@@ -280,6 +277,33 @@ def inspect_folder(
     if _supports_anchored_folder_walk():
         return _inspect_folder_anchored(absolute_root, root_stat, limits)
 
+    try:
+        if os.name == "nt":
+            with _WindowsDirectoryLeases() as leases:
+                leases.acquire(absolute_root, root_stat)
+                return _inspect_folder_path_fallback(
+                    absolute_root,
+                    root_stat,
+                    limits,
+                    leases=leases,
+                )
+        return _inspect_folder_path_fallback(absolute_root, root_stat, limits)
+    except _FolderRootChanged:
+        return _root_changed_result(limits)
+
+
+def _inspect_folder_path_fallback(
+    absolute_root: Path,
+    root_stat: os.stat_result,
+    limits: InspectionLimits,
+    *,
+    leases: _WindowsDirectoryLeases | None = None,
+) -> InspectionResult:
+    collector = _FindingCollector(limits.max_findings)
+    entries: list[SnapshotEntry] = []
+    seen: dict[str, str] = {}
+    member_count = 0
+    total_bytes = 0
     pending: list[tuple[Path, int, os.stat_result]] = [(absolute_root, 0, root_stat)]
     while pending:
         directory, depth, expected_directory = pending.pop()
@@ -341,7 +365,10 @@ def inspect_folder(
                 if depth >= limits.max_directory_depth:
                     collector.add("path.limit_exceeded", path=canonical)
                     continue
-                pending.append((Path(directory_entry.path), depth + 1, item_stat))
+                child_path = Path(directory_entry.path)
+                if leases is not None:
+                    leases.acquire(child_path, item_stat)
+                pending.append((child_path, depth + 1, item_stat))
                 continue
             if not stat.S_ISREG(item_stat.st_mode):
                 collector.add("path.unsafe_link", path=canonical)
@@ -402,6 +429,118 @@ def _folder_filesystem_call(operation: Callable[..., Any], *args: Any, **kwargs:
         raise _FolderRootChanged from None
 
 
+def _scandir_sorted(target: int | Path) -> list[Any]:
+    def materialize() -> list[Any]:
+        iterator = os.scandir(target)
+        enter = getattr(iterator, "__enter__", None)
+        if enter is not None:
+            with iterator as opened:
+                return sorted(opened, key=lambda item: (item.name.casefold(), item.name))
+        try:
+            return sorted(iterator, key=lambda item: (item.name.casefold(), item.name))
+        finally:
+            close = getattr(iterator, "close", None)
+            if close is not None:
+                close()
+
+    return _folder_filesystem_call(materialize)
+
+
+class _WindowsDirectoryLeases:
+    def __init__(self) -> None:
+        self._handles: list[int] = []
+
+    def __enter__(self) -> _WindowsDirectoryLeases:
+        return self
+
+    def __exit__(self, exception_type: type[BaseException] | None, *_args: Any) -> bool:
+        close_failed = False
+        for handle in reversed(self._handles):
+            try:
+                _close_windows_directory_lease(handle)
+            except (OSError, ValueError):
+                close_failed = True
+        self._handles.clear()
+        if close_failed and exception_type is None:
+            raise _FolderRootChanged from None
+        return False
+
+    def acquire(self, path: Path, expected: os.stat_result) -> None:
+        try:
+            before = os.lstat(path)
+        except (OSError, ValueError):
+            raise _FolderRootChanged from None
+        if not _same_directory_identity(before, expected):
+            raise _FolderRootChanged
+        try:
+            handle = _open_windows_directory_lease(path)
+        except (OSError, ValueError):
+            raise _FolderRootChanged from None
+        self._handles.append(handle)
+        try:
+            after = os.lstat(path)
+        except (OSError, ValueError):
+            raise _FolderRootChanged from None
+        if (
+            not _same_directory_identity(before, after)
+            or not _same_directory_identity(after, expected)
+        ):
+            raise _FolderRootChanged
+
+
+def _open_windows_directory_lease(path: Path) -> int:
+    if os.name != "nt":
+        raise OSError
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        create_file.restype = wintypes.HANDLE
+        handle = create_file(
+            str(path),
+            0x00010000 | 0x0080,
+            0x00000001 | 0x00000002,
+            None,
+            3,
+            0x02000000 | 0x00200000,
+            None,
+        )
+        invalid_handle = ctypes.c_void_p(-1).value
+        if handle is None or handle == invalid_handle:
+            raise OSError
+        return int(handle)
+    except (AttributeError, OSError, TypeError, ValueError):
+        raise OSError from None
+
+
+def _close_windows_directory_lease(handle: int) -> None:
+    if os.name != "nt":
+        raise OSError
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+        if not close_handle(handle):
+            raise OSError
+    except (AttributeError, OSError, TypeError, ValueError):
+        raise OSError from None
+
+
 def _inspect_folder_anchored(
     absolute_root: Path,
     root_stat: os.stat_result,
@@ -436,10 +575,7 @@ def _inspect_folder_anchored(
                 or not _root_is_unchanged(absolute_root, root_stat)
             ):
                 raise _FolderRootChanged
-            scanned = sorted(
-                _folder_filesystem_call(os.scandir, directory_fd),
-                key=lambda item: (item.name.casefold(), item.name),
-            )
+            scanned = _scandir_sorted(directory_fd)
             after_scan = _folder_filesystem_call(os.fstat, directory_fd)
             if (
                 not _same_directory_identity(after_scan, expected_directory)

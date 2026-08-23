@@ -290,6 +290,42 @@ class SkillFolderInspectionTests(unittest.TestCase):
         self.assertNotIn("secret-folder", repr(result.public_dict()))
         self.assertEqual(closed, [101])
 
+    def test_anchored_lazy_scandir_error_is_redacted_and_closes_resources(self) -> None:
+        self.write("SKILL.md", skill_markdown())
+        root_stat = os.lstat(self.root)
+        closed_fds: list[int] = []
+
+        class LazyFailure:
+            closed = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.closed = True
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise OSError("C:\\private\\lazy-secret-folder")
+
+        lazy = LazyFailure()
+        with (
+            patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=True),
+            patch("promptcard_storage.skill_importer.os.open", return_value=151),
+            patch("promptcard_storage.skill_importer.os.fstat", return_value=root_stat),
+            patch("promptcard_storage.skill_importer.os.scandir", return_value=lazy),
+            patch("promptcard_storage.skill_importer.os.close", side_effect=closed_fds.append),
+        ):
+            result = inspect_folder(self.root)
+
+        self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
+        self.assertEqual(result.snapshot.entries, ())
+        self.assertNotIn("lazy-secret-folder", repr(result.public_dict()))
+        self.assertTrue(lazy.closed)
+        self.assertEqual(closed_fds, [151])
+
     def test_anchored_child_fstat_error_closes_every_open_fd(self) -> None:
         self.write("SKILL.md", skill_markdown())
         child = self.root / "assets"
@@ -376,6 +412,92 @@ class SkillFolderInspectionTests(unittest.TestCase):
         self.assertEqual(result.snapshot.entries, ())
         self.assertNotIn("private", repr(result.public_dict()))
         self.assertEqual(close_attempts, [401])
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory lease behavior")
+    def test_windows_directory_lease_blocks_real_nested_rename(self) -> None:
+        self.write("SKILL.md", skill_markdown())
+        target = self.root / "assets"
+        target.mkdir()
+        (target / "payload.bin").write_bytes(b"safe")
+        parked = self.root.parent / f"{self.root.name}-lease-parked"
+        real_scandir = os.scandir
+        attempted = False
+        blocked = False
+
+        def attempt_rename_while_scanning(path):
+            nonlocal attempted, blocked
+            if not attempted and Path(path) == target:
+                attempted = True
+                try:
+                    os.replace(target, parked)
+                except OSError:
+                    blocked = True
+            return real_scandir(path)
+
+        try:
+            with (
+                patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=False),
+                patch(
+                    "promptcard_storage.skill_importer.os.scandir",
+                    side_effect=attempt_rename_while_scanning,
+                ),
+            ):
+                result = inspect_folder(self.root)
+        finally:
+            if parked.exists():
+                os.replace(parked, target)
+
+        self.assertTrue(attempted)
+        self.assertTrue(blocked)
+        self.assertTrue(result.clean, result.public_dict())
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory lease behavior")
+    def test_windows_directory_lease_handles_close_in_reverse_order(self) -> None:
+        self.write("SKILL.md", skill_markdown())
+        (self.root / "assets").mkdir()
+        opened_paths: list[Path] = []
+        closed_handles: list[int] = []
+
+        def open_lease(path):
+            opened_paths.append(Path(path))
+            return 700 + len(opened_paths)
+
+        with (
+            patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=False),
+            patch(
+                "promptcard_storage.skill_importer._open_windows_directory_lease",
+                side_effect=open_lease,
+                create=True,
+            ),
+            patch(
+                "promptcard_storage.skill_importer._close_windows_directory_lease",
+                side_effect=closed_handles.append,
+                create=True,
+            ),
+        ):
+            result = inspect_folder(self.root)
+
+        self.assertTrue(result.clean, result.public_dict())
+        self.assertEqual(opened_paths, [self.root, self.root / "assets"])
+        self.assertEqual(closed_handles, [702, 701])
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory lease behavior")
+    def test_windows_directory_lease_open_error_fails_closed(self) -> None:
+        self.write("SKILL.md", skill_markdown())
+
+        with (
+            patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=False),
+            patch(
+                "promptcard_storage.skill_importer._open_windows_directory_lease",
+                side_effect=OSError("C:\\private\\lease-secret"),
+                create=True,
+            ),
+        ):
+            result = inspect_folder(self.root)
+
+        self.assertEqual([finding.code for finding in result.findings], ["folder.root_changed"])
+        self.assertEqual(result.snapshot.entries, ())
+        self.assertNotIn("lease-secret", repr(result.public_dict()))
 
     def test_nested_directory_swap_discards_replacement_bytes(self) -> None:
         self.write("SKILL.md", skill_markdown())

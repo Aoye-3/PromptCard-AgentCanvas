@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import shutil
 import sqlite3
 import unittest
@@ -131,6 +132,51 @@ class SkillImportApiTests(unittest.TestCase):
         self.assertEqual(payload["manifest"]["entries"], [])
         self.assertNotIn("credential-folder", repr(payload))
         self.assertNotIn(str(folder), repr(payload))
+
+    def test_lazy_folder_iteration_error_returns_closed_sanitized_inspection(self) -> None:
+        folder = self.data_dir / "source-lazy-error"
+        folder.mkdir()
+        (folder / "SKILL.md").write_bytes(SKILL)
+        root_stat = os.lstat(folder)
+
+        class LazyFailure:
+            closed = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.closed = True
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise OSError("C:\\private\\lazy-api-secret")
+
+        lazy = LazyFailure()
+        with (
+            patch("promptcard_storage.skill_importer._supports_anchored_folder_walk", return_value=True),
+            patch("promptcard_storage.skill_importer.os.open", return_value=851),
+            patch("promptcard_storage.skill_importer.os.fstat", return_value=root_stat),
+            patch("promptcard_storage.skill_importer.os.scandir", return_value=lazy),
+            patch("promptcard_storage.skill_importer.os.close"),
+        ):
+            response = self.client.post(
+                "/api/skill-package-inspections/folder",
+                json={"path": str(folder)},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            [finding["code"] for finding in payload["findings"]],
+            ["folder.root_changed"],
+        )
+        self.assertEqual(payload["manifest"]["entries"], [])
+        self.assertNotIn("lazy-api-secret", repr(payload))
+        self.assertNotIn(str(folder), repr(payload))
+        self.assertTrue(lazy.closed)
 
     def test_dirty_unknown_expired_and_consumed_inspections_fail_closed(self) -> None:
         dirty = self.inspect_archive(archive_bytes(
