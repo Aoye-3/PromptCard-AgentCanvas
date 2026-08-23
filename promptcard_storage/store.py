@@ -1240,12 +1240,13 @@ class SqliteStore:
 
     @staticmethod
     def _validate_skill_identifier_space(connection: sqlite3.Connection) -> None:
-        seen: dict[str, tuple[str, str]] = {}
-        for token, owner, kind in JsonCollectionStore._skill_identifier_records(connection):
+        owners_by_token: dict[str, set[str]] = {}
+        for token, owner, _kind in JsonCollectionStore._skill_identifier_records(connection):
             folded_token = token.casefold()
-            if folded_token in seen:
+            owners = owners_by_token.setdefault(folded_token, set())
+            owners.add(owner)
+            if len(owners) > 1:
                 raise MigrationError("Skill identifier space is ambiguous")
-            seen[folded_token] = (owner, kind)
 
     @staticmethod
     def _skill_entries_from_item(

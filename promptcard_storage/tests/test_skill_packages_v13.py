@@ -363,6 +363,57 @@ class SkillPackagesV13Tests(unittest.TestCase):
         with self.assertRaisesRegex(MigrationError, "ambiguous"):
             self.store.get_skill(first["referenceCode"])
 
+    def test_v13_same_owner_legacy_id_and_slug_reopen_without_package_mutation(self) -> None:
+        data_dir = self.data_dir / "same-owner-v13"
+        store = JsonCollectionStore(data_dir)
+        created = store.create_skill(external_skill("legacy-same-owner", "same-owner", [
+            package_entry("instruction", "SKILL.md", b"# Same owner", "text/markdown"),
+            package_entry("asset", "assets/raw.bin", b"\x00\xffsame-owner", "application/octet-stream"),
+        ]))
+        database = data_dir / "promptcard.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "UPDATE skills SET slug=id WHERE id='legacy-same-owner'"
+            )
+            connection.commit()
+            raw_before = connection.execute(
+                """SELECT revision.digest, entry.canonical_index, entry.canonical_path,
+                          entry.entry_digest, typeof(entry.content), entry.content
+                     FROM skill_revisions AS revision
+                     JOIN skill_package_entries AS entry
+                       ON entry.skill_id=revision.skill_id
+                      AND entry.revision=revision.revision
+                    WHERE revision.skill_id='legacy-same-owner'
+                    ORDER BY revision.revision, entry.canonical_index"""
+            ).fetchall()
+        finally:
+            connection.close()
+
+        try:
+            reopened = JsonCollectionStore(data_dir)
+        except MigrationError as error:
+            self.fail(f"same-owner v13 Skill must reopen: {error}")
+        resolved = reopened.get_skill(created["referenceCode"])
+        self.assertEqual(resolved["id"], "legacy-same-owner")
+        self.assertEqual(resolved["slug"], "legacy-same-owner")
+        self.assertEqual(resolved["revisions"][0]["digest"], created["revisions"][0]["digest"])
+
+        connection = sqlite3.connect(database)
+        try:
+            self.assertEqual(connection.execute(
+                """SELECT revision.digest, entry.canonical_index, entry.canonical_path,
+                          entry.entry_digest, typeof(entry.content), entry.content
+                     FROM skill_revisions AS revision
+                     JOIN skill_package_entries AS entry
+                       ON entry.skill_id=revision.skill_id
+                      AND entry.revision=revision.revision
+                    WHERE revision.skill_id='legacy-same-owner'
+                    ORDER BY revision.revision, entry.canonical_index"""
+            ).fetchall(), raw_before)
+        finally:
+            connection.close()
+
     def test_v12_identifier_collisions_roll_back_schema_and_registry_completely(self) -> None:
         for collision_kind in ("legacy-cross", "public-code"):
             with self.subTest(collision_kind=collision_kind):
@@ -515,17 +566,34 @@ class SkillPackagesV13Tests(unittest.TestCase):
         self.assertEqual(self.store.get_skill("legacy-sql"), created)
 
     def test_v12_skill_slice_migrates_deterministically_and_preserves_legacy_digests(self) -> None:
-        legacy = self.store.create_skill({
-            "id": "legacy-v12", "slug": "legacy-v12-slug", "name": "Legacy V12",
-            "source": "external", "instructions": "Legacy instructions",
-            "references": [{"name": "guide", "content": "Reference"}],
-        })
         database = self.data_dir / "promptcard.sqlite3"
         downgrade_skill_schema_to_v12(database)
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("""INSERT INTO skills(
+                id, slug, name, description, source, trust_state, capability_id,
+                tool_dependencies_json, current_revision, created_at, updated_at
+            ) VALUES (
+                'legacy-v12', 'legacy-v12', 'Legacy V12', '', 'external', 'trusted', NULL,
+                '[]', 1, 1, 1
+            )""")
+            connection.execute("""INSERT INTO skill_revisions(
+                skill_id, revision, digest, instructions, references_json, created_at
+            ) VALUES (
+                'legacy-v12', 1, 'sha256:legacy-v12', 'Legacy instructions',
+                '[{"name":"guide","content":"Reference"}]', 1
+            )""")
+            connection.commit()
+        finally:
+            connection.close()
 
-        migrated = JsonCollectionStore(self.data_dir).get_skill("legacy-v12")
+        try:
+            migrated_store = JsonCollectionStore(self.data_dir)
+        except MigrationError as error:
+            self.fail(f"same-owner v12 Skill must migrate: {error}")
+        migrated = migrated_store.get_skill("legacy-v12")
         revision = migrated["revisions"][0]
-        self.assertEqual(revision["legacyDigest"], legacy["revisions"][0]["legacyDigest"] or legacy["revisions"][0]["digest"])
+        self.assertEqual(revision["legacyDigest"], "sha256:legacy-v12")
         self.assertEqual(revision["digestVersion"], "skill-package-v1")
         self.assertIn("legacyMetadata", revision["provenance"])
         self.assertEqual(revision["provenance"]["legacyMetadata"], {
@@ -533,6 +601,7 @@ class SkillPackagesV13Tests(unittest.TestCase):
             "digest": revision["legacyDigest"],
         })
         self.assertEqual([entry["path"] for entry in revision["entries"]], ["SKILL.md", "references/reference-0001.json"])
+        self.assertRegex(migrated["referenceCode"], SKILL_CODE)
         self.assertEqual(JsonCollectionStore(self.data_dir).get_skill("legacy-v12"), migrated)
         self.assertTrue(all(skill["referenceCode"].startswith("SKL-") for skill in JsonCollectionStore(self.data_dir).list_skills()["skills"]))
         connection = sqlite3.connect(database)
