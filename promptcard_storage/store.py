@@ -1082,12 +1082,12 @@ class SqliteStore:
         )
         with self._transaction() as connection:
             try:
-                collision = connection.execute(
-                    """SELECT 1 FROM skills
-                       WHERE id IN (?, ?) OR slug IN (?, ?)""",
-                    (skill_id, slug, skill_id, slug),
-                ).fetchone()
-                if collision is not None:
+                self._validate_skill_identifier_space(connection)
+                requested_identifiers = {skill_id.casefold(), slug.casefold()}
+                if len(requested_identifiers) != 2 or any(
+                    self._skill_identifier_is_reserved(connection, identifier)
+                    for identifier in requested_identifiers
+                ):
                     raise DuplicateItem(skill_id)
                 connection.execute(
                     """INSERT INTO skills(
@@ -1192,18 +1192,60 @@ class SqliteStore:
 
     @staticmethod
     def _resolve_skill_id(connection: sqlite3.Connection, identifier: str) -> str:
-        row = connection.execute(
-            """SELECT skill.id
-               FROM skills AS skill
-               LEFT JOIN public_references AS reference
-                 ON reference.namespace='SKL' AND reference.owner_scope=''
-                AND reference.internal_id=skill.id
-               WHERE skill.id=? OR skill.slug=? OR reference.public_code=? COLLATE NOCASE""",
-            (identifier, identifier, identifier),
-        ).fetchone()
-        if row is None:
+        folded_identifier = identifier.casefold()
+        matches = sorted({
+            skill_id
+            for token, skill_id, _kind in JsonCollectionStore._skill_identifier_records(
+                connection
+            )
+            if token.casefold() == folded_identifier
+        })
+        if not matches:
             raise MissingItem(identifier)
-        return row[0]
+        if len(matches) > 1:
+            raise MigrationError("Skill identifier is ambiguous")
+        return matches[0]
+
+    @staticmethod
+    def _skill_identifier_records(
+        connection: sqlite3.Connection,
+    ) -> list[tuple[str, str, str]]:
+        records: list[tuple[str, str, str]] = []
+        for skill_id, slug in connection.execute(
+            "SELECT id, slug FROM skills ORDER BY id"
+        ):
+            records.append((skill_id, skill_id, "id"))
+            records.append((slug, skill_id, "slug"))
+        records.extend(
+            (public_code, internal_id, "referenceCode")
+            for public_code, internal_id in connection.execute(
+                """SELECT public_code, internal_id FROM public_references
+                   WHERE namespace='SKL' AND owner_scope=''
+                   ORDER BY public_code"""
+            )
+        )
+        return records
+
+    @staticmethod
+    def _skill_identifier_is_reserved(
+        connection: sqlite3.Connection, identifier: str
+    ) -> bool:
+        folded_identifier = identifier.casefold()
+        return any(
+            token.casefold() == folded_identifier
+            for token, _owner, _kind in JsonCollectionStore._skill_identifier_records(
+                connection
+            )
+        )
+
+    @staticmethod
+    def _validate_skill_identifier_space(connection: sqlite3.Connection) -> None:
+        seen: dict[str, tuple[str, str]] = {}
+        for token, owner, kind in JsonCollectionStore._skill_identifier_records(connection):
+            folded_token = token.casefold()
+            if folded_token in seen:
+                raise MigrationError("Skill identifier space is ambiguous")
+            seen[folded_token] = (owner, kind)
 
     @staticmethod
     def _skill_entries_from_item(
@@ -3423,6 +3465,7 @@ class SqliteStore:
             self._create_skill_immutability_v13_triggers(connection)
 
     def _migrate_skill_packages_v13(self, connection: sqlite3.Connection) -> None:
+        self._validate_skill_identifier_space(connection)
         self._drop_skill_immutability_v13_triggers(connection)
         self._create_skill_packages_v13_schema(connection, protect=False)
         rows = connection.execute(
@@ -3560,6 +3603,7 @@ class SqliteStore:
         connection.execute("DROP TABLE public_references_v10_weak")
 
     def _reconcile_public_references(self, connection: sqlite3.Connection) -> None:
+        self._validate_skill_identifier_space(connection)
         candidates: set[tuple[str, str, str]] = set()
         for project_id, payload_json in connection.execute(
             "SELECT id, payload_json FROM projects ORDER BY id"
@@ -3656,10 +3700,16 @@ class SqliteStore:
         public_code = generate_reference_code(
             canonical_namespace,
             timestamp_ms=now_ms(),
-            collision_predicate=lambda candidate: connection.execute(
-                "SELECT 1 FROM public_references WHERE public_code=?",
-                (candidate,),
-            ).fetchone() is not None,
+            collision_predicate=lambda candidate: (
+                connection.execute(
+                    "SELECT 1 FROM public_references WHERE public_code=?",
+                    (candidate,),
+                ).fetchone() is not None
+                or (
+                    canonical_namespace is ReferenceNamespace.SKILL
+                    and self._skill_identifier_is_reserved(connection, candidate)
+                )
+            ),
         )
         connection.execute(
             """INSERT INTO public_references(

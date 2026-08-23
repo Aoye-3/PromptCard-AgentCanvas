@@ -297,6 +297,30 @@ class StorageAppContractTest(unittest.TestCase):
         })
         self.assertEqual(external.status_code, 200)
         skill_code = external.json()["referenceCode"]
+        for payload in (
+            {
+                "id": skill_code.lower(), "slug": "api-id-collision",
+                "name": "API ID Collision", "source": "external",
+                "instructions": "Must not be stored",
+            },
+            {
+                "id": "api-slug-collision", "slug": skill_code.lower(),
+                "name": "API Slug Collision", "source": "external",
+                "instructions": "Must not be stored",
+            },
+        ):
+            self.assertEqual(self.client.post("/api/skills", json=payload).status_code, 409)
+        self.assertNotIn(
+            "api-slug-collision",
+            {skill["id"] for skill in self.client.get("/api/skills").json()["skills"]},
+        )
+        second = self.client.post("/api/skills", json={
+            "id": "legacy-api-second", "slug": "api-second", "name": "API Second",
+            "source": "external", "instructions": "Second API instructions",
+        })
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["id"], "legacy-api-second")
+        self.assertNotEqual(second.json()["referenceCode"], skill_code)
         archived = self.client.post(f"/api/skills/{skill_code}/archive")
         self.assertEqual(archived.status_code, 200)
         self.assertEqual(archived.json()["lifecycleStatus"], "archived")

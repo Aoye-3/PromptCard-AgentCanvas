@@ -4,8 +4,15 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from promptcard_storage.maintenance import restore_backup
+from promptcard_storage.migration import MigrationError
+from promptcard_storage.reference_codes import (
+    ReferenceCodeError,
+    ReferenceNamespace,
+    generate_reference_code,
+)
 from promptcard_storage.store import DuplicateItem, JsonCollectionStore
 
 
@@ -32,6 +39,47 @@ def external_skill(legacy_id: str, slug: str, entries: list[dict]) -> dict:
         "instructions": "Legacy compatibility instructions.",
         "entries": entries,
     }
+
+
+def downgrade_skill_schema_to_v12(database: Path) -> None:
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        for trigger in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'skill_%'"
+        ).fetchall():
+            connection.execute(f"DROP TRIGGER {trigger[0]}")
+        connection.execute("DROP TABLE skill_package_entries")
+        connection.execute("ALTER TABLE skill_revisions RENAME TO skill_revisions_v13")
+        connection.execute("""CREATE TABLE skill_revisions(
+            skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+            revision INTEGER NOT NULL, digest TEXT NOT NULL, instructions TEXT NOT NULL,
+            references_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+            PRIMARY KEY(skill_id, revision), UNIQUE(skill_id, digest)
+        )""")
+        connection.execute("""INSERT INTO skill_revisions
+            SELECT skill_id, revision, COALESCE(legacy_digest, digest), instructions,
+                   references_json, created_at FROM skill_revisions_v13""")
+        connection.execute("DROP TABLE skill_revisions_v13")
+        connection.execute("ALTER TABLE skills RENAME TO skills_v13")
+        connection.execute("""CREATE TABLE skills(
+            id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+            description TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('builtin','external')),
+            trust_state TEXT NOT NULL CHECK(trust_state IN ('first-party','trusted','untrusted')),
+            capability_id TEXT, tool_dependencies_json TEXT NOT NULL,
+            current_revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        )""")
+        connection.execute("""INSERT INTO skills
+            SELECT id, slug, name, description, source, trust_state, capability_id,
+                   tool_dependencies_json, current_revision, created_at, updated_at FROM skills_v13""")
+        connection.execute("DROP TABLE skills_v13")
+        connection.execute("DELETE FROM schema_migrations")
+        connection.execute(
+            "INSERT INTO schema_migrations(version, name, applied_at) VALUES (12, 'legacy-v12', 1)"
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 class SkillPackagesV13Tests(unittest.TestCase):
@@ -187,6 +235,189 @@ class SkillPackagesV13Tests(unittest.TestCase):
             connection.close()
         self.assertEqual(self.store.get_skill(first["referenceCode"]), first)
 
+    def test_skill_identifiers_share_case_insensitive_space_with_public_codes(self) -> None:
+        first = self.store.create_skill(external_skill("legacy-alpha", "alpha", [
+            package_entry("instruction", "SKILL.md", b"# Alpha", "text/markdown"),
+        ]))
+        public_code = first["referenceCode"]
+        before = sqlite3.connect(self.data_dir / "promptcard.sqlite3")
+        try:
+            counts = (
+                before.execute("SELECT COUNT(*) FROM skills").fetchone()[0],
+                before.execute("SELECT COUNT(*) FROM skill_revisions").fetchone()[0],
+                before.execute("SELECT COUNT(*) FROM skill_package_entries").fetchone()[0],
+                before.execute("SELECT COUNT(*) FROM public_references WHERE namespace='SKL'").fetchone()[0],
+            )
+        finally:
+            before.close()
+
+        collisions = [
+            (public_code.lower(), "second-slug"),
+            ("second-id", public_code.lower()),
+            ("same-token", "SAME-TOKEN"),
+        ]
+        for legacy_id, slug in collisions:
+            with self.subTest(legacy_id=legacy_id, slug=slug), self.assertRaises(DuplicateItem):
+                self.store.create_skill(external_skill(legacy_id, slug, [
+                    package_entry("instruction", "SKILL.md", b"# Collision", "text/markdown"),
+                ]))
+
+        after = sqlite3.connect(self.data_dir / "promptcard.sqlite3")
+        try:
+            self.assertEqual((
+                after.execute("SELECT COUNT(*) FROM skills").fetchone()[0],
+                after.execute("SELECT COUNT(*) FROM skill_revisions").fetchone()[0],
+                after.execute("SELECT COUNT(*) FROM skill_package_entries").fetchone()[0],
+                after.execute("SELECT COUNT(*) FROM public_references WHERE namespace='SKL'").fetchone()[0],
+            ), counts)
+        finally:
+            after.close()
+
+        created = self.store.create_skill(external_skill("legacy-beta", "beta", [
+            package_entry("instruction", "SKILL.md", b"# Beta", "text/markdown"),
+        ]))
+        self.assertEqual(created["id"], "legacy-beta")
+        self.assertNotEqual(created["referenceCode"], public_code)
+        self.assertEqual(self.store.get_skill("LEGACY-BETA"), created)
+        self.assertEqual(self.store.get_skill("BETA"), created)
+
+    def test_skill_public_code_generation_skips_case_insensitive_legacy_id_and_slug(self) -> None:
+        timestamp = 1_700_000_000_000
+        entropies = [bytes([value]) * 10 for value in (1, 2, 3)]
+        candidates = [
+            generate_reference_code(
+                ReferenceNamespace.SKILL,
+                timestamp_ms=timestamp,
+                entropy_source=lambda entropy=entropy: entropy,
+            )
+            for entropy in entropies
+        ]
+        self.store.create_skill(external_skill(candidates[0].lower(), candidates[1].lower(), [
+            package_entry("instruction", "SKILL.md", b"# Reserved", "text/markdown"),
+        ]))
+
+        with patch("promptcard_storage.store.now_ms", return_value=timestamp), patch(
+            "promptcard_storage.reference_codes.token_bytes", side_effect=entropies
+        ):
+            created = self.store.create_skill(external_skill("legacy-generated", "generated", [
+                package_entry("instruction", "SKILL.md", b"# Generated", "text/markdown"),
+            ]))
+
+        self.assertEqual(created["id"], "legacy-generated")
+        self.assertEqual(created["referenceCode"], candidates[2])
+
+    def test_skill_public_code_generation_exhaustion_rolls_back_all_rows(self) -> None:
+        timestamp = 1_700_000_000_000
+        entropy = b"\x04" * 10
+        candidate = generate_reference_code(
+            ReferenceNamespace.SKILL,
+            timestamp_ms=timestamp,
+            entropy_source=lambda: entropy,
+        )
+        self.store.create_skill(external_skill(candidate.lower(), "reserved-generator", [
+            package_entry("instruction", "SKILL.md", b"# Reserved", "text/markdown"),
+        ]))
+        database = self.data_dir / "promptcard.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            before = {
+                table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("skills", "skill_revisions", "skill_package_entries", "public_references")
+            }
+        finally:
+            connection.close()
+
+        with patch("promptcard_storage.store.now_ms", return_value=timestamp), patch(
+            "promptcard_storage.reference_codes.token_bytes", return_value=entropy
+        ), self.assertRaisesRegex(ReferenceCodeError, "reference_code_collision"):
+            self.store.create_skill(external_skill("legacy-exhausted", "exhausted", [
+                package_entry("instruction", "SKILL.md", b"# Exhausted", "text/markdown"),
+            ]))
+
+        connection = sqlite3.connect(database)
+        try:
+            self.assertEqual({
+                table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("skills", "skill_revisions", "skill_package_entries", "public_references")
+            }, before)
+        finally:
+            connection.close()
+
+    def test_skill_resolver_fails_closed_when_raw_rows_match_multiple_skills(self) -> None:
+        first = self.store.create_skill(external_skill("legacy-resolve-a", "resolve-a", [
+            package_entry("instruction", "SKILL.md", b"# A", "text/markdown"),
+        ]))
+        self.store.create_skill(external_skill("legacy-resolve-b", "resolve-b", [
+            package_entry("instruction", "SKILL.md", b"# B", "text/markdown"),
+        ]))
+        connection = sqlite3.connect(self.data_dir / "promptcard.sqlite3")
+        try:
+            connection.execute(
+                "UPDATE skills SET slug=? WHERE id='legacy-resolve-b'",
+                (first["referenceCode"].lower(),),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaisesRegex(MigrationError, "ambiguous"):
+            self.store.get_skill(first["referenceCode"])
+
+    def test_v12_identifier_collisions_roll_back_schema_and_registry_completely(self) -> None:
+        for collision_kind in ("legacy-cross", "public-code"):
+            with self.subTest(collision_kind=collision_kind):
+                data_dir = self.data_dir / collision_kind
+                store = JsonCollectionStore(data_dir)
+                first = store.create_skill(external_skill("legacy-migrate-a", "migrate-a", [
+                    package_entry("instruction", "SKILL.md", b"# A", "text/markdown"),
+                ]))
+                store.create_skill(external_skill("legacy-migrate-b", "migrate-b", [
+                    package_entry("instruction", "SKILL.md", b"# B", "text/markdown"),
+                ]))
+                database = data_dir / "promptcard.sqlite3"
+                downgrade_skill_schema_to_v12(database)
+                connection = sqlite3.connect(database)
+                try:
+                    collision = (
+                        "LEGACY-MIGRATE-A"
+                        if collision_kind == "legacy-cross"
+                        else first["referenceCode"].lower()
+                    )
+                    connection.execute(
+                        "UPDATE skills SET slug=? WHERE id='legacy-migrate-b'",
+                        (collision,),
+                    )
+                    connection.commit()
+                    registry_before = connection.execute(
+                        """SELECT public_code, namespace, owner_scope, internal_id, created_at
+                           FROM public_references ORDER BY public_code"""
+                    ).fetchall()
+                finally:
+                    connection.close()
+
+                with self.assertRaisesRegex(MigrationError, "identifier"):
+                    JsonCollectionStore(data_dir)
+
+                connection = sqlite3.connect(database)
+                try:
+                    self.assertEqual(
+                        connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
+                        12,
+                    )
+                    self.assertIsNone(connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_package_entries'"
+                    ).fetchone())
+                    self.assertNotIn(
+                        "lifecycle_status",
+                        {row[1] for row in connection.execute("PRAGMA table_info(skills)")},
+                    )
+                    self.assertEqual(connection.execute(
+                        """SELECT public_code, namespace, owner_scope, internal_id, created_at
+                           FROM public_references ORDER BY public_code"""
+                    ).fetchall(), registry_before)
+                finally:
+                    connection.close()
+
     def test_provenance_and_declared_capabilities_are_closed_normalized_and_do_not_grant_hosts(self) -> None:
         created = self.store.create_skill({
             **external_skill("legacy-policy", "policy", [
@@ -285,49 +516,12 @@ class SkillPackagesV13Tests(unittest.TestCase):
 
     def test_v12_skill_slice_migrates_deterministically_and_preserves_legacy_digests(self) -> None:
         legacy = self.store.create_skill({
-            "id": "legacy-v12", "slug": "legacy-v12", "name": "Legacy V12",
+            "id": "legacy-v12", "slug": "legacy-v12-slug", "name": "Legacy V12",
             "source": "external", "instructions": "Legacy instructions",
             "references": [{"name": "guide", "content": "Reference"}],
         })
         database = self.data_dir / "promptcard.sqlite3"
-        connection = sqlite3.connect(database)
-        try:
-            connection.execute("PRAGMA foreign_keys=OFF")
-            for trigger in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'skill_%'"
-            ).fetchall():
-                connection.execute(f"DROP TRIGGER {trigger[0]}")
-            connection.execute("DROP TABLE skill_package_entries")
-            connection.execute("ALTER TABLE skill_revisions RENAME TO skill_revisions_v13")
-            connection.execute("""CREATE TABLE skill_revisions(
-                skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
-                revision INTEGER NOT NULL, digest TEXT NOT NULL, instructions TEXT NOT NULL,
-                references_json TEXT NOT NULL, created_at INTEGER NOT NULL,
-                PRIMARY KEY(skill_id, revision), UNIQUE(skill_id, digest)
-            )""")
-            connection.execute("""INSERT INTO skill_revisions
-                SELECT skill_id, revision, COALESCE(legacy_digest, digest), instructions,
-                       references_json, created_at FROM skill_revisions_v13""")
-            connection.execute("DROP TABLE skill_revisions_v13")
-            connection.execute("ALTER TABLE skills RENAME TO skills_v13")
-            connection.execute("""CREATE TABLE skills(
-                id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
-                description TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('builtin','external')),
-                trust_state TEXT NOT NULL CHECK(trust_state IN ('first-party','trusted','untrusted')),
-                capability_id TEXT, tool_dependencies_json TEXT NOT NULL,
-                current_revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-            )""")
-            connection.execute("""INSERT INTO skills
-                SELECT id, slug, name, description, source, trust_state, capability_id,
-                       tool_dependencies_json, current_revision, created_at, updated_at FROM skills_v13""")
-            connection.execute("DROP TABLE skills_v13")
-            connection.execute("DELETE FROM schema_migrations")
-            connection.execute(
-                "INSERT INTO schema_migrations(version, name, applied_at) VALUES (12, 'legacy-v12', 1)"
-            )
-            connection.commit()
-        finally:
-            connection.close()
+        downgrade_skill_schema_to_v12(database)
 
         migrated = JsonCollectionStore(self.data_dir).get_skill("legacy-v12")
         revision = migrated["revisions"][0]
