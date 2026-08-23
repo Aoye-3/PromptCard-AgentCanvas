@@ -792,6 +792,7 @@ class SkillHostService:
                 os.replace(new_backup, new_target)
             elif new_target.exists() and (
                 prior is None
+                or not prior["enabled"]
                 or (prior.get("projection") or {}).get("publicationName")
                 != record.get("newPublicationName")
             ):
@@ -799,6 +800,11 @@ class SkillHostService:
                     new_target, _disk_manifest(desired["projection"])
                 )
                 shutil.rmtree(new_target)
+                if new_target.exists():
+                    raise SkillHostConflict(
+                        "codex_projection_recovery_required",
+                        "The rolled-back projection remains discoverable",
+                    )
         old_target = paths["oldTarget"]
         old_backup = paths["oldBackup"]
         if old_backup is not None and old_backup.exists():
@@ -818,6 +824,13 @@ class SkillHostService:
             self.codex._verify_exact_projection(
                 prior_target, _disk_manifest(prior["projection"])
             )
+        elif prior is not None:
+            prior_target = self.codex._repository(record["repositoryScope"]) / ".agents" / "skills" / prior["projection"]["publicationName"]
+            if prior_target.exists():
+                raise SkillHostConflict(
+                    "codex_projection_recovery_required",
+                    "A disabled projection remains discoverable after rollback",
+                )
 
     def _verify_recovery_backup(
         self,

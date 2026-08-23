@@ -359,6 +359,99 @@ class SkillHostsV14Tests(unittest.TestCase):
         self.assertEqual((target / "SKILL.md").read_bytes(), b"# Revision one\n")
         self.assertEqual(self.store.get_skill_host_pin("host-skill", "codex", "repo-one")["revision"], 1)
 
+    def test_database_failure_restores_disabled_projection_for_same_and_new_names(self) -> None:
+        self.assertEqual(self.pin("codex", 1).status_code, 200)
+        self.assertEqual(self.pin("codex", 1, enabled=False).status_code, 200)
+        journal_root = self.repository / ".agents" / ".promptcard-projection-journal"
+
+        for publication_name in ("host-skill", "host-skill-safe"):
+            with self.subTest(publication_name=publication_name):
+                target = self.repository / ".agents" / "skills" / publication_name
+                original = self.store.set_skill_host_pin
+                self.store.set_skill_host_pin = lambda *args, **kwargs: (
+                    _ for _ in ()
+                ).throw(sqlite3.OperationalError("forced commit failure"))
+                try:
+                    with self.assertRaises(sqlite3.OperationalError):
+                        self.service.update_pin(
+                            self.skill["referenceCode"],
+                            "codex",
+                            "repo-one",
+                            True,
+                            1,
+                            publication_name=publication_name,
+                        )
+                finally:
+                    self.store.set_skill_host_pin = original
+
+                pin = self.store.get_skill_host_pin(
+                    "host-skill", "codex", "repo-one"
+                )
+                self.assertFalse(pin["enabled"])
+                self.assertFalse(target.exists())
+                self.assertEqual(list(journal_root.glob("*.json")), [])
+
+    def test_disabled_projection_cleanup_failure_keeps_journal_for_reopen(self) -> None:
+        self.assertEqual(self.pin("codex", 1).status_code, 200)
+        self.assertEqual(self.pin("codex", 1, enabled=False).status_code, 200)
+        journal_root = self.repository / ".agents" / ".promptcard-projection-journal"
+        original_set_pin = self.store.set_skill_host_pin
+        original_rmtree = shutil.rmtree
+
+        for publication_name in ("host-skill", "host-skill-safe"):
+            with self.subTest(publication_name=publication_name):
+                target = self.repository / ".agents" / "skills" / publication_name
+
+                def leave_live_target(path, *args, **kwargs) -> None:
+                    if Path(path) == target:
+                        return
+                    original_rmtree(path, *args, **kwargs)
+
+                self.store.set_skill_host_pin = lambda *args, **kwargs: (
+                    _ for _ in ()
+                ).throw(sqlite3.OperationalError("forced commit failure"))
+                try:
+                    with (
+                        patch(
+                            "promptcard_storage.skill_hosts.shutil.rmtree",
+                            side_effect=leave_live_target,
+                        ),
+                        self.assertRaises(SkillHostConflict) as raised,
+                    ):
+                        self.service.update_pin(
+                            self.skill["referenceCode"],
+                            "codex",
+                            "repo-one",
+                            True,
+                            1,
+                            publication_name=publication_name,
+                        )
+                finally:
+                    self.store.set_skill_host_pin = original_set_pin
+
+                self.assertEqual(
+                    raised.exception.code, "codex_projection_recovery_required"
+                )
+                self.assertFalse(
+                    self.store.get_skill_host_pin(
+                        "host-skill", "codex", "repo-one"
+                    )["enabled"]
+                )
+                self.assertTrue(target.exists())
+                self.assertEqual(len(list(journal_root.glob("*.json"))), 1)
+
+                reopened = SkillHostService(
+                    SqliteStore(self.root / "storage"),
+                    CodexProjectionAdapter({"repo-one": self.repository}),
+                )
+                recovered = reopened.get_pin(
+                    self.skill["referenceCode"], "codex", "repo-one"
+                )
+                self.assertFalse(recovered["enabled"])
+                self.assertEqual(recovered["projectionHealth"]["state"], "healthy")
+                self.assertFalse(target.exists())
+                self.assertEqual(list(journal_root.glob("*.json")), [])
+
     def test_publish_restore_failure_keeps_journal_until_reopen_recovers(self) -> None:
         self.assertEqual(self.pin("codex", 1).status_code, 200)
         revision_two = self.store.add_skill_revision("host-skill", {
