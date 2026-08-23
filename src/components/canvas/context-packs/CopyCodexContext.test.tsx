@@ -9,7 +9,8 @@ const codes = {
   projectB: 'PRJ-01ARZ3NDEKTSV4RRFFQ69G5FB0',
   text: 'CVT-01ARZ3NDEKTSV4RRFFQ69G5FAW',
   image: 'CVM-01ARZ3NDEKTSV4RRFFQ69G5FAX',
-  context: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ'
+  context: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+  contextB: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FB1'
 } as const
 
 const nodes: IFreeCanvasNode[] = [
@@ -111,6 +112,16 @@ const input = (renderer: ReactTestRenderer, name: string) => renderer.root.findB
 const textContent = (node: ReactTestInstance): string => (
   node.children.map(child => typeof child === 'string' ? child : textContent(child)).join('')
 )
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void
+  let reject!: (cause: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -254,5 +265,70 @@ describe('CopyCodexContext', () => {
     })
     expect(button(renderer, '撤销此 CVC')?.props.disabled).toBe(true)
     expect(renderer.root.findAllByProps({ role: 'status' }).map(textContent).join(' ')).toContain('已撤销，不再是可用复制上下文')
+  })
+
+  it('does not let an old inspection settlement reset input edited while the request is pending', async () => {
+    const pending = deferred<ContextPackInspection>()
+    const client = contextClient({ inspect: vi.fn().mockReturnValue(pending.promise) })
+    vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn() } })
+    const { renderer } = await renderComponent([], client)
+    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
+
+    await act(async () => button(renderer, '检查快照')?.props.onClick())
+    await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.contextB } }))
+    await act(async () => pending.resolve(inspection()))
+
+    expect(input(renderer, '检查 CVC').props.value).toBe(codes.contextB)
+    expect(renderer.root.findAllByProps({ 'aria-label': '不可变快照检查' })).toHaveLength(0)
+  })
+
+  it('keeps inspection B when a revoke for inspection A settles later', async () => {
+    const pendingRevoke = deferred<ContextPackInspection>()
+    const inspectionB = inspection({ cvcCode: codes.contextB })
+    const client = contextClient({
+      inspect: vi.fn()
+        .mockResolvedValueOnce(inspection())
+        .mockResolvedValueOnce(inspectionB),
+      revoke: vi.fn().mockReturnValue(pendingRevoke.promise)
+    })
+    vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn() } })
+    const { renderer } = await renderComponent([], client)
+    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
+    await act(async () => button(renderer, '检查快照')?.props.onClick())
+
+    await act(async () => button(renderer, '撤销此 CVC')?.props.onClick())
+    await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.contextB } }))
+    await act(async () => button(renderer, '检查快照')?.props.onClick())
+    expect(textContent(renderer.root.findByProps({ 'aria-label': '不可变快照检查' }))).toContain(codes.contextB)
+
+    await act(async () => pendingRevoke.resolve(inspection({
+      revokedAt: 12, revokedBy: 'promptcard-ui', revocationReason: 'user-revoked'
+    })))
+
+    expect(input(renderer, '检查 CVC').props.value).toBe(codes.contextB)
+    expect(textContent(renderer.root.findByProps({ 'aria-label': '不可变快照检查' }))).toContain(codes.contextB)
+    expect(textContent(renderer.root.findByProps({ 'aria-label': '不可变快照检查' }))).toContain('生命周期：有效')
+  })
+
+  it('ignores an inspection settlement after close and reopen and keeps inspect double-submit single-flight', async () => {
+    const pending = deferred<ContextPackInspection>()
+    const client = contextClient({ inspect: vi.fn().mockReturnValue(pending.promise) })
+    vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn() } })
+    const { renderer } = await renderComponent([], client)
+    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
+
+    await act(async () => {
+      button(renderer, '检查快照')?.props.onClick()
+      button(renderer, '检查快照')?.props.onClick()
+    })
+    expect(client.inspect).toHaveBeenCalledOnce()
+    await act(async () => button(renderer, '关闭 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => pending.resolve(inspection()))
+
+    expect(renderer.root.findAllByProps({ 'aria-label': '不可变快照检查' })).toHaveLength(0)
   })
 })

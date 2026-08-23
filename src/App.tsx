@@ -33,7 +33,7 @@ import { desktopShellService } from './services/desktop-shell-service'
 import { createBuilderTemplateProjectTitle, getBuilderTemplateById } from './domain/builder-templates/builder-templates'
 import type { BuilderTemplateId } from './domain/builder-templates/builder-templates'
 import { sortProjects } from './domain/projects/project-normalization'
-import { mergeStoredProjectMetadata } from './domain/projects/project-storage-merge'
+import { mergeStoredCanvasResponseProjections, mergeStoredProjectMetadata } from './domain/projects/project-storage-merge'
 import {
   createProjectSavePageLifecycle,
   createProjectSaveCoordinator,
@@ -254,7 +254,7 @@ function App() {
       return sortProjects(currentProjects.map(currentProject =>
         currentProject.id === project.id
           ? {
-              ...currentProject,
+              ...mergeStoredCanvasResponseProjections(currentProject, project),
               revision: project.revision,
               updatedAt: saveIsCurrent
                 ? Math.max(currentProject.updatedAt, project.updatedAt || savedAt)

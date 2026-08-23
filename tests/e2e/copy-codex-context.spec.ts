@@ -17,6 +17,21 @@ test('previews, copies, inspects after focus change and revokes one immutable CV
     first = await createProjectFixture(request, 'source', [textNode(), imageNode(assetId), arrowNode()])
     second = await createProjectFixture(request, 'focus', [focusTextNode()])
     await preparePage(context, page, first.title)
+    const releaseFirstSave = deferred()
+    const firstSaveReachedStorage = deferred()
+    const projectWrites: Array<Record<string, unknown>> = []
+    let holdNextProjectWrite = false
+    await page.route(`**/storage-api/projects/${first.id}`, async route => {
+      if (route.request().method() !== 'PUT') return route.continue()
+      const body = route.request().postDataJSON() as { updates?: Record<string, unknown> }
+      projectWrites.push(body.updates || {})
+      if (!holdNextProjectWrite) return route.continue()
+      holdNextProjectWrite = false
+      const response = await route.fetch()
+      firstSaveReachedStorage.resolve()
+      await releaseFirstSave.promise
+      await route.fulfill({ response })
+    })
     await page.evaluate(() => {
       const original = navigator.clipboard.writeText.bind(navigator.clipboard)
       let failures = 1
@@ -29,24 +44,60 @@ test('previews, copies, inspects after focus change and revokes one immutable CV
       })
     })
 
-    const selectionSaved = page.waitForResponse(response => (
-      response.request().method() === 'PUT'
-      && new URL(response.url()).pathname.endsWith(`/storage-api/projects/${first?.id}`)
-      && response.ok()
+    holdNextProjectWrite = true
+    await page.getByTestId('rf__node-task11-image').click({ button: 'right' })
+    await page.getByRole('menuitem', { name: '创建副本' }).click()
+    await expect(page.locator('.react-flow__node')).toHaveCount(4)
+    const duplicateId = await page.locator('.react-flow__node').evaluateAll(nodes => (
+      nodes.map(node => node.getAttribute('data-id')).find(id => id && !['task11-text', 'task11-image', 'task11-arrow'].includes(id)) || ''
     ))
-    await page.getByTestId('rf__node-task11-text').click()
-    await expect(page.locator('.react-flow__node.selected')).toHaveAttribute('data-id', 'task11-text')
-    const savedProject = await (await selectionSaved).json()
+    expect(duplicateId).not.toBe('')
+    await firstSaveReachedStorage.promise
+    const firstWriteNodes = ((projectWrites[0].freeCanvas as { nodes: Array<Record<string, unknown>> }).nodes)
+    const firstWriteCopy = firstWriteNodes.find(node => node.id === duplicateId)!
+    expect(firstWriteCopy.referenceCode).toBeUndefined()
+    expect((firstWriteCopy.meta as Record<string, unknown>).referenceCodePending).toBeUndefined()
+
+    const duplicateNode = page.locator(`.react-flow__node[data-id="${duplicateId}"]`)
+    const beforeMove = await duplicateNode.boundingBox()
+    expect(beforeMove).not.toBeNull()
+    await page.mouse.move(beforeMove!.x + 40, beforeMove!.y + 40)
+    await page.mouse.down()
+    await page.mouse.move(beforeMove!.x + 180, beforeMove!.y + 130, { steps: 8 })
+    await page.mouse.up()
+    await expect.poll(async () => (await duplicateNode.boundingBox())?.x || 0).toBeGreaterThan(beforeMove!.x + 80)
+    releaseFirstSave.resolve()
+    await expect.poll(() => projectWrites.length, { timeout: 15_000 }).toBeGreaterThanOrEqual(2)
+    await expect.poll(async () => {
+      const response = await request.get(`${storageUrl}/api/projects/${first?.id}`)
+      const stored = await response.json()
+      return stored.freeCanvas.nodes.length === 4
+    }, { timeout: 15_000 }).toBe(true)
+    const storedAfterDuplicate = await (await request.get(`${storageUrl}/api/projects/${first.id}`)).json()
+    const originalStored = storedAfterDuplicate.freeCanvas.nodes.find((node: { id: string }) => node.id === 'task11-image')
+    const duplicateStored = storedAfterDuplicate.freeCanvas.nodes.find((node: { id: string }) => node.id === duplicateId)
+    expect([originalStored.referenceCode, duplicateStored.referenceCode]).toEqual([
+      expect.stringMatching(/^CVM-/), expect.stringMatching(/^CVM-/)
+    ])
+    expect(duplicateStored.referenceCode).not.toBe(originalStored.referenceCode)
+    expect(duplicateStored.position.x).toBeGreaterThan(firstWriteCopy.position.x as number)
+
+    await duplicateNode.click()
+    await expect(page.locator('.react-flow__node.selected')).toHaveAttribute('data-id', duplicateId)
     await page.getByRole('button', { name: '复制 Codex 上下文' }).click()
     const dialog = page.getByRole('dialog', { name: '复制 Codex 上下文' })
     await expect(dialog).toBeVisible()
-    await expect(dialog).toContainText(`${first.stored.referenceCode} · 项目修订 ${savedProject.revision}`)
+    await expect(dialog).toContainText(`${first.stored.referenceCode} · 项目修订 ${storedAfterDuplicate.revision}`)
     await expect(dialog.getByRole('listitem')).toHaveText([
-      new RegExp(`文字.*Task 11 text.*${first.stored.freeCanvas.nodes[0].referenceCode}`)
+      new RegExp(`图片.*Task 11 image 副本.*${duplicateStored.referenceCode}`)
     ])
-    await expect(dialog).not.toContainText(first.stored.freeCanvas.nodes[1].referenceCode)
+    await expect(dialog).not.toContainText(originalStored.referenceCode)
 
+    const createRequest = page.waitForRequest(request => (
+      request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/storage-api/context-packs')
+    ))
     await dialog.getByRole('button', { name: '创建并复制 CVC' }).click()
+    expect((await createRequest).postDataJSON().nodeCodes).toEqual([duplicateStored.referenceCode])
     await expect(dialog.getByRole('alert')).toContainText('上下文已创建，但复制失败')
     const cvcCode = await dialog.getByTestId('context-pack-code').innerText()
     expect(cvcCode).toMatch(/^CVC-/)
@@ -67,8 +118,9 @@ test('previews, copies, inspects after focus change and revokes one immutable CV
     const snapshot = focusDialog.getByLabel('不可变快照检查')
     await expect(snapshot).toContainText('不可变快照')
     await expect(snapshot).toContainText(first.stored.referenceCode)
-    await expect(snapshot).toContainText('Task 11 text')
-    await expect(snapshot).not.toContainText('Task 11 image')
+    await expect(snapshot).toContainText('Task 11 image 副本')
+    await expect(snapshot).toContainText(duplicateStored.referenceCode)
+    await expect(snapshot).not.toContainText(originalStored.referenceCode)
     const after = await getContext(request, cvcCode, 'resolve')
     expect(after).toEqual(before)
 
@@ -141,6 +193,12 @@ const getContext = async (request: APIRequestContext, code: string, suffix: 'res
   return response.json()
 }
 const clipboardText = (page: Page): Promise<string> => page.evaluate(() => navigator.clipboard.readText())
+
+const deferred = () => {
+  let resolve!: () => void
+  const promise = new Promise<void>(resolvePromise => { resolve = resolvePromise })
+  return { promise, resolve }
+}
 
 const deleteProjectFixture = async (request: APIRequestContext, id: string) => {
   const trash = await request.post(`${storageUrl}/api/projects/trash`, { data: { ids: [id], deletedBy: 'user', deleteReason: 'task11-e2e-cleanup' } })

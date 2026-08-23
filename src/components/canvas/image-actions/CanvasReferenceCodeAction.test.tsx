@@ -118,6 +118,24 @@ describe('Canvas reference-code copy actions', () => {
     expect(writeText).not.toHaveBeenCalled()
   })
 
+  it('treats a locally duplicated node as identity-pending even if it carries a stale valid code', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const renderer = create(
+      <CanvasNodeReferenceCodeAction node={imageNode({
+        referenceCode: `CVM-${validUlid}`,
+        meta: { referenceCodePending: true, duplicatedFromNodeId: 'source' }
+      })} />
+    )
+    const button = renderer.root.findByType('button')
+
+    await act(async () => button.props.onClick({ stopPropagation: vi.fn() }))
+
+    expect(button.props.disabled).toBe(true)
+    expect(renderer.root.findByProps({ role: 'status' }).children.join('')).toContain('等待 Storage 分配')
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
   it('keeps normalized transient images disabled before code validation while stable images still copy', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('navigator', { clipboard: { writeText } })

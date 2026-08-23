@@ -91,6 +91,7 @@ import {
   undoCanvasLocalCommand,
   type CanvasLocalCommand
 } from '@/domain/free-canvas/canvas-command-history'
+import { markCanvasNodeReferencePending } from '@/domain/reference-codes/canvas-node-reference-lifecycle'
 import {
   resolveImageNodeCommands,
   type ImageNodeCommandId,
@@ -670,7 +671,7 @@ const FreeCanvasBuilderInner = ({
       if (!copied) return
       event.preventDefault()
       const current = freeCanvasRef.current
-      const duplicate: IFreeCanvasImageNode = {
+      const duplicate = markCanvasNodeReferencePending<IFreeCanvasImageNode>({
         ...copied,
         id: `free-image-copy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         title: `${copied.title} 副本`,
@@ -683,7 +684,7 @@ const FreeCanvasBuilderInner = ({
           meta: { ...annotation.meta, duplicatedFromAnnotationId: annotation.id }
         })),
         meta: { ...copied.meta, duplicatedFromNodeId: copied.id }
-      }
+      })
       commitCanvasSelection({
         ...current,
         nodes: [...current.nodes, duplicate]

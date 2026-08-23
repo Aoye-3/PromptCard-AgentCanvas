@@ -6,6 +6,7 @@ import {
   type PublicReferenceCodePrefix
 } from '@/domain/reference-codes/reference-code'
 import type { IFreeCanvasNode, IPromptProject } from '@/models/PromptHistory.model'
+import { isCanvasNodeReferencePending } from '@/domain/reference-codes/canvas-node-reference-lifecycle'
 
 interface ReferenceCodeCopyActionProps {
   referenceCode: unknown
@@ -184,6 +185,9 @@ const nodeReferenceState = (node: IFreeCanvasNode): {
   }
   const expectedPrefix = node.kind === 'text' ? 'CVT' : 'CVM'
   const kindLabel = node.kind === 'text' ? '文字节点' : '图片节点'
+  if (isCanvasNodeReferencePending(node)) {
+    return { expectedPrefix, code: null, kindLabel, unavailableReason: '节点正在等待 Storage 分配新代码' }
+  }
   if (node.kind === 'image' && node.meta.generationState === 'running') {
     return { expectedPrefix, code: null, kindLabel, unavailableReason: '图片节点仍在生成，节点代码暂不可用' }
   }

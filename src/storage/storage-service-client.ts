@@ -451,6 +451,11 @@ const projectWritePayload = (project: Partial<IPromptProject>): Partial<IPromptP
     nodes: payload.freeCanvas.nodes.map(node => {
       const nodePayload = { ...node }
       delete nodePayload.referenceCode
+      if (nodePayload.meta.referenceCodePending === true) {
+        const meta = { ...nodePayload.meta }
+        delete meta.referenceCodePending
+        nodePayload.meta = meta
+      }
       return nodePayload
     })
   }

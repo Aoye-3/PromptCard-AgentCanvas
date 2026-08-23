@@ -56,6 +56,20 @@ const project = (overrides: Partial<IPromptProject> = {}): IPromptProject => ({
 })
 
 describe('context-pack selection domain', () => {
+  it('omits a copied node that still carries another node Storage projection before code backfill', () => {
+    const original = imageNode('image', 'Reference frame', `CVM-${ulids.image}`)
+    const duplicated = {
+      ...original,
+      id: 'image-copy',
+      title: 'Reference frame copy',
+      meta: { ...original.meta, duplicatedFromNodeId: original.id }
+    } as IFreeCanvasNode
+
+    const preview = createContextPackSelectionPreview([original, duplicated], ['image-copy'])
+
+    expect(preview).toEqual({ items: [], selectedCount: 1, omittedCount: 1 })
+  })
+
   it('orders only explicitly selected stable CVT/CVM nodes by persisted Canvas order', () => {
     const nodes: IFreeCanvasNode[] = [
       textNode('text-first', 'First', `CVT-${ulids.firstText}`),

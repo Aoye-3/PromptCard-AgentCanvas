@@ -5,6 +5,7 @@ import type {
   IFreeCanvasNode,
   IFreeCanvasProject
 } from '@/models/PromptHistory.model'
+import { markCanvasNodeReferencePending } from '@/domain/reference-codes/canvas-node-reference-lifecycle'
 
 export type CanvasFlipAxis = 'horizontal' | 'vertical'
 
@@ -191,7 +192,7 @@ export const duplicateCanvasImageNode = (
   source: IFreeCanvasImageNode,
   id: string,
   offset = 28
-): IFreeCanvasImageNode => ({
+): IFreeCanvasImageNode => markCanvasNodeReferencePending({
   ...source,
   id,
   title: `${source.title} 副本`,

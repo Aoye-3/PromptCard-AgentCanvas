@@ -1,4 +1,5 @@
 import { validatePublicReferenceCode } from '@/domain/reference-codes/reference-code'
+import { isCanvasNodeReferencePending } from '@/domain/reference-codes/canvas-node-reference-lifecycle'
 import type { IFreeCanvasNode, IPromptProject } from '@/models/PromptHistory.model'
 import type { ContextPackCreateRequest } from '@/storage/storage-service-client'
 
@@ -20,10 +21,11 @@ export const createContextPackSelectionPreview = (
   selectedNodeIds: string[]
 ): ContextPackSelectionPreview => {
   const selected = new Set(selectedNodeIds)
+  const codeCounts = countSupportedCodes(nodes)
   const selectedCount = nodes.filter(node => selected.has(node.id)).length
   const items = nodes.flatMap(node => {
     if (!selected.has(node.id)) return []
-    const code = supportedNodeCode(node)
+    const code = supportedNodeCode(node, codeCounts)
     if (!code) return []
     return [{
       nodeId: node.id,
@@ -57,13 +59,31 @@ export const normalizeContextPackCode = (value: string): string | null => (
   validatePublicReferenceCode(value.trim().toUpperCase(), 'CVC')
 )
 
-const supportedNodeCode = (node: IFreeCanvasNode): string | null => {
-  if (node.kind === 'text') return validatePublicReferenceCode(node.referenceCode, 'CVT')
+const supportedNodeCode = (node: IFreeCanvasNode, codeCounts: Map<string, number>): string | null => {
+  if (isCanvasNodeReferencePending(node)) return null
+  if (node.kind === 'text') {
+    const code = validatePublicReferenceCode(node.referenceCode, 'CVT')
+    return code && codeCounts.get(code) === 1 ? code : null
+  }
   if (node.kind !== 'image') return null
   if (
     node.transient === true
     || node.meta.generationState === 'running'
     || node.meta.generationState === 'failed'
   ) return null
-  return validatePublicReferenceCode(node.referenceCode, 'CVM')
+  const code = validatePublicReferenceCode(node.referenceCode, 'CVM')
+  return code && codeCounts.get(code) === 1 ? code : null
+}
+
+const countSupportedCodes = (nodes: IFreeCanvasNode[]): Map<string, number> => {
+  const counts = new Map<string, number>()
+  nodes.forEach(node => {
+    const code = node.kind === 'text'
+      ? validatePublicReferenceCode(node.referenceCode, 'CVT')
+      : node.kind === 'image'
+        ? validatePublicReferenceCode(node.referenceCode, 'CVM')
+        : null
+    if (code) counts.set(code, (counts.get(code) || 0) + 1)
+  })
+  return counts
 }

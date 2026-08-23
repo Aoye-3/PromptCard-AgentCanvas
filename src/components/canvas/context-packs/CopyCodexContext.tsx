@@ -42,6 +42,14 @@ export const CopyCodexContext = ({
   const panelRef = useRef<HTMLDivElement>(null)
   const headingRef = useRef<HTMLHeadingElement>(null)
   const generationRef = useRef(0)
+  const contextRequestSequenceRef = useRef(0)
+  const contextRequestRef = useRef<{
+    generation: number
+    token: number
+    operation: 'inspect' | 'revoke'
+    code: string
+  } | null>(null)
+  const inspectionCodeRef = useRef('')
   const createPendingRef = useRef(false)
   const inspectPendingRef = useRef(false)
   const revokePendingRef = useRef(false)
@@ -63,7 +71,43 @@ export const CopyCodexContext = ({
     createPendingRef.current = false
     inspectPendingRef.current = false
     revokePendingRef.current = false
+    contextRequestRef.current = null
     return generationRef.current
+  }
+
+  const beginContextRequest = (operation: 'inspect' | 'revoke', code: string) => {
+    const request = {
+      generation: generationRef.current,
+      token: ++contextRequestSequenceRef.current,
+      operation,
+      code
+    }
+    contextRequestRef.current = request
+    return request
+  }
+
+  const isCurrentContextRequest = (request: NonNullable<typeof contextRequestRef.current>) => (
+    contextRequestRef.current?.generation === request.generation
+    && contextRequestRef.current.token === request.token
+    && contextRequestRef.current.operation === request.operation
+    && contextRequestRef.current.code === request.code
+    && generationRef.current === request.generation
+    && normalizeContextPackCode(inspectionCodeRef.current) === request.code
+  )
+
+  const changeInspectionCode = (value: string) => {
+    inspectionCodeRef.current = value
+    setInspectionCode(value)
+    const activeRequest = contextRequestRef.current
+    if (!activeRequest || normalizeContextPackCode(value) === activeRequest.code) return
+    contextRequestRef.current = null
+    contextRequestSequenceRef.current += 1
+    inspectPendingRef.current = false
+    revokePendingRef.current = false
+    setInspecting(false)
+    setRevoking(false)
+    setInspected(null)
+    setError(null)
   }
 
   const openDialog = () => {
@@ -104,6 +148,7 @@ export const CopyCodexContext = ({
       const result = await client.create(snapshot.request)
       if (!open || generationRef.current !== operation) return
       setCreated(result)
+      inspectionCodeRef.current = result.cvcCode
       setInspectionCode(result.cvcCode)
       await copyText(result.cvcCode, copyTarget)
     } catch (cause) {
@@ -124,23 +169,26 @@ export const CopyCodexContext = ({
       return
     }
     if (inspectPendingRef.current) return
-    const operation = generationRef.current
+    const request = beginContextRequest('inspect', code)
     inspectPendingRef.current = true
+    revokePendingRef.current = false
     setInspecting(true)
+    setRevoking(false)
     setError(null)
     try {
       const result = await client.inspect(code)
-      if (!open || generationRef.current !== operation) return
+      if (!open || !isCurrentContextRequest(request)) return
+      inspectionCodeRef.current = code
       setInspectionCode(code)
       setInspected(result)
       if (created?.cvcCode === result.cvcCode) setCreated(result)
     } catch (cause) {
-      if (open && generationRef.current === operation) {
+      if (open && isCurrentContextRequest(request)) {
         setInspected(null)
         setError(contextPackErrorMessage(cause, '无法检查此 CVC。'))
       }
     } finally {
-      if (generationRef.current === operation) {
+      if (isCurrentContextRequest(request)) {
         inspectPendingRef.current = false
         setInspecting(false)
       }
@@ -149,7 +197,7 @@ export const CopyCodexContext = ({
 
   const revokePack = async () => {
     if (!inspected || inspected.revokedAt !== null || revokePendingRef.current) return
-    const operation = generationRef.current
+    const request = beginContextRequest('revoke', inspected.cvcCode)
     revokePendingRef.current = true
     setRevoking(true)
     setError(null)
@@ -158,13 +206,13 @@ export const CopyCodexContext = ({
         actor: 'promptcard-ui',
         reason: 'user-revoked'
       })
-      if (!open || generationRef.current !== operation) return
+      if (!open || !isCurrentContextRequest(request)) return
       setInspected(result)
       if (created?.cvcCode === result.cvcCode) setCreated(result)
     } catch (cause) {
-      if (open && generationRef.current === operation) setError(contextPackErrorMessage(cause, '撤销失败，请重试。'))
+      if (open && isCurrentContextRequest(request)) setError(contextPackErrorMessage(cause, '撤销失败，请重试。'))
     } finally {
-      if (generationRef.current === operation) {
+      if (isCurrentContextRequest(request)) {
         revokePendingRef.current = false
         setRevoking(false)
       }
@@ -282,7 +330,7 @@ export const CopyCodexContext = ({
                     id="context-pack-inspection-code"
                     aria-label="检查 CVC"
                     value={inspectionCode}
-                    onChange={event => setInspectionCode(event.target.value)}
+                    onChange={event => changeInspectionCode(event.target.value)}
                     placeholder="CVC-…"
                     className="min-h-10 min-w-0 flex-1 rounded-xl border border-gray-300 px-3 font-mono text-sm uppercase outline-none focus:border-gray-900 focus:ring-2 focus:ring-gray-200"
                   />

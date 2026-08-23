@@ -196,6 +196,7 @@ describe('storageServiceClient', () => {
         { referenceCode: projected.freeCanvas!.nodes[1].referenceCode, transient: true }
       ] }
     })
+    projected.freeCanvas!.nodes[0].meta.referenceCodePending = true
     await storageServiceClient.projects.create(projected)
     await storageServiceClient.projects.update('project-1', 1, projected)
 
@@ -204,6 +205,7 @@ describe('storageServiceClient', () => {
     for (const payload of [createPayload, updatePayload]) {
       expect(payload.referenceCode).toBeUndefined()
       expect(payload.freeCanvas.nodes[0].referenceCode).toBeUndefined()
+      expect(payload.freeCanvas.nodes[0].meta.referenceCodePending).toBeUndefined()
       expect(payload.freeCanvas.nodes[1].referenceCode).toBeUndefined()
       expect(payload.freeCanvas.nodes[0].id).toBe('text-1')
       expect(payload.freeCanvas.nodes[1].transient).toBe(true)

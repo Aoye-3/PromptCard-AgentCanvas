@@ -7,6 +7,7 @@ import type {
 import {
   applyCanvasLocalCommand,
   createCanvasCommandHistory,
+  duplicateCanvasImageNode,
   executeCanvasLocalCommand,
   redoCanvasLocalCommand,
   undoCanvasLocalCommand
@@ -50,6 +51,19 @@ const project = (): IFreeCanvasProject => ({
 })
 
 describe('canvas command history', () => {
+  it('duplicates an image without inheriting its Storage-owned CVM projection', () => {
+    const source = {
+      ...imageNode('image-a'),
+      referenceCode: 'CVM-01ARZ3NDEKTSV4RRFFQ69G5FAX'
+    }
+
+    const duplicate = duplicateCanvasImageNode(source, 'image-copy')
+
+    expect(source.referenceCode).toBe('CVM-01ARZ3NDEKTSV4RRFFQ69G5FAX')
+    expect(duplicate.referenceCode).toBeUndefined()
+    expect(duplicate.meta.duplicatedFromNodeId).toBe(source.id)
+  })
+
   it('moves an image through the layer order without changing node data', () => {
     const result = applyCanvasLocalCommand(project(), {
       kind: 'reorder-node',
