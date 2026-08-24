@@ -1,0 +1,33 @@
+{
+  "name": "delivery request cannot forge profile context",
+  "entryPoint": "deliveryRequest",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v2/delivery-request.schema.json",
+  "expectedSchemaValidity": false,
+  "instance": {
+    "clientRequestId": "shared-request-001",
+    "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "kind": "canvas.media.add",
+    "sourceCodeLists": {
+      "promptBundleCodes": [],
+      "promptMediaCodes": [],
+      "canvasTemplateCodes": [],
+      "canvasMediaCodes": [],
+      "skillCodes": []
+    },
+    "provenance": "promptcard-bridge",
+    "profileId": "forged-admin",
+    "items": [
+      {
+        "kind": "canvas.media.add",
+        "mediaResource": {
+          "namespace": "canvasMedia",
+          "code": "CVM-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "mediaType": "image/png",
+          "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "byteLength": 42
+        }
+      }
+    ]
+  }
+}

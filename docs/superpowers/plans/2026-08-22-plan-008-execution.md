@@ -1,20 +1,20 @@
-# Plan 008 Execution Plan: Local Reference Bridge, RAG, Skills, And Codex Delivery
+# Plan 008 Execution Plan: Local Agent Bridge, RAG, Skills, And Additive Delivery
 
 > Execution plan for [Plan 008](../../Plan/008-local-mcp-prompt-media-codex-bridge.md). This document converts the long-term product plan into small, ordered, verifiable implementation tasks.
 
 ## Status
 
-- Status: `Proposed for review`
+- Status: `Awaiting user acceptance at Task 15.5`
 - Date: `2026-08-22`
-- Branch prepared: `feat/plan-008-contracts`
+- Active branch: `feat/plan-008-skill-hub-generic-bridge`
 - Plan 007 prerequisite: manual acceptance confirmed by the user on `2026-08-22`
 - Paid live-provider evaluation remains independent and does not block this plan
 
 ## Goal
 
-Expose PromptCard's local Prompt Library, Canvas context, and canonical Skill packages to Codex through stable typed references and a repository-owned STDIO MCP adapter, then accept only idempotent additive Prompt/image deliveries back to an explicitly persisted Canvas context.
+Expose PromptCard's local Prompt Library, Canvas context, and canonical Skill packages to MCP-capable Agent applications through stable typed references and the host-neutral PromptCard Local Agent Bridge, then accept only idempotent additive Prompt/image deliveries back to an explicitly persisted Canvas context.
 
-Do this without replacing the existing pi text Agent, embedding Codex chat in PromptCard, granting direct SQLite/filesystem access, or representing Codex output as a provider generation run.
+Do this without replacing the existing pi text Agent, embedding a third-party Agent chat in PromptCard, granting direct SQLite/filesystem access, or representing bridge-delivered output as a provider generation run.
 
 ## Research Summary
 
@@ -45,20 +45,24 @@ These are test-first verification tasks, not assumptions that authorize unrelate
 - [Stripe idempotent requests](https://docs.stripe.com/api/idempotent_requests): replay the first result for the same key and request digest; reject reuse of a key with different parameters.
 - [What an Anthropic Engineer Thinks About MCP](https://home.mlops.community/public/videos/what-an-anthropic-engineer-thinks-about-mcp) and [One Year of MCP](https://www.latent.space/p/one-year-of-mcp-with-david-soria): prefer explicit state, a small additive tool surface, progressive discovery, and read-heavy initial adoption.
 - [Local First FM episode 19](https://www.localfirst.fm/19/transcript): narrow Agent authority by resource and action; preserve an auditable chain of custody.
+- [Codex MCP documentation](https://developers.openai.com/codex/mcp): Codex supports local STDIO and Streamable HTTP MCP servers.
+- [TRAE MCP FAQ](https://forum.trae.cn/t/topic/65): TRAE supports STDIO, Streamable HTTP, and legacy SSE; this plan uses the first two only.
+- [MCP TypeScript SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/): use the split server/Node packages and the 2026-07-28 protocol line.
 
 ## Architecture Decisions To Freeze
 
-1. **One authority, several adapters.** Storage owns durable identity and state. Gateway owns policy and orchestration. CLI, MCP, local Agent, and Codex projections are adapters, not alternate databases.
+1. **One authority, several adapters.** Storage owns durable identity and state. Gateway owns policy and orchestration. CLI, MCP, local Agent, and host-specific Skill projections are adapters, not alternate databases.
 2. **Public code is not a primary key.** Existing IDs remain internal. Every public reference uses `PREFIX-ULID`, is accepted case-insensitively, persisted uppercase, and dispatched by prefix before lookup.
 3. **Namespace separation is semantic.** `PLM` and `CVM` may refer to identical bytes but remain different business identities and permission boundaries.
 4. **No ambient MCP project.** Every Canvas search, resolve, context, or delivery operation carries an exact `PRJ` or `CVC` reference. UI focus and MCP connection state are never authority.
-5. **MCP is STDIO-only in the first release.** Pin one stable MCP protocol/SDK version. Do not add HTTP transport, OAuth, MCP Apps, Sampling, Tasks, or general filesystem tools.
-6. **Schema dialect is JSON Schema 2020-12.** Store a language-neutral package at `contracts/promptcard-bridge/v1/`. Add one explicitly declared validator for contract tests instead of relying on a transitive package.
-7. **Resolve and Resource share one core.** Exact Tool resolution and any `promptcard://` Resource Template call the same Gateway resolver and permission checks.
+5. **MCP uses STDIO and loopback Streamable HTTP.** Pin `@modelcontextprotocol/server@2.0.0` and `@modelcontextprotocol/node@2.0.0`, cover the 2025-11-25 and 2026-07-28 protocol eras, and exclude `0.0.0.0`, legacy SSE, first-release OAuth, MCP Apps, Sampling, Tasks, and general filesystem tools.
+6. **Schema dialect is JSON Schema 2020-12.** Preserve `contracts/promptcard-bridge/v1/` unchanged and add the host-neutral trust/delivery overlay at `contracts/promptcard-bridge/v2/`. Use the explicitly declared validator for both versions.
+7. **Tools/Text are the portability baseline.** Exact Tool resolution and optional `promptcard://` Resource Templates call the same Gateway resolver and permission checks; Resources, structured results, and `ImageContent` always have Tool/Text fallbacks.
 8. **FTS before vectors.** Phase 4A starts with SQLite FTS5/BM25, revision/digest freshness, fixed budgets, citations, and audit. Semantic retrieval is a later optional slice that requires explicit provider consent and measured value.
 9. **Skill projections are rebuildable.** Storage holds canonical immutable packages and host pins. `.agents/skills` and local-Agent snapshots are derived projections and never become the authority.
-10. **Codex delivery has its own ledger.** Reuse asset validation and save-before-placed behavior, but do not reuse provider generation run identity or provenance.
+10. **Bridge delivery has its own profile-scoped ledger.** Reuse asset validation and save-before-placed behavior, but do not reuse provider generation-run identity or provenance. New records use `promptcard-bridge`; v1 `codex-harness` is compatibility-only.
 11. **Canonical idempotency name is `clientRequestId`.** The older `deliveryId` example in Plan 008 is treated as illustrative; all additive tool and Gateway contracts use `clientRequestId` plus a normalized request digest.
+12. **Client identity is audit-only.** A trusted launcher/authentication context supplies `profileId` and scopes. A request cannot self-report a trusted profile, and client name/version cannot select authorization, schemas, tools, budgets, or behavior.
 
 ## Global Constraints
 
@@ -395,9 +399,9 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Acceptance criteria:**
 
-- [ ] UI clearly separates canonical revision, Codex projection, and local-Agent pin.
-- [ ] Update does not silently move either pin.
-- [ ] Invalid/drifted/archived states expose recovery actions without executing content.
+- [x] UI clearly separates canonical revision, Codex projection, and local-Agent pin.
+- [x] Update does not silently move either pin.
+- [x] Invalid/drifted/archived states expose recovery actions without executing content.
 
 **Verification:** Component and browser tests cover import, validation failure, revision update, independent pins, drift, and archive.
 
@@ -407,32 +411,64 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Estimated scope:** Medium.
 
+### Task 15.5: Freeze the generic Local Agent Bridge boundary
+
+**Description:** Preserve the Codex `.agents/skills` and local-Agent pin adapters while making Gateway, CLI, MCP, retrieval, and delivery host-neutral. Add ADR-019 and the additive `promptcard-bridge/v2` trust/delivery contract without changing v1 fixtures or Storage v14's host enum, Codex journal, manifest, or projection recovery protocol.
+
+**Acceptance criteria:**
+
+- [x] v1 fixtures pass unchanged; v2 uses server-resolved `profileId`, explicit scopes, `promptcard-bridge` provenance, and profile-scoped replay identity.
+- [x] A tool request cannot forge `profileId` or scopes; client name/version are audit-only and cannot branch policy or behavior.
+- [x] Task 16 now requires a separate bridge credential/router and future 401/403 isolation tests for internal chat, model management, and image generation.
+- [x] Task 21 freezes exact MCP SDK packages, STDIO plus loopback Streamable HTTP, dual protocol-era tests, a small Tool/Text baseline, and host-neutral schemas/results.
+- [x] Codex and TRAE are the only initial verified host targets; Doubao and MarsCode remain “待验证” until official evidence and real smoke tests exist.
+- [x] Task 16 is not implemented in this slice; execution pauses here after full gates and an acceptance handoff.
+
+**Verification:** Contract tests cover v1 compatibility, v2 neutral provenance, forged-profile rejection, and cross-profile idempotency isolation. Documentation review verifies Tasks 16, 21, 23, 25, 26, and 28 against ADR-019.
+
+**Dependencies:** Task 15 focused verification and ADR-018.
+
+**Files likely touched:** `contracts/promptcard-bridge/v2/`, contract fixtures/tests, ADR-019, this execution ledger.
+
+**Estimated scope:** Small.
+
+### Task 15.5 Technical Acceptance Gate
+
+- [x] Skill Hub supports inert import review, structured findings, history/diff, exact-revision trust review, archive/restore, and explicit recovery.
+- [x] Codex and local-Agent pins are independently visible and mutable; canonical revision updates move neither pin.
+- [x] Drift/collision/archived/untrusted/disabled states remain visible, and explicit Codex repair never overwrites an unowned collision.
+- [x] The v2 boundary and ADR-019 are host-neutral while Codex `.agents/skills` remains an accurately named host adapter.
+- [x] Focused browser/component/contract tests and full Storage, Gateway/backend, configured Ruff, TypeScript, production-build, and workspace-cleanliness gates pass.
+- [ ] Await user acceptance; do not begin Task 16.
+
 ### Checkpoint 3: Skills
 
-- [ ] One canonical revision can feed both hosts with independent pins.
-- [ ] Import and preview prove no execution.
-- [ ] Drift/collision are explicit and recoverable.
-- [ ] Folder and archive imports expose structured findings and inert previews before persistence; scripts, hooks, installers, and package managers remain unexecuted.
-- [ ] A user can keep Codex on one revision and local Agent on another, then move either host without silently changing the other.
-- [ ] Manually modifying or deleting an owned Codex projection produces visible drift, and explicit republish restores it without changing the canonical package.
-- [ ] An unowned publication-name collision is preserved; choosing a different publication name recovers without overwriting the existing directory.
-- [ ] Archive, restore, publish/unpublish, and enable/disable states remain distinct and expose valid recovery actions.
-- [ ] Component, browser, Storage, Gateway, security, TypeScript, and production-build gates pass.
+- [x] One canonical revision can feed both hosts with independent pins.
+- [x] Import and preview prove no execution.
+- [x] Drift/collision are explicit and recoverable.
+- [x] Folder and archive imports expose structured findings and inert previews before persistence; scripts, hooks, installers, and package managers remain unexecuted.
+- [x] A user can keep Codex on one revision and local Agent on another, then move either host without silently changing the other.
+- [x] Manually modifying or deleting an owned Codex projection produces visible drift, and explicit republish restores it without changing the canonical package.
+- [x] An unowned publication-name collision is preserved; choosing a different publication name recovers without overwriting the existing directory.
+- [x] Archive, restore, publish/unpublish, and enable/disable states remain distinct and expose valid recovery actions.
+- [x] Component, browser, Storage, Gateway, security, TypeScript, and production-build gates pass.
 - [ ] Stop for user acceptance of the Skill Hub workflow and evidence package before beginning Task 16.
 
 ## Phase 4: Read-Only Gateway, CLI, Retrieval, And MCP
 
 ### Task 16: Expose bounded read-only Gateway operations
 
-**Description:** Add runtime describe and exact project/library/canvas/context/Skill resolve/search endpoints using the contract package and existing Gateway permission checks.
+**Description:** Add a dedicated bridge router for runtime describe and exact project/library/canvas/context/Skill resolve/search operations. Authenticate it with a separate high-entropy bridge credential and trusted profile/scopes, never the full-power `PROMPTCARD_INTERNAL_TOKEN`.
 
 **Acceptance criteria:**
 
 - [ ] Namespace/project/lifecycle errors remain distinct and structured.
 - [ ] Responses expose no paths, credentials, unrestricted metadata, or full project JSON.
 - [ ] Search cannot be accepted by any execution endpoint.
+- [ ] `bridge:read` can call runtime describe/read operations, but the same credential receives 401/403 from internal-chat, model-management, and image-generation routes.
+- [ ] Startup/authentication context supplies `profileId`; request bodies and client names cannot grant or widen scopes.
 
-**Verification:** Gateway contract tests cover every scope, reference type, redaction, bound, and offline error.
+**Verification:** Gateway contract/security tests cover every scope, reference type, redaction, bound, offline error, forged profile, and cross-router 401/403 isolation.
 
 **Dependencies:** Checkpoints 2-3.
 
@@ -512,17 +548,22 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Estimated scope:** Medium, implemented as two reviewable commits if file count exceeds five.
 
-### Task 21: Add repository-owned read-only STDIO MCP
+### Task 21: Add the repository-owned Local Agent Bridge MCP server
 
-**Description:** Wrap the same Gateway operations with the pinned official MCP SDK; expose small read Tools and optional exact `promptcard://` Resources sharing the same resolver.
+**Description:** Wrap the same Gateway operations with exact `@modelcontextprotocol/server@2.0.0` and `@modelcontextprotocol/node@2.0.0`. Serve STDIO and loopback-only Streamable HTTP with one host-neutral Tool schema/result surface. Codex/TRAE differences live only in install templates and smoke scripts.
 
 **Acceptance criteria:**
 
 - [ ] stdout contains JSON-RPC only; logs and diagnostics use stderr.
 - [ ] Process inherits a minimal allowlisted environment and has no SQLite/shell/general-filesystem tool.
 - [ ] CLI, MCP, and Gateway outputs pass the same fixtures and schema package.
+- [ ] Core tools are `promptcard_runtime_describe`, `promptcard_reference_resolve`, `promptcard_prompt_search`, and `promptcard_asset_read`; later delivery preview/commit/status tools extend the same namespace.
+- [ ] Tools plus text results are complete without Resources, structured results, or `ImageContent`; optional enhancements call the same core and retain Tool/Text fallbacks.
+- [ ] Tool count remains below 40 and every description below 8,000 characters.
+- [ ] HTTP binds only `127.0.0.1`, validates Host and Origin, and requires a high-entropy Bearer credential; no legacy SSE, `0.0.0.0`, or first-release OAuth.
+- [ ] Initialization and core calls are tested against the 2025-11-25 and 2026-07-28 protocol eras without branching business behavior by client name/version.
 
-**Verification:** MCP protocol tests cover initialization, tool schemas, Resource/Tool equivalence, offline behavior, process cleanup, and no network dependency download at startup.
+**Verification:** MCP protocol tests cover both transports × both protocol eras, initialization, tool schemas/budgets, Resource/Tool/Text equivalence, stdout pollution, EOF/session cleanup, pagination, response budgets, path redaction, offline behavior, and no dependency download at startup. Real Codex and TRAE core-tool smoke tests are required.
 
 **Dependencies:** Tasks 16-18.
 
@@ -558,19 +599,24 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 - [ ] CLI, MCP, and Gateway return contract-equivalent exact-resolution results and share retrieval records/ranking without sharing conversations, audit ownership, or permissions.
 - [ ] Namespace, project scope, lifecycle, unavailable-resource, and retrieval-unavailable outcomes remain distinct, structured, and redacted.
 - [ ] MCP can be stopped or omitted while ordinary Agent, Canvas, Prompt Library, and image-generation workflows continue to work.
+- [ ] STDIO × 2025-11-25, STDIO × 2026-07-28, Streamable HTTP × 2025-11-25, and Streamable HTTP × 2026-07-28 all pass the same core fixtures.
+- [ ] Codex and TRAE pass real `runtime_describe`, exact resolve, search, and asset-read smoke tests without client-specific tool/schema/result branches.
+- [ ] stdout pollution, EOF cleanup, pagination, response budgets, path leakage, and MCP-absent degradation tests pass.
 - [ ] User acceptance covers representative exact resolve, search ranking/evidence, offline behavior, and permission-isolation scenarios before Task 23.
 
 ## Phase 5: Idempotent Additive Delivery
 
-### Task 23: Add the Codex delivery ledger
+### Task 23: Add the profile-scoped bridge delivery ledger
 
-**Description:** Persist host/profile/operation/`clientRequestId`, normalized digest, exact target/source manifest, state, result, and timestamps before implementing Prompt or image delivery.
+**Description:** Persist trusted `profileId`, operation, `clientRequestId`, normalized digest, exact target/source manifest, `promptcard-bridge` provenance, state, result, and timestamps before implementing Prompt or image delivery. Client name/version remain audit-only.
 
 **Acceptance criteria:**
 
 - [ ] Same key plus same digest returns the first result/status.
 - [ ] Same key plus different digest returns `delivery_conflict`.
 - [ ] Validation failures before processing do not create a completed operation; crash recovery can reconcile `processing`.
+- [ ] Replay/conflict keys are isolated by trusted profile; the same request ID in two profiles never collides.
+- [ ] Requests cannot submit or replace their trusted profile or delivery scopes.
 
 **Verification:** Storage state-machine tests cover replay, conflict, crash, retry, stale/revoked CVC, and long-term deduplication.
 
@@ -598,33 +644,34 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Estimated scope:** Medium.
 
-### Task 25: Deliver additive images with codex-harness provenance
+### Task 25: Deliver additive images with promptcard-bridge provenance
 
-**Description:** Accept multipart bytes through Gateway, validate/localize with the existing asset pipeline, and create a Codex-specific pending placement using the existing save-before-placed protocol.
+**Description:** Accept multipart bytes through the bridge Gateway router, validate/localize with the existing asset pipeline, and create a host-neutral pending placement using the existing save-before-placed protocol.
 
 **Acceptance criteria:**
 
 - [ ] Gateway rejects paths/URLs, MIME spoofing, oversized images, wrong context, and missing scope before placement.
 - [ ] Asset/DB partial failures remain durable and recoverable without duplicate assets/nodes.
-- [ ] Provenance is `codex-harness`; no provider generation run is created.
+- [ ] New provenance is `promptcard-bridge`; v1 `codex-harness` is compatibility-read-only and no provider generation run is created.
 
 **Verification:** Multipart, asset, Storage, frontend recovery, replay, crash, and source-manifest tests pass.
 
 **Dependencies:** Task 23.
 
-**Files likely touched:** Gateway multipart route/service, Codex placement Storage/API, Canvas placement reconciliation, focused tests.
+**Files likely touched:** Gateway bridge multipart route/service, bridge placement Storage/API, Canvas placement reconciliation, focused tests.
 
 **Estimated scope:** Medium.
 
 ### Task 26: Expose MCP delivery and status tools
 
-**Description:** Add Prompt propose, image deliver, and delivery get Tools that validate workspace-local input paths inside the adapter, upload bytes, and forward exact contracts to Gateway.
+**Description:** Add host-neutral delivery preview, commit, and status Tools. Image commit consumes a bridge-created staged asset handle; it never accepts an arbitrary client path or remote URL. Codex and TRAE use the same names, schemas, permissions, and results.
 
 **Acceptance criteria:**
 
-- [ ] Adapter resolves the real path under an allowed workspace root and rejects traversal/symlink/junction escape.
+- [ ] Staging resolves any local source under an allowed workspace root, rejects traversal/symlink/junction escape, and returns an opaque bounded handle; commit accepts only that handle.
 - [ ] Write Tools require exact CVC/source codes and never accept search queries as targets.
 - [ ] Status polling never repeats the mutation.
+- [ ] `bridge:deliver:prompt`, `bridge:deliver:image`, and `bridge:status` are checked independently before Gateway mutation.
 
 **Verification:** MCP tests cover valid workspace file, path escape, duplicate request, digest conflict, pending recovery, and stdout purity.
 
@@ -637,11 +684,11 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 ### Checkpoint 5: Delivery
 
 - [ ] Prompt and image delivery are additive, idempotent, recoverable, and correctly scoped.
-- [ ] No Codex output is recorded as a provider generation run.
+- [ ] No bridge-delivered output is recorded as a provider generation run.
 - [ ] Repeating every E2E delivery creates exactly one durable result.
 - [ ] The delivery ledger persists processing intent before any Prompt or Canvas mutation, and retry/restart reconciles interrupted operations without duplicate results.
 - [ ] Exact CVC, project, source-code, and workspace-file scopes are enforced; search results and arbitrary paths cannot become write targets.
-- [ ] Prompt delivery creates reviewable additive proposals, while image delivery records `codex-harness` provenance and never fabricates provider-run history.
+- [ ] Prompt delivery creates reviewable additive proposals, while image delivery records `promptcard-bridge` provenance and never fabricates provider-run history.
 - [ ] Replaying the same `clientRequestId` and digest returns the first result; reusing the key with a different digest returns an explicit conflict.
 - [ ] User acceptance covers success, duplicate replay, digest conflict, failure/retry, restart recovery, and out-of-scope rejection before Task 27.
 
@@ -667,13 +714,15 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 ### Task 28: Package and document the optional bridge
 
-**Description:** Add locked launchers, configuration, diagnostics, supported-host documentation, provenance/cost caveats, and contributor verification commands.
+**Description:** Add locked launchers, Codex/TRAE configuration templates, diagnostics, verified/candidate host documentation, provenance/cost caveats, and contributor verification commands. Doubao web/desktop and MarsCode remain “待验证” until backed by official MCP-host evidence and a real smoke test.
 
 **Acceptance criteria:**
 
 - [ ] New contributor can enable read-only MCP without provider keys or runtime downloads at launch.
 - [ ] Documentation distinguishes discovery, resolution, generation host, delivery, Storage, and Canvas failures.
 - [ ] Disabling/removing MCP leaves PromptCard local workflows and data readable.
+- [ ] Configuration templates may differ by host, but core tool names, schemas, scopes, permissions, budgets, and results do not.
+- [ ] Supported-host claims link to official evidence and an acceptance run; unverified candidates are not presented as compatible.
 
 **Verification:** Clean local install/start smoke, launcher tests, documentation link check, build, and full regression suite pass.
 

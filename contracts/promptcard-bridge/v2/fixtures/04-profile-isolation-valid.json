@@ -1,0 +1,80 @@
+{
+  "name": "same request key is isolated across profiles",
+  "entryPoint": "deliveryRecordCollection",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v2/delivery-record-collection.schema.json",
+  "expectedSchemaValidity": true,
+  "instance": {
+    "records": [
+      {
+        "operationContext": {
+          "profileId": "codex-default",
+          "scopes": ["bridge:read", "bridge:deliver:image"],
+          "provenance": "promptcard-bridge",
+          "clientInfo": { "name": "codex", "version": "1.0.0" }
+        },
+        "request": {
+          "clientRequestId": "shared-request-001",
+          "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "kind": "canvas.media.add",
+          "sourceCodeLists": {
+            "promptBundleCodes": [],
+            "promptMediaCodes": [],
+            "canvasTemplateCodes": [],
+            "canvasMediaCodes": [],
+            "skillCodes": []
+          },
+          "provenance": "promptcard-bridge",
+          "items": [
+            {
+              "kind": "canvas.media.add",
+              "mediaResource": {
+                "namespace": "canvasMedia",
+                "code": "CVM-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "mediaType": "image/png",
+                "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "byteLength": 42
+              }
+            }
+          ]
+        },
+        "recordedAt": "2026-08-24T12:00:00Z"
+      },
+      {
+        "operationContext": {
+          "profileId": "trae-default",
+          "scopes": ["bridge:read", "bridge:deliver:image"],
+          "provenance": "promptcard-bridge",
+          "clientInfo": { "name": "trae", "version": "1.0.0" }
+        },
+        "request": {
+          "clientRequestId": "shared-request-001",
+          "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "kind": "canvas.media.add",
+          "sourceCodeLists": {
+            "promptBundleCodes": [],
+            "promptMediaCodes": [],
+            "canvasTemplateCodes": [],
+            "canvasMediaCodes": [],
+            "skillCodes": []
+          },
+          "provenance": "promptcard-bridge",
+          "items": [
+            {
+              "kind": "canvas.media.add",
+              "mediaResource": {
+                "namespace": "canvasMedia",
+                "code": "CVM-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "mediaType": "image/png",
+                "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "byteLength": 42
+              }
+            }
+          ]
+        },
+        "recordedAt": "2026-08-24T12:00:01Z"
+      }
+    ]
+  }
+}

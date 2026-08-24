@@ -1,0 +1,13 @@
+{
+  "name": "promptcard-bridge",
+  "contractVersion": "2.0.0",
+  "schemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "schemaFile": "schema.json",
+  "compatibleBase": "../v1/manifest.json",
+  "entryPoints": {
+    "operationContext": "https://schemas.promptcard.dev/promptcard-bridge/v2/operation-context.schema.json",
+    "deliveryRequest": "https://schemas.promptcard.dev/promptcard-bridge/v2/delivery-request.schema.json",
+    "deliveryRecord": "https://schemas.promptcard.dev/promptcard-bridge/v2/delivery-record.schema.json",
+    "deliveryRecordCollection": "https://schemas.promptcard.dev/promptcard-bridge/v2/delivery-record-collection.schema.json"
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.promptcard.dev/promptcard-bridge/v2/schema.json",
+  "title": "PromptCard Local Agent Bridge v2 boundary",
+  "$defs": {
+    "ProfileId": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v2/profile-id.schema.json",
+      "description": "A trusted launcher or authentication profile. Tool requests cannot set this value.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+    },
+    "BridgeScope": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v2/bridge-scope.schema.json",
+      "enum": [
+        "bridge:read",
+        "bridge:deliver:prompt",
+        "bridge:deliver:image",
+        "bridge:status"
+      ]
+    },
+    "ClientInfo": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v2/client-info.schema.json",
+      "description": "Audit metadata only. It must not select permissions, schemas, tools, or behavior.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "required": ["name", "version"],
+      "additionalProperties": false
+    },
+    "OperationContext": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v2/operation-context.schema.json",
+      "title": "Server-resolved bridge operation context",
+      "description": "The launcher or authenticated bridge transport supplies profileId and scopes. A client request never supplies this object.",
+      "type": "object",
+      "properties": {
+        "profileId": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v2/profile-id.schema.json"
+        },
+        "scopes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v2/bridge-scope.schema.json"
+          }
+        },
+        "provenance": { "const": "promptcard-bridge" },
+        "clientInfo": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v2/client-info.schema.json"
+        }
+      },
+      "required": ["profileId", "scopes", "provenance"],
+      "additionalProperties": false
+    },
+    "DeliveryRequest": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v2/delivery-request.schema.json",
+      "title": "Host-neutral additive delivery request",
+      "description": "This untrusted client payload deliberately excludes profileId, scopes, and client identity.",
+      "type": "object",
+      "properties": {
+        "clientRequestId": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/client-request-id.schema.json"
+        },
+        "normalizedRequestDigest": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/digest.schema.json"
+        },
+        "cvcCode": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-code-input.schema.json"
+        },
+        "kind": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/additive-kind.schema.json"
+        },
+        "sourceCodeLists": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/source-code-lists.schema.json"
+        },
+        "provenance": { "const": "promptcard-bridge" },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/additive-item.schema.json"
+          }
+        }
+      },
+      "required": [
+        "clientRequestId",
+        "normalizedRequestDigest",
+        "cvcCode",
+        "kind",
+        "sourceCodeLists",
+        "provenance",
+        "items"
+      ],
+      "allOf": [
+        {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/additive-kind-items-match.schema.json"
+        }
+      ],
+      "additionalProperties": false
+    },
+    "DeliveryRecord": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v2/delivery-record.schema.json",
+      "title": "Profile-isolated bridge delivery record",
+      "description": "Idempotency and replay are keyed by operationContext.profileId plus request.clientRequestId.",
+      "type": "object",
+      "properties": {
+        "operationContext": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v2/operation-context.schema.json"
+        },
+        "request": {
+          "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v2/delivery-request.schema.json"
+        },
+        "recordedAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        }
+      },
+      "required": ["operationContext", "request", "recordedAt"],
+      "additionalProperties": false
+    },
+    "DeliveryRecordCollection": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v2/delivery-record-collection.schema.json",
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v2/delivery-record.schema.json"
+          }
+        }
+      },
+      "required": ["records"],
+      "additionalProperties": false
+    }
+  }
+}

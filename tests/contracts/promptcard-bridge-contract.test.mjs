@@ -9,6 +9,11 @@ const contractDirectory = new URL(
   import.meta.url,
 );
 const fixtureDirectory = new URL("fixtures/", contractDirectory);
+const v2ContractDirectory = new URL(
+  "../../contracts/promptcard-bridge/v2/",
+  import.meta.url,
+);
+const v2FixtureDirectory = new URL("fixtures/", v2ContractDirectory);
 
 async function readJson(filename) {
   return JSON.parse(
@@ -32,6 +37,36 @@ async function loadFixtures() {
     filenames.map(async (filename) => ({
       filename,
       fixture: JSON.parse(await readFile(new URL(filename, fixtureDirectory), "utf8")),
+    })),
+  );
+}
+
+async function readV2Json(filename) {
+  return JSON.parse(
+    await readFile(new URL(filename, v2ContractDirectory), "utf8"),
+  );
+}
+
+async function loadV2Contract() {
+  const manifest = await readV2Json("manifest.json");
+  const v1Schema = await readJson("schema.json");
+  const schema = await readV2Json(manifest.schemaFile);
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  ajv.addSchema(v1Schema);
+  ajv.addSchema(schema);
+  return { ajv, manifest, schema };
+}
+
+async function loadV2Fixtures() {
+  const filenames = (await readdir(v2FixtureDirectory))
+    .filter((filename) => filename.endsWith(".json"))
+    .sort();
+  return Promise.all(
+    filenames.map(async (filename) => ({
+      filename,
+      fixture: JSON.parse(
+        await readFile(new URL(filename, v2FixtureDirectory), "utf8"),
+      ),
     })),
   );
 }
@@ -443,5 +478,93 @@ describe("PromptCard bridge contract package", () => {
     assert.equal(hostPins.expectedOutcome.instance.state, "applied");
     assert.equal(hostPins.expectedOutcome.instance.disposition, "original");
     assert.deepEqual(hostPins.expectedOutcome.instance.resultCodes, [`SKL-${ULID}`]);
+  });
+});
+
+describe("PromptCard bridge v2 host-neutral boundary", () => {
+  it("declares the trusted context, delivery request, and delivery record entry points", async () => {
+    const { ajv, manifest, schema } = await loadV2Contract();
+
+    assert.equal(manifest.contractVersion, "2.0.0");
+    assert.equal(manifest.compatibleBase, "../v1/manifest.json");
+    assert.equal(schema.$schema, manifest.schemaDialect);
+    assert.deepEqual(Object.keys(manifest.entryPoints).sort(), [
+      "deliveryRecord",
+      "deliveryRecordCollection",
+      "deliveryRequest",
+      "operationContext",
+    ]);
+    for (const [name, id] of Object.entries(manifest.entryPoints)) {
+      assert.match(
+        id,
+        /^https:\/\/schemas\.promptcard\.dev\/promptcard-bridge\/v2\/[a-z-]+\.schema\.json$/,
+      );
+      assert.equal(typeof ajv.getSchema(id), "function", `${name}: ${id}`);
+      assert.doesNotThrow(() => ajv.compile({ $ref: id }), name);
+    }
+  });
+
+  it("validates host-neutral v2 fixtures", async (t) => {
+    const fixtures = await loadV2Fixtures();
+    assert.ok(fixtures.length >= 4, "v2 boundary fixtures are required");
+
+    for (const { filename, fixture } of fixtures) {
+      await t.test(fixture.name ?? filename, async () => {
+        const { ajv, manifest } = await loadV2Contract();
+        assert.equal(
+          manifest.entryPoints[fixture.entryPoint],
+          fixture.schemaId,
+          `${fixture.name}: schemaId must match manifest entry point`,
+        );
+        const validate = ajv.getSchema(fixture.schemaId);
+        assert.equal(typeof validate, "function");
+        assert.equal(
+          validate(fixture.instance),
+          fixture.expectedSchemaValidity,
+          `${fixture.name}: ${JSON.stringify(validate.errors)}`,
+        );
+      });
+    }
+  });
+
+  it("does not let a delivery request self-report a trusted profile", async () => {
+    const fixtures = new Map(
+      (await loadV2Fixtures()).map(({ fixture }) => [fixture.name, fixture]),
+    );
+    const valid = fixtures.get("host-neutral delivery request");
+    const spoofed = fixtures.get("delivery request cannot forge profile context");
+    const legacy = fixtures.get("new delivery rejects legacy Codex provenance");
+
+    assert.equal(valid.expectedSchemaValidity, true);
+    assert.equal(valid.instance.provenance, "promptcard-bridge");
+    assert.equal(Object.hasOwn(valid.instance, "profileId"), false);
+    assert.equal(spoofed.expectedSchemaValidity, false);
+    assert.equal(spoofed.instance.profileId, "forged-admin");
+    assert.equal(legacy.expectedSchemaValidity, false);
+    assert.equal(legacy.instance.provenance, "codex-harness");
+  });
+
+  it("keys replay identity by trusted profile as well as client request ID", async () => {
+    const fixtures = new Map(
+      (await loadV2Fixtures()).map(({ fixture }) => [fixture.name, fixture]),
+    );
+    const isolated = fixtures.get("same request key is isolated across profiles");
+    const [codexRecord, traeRecord] = isolated.instance.records;
+
+    assert.equal(isolated.expectedSchemaValidity, true);
+    assert.equal(
+      codexRecord.request.clientRequestId,
+      traeRecord.request.clientRequestId,
+    );
+    assert.equal(
+      codexRecord.request.normalizedRequestDigest,
+      traeRecord.request.normalizedRequestDigest,
+    );
+    assert.notEqual(
+      codexRecord.operationContext.profileId,
+      traeRecord.operationContext.profileId,
+    );
+    assert.equal(codexRecord.operationContext.clientInfo.name, "codex");
+    assert.equal(traeRecord.operationContext.clientInfo.name, "trae");
   });
 });
