@@ -87,7 +87,7 @@ flowchart LR
 
 ## Image-Generation Isolation
 
-Image generation remains a separate Gateway module using `image.primary`. Image models never enter the PI text provider collection or the text-SDK registry. It does not depend on text-Agent availability. The current Storage schema is v9: it preserves the image-generation conversations and durable placements introduced in v4, the original/derived image relationships introduced in v5, the later asset-lifecycle and project-resource additions, and the v8 text-Agent conversation and Skill tables; v9 adds the nullable conversation model binding. Image runs remain immutable, and Recent Capture behavior remains unchanged.
+Image generation remains a separate Gateway module using `image.primary`. Image models never enter the PI text provider collection or the text-SDK registry. It does not depend on text-Agent availability. The current Storage schema is v15: it preserves the image-generation conversations and durable placements introduced in v4, the original/derived image relationships introduced in v5, the later asset-lifecycle and project-resource additions, and the v8-v9 text-Agent conversation, Skill, and model-binding tables. Versions 10–15 add public references, immutable context packs, canonical Skill packages, exact host pins, projection recovery, and exact-revision trust reviews without changing image-run lifecycle. Image runs remain immutable, and Recent Capture behavior remains unchanged.
 
 ## Local Port Discovery
 

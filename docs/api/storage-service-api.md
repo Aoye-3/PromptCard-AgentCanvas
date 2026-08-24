@@ -4,7 +4,7 @@ The local storage service is the durable source of truth for projects, Prompt Li
 
 ## Health
 
-`GET /health` returns `serviceVersion`, `schemaVersion`, `storage`, `database`, `pid`, and capabilities including `sqlite`, `assets`, `presetBatch`, `browserImportIdempotency`, `backup`, `recentCaptures`, `projectResources`, `agentConversations`, `skillHub`, and `contextPacks`. The current service reports schema version `14`. Versions 10–14 add public reference codes, immutable Canvas context packs, canonical Skill packages, and independent Skill host pins; see [Schema Notes](../database/schema-notes.md).
+`GET /health` returns `serviceVersion`, `schemaVersion`, `storage`, `database`, `pid`, and capabilities including `sqlite`, `assets`, `presetBatch`, `browserImportIdempotency`, `backup`, `recentCaptures`, `projectResources`, `agentConversations`, `skillHub`, and `contextPacks`. The current service reports schema version `15`. Versions 10–15 add public reference codes, immutable Canvas context packs, canonical Skill packages, independent Skill host pins, and exact-revision trust reviews; see [Schema Notes](../database/schema-notes.md).
 
 - `GET /health`
 
@@ -210,11 +210,14 @@ Moving a conversation to Trash preserves all child records. Restore returns it t
 - `POST /api/skills/{skillId}/revisions`
 - `POST /api/skills/{skillId}/archive`
 - `POST /api/skills/{skillId}/restore`
+- `POST /api/skills/{skillId}/revisions/{revision}/review`
+- `GET /api/skill-hosts`
 - `POST /api/skill-package-inspections/folder`
 - `POST /api/skill-package-inspections/archive`
 - `POST /api/skill-package-imports`
 - `PUT /api/skills/{skillId}/host-pins/{host}`
 - `GET /api/skills/{skillId}/host-pins/{host}?repositoryScope=...`
+- `POST /api/skills/{skillId}/host-pins/codex/repair`
 - `GET /api/skill-host-snapshots/local-agent?skillId=...`
 
 The registry retains the two first-party Skills and immutable revision 3 of `canvas-prompt-editor`:
@@ -222,9 +225,20 @@ The registry retains the two first-party Skills and immutable revision 3 of `can
 - `SKL-canvas-prompt-editor`, capability `canvas.prompt.edit`
 - `SKL-media-prompt-reverse`, capability `media.prompt.reverse`
 
-Each Skill summary exposes stable ID/slug, canonical `SKL` reference code, name, description, `builtin|external` source, trust state, lifecycle, optional capability ID, declared tool dependencies, current revision, and digest. Detail returns immutable canonical revisions with package entries, provenance, declared capabilities, digest, and creation time.
+Each Skill summary exposes stable ID/slug, canonical `SKL` reference code, name, description, `builtin|external` source, trust state, lifecycle, optional capability ID, declared tool dependencies, current revision, digest, and the current revision's trust review. Detail returns immutable canonical revisions with package entries, provenance, declared capabilities, digest, creation time, and per-revision review state.
 
 The mutation routes create external Skills and append external revisions only; built-in revisions remain application-managed. Folder/archive inspection is bounded and non-mutating, and import accepts only a matching clean inspection result. Archive and restore change package lifecycle without deleting immutable revisions. Package scripts and assets may be stored canonically but are never executed by the local Agent.
+
+An exact revision review uses:
+
+```json
+{
+  "expectedDigest": "sha256:...",
+  "decision": "trusted"
+}
+```
+
+`decision` is `trusted` or `untrusted`. The digest is compare-and-swap evidence for the reviewed immutable revision; a mismatch returns `409 skill_review_stale`. A new revision starts without inheriting a previous external revision's approval and does not move either host pin. Enabling or repairing an external Skill requires both globally permitted trust state and a trusted exact revision. Explicit disable/unpublish remains available for archived or revoked Skills so a discoverable projection can be removed safely.
 
 ### Independent host pins
 
@@ -241,7 +255,11 @@ The mutation routes create external Skills and append external revisions only; b
 
 `repositoryScope` is required for Codex and identifies a repository already mapped in Storage configuration; it is not a filesystem path. `publicationName` is optional and otherwise defaults to the Skill slug. Both fields are invalid for the global local-Agent host. Every response identifies the exact `revision` and `digest`; changing one host never advances the other host's pin.
 
+`GET /api/skill-hosts` returns supported host IDs and configured opaque repository scope keys. It never exposes their filesystem mappings.
+
 Codex publication writes the canonical package under the configured repository's `.agents/skills/<publicationName>` directory. `GET` adds `projectionHealth`, which is `healthy`, `drifted` with a bounded code, or `unhealthy` with a recovery-required code. Unowned collisions are preserved, and modified, missing, extra, linked, junction, or reparse content is never accepted as canonical. See [Skill Host Pins And Projections](../architecture/skill-host-projections.md) for locking, journal recovery, and residual transaction risk.
+
+Explicit repair accepts `{ "repositoryScope", "expectedRevision", "expectedDigest" }`. It compare-and-swaps against the enabled durable Codex pin, rechecks exact-revision trust, rejects unsafe ancestors before mutation, and repairs only a projection proven to be PromptCard-owned. It does not move the pin or overwrite an unowned collision.
 
 The local-Agent snapshot endpoint returns only the enabled exact pinned revision:
 

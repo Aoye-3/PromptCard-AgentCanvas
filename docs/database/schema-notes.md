@@ -25,7 +25,7 @@ Core frontend schemas:
 - `ImageGenerationCanvasPlacement`
 - `ImageAssetDerivation`
 
-Schema changes should be documented with migration or normalization behavior. The current PromptCard Storage schema is v14. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
+Schema changes should be documented with migration or normalization behavior. The current PromptCard Storage schema is v15. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
 
 ## Three-stage Project Shape
 
@@ -122,6 +122,12 @@ Schema v14 adds `skill_host_pins` with primary key `(skill_id, host, scope)`. Su
 The `(skill_id, pinned_revision)` foreign key prevents a pin from naming a missing immutable revision. Insert/update triggers additionally require `pinned_digest` to equal that revision's digest. Codex projection metadata is prohibited for local-Agent pins. Built-in Skills receive an exact enabled local-Agent pin during initialization; no host follows `skills.current_revision` implicitly.
 
 Codex files remain derived filesystem state rather than SQLite rows. Cross-instance lock files and a prepared filesystem journal compensate around the database commit; recovery finalizes when SQLite matches the desired pin, rolls back when it matches the prior pin, and retains evidence with `recovery-required` when neither state is provable. SQLite and filesystem rename are not claimed to be one hardware-atomic transaction. See [Skill Host Pins And Projections](../architecture/skill-host-projections.md).
+
+## Exact Revision Trust Reviews
+
+Schema v15 adds `skill_revision_reviews` with primary key `(skill_id, revision)`. Each row stores the canonical revision digest, `trusted | untrusted` decision, and review time. A composite foreign key ties the review to an immutable revision, while insert/update triggers reject a digest that does not equal the canonical `skill_revisions.digest`.
+
+Migration seeds reviews only for revisions whose Skill was already `first-party` or `trusted`; first-party trust is normalized to the review state `trusted`. New external revisions do not inherit another revision's review. Host enablement and Codex repair require the exact `(skill_id, revision, digest)` to remain trusted as well as the Skill's global trust state to permit use. Marking a review untrusted blocks future snapshot execution and repair, but explicit disable/unpublish remains available so revoked or archived content can be removed safely.
 
 ## Recent Capture Shape
 

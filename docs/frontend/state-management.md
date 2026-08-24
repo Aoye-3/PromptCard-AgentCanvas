@@ -244,5 +244,5 @@ Free Canvas loading normalizes missing project data by creating an empty `freeCa
 
 - There is no production server-side project database in the current frontend app.
 - There is no schema migration framework beyond current normalization helpers.
-- Storage now implements bounded folder/archive Skill inspection and import, lifecycle, independent local-Agent/Codex revision pins, Codex projection health/recovery, and exact local-Agent snapshots. The Task 15 Skill Hub management UI is not implemented, so these host controls are not yet available as a complete frontend workflow. Skill script execution and MCP publication remain unimplemented.
+- Skill script execution, hooks/installers, automatic semantic matching, the Task 16 bridge router, and MCP server remain unimplemented. The completed Skill Hub management workflow is documented in [Skill Host Pins And Projections](../architecture/skill-host-projections.md) and the [Task 15.5 acceptance package](../reviews/2026-08-24-task-15-5-technical-acceptance.md).
 - Script/storyboard decomposition proposal types are not part of the current pi tool surface.

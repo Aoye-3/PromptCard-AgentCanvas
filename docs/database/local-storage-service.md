@@ -23,6 +23,7 @@ Every maintained launcher must use this same path and reject a healthy Storage S
 - Schema version `10` adds canonical public reference codes. Version `11` adds immutable Canvas context packs, and version `12` prevents replacement of an existing context snapshot.
 - Schema version `13` migrates Skills to immutable canonical package entries with provenance, lifecycle, declared capabilities, and versioned digests.
 - Schema version `14` adds independent exact-revision pins for `local-agent` and repository-scoped `codex` hosts. Codex projection files remain derived state coordinated through OS-backed locks and a prepared recovery journal.
+- Schema version `15` adds digest-bound `trusted | untrusted` review records per immutable Skill revision. New external revisions do not inherit an older revision's approval; host enablement and Codex repair recheck the exact review.
 - Projects and presets retain their existing JSON payload. Indexed columns own revision, status, ordering, usage, and timestamps.
 - Recent Capture rows retain their full JSON payload while indexed columns own `asset_id`, `kind`, `status`, capture time, timestamps, and revision.
 - Image-generation rows retain the immutable normalized request snapshot and terminal result/error payload while indexed columns own project, optional conversation/node, connection, provider, model, state, and lifecycle timestamps. Conversation, placement, and derivation rows are permanent and have no ordinary delete path.

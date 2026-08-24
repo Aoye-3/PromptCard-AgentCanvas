@@ -257,20 +257,20 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 ## 规划中功能
 
-### 本地 MCP、Prompt 库 RAG 与 Codex 创作桥接
+### PromptCard Local Agent Bridge 与 Prompt 库 RAG
 
-计划分别为项目、Prompt 库 Prompt、Prompt 库媒体、画布文本节点、画布媒体和画布选区提供稳定、可复制的引用编码。用户既可以复制精确编码，也可以先给出项目编码，让 Codex 在项目画布与 Prompt 库两个独立索引中查找候选内容，再生成提示词或图片并通过本地受控接口交付回指定画布。
+当前已经完成 Skill Hub 管理工作流和宿主中立的 Bridge v2 合同边界。后续将分别为项目、Prompt 库 Prompt、Prompt 库媒体、画布文本节点、画布媒体和画布选区提供稳定、可复制的引用编码。用户既可以复制精确编码，也可以先给出项目编码，让已授权的 Agent 应用在项目画布与 Prompt 库两个独立索引中查找候选内容，再通过本地受控接口交付提示词或图片。
 
-- Codex 作为外部交互入口，不在 PMAgent-Canvas 内嵌 Codex 聊天界面。
-- 使用仓库自带的本地 STDIO MCP，分别暴露 Prompt 库搜索/解析与项目画布搜索/解析能力。
+- 外部 Agent 应用是创作入口；PMAgent-Canvas 不内嵌某一家的聊天界面，也不按客户端名称分叉核心工具、schema、权限或结果。
+- 后续桥接计划支持本地 STDIO 与仅监听 `127.0.0.1` 的 Streamable HTTP；不实现已弃用的旧 SSE。Codex 与 TRAE 是首批验收目标，豆包与 MarsCode 暂标“待验证”。
 - Prompt 库媒体和画布媒体采用独立编码、索引、权限与生命周期；即使复用同一底层资产，也不共用业务编码。
-- Codex 生成结果只通过 Gateway/Storage 导入，不直接修改项目 JSON、SQLite 或资产目录。
-- PromptCard 不保存 Codex 图片生成所需的外部 API Key；实际生成能力取决于用户自己的 Codex 环境。
-- 左侧全局导航规划新增 **Skill Hub**，用于安全导入、审阅、版本化和管理 Agent Skill。
-- Skill 使用独立 `SKL` 编码体系；同一固定版本可分别发布给 Codex、启用给本地 Agent，两端权限和启用状态互不联动。
-- 导入只读取与校验 Skill 包，不执行其中的脚本、安装器或依赖；本地 Agent 首版只读取受限的指令与参考资料。
+- Agent 生成结果只通过 Gateway/Storage 导入，不直接修改项目 JSON、SQLite 或资产目录；Bridge 使用独立凭据与受限 scope，不能复用内部全权令牌。
+- 左侧全局 **Skill Hub** 已支持惰性导入预审、结构化发现、revision 历史与 diff、精确 revision 信任审阅、archive/restore，以及 Codex/local-Agent 独立 pin 和显式投影修复。
+- Codex `.agents/skills` 是一个准确命名的具体 Host Adapter；canonical revision 更新不会自动移动 Codex 或 local-Agent pin。
+- Skill 导入只读取与校验包，不执行其中的脚本、安装器、hook 或依赖；本地 Agent 只读取受限的指令与文本参考资料。
+- Canvas 已使用“复制 Agent/MCP 上下文”这一宿主中立入口；Task 16 的 Gateway bridge router、CLI 和 MCP server 尚未开始。
 
-本地 Agent 的 Prompt 库手动搜索也将随这次改造升级为有界、可引用、可审计的 RAG 检索；详细设计与分阶段验收见 [Plan 008：本地 MCP、Prompt 库 RAG 与 Codex 桥接](./docs/Plan/008-local-mcp-prompt-media-codex-bridge.md)。
+本地 Agent 的 Prompt 库手动搜索后续将升级为有界、可引用、可审计的 RAG 检索。当前执行暂停在 Task 15.5 用户验收点；详见 [Plan 008 执行台账](./docs/superpowers/plans/2026-08-22-plan-008-execution.md)、[ADR-019](./docs/decisions/ADR-019-generic-local-agent-bridge-boundary.md) 与 [Task 15.5 技术验收包](./docs/reviews/2026-08-24-task-15-5-technical-acceptance.md)。
 
 ## 未来设想（暂无计划）
 

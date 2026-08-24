@@ -2,7 +2,15 @@
 
 ## Status
 
-Active
+Paused at Task 15.5 user acceptance
+
+## Current Normative Boundary
+
+This plan began with Codex-specific product language. That historical design remains useful for reference identities, retrieval, and delivery flows, but it is no longer normative where it makes MCP, Gateway, CLI, retrieval, or delivery Codex-only.
+
+[ADR-019](../decisions/ADR-019-generic-local-agent-bridge-boundary.md) and the [Plan 008 execution ledger](../superpowers/plans/2026-08-22-plan-008-execution.md) define the current `PromptCard Local Agent Bridge`: a host-neutral core with trusted profiles/scopes, v2 `promptcard-bridge` provenance, STDIO plus loopback Streamable HTTP, and Codex/TRAE as initial acceptance adapters. Codex `.agents/skills` and the local-Agent snapshot remain accurately named concrete Host Adapters. Doubao and MarsCode remain “待验证”.
+
+Task 15 and Task 15.5 are implemented and technically accepted; see the [acceptance package](../reviews/2026-08-24-task-15-5-technical-acceptance.md). Execution is paused for user acceptance before Task 16. The Bridge router, credential, CLI, MCP server, Prompt RAG backend, and delivery runtime are not implemented.
 
 ## Date
 
@@ -130,13 +138,13 @@ The maintained runtime also has important boundaries that this plan preserves:
 - the pi text Agent has no direct filesystem, Storage, or Canvas write access;
 - current provider image generation is independent from text-Agent sessions.
 
-The current left navigation now includes a minimal SkillHub inspection surface. PromptCard Storage schema v9 retains the stable local Skill identities, immutable revisions, digests, source and trust state, capability bindings, and declared Runtime tool dependencies introduced in v8, and adds per-conversation text-model binding. The catalog exposes the Skill registry; Gateway supplies exact bounded snapshots to the local text Agent. `canvas-prompt-editor` revision 3 and `media-prompt-reverse` are trusted first-party Skills bound by feature capability, while a user-selected external Skill affects only the next project message.
+The current left navigation includes the complete Task 15 Skill Hub management surface. PromptCard Storage schema v15 owns canonical Skill packages, immutable revisions and digests, provenance, lifecycle, exact-revision trust reviews, and independent host pins. Skill Hub supports inert folder/archive inspection, structured findings, import, history/diff, archive/restore, exact review, Codex/local-Agent controls, projection health, and explicit owned-drift repair. The Gateway continues to supply exact bounded snapshots to the local text Agent without expanding Runtime permissions.
 
-This is a local-Agent vertical slice, not completion of the broader Phase 3 design. Folder/archive package import and validation, `SKL-*` public reference codes, lifecycle management, host enablement and pins, Codex native projection, MCP Skill resources, and script handling remain unimplemented. The existing repository `.agents/skills` directory remains a development-time Codex discovery location rather than the canonical product store.
+Codex `.agents/skills` is a derived native projection, not the canonical store. Canonical revision updates do not move either host pin. Skill scripts, hooks, installers, automatic semantic matching, MCP Skill resources, and Task 16's host-neutral read surface remain unimplemented.
 
 The current Canvas Agent `prompt-library` mode is still request-snapshot based: the browser may serialize up to 200 Prompt records, the pi Runtime keeps at most 100, and `search_prompt_library` searches only that array. This avoids ambient library access but scales request and context size with the library, cannot provide maintained semantic retrieval, and cannot durably explain why a Prompt was selected. The shared RAG track below replaces this transport while keeping Agent and MCP permissions separate.
 
-Codex-generated images must not be represented as successful Seedream or other provider generation runs. Their provenance is `codex-harness`, and delivery uses a separate additive asset path.
+Agent-delivered images must not be represented as successful Seedream or other provider generation runs. New delivery records use v2 `promptcard-bridge` provenance and a profile-scoped ledger; v1 `codex-harness` remains compatibility-only. Delivery uses a separate additive asset path.
 
 ## Shared Prompt Library Retrieval and Local-Agent RAG
 
@@ -636,7 +644,7 @@ Additional rules:
 
 ### Phase 3: Skill Hub and Canonical Skill Registry
 
-**Goal:** Let users import and manage one versioned Skill source for Codex and the local Agent.
+**Goal:** Let users import and manage one versioned Skill source for concrete Host Adapters, initially Codex and the local Agent.
 
 **Implemented local-Agent slice (2026-08-05):**
 
@@ -646,39 +654,39 @@ Additional rules:
 - [x] Added Gateway snapshot audit and rejection when a Skill requires tools outside the current `permissionScope`.
 - [x] Kept scripts disabled and prevented Skill content from expanding tools, proposal types, or approval permissions.
 
-The following Phase 3 scope remains planned and is intentionally left unchecked below.
+**Completed management and host slice (2026-08-24):**
 
-- Add **Skill Hub** to the global left sidebar as a peer of Prompt Library and Agent Panel.
-- Add canonical `SKL` identity, immutable revisions, package digest, provenance, trust state, and host-specific publication state.
-- Implement safe folder/archive inspection, validation, preview, diff, archive, and dependency-aware deletion.
-- Add independent Codex and local-Agent enablement controls.
-- Implement the Codex native Skill projection and the local-Agent bounded snapshot adapter.
+- [x] Added canonical `SKL` identity, immutable revisions, package digests, provenance, lifecycle, exact-revision trust reviews, and host-specific pin state.
+- [x] Added inert folder/archive inspection, structured validation findings, preview/import, revision history/diff, and archive/restore.
+- [x] Added independent Codex and local-Agent enablement with exact revision/digest pins; canonical updates move neither pin.
+- [x] Added the Codex native projection, health/recovery and explicit owned-drift repair while preserving unowned collisions.
+- [x] Kept local-Agent snapshots bounded and prevented scripts, hooks, installers, and package declarations from granting tools.
 
 **Acceptance:**
 
-- [ ] The left-sidebar Skill Hub can import a valid Skill without executing package content.
-- [ ] Invalid paths, links, oversized packages, malformed metadata, and identity collisions fail closed with reviewable findings.
-- [ ] Updating a Skill creates a revision and does not silently move either host's pin.
-- [ ] Codex and the local Agent can read the same pinned `SKL` revision and digest through their own adapters.
-- [ ] Enabling or disabling one host does not change the other host.
-- [ ] The local Agent cannot execute Skill scripts or gain tools outside its existing `permissionScope`.
+- [x] The left-sidebar Skill Hub can import a valid Skill without executing package content.
+- [x] Invalid paths, links, oversized packages, malformed metadata, and identity collisions fail closed with reviewable findings.
+- [x] Updating a Skill creates a revision and does not silently move either host's pin.
+- [x] Codex and the local Agent can read the same pinned `SKL` revision and digest through their own adapters.
+- [x] Enabling or disabling one host does not change the other host.
+- [x] The local Agent cannot execute Skill scripts or gain tools outside its existing `permissionScope`.
 
 ### Phase 4: Read-Only CLI and Local MCP
 
-**Goal:** Give Codex safe access to Prompt Library, Canvas context, and Skill Hub references.
+**Goal:** Give verified MCP-capable Agent hosts safe access to Prompt Library, Canvas context, and Skill Hub references through one host-neutral core.
 
 - Implement runtime discovery plus the separate project, Prompt Library, Canvas, context, and Skill Hub read tools.
 - Add distinct MCP resource URI families for Prompt Library, Canvas, context, and Skill Hub records.
 - Provide the same operations through a deterministic JSON CLI.
-- Publish a reviewed Skill Hub revision explaining the reference-first workflow to Codex through the native projection adapter.
+- Publish reviewed installation/configuration guidance for Codex and TRAE without branching core tools or schemas by client name.
 
 **Acceptance:**
 
-- [ ] Codex can resolve user-copied `PRJ`, `PLP`, `PLM`, `CVT`, `CVM`, `CVC`, and `SKL` codes.
+- [ ] Codex and TRAE can resolve user-copied `PRJ`, `PLP`, `PLM`, `CVT`, `CVM`, `CVC`, and `SKL` codes through the same core contracts.
 - [ ] Prompt Library search never returns Canvas identities, and Canvas search never returns Prompt Library identities.
 - [ ] A broad search returns compact typed codes and summaries, not unbounded asset data.
 - [ ] No read tool exposes local paths, credentials, or unrestricted project JSON.
-- [ ] STDIO MCP starts without downloading runtime dependencies from the network.
+- [ ] STDIO and loopback Streamable HTTP pass the frozen protocol-era, authentication, origin, response-budget, and cleanup gates without downloading runtime dependencies at launch.
 
 ### Phase 4A: Shared Prompt Library RAG
 
@@ -706,20 +714,20 @@ The following Phase 3 scope remains planned and is intentionally left unchecked 
 
 ### Phase 5: Prompt Node and Image Delivery
 
-**Goal:** Return Codex outputs to the correct Canvas safely.
+**Goal:** Return Local Agent Bridge outputs to the correct Canvas safely.
 
 - Implement additive Prompt node proposal delivery.
-- Implement multipart image delivery with `codex-harness` provenance.
+- Implement multipart image delivery with v2 `promptcard-bridge` provenance and profile-scoped idempotency; accept v1 `codex-harness` only at the compatibility boundary.
 - Add idempotent generic pending Canvas placements independent of provider generation runs.
 - Reuse the existing save-before-placed reconciliation order.
-- Surface delivery state in PromptCard without adding a Codex chat panel.
+- Surface delivery state in PromptCard without adding a client-specific chat panel.
 
 **Acceptance:**
 
 - [ ] Repeated delivery does not create duplicate assets or nodes.
 - [ ] A Prompt node or image targets the Canvas identified by the `CVC` pack.
 - [ ] Project save failure leaves delivery pending and recoverable.
-- [ ] No Codex asset is recorded as a Seedream/provider generation run.
+- [ ] No bridge-delivered asset is recorded as a Seedream/provider generation run.
 - [ ] PromptCard shows provenance and the source codes used.
 
 ### Phase 6: Hardening and Distribution

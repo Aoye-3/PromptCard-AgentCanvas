@@ -34,7 +34,7 @@ Use numbered filenames:
 - [002: Floating Capture Video Asset MVP](./002-floating-capture-video-asset-mvp.md)
 - [004: Update Module Integration](./004-update-module-integration.md)
 - [007: Provider-Neutral Contextual Image Editing And Multi-View](./007-contextual-image-editing-and-multi-view-plan.md)
-- [008: Local MCP, Prompt Library RAG, and Codex Bridge](./008-local-mcp-prompt-media-codex-bridge.md)
+- [008: Local Agent Bridge, Prompt Library RAG, and host adapters](./008-local-mcp-prompt-media-codex-bridge.md) — historical filename/title; paused at Task 15.5 user acceptance, with the current host-neutral boundary in ADR-019.
 
 ## Implemented Baselines
 

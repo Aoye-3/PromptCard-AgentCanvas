@@ -2,11 +2,17 @@
 
 ## Status
 
-Accepted
+Accepted — partially superseded by ADR-019
 
 ## Date
 
 2026-08-22
+
+## Supersession
+
+[ADR-019](./ADR-019-generic-local-agent-bridge-boundary.md) supersedes only this ADR's Codex-only/STDIO-only MCP scope and new-delivery `codex-harness` provenance. New Gateway, CLI, MCP, retrieval, and delivery work is host-neutral, supports STDIO plus loopback Streamable HTTP, and emits v2 `promptcard-bridge` provenance from a trusted profile context. The v1 contract and `codex-harness` compatibility input remain valid.
+
+The Storage/Gateway/adapter authority split, public reference semantics, explicit project/context scope, canonical Skill packages, Codex `.agents/skills` projection, local-Agent snapshot adapter, FTS-first retrieval direction, and `clientRequestId` idempotency decision remain in force. The implementation-status paragraph in Consequences records the state when this ADR was accepted; current state is tracked by ADR-019 and the Task 15.5 acceptance package.
 
 ## Context
 

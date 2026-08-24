@@ -13,7 +13,7 @@ Every Canvas or Prompt Library `emit_*` tool creates a pending proposal. The fro
 
 ## Skill snapshots
 
-PromptCard Storage schema v14 is the canonical source for canonical Skill packages and independent host pins. Each run receives the exact enabled local-Agent pin as a bounded snapshot rather than an editable package copy:
+PromptCard Storage schema v15 is the canonical source for canonical Skill packages, exact-revision trust reviews, and independent host pins. Each run receives the exact enabled local-Agent pin as a bounded snapshot rather than an editable package copy:
 
 ```json
 {
@@ -35,7 +35,7 @@ External Skills are explicitly selected by the user and apply only to the next p
 
 Skill instructions never grant permissions. Storage rechecks enabled state, active lifecycle, trust, snapshot size, and declared capabilities on every read. The Gateway then independently validates the public `SKL` identity, digest, instruction/reference budgets, content types and paths, and declared capabilities. Declared tools must be a subset of the exact tool set already allowed by `permissionScope`; non-tool capabilities and missing, unavailable, malformed, or over-privileged selections fail before model invocation. System rules, proposal validation, tool schemas, and user approval outrank Skill content.
 
-The model-facing snapshot exposes only root `SKILL.md` instructions and bounded UTF-8 `references/*` text. Canonically stored scripts/assets are never exposed or executed. Folder/archive inspection and import, lifecycle, independent host pins, and Codex publication are implemented in Storage; the Skill Hub management UI, hooks/package installers, and automatic semantic matching remain unimplemented.
+The model-facing snapshot exposes only root `SKILL.md` instructions and bounded UTF-8 `references/*` text. Canonically stored scripts/assets are never exposed or executed. Skill Hub now exposes inert folder/archive inspection and import, structured findings, revision history/diff, exact-revision trust review, archive/restore, independent host pins, Codex projection health, and explicit repair. Hooks/package installers, automatic semantic matching, the Task 16 bridge router, CLI, and MCP server remain unimplemented.
 
 See [Skill Host Pins And Projections](../architecture/skill-host-projections.md) for the projection ownership, health, recovery, and budget contract.
 

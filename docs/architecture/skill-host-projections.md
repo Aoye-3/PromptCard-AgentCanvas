@@ -1,6 +1,6 @@
 # Skill Host Pins And Projections
 
-PromptCard Storage schema v14 is the authority for Skill host activation. A host never follows a Skill's mutable `currentRevision`: every activation pins one immutable revision and its canonical digest.
+PromptCard Storage schema v14 defines Skill host pins and projections; schema v15 adds exact-revision trust reviews and their management operations. Storage remains the authority for host activation. A host never follows a Skill's mutable `currentRevision`: every activation pins one immutable revision and its canonical digest.
 
 ## Ownership Model
 
@@ -28,7 +28,7 @@ Publication fails closed when the destination is not demonstrably PromptCard-own
 - `{ "state": "drifted", "code": "..." }` when files or projection metadata differ;
 - `{ "state": "unhealthy", "code": "codex_projection_recovery_required" }` when safe recovery cannot be proved.
 
-Drift is never imported as a new canonical revision. The caller must resolve the collision or drift and explicitly publish again.
+Drift is never imported as a new canonical revision. Verified PromptCard-owned drift can be repaired explicitly against the current revision and digest without moving the pin. An unowned collision is preserved; the user must resolve it outside PromptCard or choose a different publication name.
 
 ## Serialization And Crash Recovery
 
@@ -46,7 +46,7 @@ SQLite commit and filesystem rename cannot form one hardware-atomic transaction.
 
 ## Local-Agent Snapshot Boundary
 
-`GET /api/skill-host-snapshots/local-agent?skillId=...` resolves only the enabled, exact pinned revision. Every read rechecks that the Skill is active and remains `trusted` or `first-party`. Lowercase public `SKL` input is accepted, while the response returns the canonical uppercase code.
+`GET /api/skill-host-snapshots/local-agent?skillId=...` resolves only the enabled, exact pinned revision. Every read rechecks that the Skill is active, its global trust state permits use, and the exact `(skill, revision, digest)` review is trusted. Lowercase public `SKL` input is accepted, while the response returns the canonical uppercase code.
 
 The Storage snapshot contains only:
 
@@ -60,4 +60,4 @@ The Gateway independently treats the Storage response as untrusted input. Before
 
 ## Delivery Boundary
 
-Task 14 provides the Storage host-pin API, Codex filesystem projection, recovery, health reporting, and Gateway local-Agent snapshot validation. Task 15's Skill Hub management UI and Task 16's broader Gateway/MCP read surface are separate work and are not implied by this backend capability.
+Task 14 provides the Storage host-pin API, Codex filesystem projection, recovery, health reporting, and Gateway local-Agent snapshot validation. Task 15 adds the Skill Hub management UI, exact-revision review, history/diff, archive/restore, independent host controls, and explicit Codex repair. Task 15.5 freezes the host-neutral Bridge v2 contract in ADR-019. Task 16's bridge router, credentials, broader Gateway read surface, CLI, and MCP server remain unimplemented.
