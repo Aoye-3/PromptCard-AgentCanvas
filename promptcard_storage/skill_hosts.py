@@ -250,6 +250,91 @@ class CodexProjectionAdapter:
             backup_manifest=_disk_manifest(ownership),
         )
 
+    def repair(
+        self,
+        scope: str,
+        publication_name: str,
+        skill: dict[str, Any],
+        revision: dict[str, Any],
+        ownership: dict[str, Any],
+    ) -> dict[str, Any]:
+        scope = _repository_scope(scope)
+        publication_name = _publication_name(publication_name)
+        repository = self._repository(scope)
+        projection_root = repository / ".agents" / "skills"
+        target = projection_root / publication_name
+        self._reject_reparse_ancestors(repository, projection_root)
+        self._reject_reparse_path(target)
+        if not target.exists():
+            raise SkillHostConflict(
+                "codex_projection_collision",
+                "The Codex projection path is no longer owned by PromptCard",
+            )
+        expected = _disk_manifest(ownership)
+        current = self._read_manifest(target)
+        if current != expected:
+            if _same_projection_owner(current, expected):
+                raise SkillHostConflict(
+                    "codex_projection_drift",
+                    "The Codex projection ownership manifest has changed",
+                )
+            raise SkillHostConflict(
+                "codex_projection_collision",
+                "The Codex projection path belongs to another owner or repository",
+            )
+        manifest = self._manifest(scope, skill, revision)
+        if manifest != expected:
+            raise SkillHostConflict(
+                "skill_host_pin_changed",
+                "The Codex projection pin changed before repair",
+            )
+        self._validate_projection_entries(revision["entries"])
+        _scan_projection_files(target)
+        try:
+            for child in list(target.iterdir()):
+                if child.name.casefold() == MANIFEST_NAME.casefold():
+                    continue
+                stat = child.lstat()
+                if child.is_symlink() or _is_reparse(stat):
+                    raise SkillHostConflict(
+                        "codex_projection_drift",
+                        "The Codex projection contains a link or reparse point",
+                    )
+                if child.is_dir():
+                    shutil.rmtree(child)
+                elif child.is_file():
+                    child.unlink()
+                else:
+                    raise SkillHostConflict(
+                        "codex_projection_drift",
+                        "The Codex projection contains an unsafe member",
+                    )
+            for item in revision["entries"]:
+                destination = _projected_path(target, str(item["path"]))
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                self._reject_reparse_path(destination.parent)
+                temporary = destination.parent / f".{destination.name}.{uuid.uuid4().hex}.repair"
+                try:
+                    with temporary.open("wb") as handle:
+                        handle.write(base64.b64decode(item["contentBase64"], validate=True))
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temporary, destination)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            self._verify_exact_projection(target, manifest)
+        except SkillHostConflict:
+            raise
+        except (OSError, ValueError) as exc:
+            raise SkillHostConflict(
+                "codex_projection_failed",
+                "Codex projection repair failed",
+            ) from exc
+        return manifest
+
+    def repository_scopes(self) -> list[str]:
+        return sorted(self._repositories)
+
     def _repository(self, scope: str) -> Path:
         repository = self._repositories.get(scope)
         if repository is None:
@@ -536,9 +621,23 @@ class SkillHostService:
         scope = "" if host == "local-agent" else _repository_scope(repository_scope)
         if host == "local-agent" and (repository_scope is not None or publication_name is not None):
             raise ValueError("local-Agent host state is global")
-        skill, canonical = self.store.get_skill_revision(skill_id, revision)
-        if skill["trustState"] == "untrusted":
-            raise SkillHostConflict("skill_review_required", "The Skill must be reviewed before host enablement")
+        if enabled:
+            skill, canonical = self.store.get_skill_revision(skill_id, revision)
+            if skill["source"] != "builtin" and not self.store.skill_revision_is_trusted(
+                skill["id"], canonical["revision"], canonical["digest"]
+            ):
+                raise SkillHostConflict(
+                    "skill_review_required",
+                    "The Skill must be reviewed before host enablement",
+                )
+        else:
+            skill = self.store.get_skill(skill_id)
+            canonical = next(
+                (item for item in skill["revisions"] if item["revision"] == revision),
+                None,
+            )
+            if canonical is None:
+                raise MissingItem(f"{skill_id}@{revision}")
         if host == "local-agent":
             return self.store.set_skill_host_pin(
                 skill["id"], host, scope, enabled, revision, projection=None
@@ -711,6 +810,69 @@ class SkillHostService:
             health = {"state": "unhealthy", "code": recovery_error}
         return {**pin, "projectionHealth": health}
 
+    def describe_hosts(self) -> dict[str, Any]:
+        return {
+            "hosts": [
+                {"id": "local-agent", "label": "Local Agent", "scopes": [""]},
+                {
+                    "id": "codex",
+                    "label": "Codex .agents/skills",
+                    "scopes": self.codex.repository_scopes(),
+                },
+            ]
+        }
+
+    def repair_codex_projection(
+        self,
+        skill_id: str,
+        repository_scope: str,
+        expected_revision: int,
+        expected_digest: str,
+    ) -> dict[str, Any]:
+        scope = _repository_scope(repository_scope)
+        skill, canonical = self.store.get_skill_revision(skill_id, expected_revision)
+        if canonical["digest"] != expected_digest:
+            raise SkillHostConflict(
+                "skill_host_pin_changed",
+                "The Codex projection pin changed before repair",
+            )
+        if skill["source"] != "builtin" and not self.store.skill_revision_is_trusted(
+            skill["id"], canonical["revision"], canonical["digest"]
+        ):
+            raise SkillHostConflict(
+                "skill_review_required",
+                "The Skill must be reviewed before Codex projection repair",
+            )
+        current = self.store.get_skill_host_pin(skill["id"], "codex", scope)
+        projection = current.get("projection") or {}
+        publication_name = projection.get("publicationName")
+        if (
+            not current["enabled"]
+            or current["revision"] != expected_revision
+            or current["digest"] != expected_digest
+            or not isinstance(publication_name, str)
+        ):
+            raise SkillHostConflict(
+                "skill_host_pin_changed",
+                "The Codex projection pin changed before repair",
+            )
+        with self.codex.operation_lock(scope, skill["id"], [publication_name]):
+            self._recover_pending(scope, skill["id"], strict=True)
+            locked = self.store.get_skill_host_pin(skill["id"], "codex", scope)
+            if (
+                not locked["enabled"]
+                or locked["revision"] != expected_revision
+                or locked["digest"] != expected_digest
+                or locked.get("projection") != projection
+            ):
+                raise SkillHostConflict(
+                    "skill_host_pin_changed",
+                    "The Codex projection pin changed before repair",
+                )
+            self.codex.repair(scope, publication_name, skill, canonical, projection)
+            health = self.codex.projection_health(scope, locked)
+        return {**locked, "projectionHealth": health}
+
     def _recover_pending(
         self, scope: str, skill_id: str, *, strict: bool
     ) -> str | None:
@@ -858,7 +1020,9 @@ class SkillHostService:
         if not pin["enabled"]:
             raise MissingItem(skill_id)
         skill, revision = self.store.get_skill_revision(skill_id, pin["revision"])
-        if skill["trustState"] not in {"trusted", "first-party"}:
+        if skill["source"] != "builtin" and not self.store.skill_revision_is_trusted(
+            skill["id"], revision["revision"], revision["digest"]
+        ):
             raise SkillHostConflict(
                 "skill_review_required",
                 "The Skill must remain trusted for local-Agent resolution",

@@ -240,6 +240,50 @@ describe('storageServiceClient', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(7, '/storage-api/skills', expect.any(Object))
   })
 
+  test('manages inspected skills, exact reviews, independent pins, and projection repair', async () => {
+    const responses = [
+      { inspectionId: 'inspect-1', clean: true, manifest: { digest: 'sha256:one', entryCount: 0, totalBytes: 0, entries: [] }, findings: [] },
+      { inspectionId: 'inspect-1', skill: { id: 'skill-1', referenceCode: 'SKL-ONE', revision: 1, digest: 'sha256:one', lifecycleStatus: 'active' } },
+      { hosts: [{ id: 'codex', label: 'Codex .agents/skills', scopes: ['repo/one'] }] },
+      { id: 'skill-1', revisions: [] },
+      { skillId: 'skill-1', host: 'local-agent', scope: '', enabled: true, revision: 1, digest: 'sha256:one', projection: null, updatedAt: 1 },
+      { skillId: 'skill-1', host: 'codex', scope: 'repo/one', enabled: true, revision: 1, digest: 'sha256:one', projection: { publicationName: 'skill-one' }, updatedAt: 1 },
+      { skillId: 'skill-1', host: 'codex', scope: 'repo/one', enabled: true, revision: 1, digest: 'sha256:one', projection: { publicationName: 'skill-one' }, projectionHealth: { state: 'healthy' }, updatedAt: 1 },
+      { id: 'skill-1', revisions: [], lifecycleStatus: 'archived' },
+      { id: 'skill-1', revisions: [], lifecycleStatus: 'active' }
+    ]
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(responses.shift())))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.skills.inspectFolder('F:\\skills\\one')
+    await storageServiceClient.skills.importInspected({
+      inspectionId: 'inspect-1', operation: 'create', skill: { originLabel: 'one' }
+    })
+    await storageServiceClient.skills.describeHosts()
+    await storageServiceClient.skills.reviewRevision('skill/1', 1, 'sha256:one', 'trusted')
+    await storageServiceClient.skills.updateHostPin('skill/1', 'local-agent', { enabled: true, revision: 1 })
+    await storageServiceClient.skills.updateHostPin('skill/1', 'codex', {
+      enabled: true, revision: 1, repositoryScope: 'repo/one', publicationName: 'skill-one'
+    })
+    await storageServiceClient.skills.repairCodexProjection('skill/1', {
+      repositoryScope: 'repo/one', expectedRevision: 1, expectedDigest: 'sha256:one'
+    })
+    await storageServiceClient.skills.archive('skill/1')
+    await storageServiceClient.skills.restore('skill/1')
+
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1]?.method, call[1]?.body])).toEqual([
+      ['/storage-api/skill-package-inspections/folder', 'POST', JSON.stringify({ path: 'F:\\skills\\one' })],
+      ['/storage-api/skill-package-imports', 'POST', JSON.stringify({ inspectionId: 'inspect-1', operation: 'create', skill: { originLabel: 'one' } })],
+      ['/storage-api/skill-hosts', undefined, undefined],
+      ['/storage-api/skills/skill%2F1/revisions/1/review', 'POST', JSON.stringify({ expectedDigest: 'sha256:one', decision: 'trusted' })],
+      ['/storage-api/skills/skill%2F1/host-pins/local-agent', 'PUT', JSON.stringify({ enabled: true, revision: 1 })],
+      ['/storage-api/skills/skill%2F1/host-pins/codex', 'PUT', JSON.stringify({ enabled: true, revision: 1, repositoryScope: 'repo/one', publicationName: 'skill-one' })],
+      ['/storage-api/skills/skill%2F1/host-pins/codex/repair', 'POST', JSON.stringify({ repositoryScope: 'repo/one', expectedRevision: 1, expectedDigest: 'sha256:one' })],
+      ['/storage-api/skills/skill%2F1/archive', 'POST', undefined],
+      ['/storage-api/skills/skill%2F1/restore', 'POST', undefined]
+    ])
+  })
+
   test('reports request timeouts', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {

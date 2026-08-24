@@ -326,6 +326,89 @@ export interface SkillSummary {
   lifecycleStatus: 'active' | 'archived'
 }
 
+export interface SkillPackageEntry {
+  type: 'instruction' | 'reference' | 'script' | 'asset'
+  path: string
+  contentType: string
+  contentBase64?: string
+  size: number
+  digest: string
+}
+
+export interface SkillRevision {
+  revision: number
+  digest: string
+  instructions: string
+  references: unknown[]
+  createdAt: number
+  digestVersion?: string
+  legacyDigest?: string | null
+  provenance: Record<string, unknown>
+  declaredCapabilities: Record<string, unknown>
+  entries: SkillPackageEntry[]
+  trustReview: { state: 'trusted' | 'untrusted'; digest: string; reviewedAt: number } | null
+}
+
+export interface SkillDetail extends Omit<SkillSummary, 'revision' | 'digest'> {
+  currentRevision: number
+  archivedAt: number | null
+  revisions: SkillRevision[]
+}
+
+export interface SkillInspectionFinding {
+  code: string
+  severity: 'info' | 'warning' | 'error'
+  blocking: boolean
+  path: string
+  message: string
+  rule?: string
+  line?: number
+}
+
+export interface SkillInspection {
+  inspectionId: string
+  clean: boolean
+  manifest: {
+    digest: string
+    entryCount: number
+    totalBytes: number
+    entries: SkillPackageEntry[]
+  }
+  findings: SkillInspectionFinding[]
+}
+
+export interface SkillImportRequest {
+  inspectionId: string
+  operation: 'create' | 'revise'
+  skill: { originLabel?: string; skillId?: string; id?: string; slug?: string; name?: string; description?: string }
+}
+
+export interface SkillImportResult {
+  inspectionId: string
+  skill: Pick<SkillSummary, 'id' | 'referenceCode' | 'revision' | 'digest' | 'lifecycleStatus'>
+}
+
+export type SkillHost = 'local-agent' | 'codex'
+
+export interface SkillHostPin {
+  skillId: string
+  skillReferenceCode: string
+  host: SkillHost
+  scope: string
+  enabled: boolean
+  revision: number
+  digest: string
+  projection: ({ publicationName?: string } & Record<string, unknown>) | null
+  projectionHealth?: { state: string; code?: string }
+  updatedAt: number
+}
+
+export interface SkillHostDescription {
+  id: SkillHost
+  label: string
+  scopes: string[]
+}
+
 export type CreateProjectResourceFolder = Pick<ProjectResourceFolder, 'name'> &
   Partial<Pick<ProjectResourceFolder, 'id' | 'parentId' | 'sortOrder'>>
 
@@ -791,8 +874,58 @@ export const storageServiceClient = {
     async list(): Promise<SkillSummary[]> {
       return (await request<{ skills: SkillSummary[] }>('/storage-api/skills')).skills
     },
-    get(id: string): Promise<SkillSummary & { currentRevision: number; revisions: Array<Record<string, unknown>> }> {
+    get(id: string): Promise<SkillDetail> {
       return request(`/storage-api/skills/${encodeURIComponent(id)}`)
+    },
+    archive(id: string): Promise<SkillDetail> {
+      return request(`/storage-api/skills/${encodeURIComponent(id)}/archive`, { method: 'POST' })
+    },
+    restore(id: string): Promise<SkillDetail> {
+      return request(`/storage-api/skills/${encodeURIComponent(id)}/restore`, { method: 'POST' })
+    },
+    reviewRevision(id: string, revision: number, expectedDigest: string, decision: 'trusted' | 'untrusted'): Promise<SkillDetail> {
+      return request(`/storage-api/skills/${encodeURIComponent(id)}/revisions/${revision}/review`, {
+        method: 'POST', body: JSON.stringify({ expectedDigest, decision })
+      })
+    },
+    inspectFolder(path: string): Promise<SkillInspection> {
+      return request('/storage-api/skill-package-inspections/folder', {
+        method: 'POST', body: JSON.stringify({ path })
+      })
+    },
+    inspectArchive(filename: string, contentBase64: string): Promise<SkillInspection> {
+      return request('/storage-api/skill-package-inspections/archive', {
+        method: 'POST', body: JSON.stringify({ filename, contentBase64 })
+      })
+    },
+    importInspected(payload: SkillImportRequest): Promise<SkillImportResult> {
+      return request('/storage-api/skill-package-imports', {
+        method: 'POST', body: JSON.stringify(payload)
+      })
+    },
+    async describeHosts(): Promise<SkillHostDescription[]> {
+      return (await request<{ hosts: SkillHostDescription[] }>('/storage-api/skill-hosts')).hosts
+    },
+    getHostPin(id: string, host: SkillHost, repositoryScope?: string): Promise<SkillHostPin> {
+      const query = repositoryScope === undefined ? '' : `?repositoryScope=${encodeURIComponent(repositoryScope)}`
+      return request(`/storage-api/skills/${encodeURIComponent(id)}/host-pins/${host}${query}`)
+    },
+    updateHostPin(
+      id: string,
+      host: SkillHost,
+      payload: { enabled: boolean; revision: number; repositoryScope?: string; publicationName?: string }
+    ): Promise<SkillHostPin> {
+      return request(`/storage-api/skills/${encodeURIComponent(id)}/host-pins/${host}`, {
+        method: 'PUT', body: JSON.stringify(payload)
+      })
+    },
+    repairCodexProjection(
+      id: string,
+      payload: { repositoryScope: string; expectedRevision: number; expectedDigest: string }
+    ): Promise<SkillHostPin> {
+      return request(`/storage-api/skills/${encodeURIComponent(id)}/host-pins/codex/repair`, {
+        method: 'POST', body: JSON.stringify(payload)
+      })
     }
   },
   projectResources: {

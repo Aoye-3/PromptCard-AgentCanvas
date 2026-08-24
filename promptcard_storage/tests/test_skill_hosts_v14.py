@@ -79,11 +79,21 @@ class SkillHostsV14Tests(unittest.TestCase):
             json=payload,
         )
 
+    def add_reviewed_revision(self, skill_id: str, item: dict) -> dict:
+        updated = self.store.add_skill_revision(skill_id, item)
+        current = updated["revisions"][0]
+        return self.store.review_skill_revision(
+            skill_id,
+            current["revision"],
+            current["digest"],
+            "trusted",
+        )
+
     def test_schema_v14_persists_independent_host_pins(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 14)
+        self.assertEqual(SCHEMA_VERSION, 15)
         self.assertEqual(self.pin("codex", 1).status_code, 200)
         self.assertEqual(self.pin("local-agent", 1).status_code, 200)
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
 
@@ -135,7 +145,7 @@ class SkillHostsV14Tests(unittest.TestCase):
 
         shutil.rmtree(target)
         self.assertEqual(self.pin("codex", 1).status_code, 200)
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         (target / "SKILL.md").write_text("locally changed", encoding="utf-8")
@@ -176,7 +186,7 @@ class SkillHostsV14Tests(unittest.TestCase):
         self.service.codex.project = lambda *args, **kwargs: (_ for _ in ()).throw(
             SkillHostConflict("codex_projection_failed", "Projection failed")
         )
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         failed = self.pin("codex", revision_two)
@@ -186,7 +196,7 @@ class SkillHostsV14Tests(unittest.TestCase):
 
     def test_local_agent_snapshot_is_exact_filtered_and_rejects_capability_escalation(self) -> None:
         self.assertEqual(self.pin("local-agent", 1).status_code, 200)
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         snapshot = self.client.get(
@@ -204,7 +214,7 @@ class SkillHostsV14Tests(unittest.TestCase):
             "source": "external", "trustState": "trusted",
             "entries": [entry("instruction", "SKILL.md", b"# Unsafe\n")],
         })
-        unsafe = self.store.add_skill_revision(unsafe["id"], {
+        unsafe = self.add_reviewed_revision(unsafe["id"], {
             "entries": [entry("instruction", "SKILL.md", b"# Unsafe revision\n")],
             "declaredCapabilities": {"tools": ["shell"]},
         })
@@ -341,7 +351,7 @@ class SkillHostsV14Tests(unittest.TestCase):
     def test_database_failure_rolls_projection_back_to_prior_revision(self) -> None:
         self.assertEqual(self.pin("codex", 1).status_code, 200)
         target = self.repository / ".agents" / "skills" / "host-skill"
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         original = self.store.set_skill_host_pin
@@ -454,7 +464,7 @@ class SkillHostsV14Tests(unittest.TestCase):
 
     def test_publish_restore_failure_keeps_journal_until_reopen_recovers(self) -> None:
         self.assertEqual(self.pin("codex", 1).status_code, 200)
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         target = self.repository / ".agents" / "skills" / "host-skill"
@@ -548,7 +558,7 @@ class SkillHostsV14Tests(unittest.TestCase):
 
     def test_staging_cleanup_failure_keeps_journal_until_reopen_cleans_it(self) -> None:
         self.assertEqual(self.pin("codex", 1).status_code, 200)
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         original_write = Path.write_bytes
@@ -590,10 +600,10 @@ class SkillHostsV14Tests(unittest.TestCase):
         self.assertEqual(list(staging.glob("*-new")), [])
 
     def test_cross_instance_publish_publish_is_serialized_and_consistent(self) -> None:
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
-        revision_three = self.store.add_skill_revision("host-skill", {
+        revision_three = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision three\n")],
         })["currentRevision"]
         second_store = SqliteStore(self.root / "storage")
@@ -632,7 +642,7 @@ class SkillHostsV14Tests(unittest.TestCase):
 
     def test_cross_instance_publish_unpublish_never_leaves_enabled_pin_without_projection(self) -> None:
         self.assertEqual(self.pin("codex", 1).status_code, 200)
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         second_store = SqliteStore(self.root / "storage")
@@ -671,7 +681,7 @@ class SkillHostsV14Tests(unittest.TestCase):
 
     def test_crash_after_swap_is_recovered_on_reopen(self) -> None:
         self.assertEqual(self.pin("codex", 1).status_code, 200)
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         original_set = self.store.set_skill_host_pin
@@ -700,7 +710,7 @@ class SkillHostsV14Tests(unittest.TestCase):
 
     def test_crash_after_database_commit_finalizes_on_reopen(self) -> None:
         self.assertEqual(self.pin("codex", 1).status_code, 200)
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         original_set = self.store.set_skill_host_pin
@@ -729,7 +739,7 @@ class SkillHostsV14Tests(unittest.TestCase):
 
     def test_crash_recovery_refuses_a_tampered_rollback_backup_without_mutating(self) -> None:
         self.assertEqual(self.pin("codex", 1).status_code, 200)
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         original_set = self.store.set_skill_host_pin
@@ -763,7 +773,7 @@ class SkillHostsV14Tests(unittest.TestCase):
 
     def test_committed_crash_recovery_refuses_a_tampered_finalize_backup(self) -> None:
         self.assertEqual(self.pin("codex", 1).status_code, 200)
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         original_set = self.store.set_skill_host_pin
@@ -1030,7 +1040,7 @@ class SkillHostsV14Tests(unittest.TestCase):
 
     def test_publish_detects_a_target_change_during_the_swap(self) -> None:
         self.assertEqual(self.pin("codex", 1).status_code, 200)
-        revision_two = self.store.add_skill_revision("host-skill", {
+        revision_two = self.add_reviewed_revision("host-skill", {
             "entries": [entry("instruction", "SKILL.md", b"# Revision two\n")],
         })["currentRevision"]
         target = self.repository / ".agents" / "skills" / "host-skill"
@@ -1140,7 +1150,7 @@ class SkillHostsV14Tests(unittest.TestCase):
         )
         for capabilities in unsafe_capabilities:
             with self.subTest(capabilities=capabilities):
-                revision = self.store.add_skill_revision("host-skill", {
+                revision = self.add_reviewed_revision("host-skill", {
                     "entries": [entry(
                         "instruction",
                         "SKILL.md",
@@ -1158,21 +1168,22 @@ class SkillHostsV14Tests(unittest.TestCase):
                     rejected.json()["detail"]["code"], "skill_snapshot_invalid"
                 )
 
-    def test_v13_migrates_to_v14_without_changing_canonical_revisions(self) -> None:
+    def test_v13_migrates_through_v15_without_changing_canonical_revisions(self) -> None:
         before = self.store.get_skill("host-skill")["revisions"]
         database = self.root / "storage" / "promptcard.sqlite3"
         connection = sqlite3.connect(database)
         try:
+            connection.execute("DROP TABLE skill_revision_reviews")
             connection.execute("DROP TABLE skill_host_pins")
             connection.execute(
-                "UPDATE schema_migrations SET version=13, name='legacy-v13' WHERE version=14"
+                "UPDATE schema_migrations SET version=13, name='legacy-v13' WHERE version=15"
             )
             connection.commit()
         finally:
             connection.close()
 
         reopened = SqliteStore(self.root / "storage")
-        self.assertEqual(reopened.health()["schemaVersion"], 14)
+        self.assertEqual(reopened.health()["schemaVersion"], 15)
         self.assertEqual(reopened.get_skill("host-skill")["revisions"], before)
 
 

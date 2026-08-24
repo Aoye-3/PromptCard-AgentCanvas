@@ -45,6 +45,7 @@ def downgrade_skill_schema_to_v12(database: Path) -> None:
     connection = sqlite3.connect(database)
     try:
         connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("DROP TABLE IF EXISTS skill_revision_reviews")
         connection.execute("DROP TABLE IF EXISTS skill_host_pins")
         for trigger in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'skill_%'"
@@ -119,7 +120,7 @@ class SkillPackagesV13Tests(unittest.TestCase):
     def test_fresh_v13_schema_contains_canonical_entry_columns_and_immutability_triggers(self) -> None:
         connection = sqlite3.connect(self.data_dir / "promptcard.sqlite3")
         try:
-            self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 14)
+            self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 15)
             entry_columns = {
                 row[1]: row[2] for row in connection.execute("PRAGMA table_info(skill_package_entries)")
             }
@@ -142,6 +143,7 @@ class SkillPackagesV13Tests(unittest.TestCase):
                 "skill_revisions_immutable_delete", "skill_package_entries_prevent_replace",
                 "skill_package_entries_immutable_update", "skill_package_entries_immutable_delete",
                 "skill_host_pins_digest_insert", "skill_host_pins_digest_update",
+                "skill_revision_reviews_digest_insert", "skill_revision_reviews_digest_update",
             })
         finally:
             connection.close()

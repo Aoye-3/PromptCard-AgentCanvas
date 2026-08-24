@@ -182,7 +182,7 @@ class ContextPackV11Test(unittest.TestCase):
         }
 
     def test_fresh_schema_and_real_v10_v11_databases_migrate_to_current(self) -> None:
-        self.assertEqual(store_module.SCHEMA_VERSION, 14)
+        self.assertEqual(store_module.SCHEMA_VERSION, 15)
         self.assertTrue(self.store.health()["capabilities"]["contextPacks"])
         with self.store._connect() as connection:
             self.assertEqual(

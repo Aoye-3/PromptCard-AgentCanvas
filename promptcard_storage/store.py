@@ -52,7 +52,7 @@ from .skill_packages import (
 
 Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 DATABASE_NAME = "promptcard.sqlite3"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE = " \t\n\v\f\r"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
@@ -81,6 +81,13 @@ class RevisionConflict(Exception):
 
 class MissingItem(Exception):
     pass
+
+
+class SkillReviewConflict(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(code)
 
 
 class PromptReferenceError(Exception):
@@ -1002,12 +1009,21 @@ class SqliteStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT skill.id, skill.slug, skill.name, skill.description, skill.source,
-                          skill.trust_state, skill.capability_id, skill.tool_dependencies_json,
+                          CASE
+                            WHEN skill.source='builtin' THEN skill.trust_state
+                            WHEN skill.trust_state='trusted' AND review.state='trusted'
+                              THEN 'trusted'
+                            ELSE 'untrusted'
+                          END,
+                          skill.capability_id, skill.tool_dependencies_json,
                           revision.revision, revision.digest, reference.public_code,
                           skill.lifecycle_status
                    FROM skills AS skill
                    JOIN skill_revisions AS revision
                      ON revision.skill_id=skill.id AND revision.revision=skill.current_revision
+                   LEFT JOIN skill_revision_reviews AS review
+                     ON review.skill_id=revision.skill_id
+                    AND review.revision=revision.revision
                    JOIN public_references AS reference
                      ON reference.namespace='SKL' AND reference.owner_scope=''
                     AND reference.internal_id=skill.id
@@ -1043,18 +1059,42 @@ class SqliteStore:
                     "entries": self._skill_revision_entries(
                         connection, resolved_id, revision[0]
                     ),
+                    "trustReview": (
+                        {
+                            "state": revision[9],
+                            "digest": revision[10],
+                            "reviewedAt": revision[11],
+                        }
+                        if revision[9] is not None
+                        else None
+                    ),
                 }
                 for revision in connection.execute(
-                    """SELECT revision, digest, instructions, references_json, created_at,
-                              digest_version, legacy_digest, provenance_json,
-                              declared_capabilities_json
-                       FROM skill_revisions WHERE skill_id=? ORDER BY revision DESC""",
+                    """SELECT revision.revision, revision.digest, revision.instructions,
+                              revision.references_json, revision.created_at,
+                              revision.digest_version, revision.legacy_digest,
+                              revision.provenance_json, revision.declared_capabilities_json,
+                              review.state, review.digest,
+                              review.reviewed_at
+                       FROM skill_revisions AS revision
+                       LEFT JOIN skill_revision_reviews AS review
+                         ON review.skill_id=revision.skill_id
+                        AND review.revision=revision.revision
+                       WHERE revision.skill_id=? ORDER BY revision.revision DESC""",
                     (resolved_id,),
                 )
             ]
+        current = next(item for item in revisions if item["revision"] == row[8])
+        effective_trust = row[5]
+        if row[4] == "external" and (
+            effective_trust != "trusted"
+            or current["trustReview"] is None
+            or current["trustReview"]["state"] != "trusted"
+        ):
+            effective_trust = "untrusted"
         return {
             "id": row[0], "slug": row[1], "name": row[2], "description": row[3],
-            "source": row[4], "trustState": row[5], "capabilityId": row[6],
+            "source": row[4], "trustState": effective_trust, "capabilityId": row[6],
             "toolDependencies": json.loads(row[7]), "currentRevision": row[8],
             "referenceCode": reference_code, "lifecycleStatus": row[9],
             "archivedAt": row[10], "revisions": revisions,
@@ -1075,6 +1115,67 @@ class SqliteStore:
         if canonical is None:
             raise MissingItem(f"{skill_id}@{revision}")
         return skill, canonical
+
+    def review_skill_revision(
+        self,
+        skill_id: str,
+        revision: int,
+        expected_digest: str,
+        decision: str,
+    ) -> dict[str, Any]:
+        if type(revision) is not int or revision < 1:
+            raise ValueError("Skill revision must be a positive integer")
+        if decision not in {"trusted", "untrusted"}:
+            raise ValueError("Skill review decision is invalid")
+        if not isinstance(expected_digest, str) or not expected_digest:
+            raise ValueError("Skill review digest is required")
+        timestamp = now_ms()
+        with self._transaction() as connection:
+            resolved_id = self._resolve_skill_id(connection, skill_id)
+            row = connection.execute(
+                """SELECT skill.source, skill.current_revision, revision.digest
+                   FROM skills AS skill
+                   JOIN skill_revisions AS revision ON revision.skill_id=skill.id
+                   WHERE skill.id=? AND revision.revision=?""",
+                (resolved_id, revision),
+            ).fetchone()
+            if row is None:
+                raise MissingItem(f"{skill_id}@{revision}")
+            if row[0] != "external":
+                raise ValueError("Builtin Skill trust is managed by the application")
+            if row[2] != expected_digest:
+                raise SkillReviewConflict(
+                    "skill_review_stale",
+                    "The Skill revision digest changed before review",
+                )
+            connection.execute(
+                """INSERT INTO skill_revision_reviews(
+                       skill_id, revision, digest, state, reviewed_at
+                   ) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(skill_id, revision) DO UPDATE SET
+                       digest=excluded.digest,
+                       state=excluded.state,
+                       reviewed_at=excluded.reviewed_at""",
+                (resolved_id, revision, expected_digest, decision, timestamp),
+            )
+            if row[1] == revision:
+                connection.execute(
+                    "UPDATE skills SET trust_state=?, updated_at=? WHERE id=?",
+                    (decision, timestamp, resolved_id),
+                )
+        return self.get_skill(resolved_id)
+
+    def skill_revision_is_trusted(self, skill_id: str, revision: int, digest: str) -> bool:
+        with self._connect() as connection:
+            resolved_id = self._resolve_skill_id(connection, skill_id)
+            row = connection.execute(
+                """SELECT 1 FROM skill_revision_reviews AS review
+                   JOIN skills AS skill ON skill.id=review.skill_id
+                   WHERE review.skill_id=? AND review.revision=? AND review.digest=?
+                     AND review.state='trusted' AND skill.trust_state='trusted'""",
+                (resolved_id, revision, digest),
+            ).fetchone()
+        return row is not None
 
     def get_skill_host_pin(self, skill_id: str, host: str, scope: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -1123,13 +1224,13 @@ class SqliteStore:
         with self._transaction() as connection:
             resolved_id = self._resolve_skill_id(connection, skill_id)
             available = connection.execute(
-                """SELECT revision.digest FROM skill_revisions AS revision
+                """SELECT revision.digest, skill.lifecycle_status
+                   FROM skill_revisions AS revision
                    JOIN skills AS skill ON skill.id=revision.skill_id
-                   WHERE revision.skill_id=? AND revision.revision=?
-                     AND skill.lifecycle_status='active'""",
+                   WHERE revision.skill_id=? AND revision.revision=?""",
                 (resolved_id, revision),
             ).fetchone()
-            if available is None:
+            if available is None or (enabled and available[1] != "active"):
                 raise MissingItem(f"{skill_id}@{revision}")
             connection.execute(
                 """INSERT INTO skill_host_pins(
@@ -1161,6 +1262,9 @@ class SqliteStore:
         if not slug or not name:
             raise ValueError("Skill slug and name are required")
         timestamp = now_ms()
+        trust_state = str(item.get("trustState") or "untrusted")
+        if trust_state not in {"trusted", "untrusted"}:
+            raise ValueError("External Skill trust state is invalid")
         entries = self._skill_entries_from_item(item, references)
         instructions = compatibility_instruction(entries)
         digest = canonical_package_digest(entries)
@@ -1186,7 +1290,7 @@ class SqliteStore:
                        ) VALUES (?, ?, ?, ?, 'external', ?, NULL, ?, 1, ?, ?)""",
                     (
                         skill_id, slug, name, str(item.get("description") or ""),
-                        str(item.get("trustState") or "untrusted"),
+                        trust_state,
                         _json(list(item.get("toolDependencies") or [])), timestamp, timestamp,
                     ),
                 )
@@ -1202,6 +1306,13 @@ class SqliteStore:
                     ),
                 )
                 self._insert_skill_package_entries(connection, skill_id, 1, entries)
+                if trust_state == "trusted":
+                    connection.execute(
+                        """INSERT INTO skill_revision_reviews(
+                               skill_id, revision, digest, state, reviewed_at
+                           ) VALUES (?, 1, ?, 'trusted', ?)""",
+                        (skill_id, digest, timestamp),
+                    )
                 self._ensure_public_reference(
                     connection, ReferenceNamespace.SKILL, skill_id, owner_scope=""
                 )
@@ -3359,6 +3470,20 @@ class SqliteStore:
                 except Exception:
                     connection.rollback()
                     raise
+            if current_version == 14:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self._create_skill_reviews_v15_schema(connection)
+                    self._seed_skill_reviews_v15(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (15, "add-skill-revision-trust-reviews", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 15
+                except Exception:
+                    connection.rollback()
+                    raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
             connection.execute("BEGIN IMMEDIATE")
@@ -3366,6 +3491,7 @@ class SqliteStore:
                 self._harden_weak_public_references_v10_schema(connection)
                 self._seed_builtin_skills(connection)
                 self._seed_builtin_skill_host_pins_v14(connection)
+                self._seed_skill_reviews_v15(connection)
                 self._reconcile_public_references(connection)
                 connection.commit()
             except Exception:
@@ -3409,6 +3535,7 @@ class SqliteStore:
         self._create_context_packs_v12_schema(connection)
         self._create_skill_packages_v13_schema(connection)
         self._create_skill_hosts_v14_schema(connection)
+        self._create_skill_reviews_v15_schema(connection)
 
     @staticmethod
     def _create_skill_hosts_v14_schema(connection: sqlite3.Connection) -> None:
@@ -3472,6 +3599,56 @@ class SqliteStore:
                  ON revision.skill_id=skill.id AND revision.revision=skill.current_revision
                WHERE skill.source='builtin'""",
             (timestamp,),
+        )
+
+    @staticmethod
+    def _create_skill_reviews_v15_schema(connection: sqlite3.Connection) -> None:
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS skill_revision_reviews(
+                skill_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                digest TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('trusted','untrusted')),
+                reviewed_at INTEGER NOT NULL,
+                PRIMARY KEY(skill_id, revision),
+                FOREIGN KEY(skill_id, revision)
+                    REFERENCES skill_revisions(skill_id, revision) ON DELETE CASCADE
+            );
+            CREATE TRIGGER IF NOT EXISTS skill_revision_reviews_digest_insert
+            BEFORE INSERT ON skill_revision_reviews
+            WHEN NOT EXISTS(
+                SELECT 1 FROM skill_revisions
+                WHERE skill_id=NEW.skill_id AND revision=NEW.revision
+                  AND digest=NEW.digest
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'skill review digest mismatch');
+            END;
+            CREATE TRIGGER IF NOT EXISTS skill_revision_reviews_digest_update
+            BEFORE UPDATE ON skill_revision_reviews
+            WHEN NOT EXISTS(
+                SELECT 1 FROM skill_revisions
+                WHERE skill_id=NEW.skill_id AND revision=NEW.revision
+                  AND digest=NEW.digest
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'skill review digest mismatch');
+            END;
+        """)
+
+    @staticmethod
+    def _seed_skill_reviews_v15(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """INSERT OR IGNORE INTO skill_revision_reviews(
+                   skill_id, revision, digest, state, reviewed_at
+               )
+               SELECT revision.skill_id, revision.revision, revision.digest,
+                      CASE WHEN skill.trust_state='first-party' THEN 'trusted'
+                           ELSE skill.trust_state END,
+                      revision.created_at
+               FROM skill_revisions AS revision
+               JOIN skills AS skill ON skill.id=revision.skill_id
+               WHERE skill.trust_state IN ('first-party','trusted')"""
         )
 
     def _create_public_references_v10_schema(self, connection: sqlite3.Connection) -> None:

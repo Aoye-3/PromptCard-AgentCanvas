@@ -25,6 +25,7 @@ from .store import (
     MissingItem,
     PromptReferenceError,
     RevisionConflict,
+    SkillReviewConflict,
     SqliteStore,
 )
 
@@ -117,6 +118,17 @@ class SkillHostPinPayload(BaseModel):
     revision: int = Field(ge=1)
     repositoryScope: str | None = None
     publicationName: str | None = None
+
+
+class SkillRevisionReviewPayload(BaseModel):
+    expectedDigest: str
+    decision: Literal["trusted", "untrusted"]
+
+
+class CodexProjectionRepairPayload(BaseModel):
+    repositoryScope: str
+    expectedRevision: int = Field(ge=1)
+    expectedDigest: str
 
 
 def create_app(
@@ -422,6 +434,23 @@ def create_app(
     def restore_skill(skill_id: str) -> dict[str, Any]:
         return _handle(lambda: storage.restore_skill(skill_id))
 
+    @application.post("/api/skills/{skill_id}/revisions/{revision}/review")
+    def review_skill_revision(
+        skill_id: str,
+        revision: int,
+        payload: SkillRevisionReviewPayload,
+    ) -> dict[str, Any]:
+        return _handle(lambda: storage.review_skill_revision(
+            skill_id,
+            revision,
+            payload.expectedDigest,
+            payload.decision,
+        ))
+
+    @application.get("/api/skill-hosts")
+    def describe_skill_hosts() -> dict[str, Any]:
+        return skill_hosts.describe_hosts()
+
     @application.put("/api/skills/{skill_id}/host-pins/{host}")
     def update_skill_host_pin(
         skill_id: str, host: str, payload: SkillHostPinPayload
@@ -442,6 +471,18 @@ def create_app(
         repositoryScope: str | None = None,
     ) -> dict[str, Any]:
         return _handle(lambda: skill_hosts.get_pin(skill_id, host, repositoryScope))
+
+    @application.post("/api/skills/{skill_id}/host-pins/codex/repair")
+    def repair_codex_projection(
+        skill_id: str,
+        payload: CodexProjectionRepairPayload,
+    ) -> dict[str, Any]:
+        return _handle(lambda: skill_hosts.repair_codex_projection(
+            skill_id,
+            payload.repositoryScope,
+            payload.expectedRevision,
+            payload.expectedDigest,
+        ))
 
     @application.get("/api/skill-host-snapshots/local-agent")
     def get_local_agent_skill_snapshot(skillId: str) -> dict[str, Any]:
@@ -707,6 +748,8 @@ def _handle(callback: Callable[[], Any]) -> Any:
         raise _http_error(exc.status_code, exc.code, exc.message) from exc
     except SkillHostConflict as exc:
         raise _http_error(exc.status_code, exc.code, exc.message) from exc
+    except SkillReviewConflict as exc:
+        raise _http_error(409, exc.code, exc.message) from exc
     except PromptReferenceError as exc:
         raise _http_error(
             exc.status_code,

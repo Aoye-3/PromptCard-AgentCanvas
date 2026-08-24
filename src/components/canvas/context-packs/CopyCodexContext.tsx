@@ -275,12 +275,12 @@ export const CopyCodexContext = ({
         ref={triggerRef}
         type="button"
         className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs font-bold text-gray-600 transition hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900"
-        aria-label="复制 Codex 上下文"
-        title="预览并复制 Codex 上下文"
+        aria-label="复制 Agent/MCP 上下文"
+        title="预览并复制 Agent/MCP 上下文"
         onClick={openDialog}
       >
         <Braces className="h-3.5 w-3.5" />
-        <span className="hidden whitespace-nowrap md:inline">Codex 上下文</span>
+        <span className="hidden whitespace-nowrap md:inline">Agent/MCP 上下文</span>
       </button>
 
       {open && snapshot && (
@@ -302,11 +302,11 @@ export const CopyCodexContext = ({
             <div className="flex items-start justify-between border-b border-gray-200 px-4 py-3 sm:px-5">
               <div>
                 <h2 id="copy-codex-context-title" ref={headingRef} tabIndex={-1} className="text-base font-black text-gray-950">
-                  复制 Codex 上下文
+                  复制 Agent/MCP 上下文
                 </h2>
                 <p className="mt-1 text-xs leading-5 text-gray-500">先确认显式选中的稳定引用，再创建不可变快照。</p>
               </div>
-              <button type="button" aria-label="关闭 Codex 上下文" className="rounded-full p-2 text-gray-500 hover:bg-gray-100" onClick={closeDialog}>
+              <button type="button" aria-label="关闭 Agent/MCP 上下文" className="rounded-full p-2 text-gray-500 hover:bg-gray-100" onClick={closeDialog}>
                 <X className="h-4 w-4" />
               </button>
             </div>

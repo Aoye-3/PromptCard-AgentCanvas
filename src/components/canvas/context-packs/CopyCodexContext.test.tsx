@@ -133,7 +133,7 @@ describe('CopyCodexContext', () => {
     vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
     const { renderer } = await renderComponent(['image', 'arrow', 'text'])
 
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
 
     const dialog = renderer.root.findByProps({ role: 'dialog' })
     expect(dialog.props['aria-modal']).toBe('true')
@@ -155,7 +155,7 @@ describe('CopyCodexContext', () => {
     vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn() } })
     const { client, renderer } = await renderComponent(selectedNodeIds, contextClient(), activeProject)
 
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
 
     expect(renderer.root.findAllByProps({ role: 'status' }).map(textContent).join(' ')).toContain(message)
     expect(button(renderer, '创建并复制 CVC')?.props.disabled).toBe(true)
@@ -166,7 +166,7 @@ describe('CopyCodexContext', () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('navigator', { clipboard: { writeText } })
     const { client, renderer } = await renderComponent(['image', 'text'])
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
 
     await act(async () => button(renderer, '创建并复制 CVC')?.props.onClick())
 
@@ -188,7 +188,7 @@ describe('CopyCodexContext', () => {
     const writeText = vi.fn().mockRejectedValueOnce(new Error('denied')).mockResolvedValueOnce(undefined)
     vi.stubGlobal('navigator', { clipboard: { writeText } })
     const { client, renderer } = await renderComponent(['text'])
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
 
     await act(async () => button(renderer, '创建并复制 CVC')?.props.onClick())
 
@@ -208,7 +208,7 @@ describe('CopyCodexContext', () => {
       }))
     })
     const { renderer } = await renderComponent(['text'], client)
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
 
     await act(async () => button(renderer, '创建并复制 CVC')?.props.onClick())
 
@@ -222,7 +222,7 @@ describe('CopyCodexContext', () => {
     const client = contextClient({ create: vi.fn().mockReturnValue(pending) })
     vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn() } })
     const { renderer } = await renderComponent(['text'], client)
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
     const createButton = button(renderer, '创建并复制 CVC')!
 
     await act(async () => {
@@ -230,8 +230,8 @@ describe('CopyCodexContext', () => {
       createButton.props.onClick()
     })
     expect(client.create).toHaveBeenCalledOnce()
-    await act(async () => button(renderer, '关闭 Codex 上下文')?.props.onClick())
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '关闭 Agent/MCP 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
     await act(async () => resolveCreate(inspection()))
 
     expect(renderer.root.findAllByProps({ 'data-testid': 'context-pack-code' })).toHaveLength(0)
@@ -241,7 +241,7 @@ describe('CopyCodexContext', () => {
     vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
     const client = contextClient()
     const { renderer } = await renderComponent([], client, project(codes.projectB))
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
     await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context.toLowerCase() } }))
 
     await act(async () => button(renderer, '检查快照')?.props.onClick())
@@ -272,7 +272,7 @@ describe('CopyCodexContext', () => {
     const client = contextClient({ inspect: vi.fn().mockReturnValue(pending.promise) })
     vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn() } })
     const { renderer } = await renderComponent([], client)
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
     await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
 
     await act(async () => button(renderer, '检查快照')?.props.onClick())
@@ -294,7 +294,7 @@ describe('CopyCodexContext', () => {
     })
     vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn() } })
     const { renderer } = await renderComponent([], client)
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
     await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
     await act(async () => button(renderer, '检查快照')?.props.onClick())
 
@@ -317,7 +317,7 @@ describe('CopyCodexContext', () => {
     const client = contextClient({ inspect: vi.fn().mockReturnValue(pending.promise) })
     vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn() } })
     const { renderer } = await renderComponent([], client)
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
     await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
 
     await act(async () => {
@@ -325,8 +325,8 @@ describe('CopyCodexContext', () => {
       button(renderer, '检查快照')?.props.onClick()
     })
     expect(client.inspect).toHaveBeenCalledOnce()
-    await act(async () => button(renderer, '关闭 Codex 上下文')?.props.onClick())
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '关闭 Agent/MCP 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
     await act(async () => pending.resolve(inspection()))
 
     expect(renderer.root.findAllByProps({ 'aria-label': '不可变快照检查' })).toHaveLength(0)
@@ -344,7 +344,7 @@ describe('CopyCodexContext', () => {
       })
       vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
       const { renderer } = await renderComponent(['text'], client)
-      await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+      await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
       await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.contextB } }))
       await act(async () => button(renderer, '创建并复制 CVC')?.props.onClick())
       await act(async () => button(renderer, '检查快照')?.props.onClick())
@@ -370,7 +370,7 @@ describe('CopyCodexContext', () => {
       })
       vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
       const { renderer } = await renderComponent(['text'], client)
-      await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+      await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
       await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.contextB } }))
       await act(async () => button(renderer, '检查快照')?.props.onClick())
       await act(async () => button(renderer, '创建并复制 CVC')?.props.onClick())
@@ -397,7 +397,7 @@ describe('CopyCodexContext', () => {
       })
       vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
       const { renderer } = await renderComponent(['text'], client)
-      await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+      await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
       await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
       await act(async () => button(renderer, '检查快照')?.props.onClick())
       await act(async () => button(renderer, '创建并复制 CVC')?.props.onClick())
@@ -424,7 +424,7 @@ describe('CopyCodexContext', () => {
       })
       vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
       const { renderer } = await renderComponent(['text'], client)
-      await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+      await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
       await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
       await act(async () => button(renderer, '检查快照')?.props.onClick())
       await act(async () => button(renderer, '撤销此 CVC')?.props.onClick())
@@ -453,12 +453,12 @@ describe('CopyCodexContext', () => {
     })
     vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn() } })
     const { renderer } = await renderComponent([], client)
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
     await act(async () => input(renderer, '检查 CVC').props.onChange({ target: { value: codes.context } }))
     await act(async () => button(renderer, '检查快照')?.props.onClick())
     await act(async () => button(renderer, '撤销此 CVC')?.props.onClick())
-    await act(async () => button(renderer, '关闭 Codex 上下文')?.props.onClick())
-    await act(async () => button(renderer, '复制 Codex 上下文')?.props.onClick())
+    await act(async () => button(renderer, '关闭 Agent/MCP 上下文')?.props.onClick())
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
     await act(async () => pendingRevoke.resolve(inspection({
       revokedAt: 12, revokedBy: 'promptcard-ui', revocationReason: 'user-revoked'
     })))

@@ -84,8 +84,8 @@ test('previews, copies, inspects after focus change and revokes one immutable CV
 
     await duplicateNode.click()
     await expect(page.locator('.react-flow__node.selected')).toHaveAttribute('data-id', duplicateId)
-    await page.getByRole('button', { name: '复制 Codex 上下文' }).click()
-    const dialog = page.getByRole('dialog', { name: '复制 Codex 上下文' })
+    await page.getByRole('button', { name: '复制 Agent/MCP 上下文' }).click()
+    const dialog = page.getByRole('dialog', { name: '复制 Agent/MCP 上下文' })
     await expect(dialog).toBeVisible()
     await expect(dialog).toContainText(`${first.stored.referenceCode} · 项目修订 ${storedAfterDuplicate.revision}`)
     await expect(dialog.getByRole('listitem')).toHaveText([
@@ -106,13 +106,13 @@ test('previews, copies, inspects after focus change and revokes one immutable CV
     await expect.poll(() => clipboardText(page)).toBe(cvcCode)
     await expect(dialog.getByRole('alert')).toHaveCount(0)
 
-    await dialog.getByRole('button', { name: '关闭 Codex 上下文' }).click()
+    await dialog.getByRole('button', { name: '关闭 Agent/MCP 上下文' }).click()
     await page.getByRole('button', { name: 'Back' }).click()
     const focusCard = page.getByText(second.title, { exact: true }).locator('xpath=ancestor::article')
     await focusCard.getByRole('button', { name: 'Open project' }).click()
     await expect(page.locator('[data-free-canvas-screen]')).toBeVisible()
-    await page.getByRole('button', { name: '复制 Codex 上下文' }).click()
-    const focusDialog = page.getByRole('dialog', { name: '复制 Codex 上下文' })
+    await page.getByRole('button', { name: '复制 Agent/MCP 上下文' }).click()
+    const focusDialog = page.getByRole('dialog', { name: '复制 Agent/MCP 上下文' })
     await focusDialog.getByLabel('检查 CVC').fill(cvcCode.toLowerCase())
     await focusDialog.getByRole('button', { name: '检查快照' }).click()
     const snapshot = focusDialog.getByLabel('不可变快照检查')
