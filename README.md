@@ -267,7 +267,7 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 - 外部 Agent 应用是创作入口；PMAgent-Canvas 不内嵌某一家的聊天界面，也不按客户端名称分叉核心工具、schema、权限或结果。
 - 后续桥接计划支持本地 STDIO 与仅监听 `127.0.0.1` 的 Streamable HTTP；不实现已弃用的旧 SSE。Codex 与 TRAE 是首批验收目标，豆包与 MarsCode 暂标“待验证”。
 - Prompt 库媒体和画布媒体采用独立编码、索引、权限与生命周期；即使复用同一底层资产，也不共用业务编码。
-- Agent 生成结果只通过 Gateway/Storage 导入，不直接修改项目 JSON、SQLite 或资产目录；Bridge 使用独立凭据与受限 scope，不能复用内部全权令牌。
+- Agent 生成结果只通过 Gateway/Storage 导入，不直接修改项目 JSON、SQLite 或资产目录；后续 Bridge 必须使用独立凭据与受限 scope，不能复用内部全权令牌。
 - 左侧全局 **Skill Hub** 已支持惰性导入预审、结构化发现、revision 历史与 diff、精确 revision 信任审阅、archive/restore，以及 Codex/local-Agent 独立 pin 和显式投影修复。
 - Codex `.agents/skills` 是一个准确命名的具体 Host Adapter；canonical revision 更新不会自动移动 Codex 或 local-Agent pin。
 - Skill 导入只读取与校验包，不执行其中的脚本、安装器、hook 或依赖；本地 Agent 只读取受限的指令与文本参考资料。
