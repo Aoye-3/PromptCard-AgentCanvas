@@ -257,24 +257,33 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 ## 规划中功能
 
-### 本地 MCP、Prompt 库 RAG 与 Codex 创作桥接
+### PromptCard Local Agent Bridge 与 Prompt 库 RAG
 
-计划分别为项目、Prompt 库 Prompt、Prompt 库媒体、画布文本节点、画布媒体和画布选区提供稳定、可复制的引用编码。用户既可以复制精确编码，也可以先给出项目编码，让 Codex 在项目画布与 Prompt 库两个独立索引中查找候选内容，再生成提示词或图片并通过本地受控接口交付回指定画布。
+计划分别为项目、Prompt 库 Prompt、Prompt 库媒体、画布文本节点、画布媒体和画布选区提供稳定、可复制的引用编码。用户既可以复制精确编码，也可以先给出项目编码，让已授权的 Agent 应用在项目画布与 Prompt 库两个独立索引中查找候选内容，再通过本地受控接口交付提示词或图片。
 
-- Codex 作为外部交互入口，不在 PMAgent-Canvas 内嵌 Codex 聊天界面。
-- 使用仓库自带的本地 STDIO MCP，分别暴露 Prompt 库搜索/解析与项目画布搜索/解析能力。
+- 外部 Agent 应用是创作入口；PMAgent-Canvas 不内嵌某一家的聊天界面，也不按客户端名称分叉核心工具、schema、权限或结果。
+- 后续桥接计划支持本地 STDIO 与仅监听 `127.0.0.1` 的 Streamable HTTP；不实现已弃用的旧 SSE。Codex 与 TRAE 是首批验收目标，豆包与 MarsCode 暂标“待验证”。
 - Prompt 库媒体和画布媒体采用独立编码、索引、权限与生命周期；即使复用同一底层资产，也不共用业务编码。
-- Codex 生成结果只通过 Gateway/Storage 导入，不直接修改项目 JSON、SQLite 或资产目录。
-- PromptCard 不保存 Codex 图片生成所需的外部 API Key；实际生成能力取决于用户自己的 Codex 环境。
+- Agent 生成结果只通过 Gateway/Storage 导入，不直接修改项目 JSON、SQLite 或资产目录；Bridge 必须使用独立凭据与受限 scope，不能复用内部全权令牌。
 - 左侧全局导航规划新增 **Skill Hub**，用于安全导入、审阅、版本化和管理 Agent Skill。
-- Skill 使用独立 `SKL` 编码体系；同一固定版本可分别发布给 Codex、启用给本地 Agent，两端权限和启用状态互不联动。
-- 导入只读取与校验 Skill 包，不执行其中的脚本、安装器或依赖；本地 Agent 首版只读取受限的指令与参考资料。
+- Skill 使用独立 `SKL` 编码体系；同一固定版本可分别发布到 Codex `.agents/skills` 适配器、启用给本地 Agent，并为其他兼容 Host Adapter 保留统一边界，各端权限和启用状态互不联动。
+- 导入只读取与校验 Skill 包，不执行其中的脚本、安装器、hook 或依赖；本地 Agent 首版只读取受限的指令与文本参考资料。
 
-本地 Agent 的 Prompt 库手动搜索也将随这次改造升级为有界、可引用、可审计的 RAG 检索；详细设计与分阶段验收见 [Plan 008：本地 MCP、Prompt 库 RAG 与 Codex 桥接](./docs/Plan/008-local-mcp-prompt-media-codex-bridge.md)。
+本地 Agent 的 Prompt 库手动搜索也将随这次改造升级为有界、可引用、可审计的 RAG 检索；原始分阶段设计见 [Plan 008：本地 MCP、Prompt 库 RAG 与 Codex 桥接](./docs/Plan/008-local-mcp-prompt-media-codex-bridge.md)。
 
 ## 未来设想（暂无计划）
 
 以下内容仅记录可能的产品方向，尚未进入正式 Plan，不代表已经排期、确定接口或承诺实现。
+
+### 插件节点 Hub
+
+远期规划在自由画布中加入 **插件节点 Hub**，统一承载可发现、可安装、可版本化并可按项目启用的扩展节点。插件节点 Hub 面向画布能力扩展，与管理 Agent 指令包的 Skill Hub 保持独立边界。
+
+首批插件节点计划按以下顺序探索：
+
+1. **357 头身角色基膜库**：围绕 3、5、7 头身比例组织可复用的角色基膜，为角色设定、姿态设计和后续视觉生成提供一致起点。
+2. **基于前端 3D 代码的线稿风格场景生成**：使用前端 3D 代码搭建和调整场景结构，再将视角、构图与空间关系转换为可继续创作的线稿风格场景结果。
+3. **浏览器插件节点**：可在画布中展开浏览器视图，由用户登录模型官网，并将画布中的资产和提示词直接拖入网页应用的可接收区域，减少跨应用复制、下载和重复上传。登录状态、网站兼容性与拖放权限边界将在进入正式 Plan 后单独定义。
 
 ### 编剧 Agent Skill 与情绪曲线脚本工作台
 
