@@ -34,7 +34,7 @@ Use numbered filenames:
 - [002: Floating Capture Video Asset MVP](./002-floating-capture-video-asset-mvp.md)
 - [004: Update Module Integration](./004-update-module-integration.md)
 - [007: Provider-Neutral Contextual Image Editing And Multi-View](./007-contextual-image-editing-and-multi-view-plan.md)
-- [008: Local Agent Bridge, Prompt Library RAG, and host adapters](./008-local-mcp-prompt-media-codex-bridge.md) — historical filename/title; paused at Task 15.5 user acceptance, with the current host-neutral boundary in ADR-019.
+- [008: Local Agent Bridge, Prompt Library RAG, and host adapters](./008-local-mcp-prompt-media-codex-bridge.md) — historical filename/title; Phase 3.5 Skill conversation/Document/Storyboard loop is planned for implementation before Task 16, with the host-neutral Bridge boundary in ADR-019.
 
 ## Implemented Baselines
 

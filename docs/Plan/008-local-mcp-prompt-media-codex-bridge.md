@@ -2,7 +2,7 @@
 
 ## Status
 
-Paused at Task 15.5 user acceptance
+Task 15.5 technically accepted; Tasks 15.6-15.10 planned and not implemented; Task 16 remains blocked
 
 ## Current Normative Boundary
 
@@ -459,6 +459,16 @@ Codex and the local Agent share package identity and revision content, but not t
 
 The audit trail records which host resolved which `SKL` revision and digest, without storing model secrets or unbounded conversation content.
 
+## Local Agent Creative Document Loop (Planned, Not Implemented)
+
+Before the external Bridge work begins, Checkpoint 3.5 adds a project-local creative planning loop for the existing text Agent. The detailed design is frozen by [ADR-020](../decisions/ADR-020-separate-planning-documents-from-prompt-execution.md), [ADR-021](../decisions/ADR-021-project-document-resources-and-ephemeral-provider-files.md), and the [implementation plan](../superpowers/plans/2026-08-27-skill-conversation-document-storyboard.md).
+
+The loop introduces a top-level **对话模式【测试中】** that can keep explicitly selected local-Agent Skills bound across turns, accept project-scoped TXT/Markdown/PDF/DOCX attachments, and directly create or revise a long-form Document working draft. Document is a separate Canvas node and storage domain: it does not reuse Prompt segments and never enters Prompt Library, Prompt RAG, Prompt compilation, image-generation inputs, or ambient full-body workspace context.
+
+Document changes use inline suggestion review while their proposed state is the effective working draft. The user must explicitly invoke `Document -> Storyboard`; later Storyboard changes use per-field differences. Moving selected Document text or a Storyboard shot into Prompt content is another explicit action that creates a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node; it cannot update an existing Prompt or read/write Prompt Library.
+
+This project-local loop does not use MCP, Bridge credentials/profiles, or the Bridge delivery ledger. Skills remain inert bounded instruction/reference packages; each turn revalidates the current local-Agent pin, trust, lifecycle, exact revision/digest, and tool dependencies. Task 16 remains unimplemented until Checkpoint 3.5 receives technical and user acceptance.
+
 ## MCP Boundary
 
 ### Transport and ownership
@@ -671,6 +681,18 @@ Additional rules:
 - [x] Enabling or disabling one host does not change the other host.
 - [x] The local Agent cannot execute Skill scripts or gain tools outside its existing `permissionScope`.
 
+### Phase 3.5: Skill Conversation And Creative Documents (Planned)
+
+**Goal:** Complete a recoverable local Skill conversation -> file -> Document -> Storyboard -> explicit Prompt proposal loop without changing Prompt or external Bridge semantics.
+
+- [ ] Add `chat-experimental` as a conversation mode separate from Prompt edit modes, with persistent conversation-scoped Skill binding and per-turn pin/trust/tool revalidation.
+- [ ] Add Storage schema v16 project document resources for TXT/Markdown/PDF/DOCX; keep image project resources unchanged.
+- [ ] Use local safe text/DOCX extraction and an isolated Ark Files/Responses path for PDF, with per-invocation remote deletion and durable cleanup retry.
+- [ ] Add isolated Document and Storyboard Canvas nodes, explicit kind dispatch, bounded context resolution, persistence, command history, and old-project compatibility.
+- [ ] Apply Agent Document suggestions and Storyboard field differences through typed operations, frontend persistence acknowledgement, rollback, and idempotent restart reconciliation.
+- [ ] Require explicit Document -> Storyboard and selected text/shot -> Prompt actions; prove Document/Storyboard never enter Prompt Library/RAG/compiler/image-generation implicitly.
+- [ ] Deliver Checkpoint 3.5 evidence and stop for user acceptance before Task 16.
+
 ### Phase 4: Read-Only CLI and Local MCP
 
 **Goal:** Give verified MCP-capable Agent hosts safe access to Prompt Library, Canvas context, and Skill Hub references through one host-neutral core.
@@ -756,12 +778,14 @@ Additional rules:
 - Runtime tests: only explicit Prompt Library RAG mode receives bounded evidence or the retrieval tool.
 - MCP/CLI contract tests: identical schemas and results for every shared operation.
 - Skill package security tests: traversal, unsafe links, duplicate normalized paths, archive limits, malformed metadata, collision, and no-execution guarantees.
+- Creative-document tests: experimental conversation/Skill persistence, document format and provider cleanup security, Document suggestion semantics, Storyboard field review, apply/replay recovery, explicit transforms, and Prompt/image isolation.
 - End-to-end tests:
   - copy a `PLP` code, resolve Prompt and ordered `PLM` media;
   - resolve a `PRJ`, search Canvas `CVT`/`CVM`, and separately search Prompt Library `PLP`/`PLM`;
   - create a `CVC` code from selected nodes and resolve it after focus changes;
   - import one Skill, publish the same pinned revision to Codex, and enable it independently for the local Agent;
   - update the Skill and verify neither host moves revisions without explicit approval;
+  - bind a local-Agent Skill across an experimental conversation, attach each supported document format, create/revise a Document, explicitly create a Storyboard, and explicitly create one pending `free_canvas_text_create` proposal from a selection;
   - deliver a Prompt node and image to that context;
   - repeat the same request and verify no duplicate node or asset;
   - disable Codex/MCP and verify PromptCard local workflows still work.
@@ -780,7 +804,7 @@ Additional rules:
 - No silent upload of Prompt content to a remote embedding service.
 - No shared generic media code spanning Prompt Library and Canvas.
 - No copying the entire Canvas when the user has not explicitly requested it.
-- No updates, deletes, or destructive Canvas operations in the first MCP write surface.
+- No updates, deletes, or destructive Canvas operations in the first MCP/Bridge write surface; the separately accepted project-local Document/Storyboard typed operations do not create a general Canvas mutation API.
 - No representation of Codex image output as a successful PromptCard provider run.
 - No promise that an open-source clone receives free or offline image generation.
 

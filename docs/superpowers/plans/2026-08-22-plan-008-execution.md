@@ -4,15 +4,15 @@
 
 ## Status
 
-- Status: `Awaiting user acceptance at Task 15.5`
+- Status: `Task 15.5 technically accepted; Tasks 15.6-15.10 planned and awaiting implementation; Task 16 blocked`
 - Date: `2026-08-22`
-- Active branch: `feat/plan-008-skill-hub-generic-bridge`
+- Planning update branch: `docs/document-skill-loop-plan`
 - Plan 007 prerequisite: manual acceptance confirmed by the user on `2026-08-22`
 - Paid live-provider evaluation remains independent and does not block this plan
 
 ## Goal
 
-Expose PromptCard's local Prompt Library, Canvas context, and canonical Skill packages to MCP-capable Agent applications through stable typed references and the host-neutral PromptCard Local Agent Bridge, then accept only idempotent additive Prompt/image deliveries back to an explicitly persisted Canvas context.
+First complete a project-local Skill conversation -> document attachment -> planning Document -> explicit Storyboard -> explicit Prompt proposal loop. Then expose PromptCard's local Prompt Library, Canvas context, and canonical Skill packages to MCP-capable Agent applications through stable typed references and the host-neutral PromptCard Local Agent Bridge, and accept only idempotent additive Prompt/image deliveries back to an explicitly persisted Canvas context.
 
 Do this without replacing the existing pi text Agent, embedding a third-party Agent chat in PromptCard, granting direct SQLite/filesystem access, or representing bridge-delivered output as a provider generation run.
 
@@ -28,6 +28,10 @@ The implementation should extend the existing boundaries rather than create a se
 - the current Canvas workspace snapshot is bounded and lossy; it cannot be reused as an immutable `CVC` context pack.
 - the existing image placement flow provides the right recovery order: durable pending record, Canvas hydration, project save, then `placed`. Its provider-generation identity must not be reused for Codex delivery.
 - the current Skill registry is a useful local-Agent slice, but its `SKL-*` values are internal IDs rather than Plan 008 public ULID reference codes.
+- the current Free Canvas `text` node is executable Prompt content with `preset`/`user` segments; reusing it for long-form planning would route Document prose into Prompt semantics.
+- current Agent Skill selection is component-local, says “仅作用于下一条消息”, and clears after send; persistent Skill use therefore belongs to a new conversation mode rather than a global behavior change.
+- current project resources and asset validation are image/video-oriented, while the Ark Chat Completions adapter accepts text/image only; document resources and file-bearing Ark Responses require separate adapters.
+- current node normalization has fallthrough paths that can coerce unknown kinds to Prompt text or media behavior; every Document/Storyboard union dispatch must become explicit before those kinds ship.
 
 Two inferred risks require regression tests before their dependent work:
 
@@ -48,6 +52,9 @@ These are test-first verification tasks, not assumptions that authorize unrelate
 - [Codex MCP documentation](https://developers.openai.com/codex/mcp): Codex supports local STDIO and Streamable HTTP MCP servers.
 - [TRAE MCP FAQ](https://forum.trae.cn/t/topic/65): TRAE supports STDIO, Streamable HTTP, and legacy SSE; this plan uses the first two only.
 - [MCP TypeScript SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/): use the split server/Node packages and the 2026-07-28 protocol line.
+- [Tiptap persistence](https://tiptap.dev/docs/editor/core-concepts/persistence) and [schema](https://tiptap.dev/docs/editor/core-concepts/schema): persist strict editor JSON and validate the allowed rich-text structure.
+- [Doubao Seed 2.0 Lite](https://www.volcengine.com/docs/82379/1795150) and [Volcengine Responses API](https://volcengine.github.io/veadk-python/cn/docs/framework/agent/responses-api/): use file IDs for native PDF understanding, including visual page interpretation.
+- [python-docx 1.2.0](https://pypi.org/project/python-docx/): use a pinned local reader for bounded DOCX paragraph/table extraction.
 
 ## Architecture Decisions To Freeze
 
@@ -63,6 +70,11 @@ These are test-first verification tasks, not assumptions that authorize unrelate
 10. **Bridge delivery has its own profile-scoped ledger.** Reuse asset validation and save-before-placed behavior, but do not reuse provider generation-run identity or provenance. New records use `promptcard-bridge`; v1 `codex-harness` is compatibility-only.
 11. **Canonical idempotency name is `clientRequestId`.** The older `deliveryId` example in Plan 008 is treated as illustrative; all additive tool and Gateway contracts use `clientRequestId` plus a normalized request digest.
 12. **Client identity is audit-only.** A trusted launcher/authentication context supplies `profileId` and scopes. A request cannot self-report a trusted profile, and client name/version cannot select authorization, schemas, tools, budgets, or behavior.
+13. **Planning Documents are not Prompts.** Document and Storyboard use independent Canvas node/data models and never enter Prompt Library, Prompt RAG, Prompt compilation, image-generation input, or ambient full-body context without an explicit typed transform.
+14. **Experimental conversation is a top-level mode.** `chat-experimental` is separate from Canvas Prompt edit modes. Only this mode persists conversation-scoped Skill bindings; existing Prompt flows keep one-shot Skill selection.
+15. **Project documents stay local; provider files are ephemeral.** Schema v16 adds project document resources. TXT/Markdown/DOCX are normalized locally; PDF uses an isolated Ark Files/Responses path with per-call deletion and durable redacted cleanup retry.
+16. **Agent creative writes are narrow and recoverable.** Dedicated Document/Storyboard create/change tools bind exact revisions/digests. Frontend persistence acknowledgement, rollback, request/edit idempotency, and restart reconciliation prevent silent conversation/Canvas divergence.
+17. **Transforms require explicit user actions.** Document -> Storyboard and selected Document text/Storyboard shot -> Prompt are the only cross-domain paths in this slice; the latter produces a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node and cannot update an existing Prompt or read/write Prompt Library.
 
 ## Global Constraints
 
@@ -74,6 +86,8 @@ These are test-first verification tasks, not assumptions that authorize unrelate
 - Browser and model output are untrusted at Gateway boundaries.
 - Every migration is idempotent, preserves Trash/restore semantics, and is covered by backup/restore tests.
 - Each task leaves the application buildable and testable. No task silently combines refactoring with a feature slice.
+- Tasks 15.6-15.10 do not use MCP, Bridge credentials/profiles, or the Bridge delivery ledger. They must complete and receive acceptance before Task 16 begins.
+- Preserve existing Prompt-node, Prompt Library/RAG, image-generation, one-shot Skill, and standalone Storyboard behavior; union extensions require explicit dispatch rather than casts/fallbacks.
 
 ## Dependency Graph
 
@@ -90,6 +104,12 @@ flowchart TD
     E --> I["Read-only Gateway / CLI"]
     F --> I
     G --> I
+    G --> Q["Experimental Skill conversation"]
+    Q --> R["Project document resources"]
+    R --> S["Document working draft"]
+    S --> T["Explicit Storyboard transform"]
+    T --> U["Explicit Prompt proposal handoff"]
+    U --> I
     H --> J["Local-Agent Prompt Library RAG"]
     H --> K["STDIO MCP search and resolve"]
     I --> K
@@ -439,7 +459,7 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 - [x] Drift/collision/archived/untrusted/disabled states remain visible, and explicit Codex repair never overwrites an unowned collision.
 - [x] The v2 boundary and ADR-019 are host-neutral while Codex `.agents/skills` remains an accurately named host adapter.
 - [x] Focused browser/component/contract tests and full Storage, Gateway/backend, configured Ruff, TypeScript, production-build, and workspace-cleanliness gates pass.
-- [ ] Await user acceptance; do not begin Task 16.
+- [x] On 2026-08-27 the user explicitly authorized planning and handoff of the project-local Phase 3.5 work; remaining Skill Hub manual probes roll into Checkpoint 3.5, and Task 16 remains blocked.
 
 ### Checkpoint 3: Skills
 
@@ -452,7 +472,132 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 - [x] An unowned publication-name collision is preserved; choosing a different publication name recovers without overwriting the existing directory.
 - [x] Archive, restore, publish/unpublish, and enable/disable states remain distinct and expose valid recovery actions.
 - [x] Component, browser, Storage, Gateway, security, TypeScript, and production-build gates pass.
-- [ ] Stop for user acceptance of the Skill Hub workflow and evidence package before beginning Task 16.
+- [x] User authorized progression into Phase 3.5 on 2026-08-27; combine the remaining Skill Hub manual probes with Checkpoint 3.5 and still stop before Task 16.
+
+## Phase 3.5: Experimental Skill Conversation And Creative Documents
+
+This phase is a project-local extension of the existing Agent and Skill Host Adapter. It does not implement or depend on the external Local Agent Bridge. The normative design is [ADR-020](../../decisions/ADR-020-separate-planning-documents-from-prompt-execution.md), [ADR-021](../../decisions/ADR-021-project-document-resources-and-ephemeral-provider-files.md), and the [detailed implementation plan](./2026-08-27-skill-conversation-document-storyboard.md).
+
+### Task 15.6: Freeze the creative-document contracts and dispatch boundary
+
+**Description:** Add the separate interaction mode, Document/Storyboard node contracts, typed Agent edit results, and closed node-kind dispatch rules before implementation. Prompt `text`, Prompt edit modes, standalone Storyboard proposals, image resources, and Bridge contracts remain unchanged.
+
+**Acceptance criteria:**
+
+- [ ] `chat-experimental` is a top-level interaction mode and is not added to `CanvasAgentEditMode`.
+- [ ] Document does not reuse Prompt segments; Storyboard Canvas state does not reuse the standalone storyboard mutation path.
+- [ ] Normalization, rendering, reference selection, context packing, Prompt compilation, and image inputs use explicit kind allowlists; unknown kinds become read-only `unsupported` projections that round-trip their untouched original JSON and never fall through to `text` or `image`.
+- [ ] Existing projects and Prompt workflows normalize and build unchanged.
+
+**Verification:** Contract/normalization tests cover legacy, new, and unknown node kinds; TypeScript and production build pass.
+
+**Dependencies:** Task 15.5 technical evidence, the user's 2026-08-27 authorization to proceed into Phase 3.5, and ADR-020/ADR-021.
+
+**Files likely touched:** Free Canvas/Agent model types, project normalization, focused dispatch tests.
+
+**Estimated scope:** Medium.
+
+### Task 15.7: Persist experimental conversation and Skill binding
+
+**Description:** Add user-facing **对话模式【测试中】** with conversation-scoped Skill binding, durable conversation/retry behavior, and a mode-specific tool policy. Preserve one-shot Skill selection in every existing Prompt workflow.
+
+**Acceptance criteria:**
+
+- [ ] No Prompt target is required; the selected model, conversation, and bound Skill IDs survive reload/restart.
+- [ ] Every turn resolves the current local-Agent pin and records exact revision/digest provenance; a pin move affects the next turn only.
+- [ ] Disabled, untrusted, archived, over-budget, or tool-incompatible Skills fail before model invocation and cannot expand the allowed tool set.
+- [ ] Consecutive messages reuse one Storage conversation and response-loss replay with the same request ID returns the saved turn without duplication.
+
+**Verification:** Storage/Gateway/runtime/store/component tests cover persistence, Task 19 durability risks, Skill state transitions, and existing one-shot behavior.
+
+**Dependencies:** Task 15.6.
+
+**Files likely touched:** conversation Storage/Gateway contracts, Agent store/panel/composer, runtime policy, focused tests.
+
+**Estimated scope:** Medium.
+
+### Task 15.8: Add project document resources and bounded provider input
+
+**Description:** In one v15 -> v16 migration add project document resources and provider-file cleanup state for TXT, Markdown, PDF, and DOCX. Keep local bytes canonical, normalize text/DOCX locally, and use an isolated Ark Files/Responses adapter for PDF with per-invocation deletion.
+
+**Acceptance criteria:**
+
+- [ ] Schema v16 creates both `project_document_resources` and `provider_file_cleanup`; migration, backup/restore, and health tests freeze both tables before Gateway consumes them. Document resources remain separate from image `project_resources`, Prompt media, and browser/provider identities.
+- [ ] TXT/MD are strict UTF-8; DOCX extraction uses exactly `python-docx==1.2.0`; PDF uses the existing Ark SDK's Files/Responses interfaces only when the selected model declares support.
+- [ ] Limits are TXT/MD 5 MiB, DOCX 20 MiB, PDF 50 MiB, five attachments, and 100 MiB aggregate per turn; extension/MIME/signature/container/project/lifecycle checks all pass.
+- [ ] Each PDF is uploaded for one invocation and deleted in `finally`; failed deletion creates a redacted durable cleanup record retried on startup.
+- [ ] Unsupported providers/models return `document_input_not_supported` before invocation rather than switching provider, OCR, or parsing semantics.
+
+**Verification:** Storage and Gateway tests cover valid files, spoofing, corrupt/encrypted/zip-bomb DOCX, oversize/count, project isolation, backup/restore, scanned PDF, delete/retry/restart, redaction, and unchanged Chat Completions.
+
+**Dependencies:** Task 15.7.
+
+**Files likely touched:** Storage document module/schema/API, frontend Storage client, Ark Responses/cleanup modules, provider capability tests.
+
+**Estimated scope:** Large; execute the detailed plan's Storage and Gateway slices as separate reviewed commits.
+
+### Task 15.9: Add isolated Document nodes and tracked Agent changes
+
+**Description:** Add a restricted Tiptap Document node with complete inline editing, expanded editor, collapsed summary, reversible user edits, and Agent suggestion marks. Direct Agent writes use typed operations and a durable frontend apply acknowledgement.
+
+**Acceptance criteria:**
+
+- [ ] Pin all selected `@tiptap/*` packages to `3.30.3`; keep an editor-neutral versioned block AST as the persisted/runtime contract, with Tiptap JSON only as a frontend adapter. Allow only headings, paragraphs, bold/italic, lists, quote, checklist, link, and basic table.
+- [ ] User edits are immediate canonical edits. Agent insertions are green/effective; Agent deletions remain red/struck through but are excluded from effective text; linked replacements resolve atomically.
+- [ ] Single/all accept/reject, undo/redo, inline/expanded/collapsed views, project save/reload, and old-project normalization preserve the same effective content.
+- [ ] `emit_document_create` and `emit_document_changes` use editor-neutral blocks/operations and bind the project, node kind, base revision/digest, NFC text, UTF-8 byte anchors, expected text digest, budgets, provenance, request ID, and edit ID; Tiptap JSON and arbitrary JSON patch are rejected.
+- [ ] Gateway records deterministic `pending_apply` edit/node IDs and expected result digest. Frontend saves content plus `AgentAppliedEditMarker` atomically; Gateway reloads Storage and verifies project/node kind/ID/marker/result before `applied`.
+- [ ] Reconciliation freezes every terminal: matching marker -> `applied`; absent marker plus revalidatable base -> same edit replay; changed conflicting base -> `failed_conflict`; marker/result mismatch -> `failed_integrity`; deleted/trashed project/target -> `failed_target_missing`. Save failure rolls back, and frontend ACK alone is not authority.
+- [ ] Ambient workspace snapshots expose only identity/title/revision/digest/bounded excerpt; full effective text requires explicit attachment, `@Document`, selection, or transform.
+
+**Verification:** Domain/editor/component/browser/Gateway/runtime/recovery tests cover rich text, suggestion semantics, conflicts, save failure, response loss, duplicate request, restart reconciliation, budgets, and context isolation.
+
+**Dependencies:** Task 15.8.
+
+**Files likely touched:** Document domain/editor/node, canvas renderer/commands/save coordination, Agent tools/Gateway apply ledger, focused tests.
+
+**Estimated scope:** Large; execute the detailed plan's editor and Agent-write slices as separate reviewed commits.
+
+### Task 15.10: Add explicit Storyboard and Prompt transforms
+
+**Description:** Add a structured Storyboard Canvas node, explicit effective Document -> Storyboard creation, per-field Storyboard Agent differences, and an explicit selected text/shot -> new Prompt Canvas node proposal handoff.
+
+**Acceptance criteria:**
+
+- [ ] Storyboard node reuses `IStoryboardSequence`/`IStoryboardRow` field definitions while keeping Canvas mutation separate from standalone storyboard proposals.
+- [ ] Initial creation requires the explicit user action and records source Document revision/digest, resource digests, model, and exact Skill revision/digest; it is directly applied, persisted, idempotent, and undoable.
+- [ ] Later changes display per-field old/new values with single/all accept/reject and stale base rejection.
+- [ ] Document/Storyboard receive no automatic Prompt/Canvas media reference, Prompt Library/RAG record, Prompt compiler input, or image-generation attachment.
+- [ ] Only an explicit selected text/shot action creates a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node. It cannot update an existing Prompt node or read/write Prompt Library.
+
+**Verification:** Focused transform/field-diff/reference/context/Prompt/image regression tests plus a full end-to-end browser flow.
+
+**Dependencies:** Task 15.9.
+
+**Files likely touched:** Storyboard Canvas domain/node/tools, explicit action UI, Prompt proposal adapter, focused tests.
+
+**Estimated scope:** Medium.
+
+### Task 15.10 Technical Acceptance Gate
+
+- [ ] A fresh independent reviewer passes the full Task 15.6-15.10 diff; Blocking/Important findings are fixed test-first and re-reviewed by a new reviewer.
+- [ ] Multi-turn Skill binding, current-pin provenance, disabled/untrusted/archived rejection, response-loss replay, and restart hydration pass.
+- [ ] TXT/MD/PDF/DOCX, scanned PDF, spoof/corrupt/encrypted/oversize/zip-bomb inputs, remote cleanup, retry/restart, redaction, and unsupported-provider behavior pass.
+- [ ] Document inline/expanded/collapsed editing, rich-text persistence, suggestion accept/reject/effective draft, conflict, undo/redo, apply ACK, rollback, and idempotent recovery pass.
+- [ ] Explicit Document -> Storyboard creation, Storyboard field review, and selected text/shot -> Prompt proposal pass with exact provenance.
+- [ ] Adversarial isolation proves Document/Storyboard never enter Prompt Library, Prompt RAG, Prompt compilation, image-generation inputs, or ambient full-body context.
+- [ ] Existing Prompt, image, Skill projection, standalone Storyboard, context pack, reference-code, Storage, Gateway/runtime, Ruff, TypeScript, and production-build gates pass.
+- [ ] The evidence package lists commits, test counts/skips/warnings, manual probes, cleanup/path/credential checks, residual risks, and unrelated startup-script changes left untouched.
+- [ ] Stop for user acceptance; do not begin Task 16.
+
+### Checkpoint 3.5: Skill Conversation And Creative Documents
+
+- [ ] Import/review a storyboard-master Skill, enable one exact local-Agent revision, and use it across three experimental conversation turns plus app restart.
+- [ ] Upload all four file types including a scanned PDF; create a character/asset planning Document and inspect inline/fullscreen/collapsed persistence.
+- [ ] Apply Agent suggestions, accept/reject individual/all changes, and confirm later Agent/Storyboard work uses the effective draft.
+- [ ] Explicitly create and revise a Storyboard, then explicitly convert one selection/shot to a Prompt proposal.
+- [ ] Confirm no implicit Document/Storyboard Prompt indexing, compilation, or image context and no duplicate state after restart/retry.
+- [ ] Stop for user acceptance before Phase 4.
 
 ## Phase 4: Read-Only Gateway, CLI, Retrieval, And MCP
 
@@ -470,7 +615,7 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Verification:** Gateway contract/security tests cover every scope, reference type, redaction, bound, offline error, forged profile, and cross-router 401/403 isolation.
 
-**Dependencies:** Checkpoints 2-3.
+**Dependencies:** Checkpoints 2-3.5 and explicit user acceptance of Checkpoint 3.5.
 
 **Files likely touched:** new Gateway bridge contracts/router/service and focused tests.
 
@@ -512,15 +657,16 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Estimated scope:** Medium.
 
-### Task 19: Prove Agent conversation durability prerequisites
+### Task 19: Re-run Agent conversation durability prerequisites before RAG
 
-**Description:** Add regression tests for new-conversation continuation and response-loss retry. Make the smallest correction only if the tests reproduce the inferred risks.
+**Description:** Re-run the consecutive-message, response-loss replay, and restart-hydration evidence first delivered by Task 15.7 before changing Prompt retrieval. Make no second durability implementation unless these regression tests expose a new RAG-specific failure.
 
 **Acceptance criteria:**
 
 - [ ] Two consecutive messages reuse one Storage conversation.
 - [ ] Retrying a lost response can reuse the original request ID and returns the saved turn.
 - [ ] Ordinary failure behavior and existing conversation hydration remain compatible.
+- [ ] `chat-experimental` persistence remains isolated from Prompt Library RAG modes and does not cause full Document content to enter retrieval requests.
 
 **Verification:** Focused store/UI/Gateway tests pass before and after any correction.
 
@@ -737,6 +883,9 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 - [ ] `PRJ/PLP/PLM/CVT/CVM/CVC/SKL` codes are stable, exact, indexed, and namespace-safe.
 - [ ] CVC remains stable across UI focus changes and can be revoked.
 - [ ] Canonical Skill revisions feed Codex and local Agent through independent pins.
+- [ ] Experimental local-Agent conversations persist explicit Skill bindings while revalidating current pins/trust/tools on every turn; existing Prompt conversations retain one-shot Skill selection.
+- [ ] Project Document resources and provider files remain separate from image/Prompt resources; remote PDF handles are ephemeral and recoverable.
+- [ ] Document and Storyboard nodes remain outside Prompt Library/RAG/compiler/image inputs until an explicit typed transform creates a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node.
 - [ ] Local-Agent RAG and MCP search share retrieval records/ranking but not conversations or permissions.
 - [ ] CLI/MCP/Gateway produce contract-equivalent results.
 - [ ] Prompt and image delivery are additive, idempotent, recoverable, and provenance-correct.
@@ -757,9 +906,9 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 - Implement tasks sequentially unless a checkpoint explicitly exposes independent test/documentation work.
 - Use test-first development for migrations, resolvers, retrieval freshness, idempotency, and security boundaries.
 - Commit one task or one tightly coupled vertical slice at a time; do not mix cleanup.
-- Stop for human review at the Task 14 Technical Acceptance Gate, Checkpoints 3/4/5, and the Final Human Acceptance Gate. Do not begin the next gated phase until the user accepts the evidence package.
+- Stop for human review at the Task 14 Technical Acceptance Gate, Checkpoints 3/3.5/4/5, and the Final Human Acceptance Gate. Do not begin the next gated phase until the user accepts the evidence package.
 - Any new dependency must be pinned, justified against existing stack capability, and reviewed for startup/network behavior.
-- Semantic embeddings, HTTP MCP, auto Skill matching, script execution, whole-Canvas context, and update/delete Canvas tools require separate accepted follow-up plans.
+- Semantic embeddings, auto Skill matching, script execution, whole-Canvas context, and general MCP/Bridge Canvas update/delete tools require separate accepted follow-up plans. The accepted Document/Storyboard typed operations do not authorize a generic Canvas mutation API.
 
 ## Open Questions To Resolve At Checkpoints
 

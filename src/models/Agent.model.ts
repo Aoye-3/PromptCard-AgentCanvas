@@ -122,6 +122,7 @@ export interface AgentWorkspaceContext {
   snapshot: Record<string, unknown>
 }
 
+/** Prompt-text edit operations only; conversation interaction modes are a separate policy boundary. See ADR-020. */
 export type CanvasAgentEditMode = 'complete' | 'rewrite' | 'prompt-library'
 
 export interface CanvasAgentSelection {

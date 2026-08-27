@@ -21,3 +21,5 @@ Architecture Decision Records capture durable product and engineering decisions 
 - [ADR-017: Bind Agent Models Per Conversation And Preserve Canvas Source Segments](./ADR-017-session-model-binding-and-anchored-canvas-edits.md)
 - [ADR-018: Define The Local Codex MCP Contract Boundary (partially superseded by ADR-019)](./ADR-018-local-codex-mcp-contract-boundary.md)
 - [ADR-019: Freeze The Generic Local Agent Bridge Boundary](./ADR-019-generic-local-agent-bridge-boundary.md)
+- [ADR-020: Separate Planning Documents From Executable Prompt Content](./ADR-020-separate-planning-documents-from-prompt-execution.md)
+- [ADR-021: Keep Project Documents Local And Provider Files Ephemeral](./ADR-021-project-document-resources-and-ephemeral-provider-files.md)

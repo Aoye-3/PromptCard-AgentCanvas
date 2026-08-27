@@ -110,6 +110,12 @@ export interface IFreeCanvasBaseNode {
   meta: Record<string, unknown>
 }
 
+/**
+ * Executable Prompt-authoring content with protected preset/user segments.
+ * Long-form planning prose must use a separate Document node and explicit
+ * transform actions; it must never be folded into this Prompt shape.
+ * See ADR-020.
+ */
 export interface IFreeCanvasTextNode extends IFreeCanvasBaseNode {
   kind: 'text'
   fontSize: FreeCanvasTextSize
