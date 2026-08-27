@@ -1,3 +1,4 @@
+import { startTransition } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   markProposalStatus: vi.fn(),
   init: vi.fn(),
   sessionError: undefined as string | undefined,
+  sessionConversationId: undefined as string | undefined,
   retryRequest: undefined as undefined | {
     requestId: string
     content: string
@@ -37,6 +39,7 @@ vi.mock('@/stores/agent.store', () => ({
       proposals: mocks.proposals,
       running: false,
       runtimeError: mocks.sessionError,
+      conversationId: mocks.sessionConversationId,
       retryRequest: mocks.retryRequest
     }),
     skills: [{ id: 'SKL-tone', name: 'Tone Helper', source: 'external', trustState: 'trusted', toolDependencies: [] }],
@@ -58,8 +61,14 @@ vi.mock('@/stores/agent.store', () => ({
 }))
 
 vi.mock('@/components/agent/AgentConversationMenu', () => ({
-  AgentConversationMenu: ({ onConversationChange }: { onConversationChange: (value: Record<string, unknown>) => void }) => (
-    <>
+  AgentConversationMenu: ({
+    activeConversationId,
+    onConversationChange
+  }: {
+    activeConversationId?: string
+    onConversationChange: (value: Record<string, unknown>) => void
+  }) => (
+    <div data-active-conversation-id={activeConversationId || ''}>
       {[
         ['conversation-experimental', '加载实验会话'],
         ['conversation-b', '加载会话 B']
@@ -80,7 +89,7 @@ vi.mock('@/components/agent/AgentConversationMenu', () => ({
           })}
         >{label}</button>
       ))}
-    </>
+    </div>
   )
 }))
 
@@ -132,6 +141,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.sessionError = undefined
+    mocks.sessionConversationId = undefined
     mocks.retryRequest = undefined
     mocks.messages = []
     mocks.proposals = []
@@ -1158,6 +1168,309 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
 
     expect(mocks.sendMessage).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('keeps the current Canvas apply attempt valid when the active conversation is reselected', async () => {
+    const pendingApply = deferred<boolean | void>()
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [],
+      canvasEdits: [{ id: 'edit-reselected-conversation', kind: 'free_canvas_text_create' }]
+    })
+    const applyCanvasEdit = vi.fn(() => pendingApply.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Apply after reselecting this conversation' }
+    }))
+    let submission!: Promise<void>
+    await act(async () => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(applyCanvasEdit).toHaveBeenCalledOnce()
+
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await act(async () => {
+      pendingApply.reject(new Error('current conversation Canvas apply failed'))
+      await submission
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('keeps the current workspace apply attempt valid when the active conversation is reselected', async () => {
+    const pendingApply = deferred<boolean | void>()
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [{
+        id: 'proposal-reselected-conversation', kind: 'workspace_card_update', agentName: 'PromptCard Agent',
+        updates: [{ cardId: 'card-1', content: 'Updated' }], rationale: 'Apply update',
+        status: 'pending', createdAt: 1
+      }],
+      canvasEdits: []
+    })
+    const applyWorkspaceProposal = vi.fn(() => pendingApply.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={applyWorkspaceProposal}
+          autoApplyWorkspaceChanges
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Apply workspace after reselecting this conversation' }
+    }))
+    let submission!: Promise<void>
+    await act(async () => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(applyWorkspaceProposal).toHaveBeenCalledOnce()
+
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await act(async () => {
+      pendingApply.reject(new Error('current conversation workspace apply failed'))
+      await submission
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('drops an old apply failure after a new project and session identity commits', async () => {
+    const pendingApply = deferred<boolean | void>()
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [],
+      canvasEdits: [{ id: 'edit-old-committed-identity', kind: 'free_canvas_text_create' }]
+    })
+    const applyCanvasEdit = vi.fn(() => pendingApply.promise)
+    const changedWorkspaceContext: AgentWorkspaceContext = {
+      ...workspaceContext,
+      contextId: 'canvas-context-b',
+      projectId: 'project-b',
+      projectTitle: 'Project B'
+    }
+    const panel = (sessionKey: string, context: AgentWorkspaceContext) => (
+      <AgentCollaborationPanel
+        title="Free Canvas Agent"
+        mode="free-canvas-workspace"
+        sessionKey={sessionKey}
+        workspaceContext={context}
+        onApplyWorkspaceProposal={vi.fn()}
+        onApplyCanvasEdit={applyCanvasEdit}
+        embedded
+      />
+    )
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(panel('session-a', workspaceContext))
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Apply before committed identity switch' }
+    }))
+    let submission!: Promise<void>
+    await act(async () => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+      await Promise.resolve()
+    })
+
+    act(() => renderer.update(panel('session-b', changedWorkspaceContext)))
+    expect(renderer.root.findByType(AgentCollaborationPanel).props.sessionKey).toBe('session-b')
+    await act(async () => {
+      pendingApply.reject(new Error('old committed identity apply failed'))
+      await submission
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('does not invalidate a committed apply attempt from an identity render that suspends before commit', async () => {
+    const reactActEnvironment = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean
+    }
+    const previousActEnvironment = reactActEnvironment.IS_REACT_ACT_ENVIRONMENT
+    reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true
+    try {
+      const pendingApply = deferred<boolean | void>()
+      const neverCommits = new Promise<never>(() => undefined)
+      mocks.sendMessage.mockResolvedValueOnce({
+        proposals: [],
+        canvasEdits: [{ id: 'edit-before-aborted-render', kind: 'free_canvas_text_create' }]
+      })
+      const applyCanvasEdit = vi.fn(() => pendingApply.promise)
+      const changedWorkspaceContext: AgentWorkspaceContext = {
+        ...workspaceContext,
+        contextId: 'canvas-context-uncommitted',
+        projectId: 'project-uncommitted',
+        projectTitle: 'Uncommitted Project'
+      }
+      function SuspendBeforeCommit(): never {
+        throw neverCommits
+      }
+      function ConcurrentIdentityHarness({
+        sessionKey,
+        context,
+        suspend
+      }: {
+        sessionKey: string
+        context: AgentWorkspaceContext
+        suspend: boolean
+      }) {
+        return (
+          <>
+            <AgentCollaborationPanel
+              title="Free Canvas Agent"
+              mode="free-canvas-workspace"
+              sessionKey={sessionKey}
+              workspaceContext={context}
+              onApplyWorkspaceProposal={vi.fn()}
+              onApplyCanvasEdit={applyCanvasEdit}
+              embedded
+            />
+            {suspend ? <SuspendBeforeCommit /> : null}
+          </>
+        )
+      }
+      let renderer!: ReactTestRenderer
+      await act(async () => {
+        renderer = create(
+          <ConcurrentIdentityHarness sessionKey="session-committed" context={workspaceContext} suspend={false} />,
+          { unstable_isConcurrent: true } as never
+        )
+      })
+      act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+      act(() =>
+        renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+          currentTarget: {
+            textContent: 'Apply while another identity render aborts'
+          }
+        })
+      )
+      let submission!: Promise<void>
+      await act(async () => {
+        submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+        await Promise.resolve()
+      })
+
+      act(() => {
+        startTransition(() => {
+          renderer.update(
+            <ConcurrentIdentityHarness sessionKey="session-uncommitted" context={changedWorkspaceContext} suspend />
+          )
+        })
+      })
+      expect(renderer.root.findByType(AgentCollaborationPanel).props.sessionKey).toBe('session-committed')
+
+      await act(async () => {
+        pendingApply.reject(new Error('committed apply failed'))
+        await submission
+      })
+
+      expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+    } finally {
+      reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
+    }
+  })
+
+  it('migrates the current apply attempt to a durable new conversation identity', async () => {
+    const pendingApply = deferred<boolean | void>()
+    mocks.sendMessage.mockImplementationOnce(async () => {
+      mocks.sessionConversationId = 'conversation-created'
+      return {
+        proposals: [],
+        canvasEdits: [{ id: 'edit-created-conversation', kind: 'free_canvas_text_create' }]
+      }
+    })
+    const applyCanvasEdit = vi.fn(() => pendingApply.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Create durable conversation and apply' }
+    }))
+    let submission!: Promise<void>
+    await act(async () => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(renderer.root.findByProps({ 'data-active-conversation-id': 'conversation-created' })).toBeTruthy()
+
+    await act(async () => {
+      pendingApply.reject(new Error('current migrated apply failed'))
+      await submission
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('does not migrate a stale response to its durable conversation identity', async () => {
+    const pendingSend = deferred<{
+      proposals: AgentWorkspaceProposal[]
+      canvasEdits: Array<{ id: string; kind: 'free_canvas_text_create' }>
+    }>()
+    mocks.sendMessage.mockReturnValueOnce(pendingSend.promise)
+    const applyCanvasEdit = vi.fn().mockRejectedValue(new Error('stale response apply failed'))
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Send before selecting another conversation' }
+    }))
+    let submission!: Promise<void>
+    act(() => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载会话 B' }).props.onClick())
+
+    mocks.sessionConversationId = 'conversation-created-from-stale-send'
+    await act(async () => {
+      pendingSend.resolve({
+        proposals: [],
+        canvasEdits: [{ id: 'edit-stale-created-conversation', kind: 'free_canvas_text_create' }]
+      })
+      await submission
+    })
+
+    expect(renderer.root.findByProps({ 'data-active-conversation-id': 'conversation-b' })).toBeTruthy()
     expect(JSON.stringify(renderer.toJSON())).not.toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
   })
 })

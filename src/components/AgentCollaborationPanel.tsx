@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Bot, Check, FileText, Loader2, MoreHorizontal, Puzzle, RefreshCw, Send, Wand2, X } from 'lucide-react'
 import { useAgentStore } from '@/stores/agent.store'
 import { usePresetStore } from '@/stores/preset.store'
@@ -68,6 +68,7 @@ const agentQuickPrompts = [
 ] as const
 
 const POST_SEND_APPLY_ERROR = '消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。'
+const useCommitLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect
 
 export function AgentCollaborationPanel({
   title,
@@ -133,10 +134,6 @@ export function AgentCollaborationPanel({
   const postSendApplyIdentity = `${sessionKey}:${workspaceContext.projectId}:${conversationId || 'new'}`
   const postSendApplyIdentityRef = useRef(postSendApplyIdentity)
   const postSendApplyAttemptRef = useRef(0)
-  if (postSendApplyIdentityRef.current !== postSendApplyIdentity) {
-    postSendApplyIdentityRef.current = postSendApplyIdentity
-    postSendApplyAttemptRef.current += 1
-  }
   const lastDraftRequestIdRef = useRef<string>()
   const externalSkills = skills.filter(skill => skill.source === 'external' && skill.id)
   const canvasNodes = useMemo(() => readCanvasNodeSummaries(workspaceContext), [workspaceContext])
@@ -154,6 +151,12 @@ export function AgentCollaborationPanel({
     : selectedModelKey || (defaultModel ? canvasAgentModelOption(defaultModel)?.key || '' : '')
   const effectiveModel = models.find(model => canvasAgentModelOption(model)?.key === effectiveModelKey)
   const visiblePanelError = visibleRuntimeError || postSendApplyError || modelSwitchError
+
+  useCommitLayoutEffect(() => {
+    if (postSendApplyIdentityRef.current === postSendApplyIdentity) return
+    postSendApplyIdentityRef.current = postSendApplyIdentity
+    postSendApplyAttemptRef.current += 1
+  }, [postSendApplyIdentity])
 
   useEffect(() => {
     if (!initialized) init()
@@ -727,8 +730,11 @@ export function AgentCollaborationPanel({
   )
 
   function handleConversationChange(conversation: AgentConversationDetail) {
-    postSendApplyIdentityRef.current = `${sessionKey}:${workspaceContext.projectId}:${conversation.id}`
-    postSendApplyAttemptRef.current += 1
+    const nextApplyIdentity = `${sessionKey}:${workspaceContext.projectId}:${conversation.id}`
+    if (postSendApplyIdentityRef.current !== nextApplyIdentity) {
+      postSendApplyIdentityRef.current = nextApplyIdentity
+      postSendApplyAttemptRef.current += 1
+    }
     setPostSendApplyError(undefined)
     setConversationId(conversation.id)
     setInteractionMode(conversation.interactionMode || 'prompt-edit')
