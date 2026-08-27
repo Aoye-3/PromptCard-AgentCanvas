@@ -249,6 +249,8 @@ export function buildFreeCanvasWorkspaceContext({
   freeCanvas: IFreeCanvasProject
 }): AgentWorkspaceContext {
   const workspaceNodes = freeCanvas.nodes.filter(isWorkspaceFreeCanvasNode)
+  const snapshotNodes = workspaceNodes.slice(0, MAX_CARDS)
+  const snapshotNodeIds = new Set(snapshotNodes.map(node => node.id))
   const selectedNode = workspaceNodes.find(node => node.id === freeCanvas.selectedNodeId) || null
 
   return {
@@ -260,8 +262,10 @@ export function buildFreeCanvasWorkspaceContext({
       projectType: activeProject.type,
       selectedNodeId: selectedNode?.id || null,
       selectedNode: selectedNode ? compactFreeCanvasNode(selectedNode) : null,
-      nodes: workspaceNodes.slice(0, MAX_CARDS).map(compactFreeCanvasNode),
-      edges: freeCanvas.edges.slice(0, MAX_CARDS).map(edge => ({
+      nodes: snapshotNodes.map(compactFreeCanvasNode),
+      edges: freeCanvas.edges
+        .filter(edge => snapshotNodeIds.has(edge.source) && snapshotNodeIds.has(edge.target))
+        .slice(0, MAX_CARDS).map(edge => ({
         id: edge.id,
         source: edge.source,
         target: edge.target,

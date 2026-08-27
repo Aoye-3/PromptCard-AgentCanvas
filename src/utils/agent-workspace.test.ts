@@ -354,7 +354,7 @@ describe('agent workspace context', () => {
     expect(textNode.userText).toBe('  User  spacing\nline  ')
   })
 
-  it('excludes unsupported nodes and their selection from workspace context', () => {
+  it('excludes unsupported nodes, selection, and connected edges from workspace context', () => {
     const freeCanvas: IFreeCanvasProject = {
       nodes: [
         {
@@ -389,7 +389,12 @@ describe('agent workspace context', () => {
           meta: {}
         }
       ],
-      edges: [], viewport: null, selectedNodeId: 'future-1', meta: {}
+      edges: [
+        { id: 'edge-supported', source: 'document-1', target: 'storyboard-1', label: 'Supported path', createdAt: 1 },
+        { id: 'edge-from-unsupported', source: 'future-1', target: 'document-1', label: 'PRIVATE UNKNOWN EDGE', createdAt: 1 },
+        { id: 'edge-to-unsupported', source: 'storyboard-1', target: 'future-1', label: 'PRIVATE UNKNOWN EDGE', createdAt: 1 }
+      ],
+      viewport: null, selectedNodeId: 'future-1', meta: {}
     }
     const project: IPromptProject = {
       id: 'project-isolated', title: 'Isolated canvas', type: 'free-canvas', revision: 8,
@@ -405,6 +410,9 @@ describe('agent workspace context', () => {
     expect(nodes).toEqual([
       { id: 'document-1', kind: 'document', title: 'Creative brief', revision: 4, digest: 'document-digest' },
       { id: 'storyboard-1', kind: 'storyboard', title: 'Opening shots' }
+    ])
+    expect(context.snapshot.edges).toEqual([
+      { id: 'edge-supported', source: 'document-1', target: 'storyboard-1', label: 'Supported path' }
     ])
     const serialized = JSON.stringify(context.snapshot)
     expect(serialized).not.toContain('PRIVATE DOCUMENT BODY')
