@@ -3,17 +3,21 @@ import { createServer, type Server } from 'node:http'
 import { createConnection } from 'node:net'
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
 
 const repoRoot = path.resolve(__dirname, '..')
 const scriptPath = path.join(repoRoot, 'scripts', 'start-dev-with-agent.ps1')
+const devPortRuntimePath = path.join(repoRoot, 'scripts', 'dev-port-runtime.ps1')
 const agentCheckScriptPath = path.join(repoRoot, 'scripts', 'check-agent-runtime.ps1')
 const agentStartScriptPath = path.join(repoRoot, 'scripts', 'start-agent-runtime.ps1')
+const storagePythonPath = path.join(repoRoot, 'agent-runtime', 'backend', '.venv', 'Scripts', 'python.exe')
 const viteConfigPath = path.join(repoRoot, 'vite.config.ts')
 const powershell = 'powershell'
 const servers: Server[] = []
 const tempDirs: string[] = []
 const runtimeProcesses: Array<ReturnType<typeof spawn>> = []
+const execFileAsync = promisify(execFile)
 
 afterEach(async () => {
   await Promise.all(runtimeProcesses.splice(0).map(stopProcessTree))
@@ -109,10 +113,21 @@ function isProcessRunning(pid: number) {
   })
 }
 
-function startHealthyServer() {
+function startHealthyServer(schemaVersion = 15) {
   const server = createServer((_, response) => {
     response.writeHead(200, { 'content-type': 'application/json' })
-    response.end('{"ok":true,"serviceVersion":"2.0.0","schemaVersion":9,"capabilities":{"assets":true,"sqlite":true,"projectResources":true,"agentConversations":true,"skillHub":true}}')
+    response.end(JSON.stringify({
+      ok: true,
+      serviceVersion: '2.0.0',
+      schemaVersion,
+      capabilities: {
+        assets: true,
+        sqlite: true,
+        projectResources: true,
+        agentConversations: true,
+        skillHub: true
+      }
+    }))
   })
 
   return new Promise<string>((resolve) => {
@@ -125,6 +140,20 @@ function startHealthyServer() {
       resolve(`http://127.0.0.1:${address.port}/health`)
     })
   })
+}
+
+async function getCurrentStorageSchemaVersion() {
+  const { stdout } = await execFileAsync(storagePythonPath, [
+    '-c',
+    'from promptcard_storage.store import SCHEMA_VERSION; print(SCHEMA_VERSION)'
+  ], {
+    cwd: repoRoot,
+    windowsHide: true,
+    env: { ...process.env, PYTHONPATH: repoRoot }
+  })
+  const schemaVersion = Number(stdout.trim())
+  if (!Number.isInteger(schemaVersion)) throw new Error(`Storage schema was not an integer: ${stdout}`)
+  return schemaVersion
 }
 
 function startHealthyFrontendServer() {
@@ -202,6 +231,51 @@ async function makeMarkerCommand(markerName: string) {
     markerPath,
     command: `Set-Content -LiteralPath '${escapedMarkerPath}' -Value 'started'`
   }
+}
+
+async function makeIsolatedStartScriptFixture(name: string) {
+  const runtimeManifestPath = await makeRuntimeManifestPath(`${name}.runtime.json`)
+  const fixtureRoot = path.dirname(runtimeManifestPath)
+  const fixtureScripts = path.join(fixtureRoot, 'scripts')
+  await mkdir(fixtureScripts, { recursive: true })
+  await Promise.all([
+    copyFile(scriptPath, path.join(fixtureScripts, 'start-dev-with-agent.ps1')),
+    copyFile(devPortRuntimePath, path.join(fixtureScripts, 'dev-port-runtime.ps1')),
+    ...['start-storage-service.ps1', 'start-agent-runtime.ps1', 'start-text-agent-runtime.ps1'].map(file => (
+      writeFile(path.join(fixtureScripts, file), 'exit 23\r\n')
+    ))
+  ])
+  return {
+    runtimeManifestPath,
+    scriptPath: path.join(fixtureScripts, 'start-dev-with-agent.ps1')
+  }
+}
+
+async function runServicesOnlyWithStorageSchema(name: string, schemaVersion: number) {
+  const fixture = await makeIsolatedStartScriptFixture(name)
+  const [storageUrl, agentUrl, textAgentUrl] = await Promise.all([
+    startHealthyServer(schemaVersion),
+    startHealthyServer(),
+    startHealthyTextAgentServer()
+  ])
+  return runPowerShell([
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    fixture.scriptPath,
+    '-StorageHealthUrl',
+    storageUrl,
+    '-AgentHealthUrl',
+    agentUrl,
+    '-TextAgentHealthUrl',
+    textAgentUrl,
+    '-RuntimeManifestPath',
+    fixture.runtimeManifestPath,
+    '-HealthTimeoutSeconds',
+    '2',
+    '-ServicesOnly'
+  ])
 }
 
 function startHealthyTextAgentServer() {
@@ -463,6 +537,25 @@ describe('start-dev-with-agent.ps1', () => {
     expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0)
     expect(result.stderr).toBe('')
   })
+
+  test('accepts the schema exported by the current Storage runtime', async () => {
+    const currentSchemaVersion = await getCurrentStorageSchemaVersion()
+    const result = await runServicesOnlyWithStorageSchema('current-storage-schema', currentSchemaVersion)
+
+    expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0)
+    expect(result.stdout).toContain('PromptCard storage service is already healthy')
+    expect(result.stdout).toContain('PromptCard local services are healthy')
+  }, 15_000)
+
+  test('rejects a legacy Storage schema even when its health response is otherwise valid', async () => {
+    const currentSchemaVersion = await getCurrentStorageSchemaVersion()
+    expect(currentSchemaVersion).toBeGreaterThan(9)
+    const result = await runServicesOnlyWithStorageSchema('legacy-storage-schema', 9)
+
+    expect(result.code).not.toBe(0)
+    expect(`${result.stdout}\n${result.stderr}`).toContain('incompatible storage version')
+    expect(`${result.stdout}\n${result.stderr}`).toContain('did not become healthy within 2 seconds')
+  }, 15_000)
 
   test('exits without running frontend command when all services are healthy', async () => {
     await expectScriptSupportsTestParameters()

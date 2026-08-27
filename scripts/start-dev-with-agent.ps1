@@ -79,6 +79,7 @@ if (!$env:PROMPTCARD_INTERNAL_TOKEN) {
 if (!$env:PROMPTCARD_IMAGE_GENERATION_NODE_V1) {
   $env:PROMPTCARD_IMAGE_GENERATION_NODE_V1 = "1"
 }
+$ExpectedStorageSchemaVersion = 15
 
 $StorageHealthUrl = $Runtime.storageHealthUrl
 $AgentHealthUrl = $Runtime.agentHealthUrl
@@ -102,11 +103,11 @@ function Test-StorageService {
     $payload = $response.Content | ConvertFrom-Json
     if (
       $payload.serviceVersion -ne "2.0.0" -or
-      $payload.schemaVersion -ne 9 -or
+      $payload.schemaVersion -ne $ExpectedStorageSchemaVersion -or
       !$payload.capabilities.sqlite -or
       !$payload.capabilities.projectResources
     ) {
-      Write-Host "PromptCard storage service is running an incompatible storage version."
+      Write-Host "PromptCard storage service is running an incompatible storage version (schema $($payload.schemaVersion); expected $ExpectedStorageSchemaVersion)."
       return $false
     }
     if (!$env:PROMPTCARD_STORAGE_DATA_DIR) { return $true }

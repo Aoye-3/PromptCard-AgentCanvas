@@ -176,7 +176,13 @@ function Get-DesktopShellSourceFingerprint {
     ForEach-Object {
       $fullPath = [System.IO.Path]::GetFullPath([string]$_.FullName)
       $relativePath = $fullPath.Substring(([string]$RepoRoot).Length).TrimStart("\", "/")
-      $fileHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+      $fileSha256 = [System.Security.Cryptography.SHA256]::Create()
+      try {
+        $fileHash = [System.BitConverter]::ToString($fileSha256.ComputeHash([System.IO.File]::ReadAllBytes($fullPath))).Replace("-", "").ToLowerInvariant()
+      }
+      finally {
+        $fileSha256.Dispose()
+      }
       "$relativePath=$fileHash"
     }
 
