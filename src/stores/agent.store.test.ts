@@ -296,7 +296,44 @@ describe('agent store', () => {
 
     expect(serviceMock.sendMessage.mock.calls.slice(-2).map(call => call[0].requestId))
       .toEqual(['request-stable', 'request-stable'])
-    expect(useAgentStore.getState().getAgentSession(options.sessionKey).retryRequest).toBeUndefined()
+    const session = useAgentStore.getState().getAgentSession(options.sessionKey)
+    expect(session.retryRequest).toBeUndefined()
+    expect(session.messages.map(message => [message.role, message.content])).toEqual([
+      ['user', 'continue'],
+      ['assistant', 'saved response']
+    ])
+  })
+
+  it('clears a failed conversation retry when another conversation is hydrated', async () => {
+    serviceMock.sendMessage.mockRejectedValueOnce(new Error('response lost'))
+    const sessionKey = 'workspace:free-canvas:project-1'
+
+    await useAgentStore.getState().sendMessage('continue A', [], {
+      sessionKey,
+      conversationId: 'conversation-a',
+      requestId: 'request-a'
+    })
+
+    const failed = useAgentStore.getState().getAgentSession(sessionKey)
+    expect(failed.retryRequest).toEqual(expect.objectContaining({
+      requestId: 'request-a', content: 'continue A', conversationId: 'conversation-a'
+    }))
+    expect(failed.runtimeError).toBe('response lost')
+
+    useAgentStore.getState().hydrateSession(sessionKey, {
+      conversationId: 'conversation-b',
+      threadId: 'conversation-b',
+      messages: [],
+      proposals: []
+    })
+
+    const switched = useAgentStore.getState().getAgentSession(sessionKey)
+    expect(switched.conversationId).toBe('conversation-b')
+    expect(switched.retryRequest).toBeUndefined()
+    expect(switched.runtimeError).toBeUndefined()
+    expect(useAgentStore.getState().runtimeError).toBeUndefined()
+    expect(switched.messages).toEqual([])
+    expect(serviceMock.sendMessage).toHaveBeenCalledTimes(1)
   })
 
   it('clears and updates proposals only inside the target session', async () => {

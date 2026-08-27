@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   markProposalStatus: vi.fn(),
   init: vi.fn(),
   sessionError: undefined as string | undefined,
+  retryRequest: undefined as undefined | { requestId: string; content: string; conversationId: string },
   messages: [] as AgentMessage[],
   proposals: [] as AgentWorkspaceProposal[],
   hydrateSession: vi.fn(),
@@ -24,7 +25,8 @@ vi.mock('@/stores/agent.store', () => ({
       messages: mocks.messages,
       proposals: mocks.proposals,
       running: false,
-      runtimeError: mocks.sessionError
+      runtimeError: mocks.sessionError,
+      retryRequest: mocks.retryRequest
     }),
     skills: [{ id: 'SKL-tone', name: 'Tone Helper', source: 'external', trustState: 'trusted', toolDependencies: [] }],
     models: [{
@@ -96,6 +98,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.sessionError = undefined
+    mocks.retryRequest = undefined
     mocks.messages = []
     mocks.proposals = []
   })
@@ -153,6 +156,30 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         interactionMode: 'chat-experimental', boundSkillIds: ['SKL-tone'], revision: 4
       })
     )
+  })
+
+  it('does not expose a failed conversation retry after switching conversations', () => {
+    mocks.sessionError = 'response lost'
+    mocks.retryRequest = {
+      requestId: 'request-a', content: 'continue A', conversationId: 'conversation-a'
+    }
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('使用原请求重试')
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
   })
 
   it('renders assistant Markdown as semantic conversation content', () => {

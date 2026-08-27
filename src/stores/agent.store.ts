@@ -65,6 +65,12 @@ interface AgentState {
 
 const messageId = () => `agent-message-${Date.now()}-${Math.random().toString(16).slice(2)}`
 
+type ScopedRetryRequest = NonNullable<AgentConversationSession['retryRequest']> & {
+  conversationId: string
+  userMessageId: string
+  errorMessageId: string
+}
+
 const emptySession = (): AgentConversationSession => ({
   messages: [],
   proposals: [],
@@ -185,18 +191,29 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       throw new Error('Agent sessionKey is required')
     }
     const requestId = options?.requestId || messageId()
+    const initialSession = getSessionFromState(get(), sessionKey)
+    const conversationId = options?.conversationId || initialSession.conversationId || ''
+    const pendingRetry = initialSession.retryRequest as ScopedRetryRequest | undefined
+    const isRetry = Boolean(
+      options?.requestId
+      && pendingRetry?.requestId === requestId
+      && pendingRetry.content === content
+      && pendingRetry.conversationId === conversationId
+      && initialSession.messages.some(message => message.id === pendingRetry.userMessageId)
+    )
     const userMessage: AgentMessage = {
       id: messageId(),
       role: 'user',
       content,
       createdAt: Date.now()
     }
+    const errorMessageId = isRetry && pendingRetry ? pendingRetry.errorMessageId : messageId()
     set(state => ({
       sessionsByKey: updateSessions(state.sessionsByKey, sessionKey, session => ({
         ...session,
         running: true,
         runtimeError: undefined,
-        messages: [...session.messages, userMessage],
+        messages: isRetry ? session.messages : [...session.messages, userMessage],
         updatedAt: Date.now()
       })),
       runtimeError: undefined
@@ -254,7 +271,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           threadId: result.threadId,
           conversationId: result.conversationId || options?.conversationId || session.conversationId,
           messages: [
-            ...session.messages,
+            ...(
+              isRetry && pendingRetry
+                ? session.messages.filter(message => message.id !== pendingRetry.errorMessageId)
+                : session.messages
+            ),
             {
               id: messageId(),
               role: 'assistant',
@@ -274,11 +295,17 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           ...session,
           running: false,
           runtimeError: error instanceof Error ? error.message : String(error),
-          retryRequest: { requestId, content },
+          retryRequest: {
+            requestId,
+            content,
+            conversationId,
+            userMessageId: isRetry && pendingRetry ? pendingRetry.userMessageId : userMessage.id,
+            errorMessageId
+          } as ScopedRetryRequest,
           messages: [
-            ...session.messages,
+            ...session.messages.filter(message => message.id !== errorMessageId),
             {
-              id: messageId(),
+              id: errorMessageId,
               role: 'assistant',
               content: `Agent call failed: ${error instanceof Error ? error.message : String(error)}`,
               createdAt: Date.now()
@@ -300,8 +327,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         ...session,
         messages: session.messages || current.messages,
         proposals: session.proposals || current.proposals,
-        running: false
-      }))
+        running: false,
+        runtimeError: undefined,
+        retryRequest: undefined
+      })),
+      runtimeError: undefined
     }))
   },
 

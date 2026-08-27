@@ -101,6 +101,12 @@ export function AgentCollaborationPanel({
   const [draft, setDraft] = useState(embedded ? '' : '告诉 Agent 你想怎么修改当前选中的提示词卡片。')
   const [appliedMessages, setAppliedMessages] = useState<AgentMessage[]>([])
   const [conversationId, setConversationId] = useState<string>()
+  const retryRequest = session.retryRequest as (
+    (NonNullable<typeof session.retryRequest> & { conversationId: string }) | undefined
+  )
+  const currentRetryRequest = retryRequest?.conversationId === conversationId
+    ? retryRequest
+    : undefined
   const [skillMenuOpen, setSkillMenuOpen] = useState(false)
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
   const [interactionMode, setInteractionMode] = useState<AgentInteractionMode>('prompt-edit')
@@ -483,15 +489,19 @@ export function AgentCollaborationPanel({
 
       {embedded ? (
         <div className="shrink-0 border-t border-[#e5e7eb] bg-white p-2.5">
-          {session.retryRequest ? (
+          {currentRetryRequest ? (
             <button
               type="button"
+              aria-label="使用原请求重试"
               className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900"
-              onClick={() => void handleSend(
-                session.retryRequest!.content,
-                [],
-                session.retryRequest!.requestId
-              )}
+              onClick={() => {
+                if (currentRetryRequest.conversationId !== conversationId) return
+                void handleSend(
+                  currentRetryRequest.content,
+                  [],
+                  currentRetryRequest.requestId
+                )
+              }}
             >
               使用原请求重试
             </button>
