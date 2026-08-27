@@ -288,6 +288,27 @@ class StorageAppContractTest(unittest.TestCase):
         self.assertEqual(turn.status_code, 200)
         self.assertEqual(listed.json()["conversations"][0]["id"], "conversation-1")
         self.assertEqual(listed.json()["conversations"][0]["modelBinding"]["modelId"], "model-a")
+        self.assertEqual(created.json()["interactionMode"], "prompt-edit")
+        interaction = self.client.patch(
+            "/api/projects/project-agent/conversations/conversation-1/interaction",
+            json={
+                "interactionMode": "chat-experimental",
+                "boundSkillIds": ["SKL-external"],
+                "expectedRevision": 1,
+            },
+        )
+        self.assertEqual(interaction.status_code, 200)
+        self.assertEqual(interaction.json()["interactionMode"], "chat-experimental")
+        self.assertEqual(interaction.json()["boundSkillIds"], ["SKL-external"])
+        stale = self.client.patch(
+            "/api/projects/project-agent/conversations/conversation-1/interaction",
+            json={
+                "interactionMode": "prompt-edit",
+                "boundSkillIds": [],
+                "expectedRevision": 1,
+            },
+        )
+        self.assertEqual(stale.status_code, 409)
         self.assertEqual(len(detail.json()["messages"]), 2)
         self.assertEqual(detail.json()["turns"][0]["modelSnapshot"]["connectionId"], "connection-a")
         self.assertEqual(len(skills.json()["skills"]), 2)

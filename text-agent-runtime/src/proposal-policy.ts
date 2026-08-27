@@ -4,6 +4,7 @@ export type PermissionScope =
   | 'media-analysis-agent'
 
 export type PromptLanguageMode = 'zh' | 'en' | 'mixed'
+export type AgentInteractionMode = 'prompt-edit' | 'chat-experimental'
 
 export interface PromptLibraryItem {
   id?: string
@@ -23,6 +24,7 @@ export interface ConversationHistoryMessage extends Record<string, unknown> {
 export interface InvocationInput {
   content: string
   permissionScope: PermissionScope
+  interactionMode?: AgentInteractionMode
   workspaceContext: (Record<string, unknown> & {
     snapshot?: Record<string, unknown> & {
       selectedNode?: (Record<string, unknown> & { kind?: unknown; id?: unknown }) | null
@@ -83,12 +85,20 @@ export interface InvocationPolicy {
 }
 
 export function buildInvocation(input: InvocationInput) {
+  const interactionMode = input.interactionMode || 'prompt-edit'
+  const isExperimentalChat = interactionMode === 'chat-experimental'
   const snapshot = input.workspaceContext?.snapshot
   const selectedNode = snapshot?.selectedNode
-  const hasExplicitCanvasContext = input.canvasNodeContext !== undefined && input.canvasNodeContext !== null
-  const canSearchPromptLibrary = input.permissionScope === 'prompt-library-agent'
+  const hasExplicitCanvasContext = !isExperimentalChat
+    && input.canvasNodeContext !== undefined
+    && input.canvasNodeContext !== null
+  const canSearchPromptLibrary = !isExperimentalChat && (
+    input.permissionScope === 'prompt-library-agent'
     || input.canvasNodeContext?.mode === 'prompt-library'
-  const selectedTextNodeId = hasExplicitCanvasContext
+  )
+  const selectedTextNodeId = isExperimentalChat
+    ? null
+    : hasExplicitCanvasContext
     ? input.canvasNodeContext?.mode === 'prompt-library' ? null : input.canvasNodeContext?.targetNodeId || null
     : selectedNode?.kind === 'text' && selectedNode?.id === snapshot?.selectedNodeId
       ? String(selectedNode.id)
@@ -115,7 +125,10 @@ export function buildInvocation(input: InvocationInput) {
 
   let allowedProposalKinds: string[] = []
   let allowedCanvasEditKinds: string[] = []
-  if (input.permissionScope === 'prompt-library-agent') {
+  if (isExperimentalChat) {
+    allowedProposalKinds = []
+    allowedCanvasEditKinds = []
+  } else if (input.permissionScope === 'prompt-library-agent') {
     allowedProposalKinds = ['prompt_library_write_proposal']
   } else if (input.permissionScope === 'workspace-chatbot-agent') {
     allowedCanvasEditKinds = hasExplicitCanvasContext
@@ -136,11 +149,12 @@ export function buildInvocation(input: InvocationInput) {
 
   return {
     content: input.content.trim(),
+    interactionMode,
     workspaceContext: input.workspaceContext,
     promptLibrary: canSearchPromptLibrary ? input.promptLibrary.slice(0, 100) : [],
     history: (input.history || []).slice(-40),
     skillSnapshots: (input.skillSnapshots || []).slice(0, 8),
-    canvasNodeContext: input.canvasNodeContext || null,
+    canvasNodeContext: isExperimentalChat ? null : input.canvasNodeContext || null,
     mediaAction: input.mediaAction || 'chat',
     promptLanguageMode: input.permissionScope === 'media-analysis-agent'
       ? input.promptLanguageMode || 'mixed'

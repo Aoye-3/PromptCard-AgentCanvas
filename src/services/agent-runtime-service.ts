@@ -6,6 +6,7 @@ import type {
   AgentRunProvenance,
   AgentModelInfo,
   AgentPermissionScope,
+  AgentInteractionMode,
   AgentSkillInfo,
   AgentToolInfo,
   AgentWorkspaceProposal,
@@ -156,6 +157,7 @@ export const agentRuntimeService = {
     workspaceContext?: unknown
     promptLibrary?: Array<Record<string, unknown>>
     selectedSkillIds?: string[]
+    interactionMode?: AgentInteractionMode
     canvasNodeContext?: CanvasAgentNodeContext
   }) =>
     requestJson<{

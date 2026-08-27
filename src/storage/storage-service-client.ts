@@ -2,6 +2,7 @@ import type { CardType, IPreset } from '@/models/Card.model'
 import type { IPromptProject } from '@/models/PromptHistory.model'
 import type { ImageOperationRecipeSnapshot } from '@/domain/image-actions/image-operations'
 import { validatePublicReferenceCode } from '@/domain/reference-codes/reference-code'
+import type { AgentInteractionMode } from '@/models/Agent.model'
 
 export interface TrashEntry<T> {
   id: string
@@ -292,6 +293,9 @@ export interface AgentConversationSummary {
   updatedAt: number
   deletedAt?: number | null
   modelBinding?: AgentConversationModelBinding | null
+  interactionMode: AgentInteractionMode
+  boundSkillIds: string[]
+  revision: number
 }
 
 export interface AgentConversationModelBinding {
@@ -848,6 +852,20 @@ export const storageServiceClient = {
       return request(`/storage-api/projects/${encodeURIComponent(projectId)}/agent-conversations/${encodeURIComponent(id)}/model`, {
         method: 'PATCH',
         body: JSON.stringify({ modelBinding })
+      })
+    },
+    updateInteraction(
+      id: string,
+      projectId: string,
+      metadata: {
+        interactionMode: AgentInteractionMode
+        boundSkillIds: string[]
+        expectedRevision: number
+      }
+    ): Promise<AgentConversationSummary> {
+      return request(`/storage-api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(id)}/interaction`, {
+        method: 'PATCH',
+        body: JSON.stringify(metadata)
       })
     },
     trash(id: string, projectId: string): Promise<AgentConversationSummary> {

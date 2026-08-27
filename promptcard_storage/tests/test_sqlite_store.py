@@ -266,6 +266,53 @@ class SqliteStoreTest(unittest.TestCase):
         with self.assertRaises(MissingItem):
             store.update_agent_conversation_model_binding("conversation-model", "p2", None)
 
+    def test_agent_conversation_interaction_defaults_and_optimistic_update_persist(self) -> None:
+        store = JsonCollectionStore(self.data_dir)
+        store.create_project(project("p1", "One"))
+        store.create_project(project("p2", "Two"))
+        created = store.create_agent_conversation({
+            "id": "conversation-interaction",
+            "projectId": "p1",
+            "entrypoint": "workspace-chatbot-agent",
+            "mode": "free-canvas",
+        })
+
+        self.assertEqual(created["interactionMode"], "prompt-edit")
+        self.assertEqual(created["boundSkillIds"], [])
+        self.assertEqual(created["revision"], 1)
+
+        updated = store.update_agent_conversation_interaction(
+            "conversation-interaction",
+            "p1",
+            "chat-experimental",
+            ["SKL-one", "SKL-two"],
+            expected_revision=1,
+        )
+
+        self.assertEqual(updated["interactionMode"], "chat-experimental")
+        self.assertEqual(updated["boundSkillIds"], ["SKL-one", "SKL-two"])
+        self.assertEqual(updated["revision"], 2)
+        self.assertEqual(
+            store.get_agent_conversation("conversation-interaction", "p1")["boundSkillIds"],
+            ["SKL-one", "SKL-two"],
+        )
+        with self.assertRaises(RevisionConflict):
+            store.update_agent_conversation_interaction(
+                "conversation-interaction",
+                "p1",
+                "prompt-edit",
+                [],
+                expected_revision=1,
+            )
+        with self.assertRaises(MissingItem):
+            store.update_agent_conversation_interaction(
+                "conversation-interaction",
+                "p2",
+                "prompt-edit",
+                [],
+                expected_revision=2,
+            )
+
     def test_v8_agent_conversations_migrate_model_binding_column(self) -> None:
         store = JsonCollectionStore(self.data_dir)
         store.create_project(project("p1", "One"))

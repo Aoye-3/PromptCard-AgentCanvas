@@ -1223,6 +1223,161 @@ async def test_persistent_message_reuses_saved_turn_before_model_resolution(monk
 
 
 @pytest.mark.anyio
+async def test_experimental_conversation_reloads_bound_skills_and_current_pin_each_turn(
+    monkeypatch,
+):
+    conversation = {
+        "id": "conversation-1",
+        "projectId": "project-1",
+        "entrypoint": "workspace-chatbot-agent",
+        "mode": "free-canvas",
+        "interactionMode": "chat-experimental",
+        "boundSkillIds": ["SKL-00000000000000000000000002"],
+        "modelBinding": {
+            "connectionId": "connection-1",
+            "providerId": "deepseek",
+            "modelId": "deepseek-chat",
+        },
+        "messages": [],
+        "turns": [],
+    }
+    pin_revision = 0
+    invocations = []
+
+    async def fake_storage(method, path, **kwargs):
+        nonlocal pin_revision
+        if method == "GET" and path == "/api/agent-conversations/conversation-1":
+            return conversation
+        if method == "GET" and path == "/api/skills":
+            return {"skills": [{
+                "id": "external-skill-id",
+                "referenceCode": "SKL-00000000000000000000000002",
+                "source": "external",
+            }]}
+        if method == "GET" and path == "/api/skill-host-snapshots/local-agent":
+            pin_revision += 1
+            return {
+                "skillId": "external-skill-id",
+                "skillReferenceCode": "SKL-00000000000000000000000002",
+                "revision": pin_revision,
+                "digest": "sha256:" + str(pin_revision) * 64,
+                "instructions": f"Pinned revision {pin_revision}",
+                "references": [],
+                "declaredCapabilities": {
+                    "tools": [], "network": [], "executables": [], "models": [], "other": [],
+                },
+            }
+        if method == "POST" and path.endswith("/turns"):
+            turn = {
+                "requestId": kwargs["json"]["requestId"],
+                "messages": [kwargs["json"]["userMessage"], kwargs["json"]["assistantMessage"]],
+                "proposals": kwargs["json"]["proposals"],
+                "skillSnapshots": kwargs["json"]["skillSnapshots"],
+                "modelSnapshot": kwargs["json"]["modelSnapshot"],
+            }
+            conversation["turns"].append(turn)
+            conversation["messages"].extend(turn["messages"])
+            return turn
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_invoke(payload):
+        invocations.append(payload)
+        return {
+            "threadId": "conversation-1",
+            "text": f"Answer {len(invocations)}",
+            "proposals": [],
+            "canvasEdits": [],
+            "diagnostics": {},
+        }
+
+    monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", fake_storage)
+    monkeypatch.setattr("app.gateway.promptcard_runtime._invoke_text_agent", fake_invoke)
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime.resolve_text_model",
+        lambda _: {
+            "connectionId": "connection-1", "providerId": "deepseek",
+            "model": {"id": "deepseek-chat", "displayName": "DeepSeek", "capabilities": {"input": ["text"]}},
+        },
+    )
+
+    for request_id, content in (("request-1", "First"), ("request-2", "Second")):
+        body = PromptCardRuntimeMessageRequest.model_validate({
+            "conversationId": "conversation-1",
+            "requestId": request_id,
+            "content": content,
+            "projectId": "project-1",
+            "mode": "free-canvas",
+            "selectedSkillIds": ["SKL-browser-one-shot-must-not-win"],
+            "canvasNodeContext": {
+                "mode": "complete", "targetNodeId": "stale-prompt-target",
+                "referenceNodeIds": [], "mentions": [],
+            },
+        })
+        await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert [payload["interactionMode"] for payload in invocations] == [
+        "chat-experimental", "chat-experimental",
+    ]
+    assert [payload["skillSnapshots"][0]["revision"] for payload in invocations] == [1, 2]
+    assert [turn["skillSnapshots"][0]["digest"] for turn in conversation["turns"]] == [
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+    ]
+    assert [message["content"][0]["text"] for message in invocations[1]["history"]] == [
+        "First", "Answer 1",
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        HTTPException(status_code=403, detail="skill_host_disabled"),
+        HTTPException(status_code=403, detail="skill_revision_untrusted"),
+        HTTPException(status_code=410, detail="skill_archived"),
+        HTTPException(status_code=413, detail="skill_snapshot_too_large"),
+        HTTPException(status_code=403, detail="skill_tool_dependency_not_allowed"),
+    ],
+    ids=["disabled", "untrusted", "archived", "over-budget", "missing-tool"],
+)
+async def test_experimental_bound_skill_failure_precedes_model_invocation(monkeypatch, failure):
+    async def fake_storage(method, path, **kwargs):
+        if path == "/api/agent-conversations/conversation-1":
+            return {
+                "id": "conversation-1", "projectId": "project-1",
+                "entrypoint": "workspace-chatbot-agent", "mode": "free-canvas",
+                "interactionMode": "chat-experimental", "boundSkillIds": ["SKL-00000000000000000000000002"],
+                "messages": [], "turns": [],
+            }
+        if path == "/api/skills":
+            return {"skills": [{
+                "id": "external-skill-id", "referenceCode": "SKL-00000000000000000000000002", "source": "external",
+            }]}
+        if path == "/api/skill-host-snapshots/local-agent":
+            raise failure
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", fake_storage)
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime.resolve_text_model",
+        lambda _: (_ for _ in ()).throw(AssertionError("model resolution must be skipped")),
+    )
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime._invoke_text_agent",
+        lambda _: (_ for _ in ()).throw(AssertionError("agent invocation must be skipped")),
+    )
+    body = PromptCardRuntimeMessageRequest.model_validate({
+        "conversationId": "conversation-1", "requestId": "request-1",
+        "content": "Use the bound Skill", "projectId": "project-1", "mode": "free-canvas",
+    })
+
+    with pytest.raises(HTTPException) as error:
+        await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert error.value.detail == failure.detail
+
+
+@pytest.mark.anyio
 async def test_persistent_message_rejects_conversation_entrypoint_mismatch(monkeypatch):
     async def fake_storage(method, path, **kwargs):
         assert method == "GET"

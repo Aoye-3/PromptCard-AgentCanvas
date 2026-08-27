@@ -10,7 +10,9 @@ const mocks = vi.hoisted(() => ({
   init: vi.fn(),
   sessionError: undefined as string | undefined,
   messages: [] as AgentMessage[],
-  proposals: [] as AgentWorkspaceProposal[]
+  proposals: [] as AgentWorkspaceProposal[],
+  hydrateSession: vi.fn(),
+  updateInteraction: vi.fn()
 }))
 
 vi.mock('@/stores/agent.store', () => ({
@@ -38,8 +40,33 @@ vi.mock('@/stores/agent.store', () => ({
     checkRuntime: mocks.checkRuntime,
     sendMessage: mocks.sendMessage,
     markProposalStatus: mocks.markProposalStatus,
-    hydrateSession: vi.fn()
+    hydrateSession: mocks.hydrateSession
   })
+}))
+
+vi.mock('@/components/agent/AgentConversationMenu', () => ({
+  AgentConversationMenu: ({ onConversationChange }: { onConversationChange: (value: Record<string, unknown>) => void }) => (
+    <button
+      type="button"
+      aria-label="加载实验会话"
+      onClick={() => onConversationChange({
+        id: 'conversation-experimental', projectId: 'project-a',
+        entrypoint: 'workspace-chatbot-agent', mode: 'free-canvas-workspace', title: 'Experimental',
+        status: 'active', createdAt: 1, updatedAt: 2, modelBinding: null,
+        interactionMode: 'chat-experimental', boundSkillIds: ['SKL-tone'], revision: 4,
+        messages: [], proposals: [], turns: []
+      })}
+    >Load</button>
+  )
+}))
+
+vi.mock('@/storage/storage-service-client', () => ({
+  storageServiceClient: {
+    agentConversations: {
+      updateProposal: vi.fn(),
+      updateInteraction: mocks.updateInteraction
+    }
+  }
 }))
 
 vi.mock('@/stores/preset.store', () => ({
@@ -96,6 +123,36 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     expect(markup).toContain('aria-label="对话模型"')
     expect(markup).toContain('Doubao Seed 2.0 Lite')
     expect(markup).not.toContain('>发送给 Agent</button>')
+  })
+
+  it('hydrates the experimental mode and persistent Skill binding copy', () => {
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByProps({ 'aria-label': 'Skill 选择' }).props.onClick())
+
+    expect(renderer.root.findByProps({ 'aria-label': 'Agent 交互模式' }).props.value)
+      .toBe('chat-experimental')
+    expect(JSON.stringify(renderer.toJSON())).toContain('对话模式【测试中】')
+    expect(JSON.stringify(renderer.toJSON())).toContain('本对话持续启用')
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('仅作用于下一条消息')
+    expect(mocks.hydrateSession).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        interactionMode: 'chat-experimental', boundSkillIds: ['SKL-tone'], revision: 4
+      })
+    )
   })
 
   it('renders assistant Markdown as semantic conversation content', () => {

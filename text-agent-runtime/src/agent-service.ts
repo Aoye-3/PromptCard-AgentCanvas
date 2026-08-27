@@ -280,6 +280,7 @@ function proposalTool(
 }
 
 export function buildAgentSystemPrompt(invocation: ReturnType<typeof buildInvocation>) {
+  const isExperimentalChat = invocation.interactionMode === 'chat-experimental'
   const context = invocation.workspaceContext
     ? JSON.stringify(invocation.workspaceContext)
     : 'No Canvas workspace context.'
@@ -310,8 +311,12 @@ export function buildAgentSystemPrompt(invocation: ReturnType<typeof buildInvoca
     references: skill.references || []
   }))
   return [
-    'You are PromptCard Agent, a focused prompt-writing assistant.',
-    invocation.policy.allowedCanvasEditKinds.length
+    isExperimentalChat
+      ? 'You are PromptCard Agent in an ordinary multi-turn conversation.'
+      : 'You are PromptCard Agent, a focused prompt-writing assistant.',
+    isExperimentalChat
+      ? 'Do not edit Prompt content or search Prompt Library. Use only the tools supplied by runtime policy; having a Skill never adds a tool.'
+      : invocation.policy.allowedCanvasEditKinds.length
       ? 'Canvas completion and rewrite results are applied directly after Gateway validation. Use emit_canvas_prompt_edit exactly once after analysis; do not describe the result as a proposal or ask for approval.'
       : 'Never write directly to Canvas or Prompt Library. Use the available structured tool after analysis.',
     'Prompt Library mutations remain proposals that require explicit approval.',

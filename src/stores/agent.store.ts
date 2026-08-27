@@ -5,6 +5,7 @@ import type {
   AgentCanvasEdit,
   AgentConversationSession,
   AgentInfo,
+  AgentInteractionMode,
   AgentMessage,
   AgentPermissionScope,
   AgentModelInfo,
@@ -50,6 +51,8 @@ interface AgentState {
       permissionScope?: AgentPermissionScope
       sessionKey: AgentSessionKey
       conversationId?: string
+      requestId?: string
+      interactionMode?: AgentInteractionMode
       selectedSkillIds?: string[]
       canvasNodeContext?: CanvasAgentNodeContext
     }
@@ -181,6 +184,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     if (!sessionKey) {
       throw new Error('Agent sessionKey is required')
     }
+    const requestId = options?.requestId || messageId()
     const userMessage: AgentMessage = {
       id: messageId(),
       role: 'user',
@@ -206,12 +210,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const result = await agentRuntimeService.sendMessage({
         threadId: getSessionFromState(get(), sessionKey).threadId,
         ...(options?.conversationId ? { conversationId: options.conversationId } : {}),
-        requestId: messageId(),
+        requestId,
         content,
         mode: options?.mode,
         permissionScope: options?.permissionScope || (options?.workspaceContext ? 'workspace-chatbot-agent' : 'prompt-library-agent'),
         sessionKey,
         projectId: options?.workspaceContext?.projectId,
+        ...(options?.interactionMode ? { interactionMode: options.interactionMode } : {}),
         workspaceContext: options?.workspaceContext,
         ...(options?.selectedSkillIds?.length ? { selectedSkillIds: options.selectedSkillIds } : {}),
         ...(options?.canvasNodeContext ? { canvasNodeContext: options.canvasNodeContext } : {}),
@@ -244,6 +249,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         sessionsByKey: updateSessions(state.sessionsByKey, sessionKey, session => ({
           ...session,
           running: false,
+          runtimeError: undefined,
+          retryRequest: undefined,
           threadId: result.threadId,
           conversationId: result.conversationId || options?.conversationId || session.conversationId,
           messages: [
@@ -267,6 +274,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           ...session,
           running: false,
           runtimeError: error instanceof Error ? error.message : String(error),
+          retryRequest: { requestId, content },
           messages: [
             ...session.messages,
             {

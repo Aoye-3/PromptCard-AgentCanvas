@@ -7,6 +7,7 @@ import type {
   AgentMessage,
   AgentCanvasEdit,
   AgentModelInfo,
+  AgentInteractionMode,
   AgentWorkspaceContext,
   AgentWorkspaceMode,
   AgentWorkspaceProposal,
@@ -102,6 +103,9 @@ export function AgentCollaborationPanel({
   const [conversationId, setConversationId] = useState<string>()
   const [skillMenuOpen, setSkillMenuOpen] = useState(false)
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
+  const [interactionMode, setInteractionMode] = useState<AgentInteractionMode>('prompt-edit')
+  const [boundSkillIds, setBoundSkillIds] = useState<string[]>([])
+  const [conversationRevision, setConversationRevision] = useState(1)
   const [canvasAttachments, setCanvasAttachments] = useState<CanvasAgentAttachment[]>([])
   const [canvasEditMode, setCanvasEditMode] = useState<CanvasAgentEditMode>('complete')
   const [canvasSelection, setCanvasSelection] = useState<(CanvasAgentSelection & { nodeId: string }) | undefined>()
@@ -186,14 +190,17 @@ export function AgentCollaborationPanel({
 
   const handleSend = async (
     content = draft,
-    mentions: Array<{ nodeId: string; label: string }> = []
+    mentions: Array<{ nodeId: string; label: string }> = [],
+    requestId?: string
   ) => {
     if (!content.trim() || running) return
     const promptLibraryMode = canvasEditMode === 'prompt-library'
     const target = promptLibraryMode
       ? undefined
       : canvasAttachments.find(attachment => attachment.role === 'target')
-    const canvasNodeContext = embedded && mode === 'free-canvas-workspace'
+    const canvasNodeContext = interactionMode === 'prompt-edit'
+      && embedded
+      && mode === 'free-canvas-workspace'
       ? {
           mode: canvasEditMode,
           targetNodeId: target?.nodeId || null,
@@ -209,12 +216,16 @@ export function AgentCollaborationPanel({
       permissionScope: 'workspace-chatbot-agent',
       sessionKey,
       conversationId,
-      selectedSkillIds,
+      requestId,
+      interactionMode,
+      selectedSkillIds: interactionMode === 'prompt-edit' ? selectedSkillIds : undefined,
       canvasNodeContext
     })
     const succeeded = !getAgentSession(sessionKey).runtimeError
     if (!succeeded) return
-    setSelectedSkillIds([])
+    const updatedConversationId = getAgentSession(sessionKey).conversationId
+    if (updatedConversationId) setConversationId(updatedConversationId)
+    if (interactionMode === 'prompt-edit') setSelectedSkillIds([])
 
     const appliedCanvasEdits: AgentCanvasEdit[] = []
     if (onApplyCanvasEdit) {
@@ -345,9 +356,24 @@ export function AgentCollaborationPanel({
             activeConversationId={conversationId}
             onConversationChange={handleConversationChange}
           />
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-bold text-amber-800" title="此内置 Skill 由画布入口自动绑定">
-            <Wand2 className="h-3 w-3" /> Canvas Prompt Editor
-          </span>
+          <select
+            aria-label="Agent 交互模式"
+            value={interactionMode}
+            disabled={!conversationId || running}
+            onChange={event => void persistConversationInteraction(
+              event.target.value as AgentInteractionMode,
+              []
+            )}
+            className="h-7 rounded-md border border-[#e5e7eb] bg-white px-2 text-[10px] font-bold text-[#4d4c48] disabled:opacity-50"
+          >
+            <option value="prompt-edit">提示词编辑</option>
+            <option value="chat-experimental">对话模式【测试中】</option>
+          </select>
+          {interactionMode === 'prompt-edit' ? (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-bold text-amber-800" title="此内置 Skill 由画布入口自动绑定">
+              <Wand2 className="h-3 w-3" /> Canvas Prompt Editor
+            </span>
+          ) : null}
         </div>
       ) : null}
 
@@ -457,6 +483,19 @@ export function AgentCollaborationPanel({
 
       {embedded ? (
         <div className="shrink-0 border-t border-[#e5e7eb] bg-white p-2.5">
+          {session.retryRequest ? (
+            <button
+              type="button"
+              className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900"
+              onClick={() => void handleSend(
+                session.retryRequest!.content,
+                [],
+                session.retryRequest!.requestId
+              )}
+            >
+              使用原请求重试
+            </button>
+          ) : null}
           <div className="relative mb-2 flex min-w-0 items-center gap-1.5">
             {agentQuickPrompts.slice(0, 2).map(item => (
               <QuickPrompt
@@ -477,22 +516,44 @@ export function AgentCollaborationPanel({
             </button>
             <button
               type="button"
-              className={`ml-auto inline-flex h-7 items-center gap-1 rounded-lg border px-2 text-[10px] font-bold ${selectedSkillIds.length ? 'border-sky-200 bg-sky-50 text-sky-800' : 'border-[#e5e7eb] text-[#5e5d59]'}`}
+              aria-label="Skill 选择"
+              className={`ml-auto inline-flex h-7 items-center gap-1 rounded-lg border px-2 text-[10px] font-bold ${(interactionMode === 'chat-experimental' ? boundSkillIds : selectedSkillIds).length ? 'border-sky-200 bg-sky-50 text-sky-800' : 'border-[#e5e7eb] text-[#5e5d59]'}`}
               onClick={() => setSkillMenuOpen(value => !value)}
               aria-expanded={skillMenuOpen}
             >
-              <Puzzle className="h-3 w-3" /> Skill{selectedSkillIds.length ? ` · ${selectedSkillIds.length}` : ''}
+              <Puzzle className="h-3 w-3" /> Skill{(interactionMode === 'chat-experimental' ? boundSkillIds : selectedSkillIds).length ? ` · ${(interactionMode === 'chat-experimental' ? boundSkillIds : selectedSkillIds).length}` : ''}
             </button>
             {skillMenuOpen ? (
               <div className="absolute bottom-9 right-0 z-30 w-64 rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
-                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-gray-400">仅作用于下一条消息</div>
+                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-gray-400">
+                  {interactionMode === 'chat-experimental' ? '本对话持续启用' : '仅作用于下一条消息'}
+                </div>
                 {externalSkills.length === 0 ? <div className="px-2 py-3 text-xs text-gray-400">暂无可主动触发的外置 Skill</div> : externalSkills.map(skill => {
                   const dependencies = skill.toolDependencies || []
-                  const availableTools = new Set(tools.map(tool => tool.name))
+                  const availableTools = new Set(
+                    interactionMode === 'chat-experimental' ? [] : tools.map(tool => tool.name)
+                  )
                   const unavailable = dependencies.some(name => !availableTools.has(name))
-                  const selected = selectedSkillIds.includes(skill.id!)
+                  const activeSkillIds = interactionMode === 'chat-experimental'
+                    ? boundSkillIds
+                    : selectedSkillIds
+                  const selected = activeSkillIds.includes(skill.id!)
                   return <label key={skill.id} className={`flex items-start gap-2 rounded-md px-2 py-2 text-xs ${unavailable ? 'cursor-not-allowed opacity-45' : 'cursor-pointer hover:bg-gray-50'}`} title={unavailable ? `缺少工具：${dependencies.filter(name => !availableTools.has(name)).join(', ')}` : skill.description}>
-                    <input type="checkbox" disabled={unavailable} checked={selected} onChange={() => setSelectedSkillIds(current => selected ? current.filter(id => id !== skill.id) : [...current, skill.id!])} />
+                    <input
+                      type="checkbox"
+                      disabled={unavailable}
+                      checked={selected}
+                      onChange={() => {
+                        const next = selected
+                          ? activeSkillIds.filter(id => id !== skill.id)
+                          : [...activeSkillIds, skill.id!]
+                        if (interactionMode === 'chat-experimental') {
+                          void persistConversationInteraction(interactionMode, next)
+                        } else {
+                          setSelectedSkillIds(next)
+                        }
+                      }}
+                    />
                     <span><span className="block font-bold text-gray-800">{skill.name}</span><span className="mt-0.5 block text-[10px] text-gray-400">v{skill.revision || 1} · {skill.trustState || skill.source}</span></span>
                   </label>
                 })}
@@ -505,7 +566,7 @@ export function AgentCollaborationPanel({
             editMode={canvasEditMode}
             selection={canvasSelection ? withoutNodeId(canvasSelection) : undefined}
             running={running}
-            disabled={runtimeStatus !== 'connected' || running || modelSaving || !effectiveModel || effectiveModel.available === false}
+            disabled={runtimeStatus !== 'connected' || running || modelSaving || !effectiveModel || effectiveModel.available === false || (interactionMode === 'chat-experimental' && !conversationId)}
             externalDraft={composerDraft}
             resetKey={composerResetKey}
             modelOptions={modelOptions}
@@ -564,9 +625,15 @@ export function AgentCollaborationPanel({
 
   function handleConversationChange(conversation: AgentConversationDetail) {
     setConversationId(conversation.id)
+    setInteractionMode(conversation.interactionMode || 'prompt-edit')
+    setBoundSkillIds(conversation.boundSkillIds || [])
+    setConversationRevision(conversation.revision || 1)
     hydrateSession(sessionKey, {
       conversationId: conversation.id,
       threadId: conversation.id,
+      interactionMode: conversation.interactionMode || 'prompt-edit',
+      boundSkillIds: conversation.boundSkillIds || [],
+      revision: conversation.revision || 1,
       messages: conversation.messages.map((message, index) => ({
         id: message.id || `stored-message-${index}`,
         role: message.role,
@@ -598,6 +665,42 @@ export function AgentCollaborationPanel({
     setModelSelectionRequired(false)
     if (!conversation.modelBinding && nextOption) {
       void persistConversationModel(nextOption.key, conversation.id)
+    }
+  }
+
+  async function persistConversationInteraction(
+    nextMode: AgentInteractionMode,
+    nextBoundSkillIds: string[]
+  ) {
+    if (!conversationId) return
+    setModelSwitchError(undefined)
+    try {
+      const updated = await storageServiceClient.agentConversations.updateInteraction(
+        conversationId,
+        workspaceContext.projectId,
+        {
+          interactionMode: nextMode,
+          boundSkillIds: nextMode === 'chat-experimental' ? nextBoundSkillIds : [],
+          expectedRevision: conversationRevision
+        }
+      )
+      setInteractionMode(updated.interactionMode)
+      setBoundSkillIds(updated.boundSkillIds)
+      setConversationRevision(updated.revision)
+      setSelectedSkillIds([])
+      hydrateSession(sessionKey, {
+        interactionMode: updated.interactionMode,
+        boundSkillIds: updated.boundSkillIds,
+        revision: updated.revision
+      })
+      if (updated.interactionMode === 'chat-experimental') {
+        setCanvasAttachments([])
+        setCanvasSelection(undefined)
+        setCanvasEditMode('complete')
+        setComposerResetKey(key => key + 1)
+      }
+    } catch (error) {
+      setModelSwitchError(error instanceof Error ? error.message : String(error))
     }
   }
 

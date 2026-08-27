@@ -105,6 +105,12 @@ class AgentConversationModelBindingPayload(BaseModel):
     modelBinding: dict[str, Any] | None = None
 
 
+class AgentConversationInteractionPayload(BaseModel):
+    interactionMode: Literal["prompt-edit", "chat-experimental"]
+    boundSkillIds: list[str] = Field(default_factory=list, max_length=8)
+    expectedRevision: int = Field(ge=1)
+
+
 class AgentProposalStatusPayload(AgentConversationProjectPayload):
     status: str
 
@@ -365,6 +371,20 @@ def create_app(
     ) -> dict[str, Any]:
         return _handle(lambda: storage.update_agent_conversation_model_binding(
             conversation_id, project_id, payload.modelBinding
+        ))
+
+    @application.patch("/api/projects/{project_id}/conversations/{conversation_id}/interaction")
+    def update_agent_conversation_interaction(
+        project_id: str,
+        conversation_id: str,
+        payload: AgentConversationInteractionPayload,
+    ) -> dict[str, Any]:
+        return _handle(lambda: storage.update_agent_conversation_interaction(
+            conversation_id,
+            project_id,
+            payload.interactionMode,
+            payload.boundSkillIds,
+            expected_revision=payload.expectedRevision,
         ))
 
     @application.post("/api/agent-conversations/{conversation_id}/turns")

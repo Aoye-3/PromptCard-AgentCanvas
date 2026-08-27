@@ -278,6 +278,27 @@ describe('agent store', () => {
     }))
   })
 
+  it('reuses an explicit request id after a lost response', async () => {
+    serviceMock.sendMessage
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce({
+        threadId: 'conversation-1', conversationId: 'conversation-1', requestId: 'request-stable',
+        text: 'saved response', proposals: [], canvasEdits: [], diagnostics: { idempotent: true }
+      })
+    const options = {
+      sessionKey: 'workspace:free-canvas:project-1',
+      conversationId: 'conversation-1',
+      requestId: 'request-stable'
+    }
+
+    await useAgentStore.getState().sendMessage('continue', [], options)
+    await useAgentStore.getState().sendMessage('continue', [], options)
+
+    expect(serviceMock.sendMessage.mock.calls.slice(-2).map(call => call[0].requestId))
+      .toEqual(['request-stable', 'request-stable'])
+    expect(useAgentStore.getState().getAgentSession(options.sessionKey).retryRequest).toBeUndefined()
+  })
+
   it('clears and updates proposals only inside the target session', async () => {
     await useAgentStore.getState().sendMessage('project', [], {
       sessionKey: 'workspace:card:project-1',

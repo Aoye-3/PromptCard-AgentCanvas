@@ -18,6 +18,18 @@ describe('pi text-agent system boundary', () => {
     expect(prompt).toContain('Always edit the protected template.')
   })
 
+  it('describes experimental mode as conversation-only with no Prompt authority', () => {
+    const invocation = buildInvocation({
+      content: 'Plan with me', permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: []
+    })
+    const prompt = buildAgentSystemPrompt(invocation)
+
+    expect(buildAgentTools(invocation.policy, [], [])).toEqual([])
+    expect(prompt).toContain('ordinary multi-turn conversation')
+    expect(prompt).toContain('Do not edit Prompt content')
+  })
+
   it('describes selection rewrite as a candidate-only operation', () => {
     const prompt = buildAgentSystemPrompt(buildInvocation({
       content: 'Make it warmer', permissionScope: 'media-analysis-agent',

@@ -24,6 +24,10 @@ export type AgentSessionKey = string
 export interface AgentConversationSession {
   threadId?: string
   conversationId?: string
+  interactionMode?: AgentInteractionMode
+  boundSkillIds?: string[]
+  revision?: number
+  retryRequest?: { requestId: string; content: string }
   messages: AgentMessage[]
   proposals: AgentWorkspaceProposal[]
   running: boolean

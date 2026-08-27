@@ -264,6 +264,9 @@ describe('storageServiceClient', () => {
     await storageServiceClient.agentConversations.updateModel('conversation/1', 'project/1', {
       connectionId: 'connection-1', providerId: 'volcengine-ark', modelId: 'ark-chat'
     })
+    await storageServiceClient.agentConversations.updateInteraction('conversation/1', 'project/1', {
+      interactionMode: 'chat-experimental', boundSkillIds: ['SKL-one'], expectedRevision: 3
+    })
     await storageServiceClient.agentConversations.deleteForever('conversation/1', 'project/1')
     await storageServiceClient.skills.list()
 
@@ -273,8 +276,12 @@ describe('storageServiceClient', () => {
       method: 'PATCH',
       body: JSON.stringify({ modelBinding: { connectionId: 'connection-1', providerId: 'volcengine-ark', modelId: 'ark-chat' } })
     }))
-    expect(fetchMock).toHaveBeenNthCalledWith(6, '/storage-api/agent-conversations/conversation%2F1', expect.objectContaining({ method: 'DELETE' }))
-    expect(fetchMock).toHaveBeenNthCalledWith(7, '/storage-api/skills', expect.any(Object))
+    expect(fetchMock).toHaveBeenNthCalledWith(6, '/storage-api/projects/project%2F1/conversations/conversation%2F1/interaction', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ interactionMode: 'chat-experimental', boundSkillIds: ['SKL-one'], expectedRevision: 3 })
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(7, '/storage-api/agent-conversations/conversation%2F1', expect.objectContaining({ method: 'DELETE' }))
+    expect(fetchMock).toHaveBeenNthCalledWith(8, '/storage-api/skills', expect.any(Object))
   })
 
   test('manages inspected skills, exact reviews, independent pins, and projection repair', async () => {

@@ -66,6 +66,10 @@ class PromptCardRuntimeMessageRequest(BaseModel):
         alias="selectedSkillIds",
         max_length=8,
     )
+    interaction_mode: Literal["prompt-edit", "chat-experimental"] = Field(
+        default="prompt-edit",
+        alias="interactionMode",
+    )
     canvas_node_context: dict[str, Any] | None = Field(
         default=None,
         alias="canvasNodeContext",
@@ -194,12 +198,12 @@ class PromptCardRuntimeService:
         request: Request,
     ) -> dict[str, Any]:
         payload = body.model_dump(by_alias=True)
-        resolved_canvas_context = _resolve_canvas_node_context(body)
-        payload["canvasNodeContext"] = resolved_canvas_context
+        resolved_canvas_context: dict[str, Any] | None = None
         conversation_id = body.conversation_id
         model_binding: dict[str, Any] | None = None
         request_id = body.request_id or str(uuid.uuid4())
         skill_snapshots: list[dict[str, Any]] = []
+        interaction_mode: Literal["prompt-edit", "chat-experimental"] = "prompt-edit"
         if body.permission_scope == "workspace-chatbot-agent" and body.project_id:
             if not conversation_id:
                 created = await _storage_request("POST", "/api/agent-conversations", json={
@@ -229,10 +233,39 @@ class PromptCardRuntimeService:
             )
             if existing_turn is not None:
                 return _saved_turn_response(conversation_id, request_id, existing_turn)
+            stored_interaction_mode = conversation.get("interactionMode", "prompt-edit")
+            if stored_interaction_mode not in {"prompt-edit", "chat-experimental"}:
+                raise HTTPException(
+                    status_code=502,
+                    detail="agent_conversation_interaction_invalid",
+                )
+            interaction_mode = stored_interaction_mode
+            bound_skill_ids = conversation.get("boundSkillIds", [])
+            if not isinstance(bound_skill_ids, list) or not all(
+                isinstance(skill_id, str) for skill_id in bound_skill_ids
+            ):
+                raise HTTPException(
+                    status_code=502,
+                    detail="agent_conversation_skill_bindings_invalid",
+                )
+            if interaction_mode == "chat-experimental":
+                payload["selectedSkillIds"] = []
             model_binding = conversation.get("modelBinding")
             payload["history"] = _agent_history(conversation.get("messages") or [])
-            skill_snapshots = await _resolve_skill_snapshots(body)
+            skill_request = body.model_copy(update={
+                "interaction_mode": interaction_mode,
+                "selected_skill_ids": (
+                    bound_skill_ids
+                    if interaction_mode == "chat-experimental"
+                    else body.selected_skill_ids
+                ),
+            })
+            skill_snapshots = await _resolve_skill_snapshots(skill_request)
             payload["skillSnapshots"] = skill_snapshots
+        if interaction_mode == "prompt-edit":
+            resolved_canvas_context = _resolve_canvas_node_context(body)
+        payload["canvasNodeContext"] = resolved_canvas_context
+        payload["interactionMode"] = interaction_mode
         descriptor = resolve_text_model(model_binding)
         normalized_binding = _model_binding_from_descriptor(descriptor)
         if conversation_id and body.project_id and model_binding is None:
@@ -253,10 +286,15 @@ class PromptCardRuntimeService:
         response = await _invoke_text_agent(payload)
         raw_canvas_edits = response.get("canvasEdits")
         raw_canvas_edits = raw_canvas_edits if isinstance(raw_canvas_edits, list) else []
+        validation_permission_scope = (
+            "chat-experimental"
+            if interaction_mode == "chat-experimental"
+            else body.permission_scope
+        )
         response["canvasEdits"] = validate_agent_canvas_edits(
             raw_canvas_edits,
             workspace_context=body.workspace_context,
-            permission_scope=body.permission_scope,
+            permission_scope=validation_permission_scope,
             canvas_node_context=resolved_canvas_context,
         )
         if raw_canvas_edits:
@@ -272,7 +310,7 @@ class PromptCardRuntimeService:
         response["proposals"] = validate_agent_proposals(
             response.get("proposals") or [],
             workspace_context=body.workspace_context,
-            permission_scope=body.permission_scope,
+            permission_scope=validation_permission_scope,
             canvas_node_context=resolved_canvas_context,
         )
         model_snapshot = _model_snapshot(descriptor)
@@ -1023,6 +1061,8 @@ def _conversation_title(content: str) -> str:
 
 
 def _allowed_tool_names(body: PromptCardRuntimeMessageRequest) -> set[str]:
+    if body.interaction_mode == "chat-experimental":
+        return set()
     tools: set[str] = set()
     if body.permission_scope == "prompt-library-agent":
         tools.add("search_prompt_library")
@@ -1043,7 +1083,8 @@ async def _resolve_skill_snapshots(body: PromptCardRuntimeMessageRequest) -> lis
     allowed_tools = _allowed_tool_names(body)
     snapshots = (
         []
-        if (body.canvas_node_context or {}).get("mode") == "prompt-library"
+        if body.interaction_mode == "chat-experimental"
+        or (body.canvas_node_context or {}).get("mode") == "prompt-library"
         else await _builtin_skill_snapshot("canvas.prompt.edit", allowed_tools)
     )
     if not body.selected_skill_ids:

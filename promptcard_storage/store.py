@@ -733,6 +733,9 @@ class SqliteStore:
             "updatedAt": int(item.get("updatedAt") or timestamp),
             "deletedAt": None,
             "modelBinding": model_binding,
+            "interactionMode": "prompt-edit",
+            "boundSkillIds": [],
+            "revision": 1,
         }
         with self._transaction() as connection:
             self._require_active_project(connection, project_id)
@@ -775,7 +778,8 @@ class SqliteStore:
         with self._connect() as connection:
             rows = connection.execute(
                 f"""SELECT id, project_id, entrypoint, mode, title, status,
-                           created_at, updated_at, deleted_at, model_binding_json
+                           created_at, updated_at, deleted_at, model_binding_json,
+                           interaction_mode, bound_skill_ids_json, revision
                     FROM agent_conversations
                     WHERE {' AND '.join(clauses)}
                     ORDER BY updated_at DESC, id DESC LIMIT ?""",
@@ -797,7 +801,8 @@ class SqliteStore:
         with self._connect() as connection:
             row = connection.execute(
                 f"""SELECT id, project_id, entrypoint, mode, title, status,
-                           created_at, updated_at, deleted_at, model_binding_json
+                           created_at, updated_at, deleted_at, model_binding_json,
+                           interaction_mode, bound_skill_ids_json, revision
                     FROM agent_conversations
                     WHERE id=? AND project_id=? AND {status_clause}""",
                 (conversation_id, project_id),
@@ -851,7 +856,8 @@ class SqliteStore:
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT id, project_id, entrypoint, mode, title, status,
-                           created_at, updated_at, deleted_at, model_binding_json
+                           created_at, updated_at, deleted_at, model_binding_json,
+                           interaction_mode, bound_skill_ids_json, revision
                     FROM agent_conversations
                     WHERE id=? AND project_id=? AND status='active'""",
                 (conversation_id, project_id),
@@ -859,6 +865,60 @@ class SqliteStore:
         if row is None:
             raise MissingItem(conversation_id)
         return self._agent_conversation_summary(row)
+
+    def update_agent_conversation_interaction(
+        self,
+        conversation_id: str,
+        project_id: str,
+        interaction_mode: str,
+        bound_skill_ids: list[str],
+        *,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        if interaction_mode not in {"prompt-edit", "chat-experimental"}:
+            raise ValueError("Invalid agent conversation interactionMode")
+        if not isinstance(bound_skill_ids, list) or len(bound_skill_ids) > 8:
+            raise ValueError("Agent conversation boundSkillIds are invalid")
+        normalized_skill_ids = []
+        for skill_id in bound_skill_ids:
+            if not isinstance(skill_id, str) or not skill_id.strip():
+                raise ValueError("Agent conversation boundSkillIds are invalid")
+            normalized_skill_ids.append(skill_id.strip())
+        if len(normalized_skill_ids) != len(set(normalized_skill_ids)):
+            raise ValueError("Agent conversation boundSkillIds must be unique")
+        if interaction_mode == "prompt-edit" and normalized_skill_ids:
+            raise ValueError("Prompt interactions cannot persist Skill bindings")
+        with self._transaction() as connection:
+            row = connection.execute(
+                """SELECT id, project_id, entrypoint, mode, title, status,
+                          created_at, updated_at, deleted_at, model_binding_json,
+                          interaction_mode, bound_skill_ids_json, revision
+                   FROM agent_conversations
+                   WHERE id=? AND project_id=? AND status='active'""",
+                (conversation_id, project_id),
+            ).fetchone()
+            if row is None:
+                raise MissingItem(conversation_id)
+            current = self._agent_conversation_summary(row)
+            if current["revision"] != expected_revision:
+                raise RevisionConflict(current)
+            result = connection.execute(
+                """UPDATE agent_conversations
+                   SET interaction_mode=?, bound_skill_ids_json=?, revision=revision+1,
+                       updated_at=?
+                   WHERE id=? AND project_id=? AND status='active' AND revision=?""",
+                (
+                    interaction_mode,
+                    _json(normalized_skill_ids),
+                    now_ms(),
+                    conversation_id,
+                    project_id,
+                    expected_revision,
+                ),
+            )
+            if result.rowcount == 0:
+                raise RevisionConflict(current)
+        return self.get_agent_conversation(conversation_id, project_id)
 
     def trash_agent_conversation(self, conversation_id: str, project_id: str) -> dict[str, Any]:
         timestamp = now_ms()
@@ -3489,6 +3549,7 @@ class SqliteStore:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 self._harden_weak_public_references_v10_schema(connection)
+                self._migrate_agent_conversation_interaction_metadata(connection)
                 self._seed_builtin_skills(connection)
                 self._seed_builtin_skill_host_pins_v14(connection)
                 self._seed_skill_reviews_v15(connection)
@@ -4746,7 +4807,10 @@ class SqliteStore:
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 deleted_at INTEGER,
-                model_binding_json TEXT
+                model_binding_json TEXT,
+                interaction_mode TEXT NOT NULL DEFAULT 'prompt-edit',
+                bound_skill_ids_json TEXT NOT NULL DEFAULT '[]',
+                revision INTEGER NOT NULL DEFAULT 1
             );
             CREATE INDEX IF NOT EXISTS agent_conversations_project_status_order
                 ON agent_conversations(project_id, status, updated_at DESC, id DESC);
@@ -4809,6 +4873,22 @@ class SqliteStore:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_conversations)")}
         if "model_binding_json" not in columns:
             connection.execute("ALTER TABLE agent_conversations ADD COLUMN model_binding_json TEXT")
+
+    def _migrate_agent_conversation_interaction_metadata(
+        self,
+        connection: sqlite3.Connection,
+    ) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_conversations)")}
+        additions = {
+            "interaction_mode": "TEXT NOT NULL DEFAULT 'prompt-edit'",
+            "bound_skill_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+            "revision": "INTEGER NOT NULL DEFAULT 1",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE agent_conversations ADD COLUMN {name} {definition}"
+                )
 
     def _seed_builtin_skills(self, connection: sqlite3.Connection) -> None:
         builtins = (
@@ -4918,6 +4998,9 @@ class SqliteStore:
             "title": row[4], "status": row[5], "createdAt": row[6],
             "updatedAt": row[7], "deletedAt": row[8],
             "modelBinding": json.loads(row[9]) if row[9] is not None else None,
+            "interactionMode": row[10],
+            "boundSkillIds": json.loads(row[11]),
+            "revision": row[12],
         }
 
     def _skill_summary(self, row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:

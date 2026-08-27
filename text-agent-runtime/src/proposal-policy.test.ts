@@ -203,4 +203,30 @@ describe('pi text-agent invocation boundary', () => {
     expect(chat.policy.allowedProposalKinds).toEqual([])
     expect(preview.policy.allowedProposalKinds).toEqual(['media_prompt_preview'])
   })
+
+  it('keeps experimental conversation policy closed against Prompt targets and retrieval', () => {
+    const invocation = buildInvocation({
+      content: 'Discuss this project',
+      permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental',
+      workspaceContext: {
+        snapshot: {
+          selectedNodeId: 'text-a',
+          selectedNode: { id: 'text-a', kind: 'text' },
+          nodes: [{ id: 'text-a', kind: 'text' }]
+        }
+      },
+      promptLibrary: [{ label: 'Prompt', content: 'must remain unavailable' }],
+      canvasNodeContext: {
+        mode: 'complete', targetNodeId: 'text-a', referenceNodeIds: [], mentions: []
+      }
+    })
+
+    expect(invocation.interactionMode).toBe('chat-experimental')
+    expect(invocation.promptLibrary).toEqual([])
+    expect(invocation.policy.allowedProposalKinds).toEqual([])
+    expect(invocation.policy.allowedCanvasEditKinds).toEqual([])
+    expect(invocation.policy.selectedTextNodeId).toBeNull()
+    expect(invocation.policy.canSearchPromptLibrary).toBe(false)
+  })
 })
