@@ -9,9 +9,15 @@ const mocks = vi.hoisted(() => ({
   markProposalStatus: vi.fn(),
   init: vi.fn(),
   sessionError: undefined as string | undefined,
-  retryRequest: undefined as undefined | { requestId: string; content: string; conversationId: string },
+  retryRequest: undefined as undefined | {
+    requestId: string
+    content: string
+    conversationId: string
+    explicitDocumentNodeIds?: string[]
+  },
   messages: [] as AgentMessage[],
   proposals: [] as AgentWorkspaceProposal[],
+  storedMessages: [] as Array<Record<string, unknown>>,
   hydrateSession: vi.fn(),
   updateInteraction: vi.fn()
 }))
@@ -56,7 +62,7 @@ vi.mock('@/components/agent/AgentConversationMenu', () => ({
         entrypoint: 'workspace-chatbot-agent', mode: 'free-canvas-workspace', title: 'Experimental',
         status: 'active', createdAt: 1, updatedAt: 2, modelBinding: null,
         interactionMode: 'chat-experimental', boundSkillIds: ['SKL-tone'], revision: 4,
-        messages: [], proposals: [], turns: []
+        messages: mocks.storedMessages, proposals: [], turns: []
       })}
     >Load</button>
   )
@@ -80,6 +86,8 @@ vi.mock('@/stores/preset.store', () => ({
 }))
 
 import { AgentCollaborationPanel } from './AgentCollaborationPanel'
+import { AgentDocumentAttachments } from './agent/AgentDocumentAttachments'
+import { CanvasAgentComposer } from './agent/CanvasAgentComposer'
 
 const workspaceContext: AgentWorkspaceContext = {
   contextId: 'canvas-context',
@@ -101,6 +109,10 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     mocks.retryRequest = undefined
     mocks.messages = []
     mocks.proposals = []
+    mocks.storedMessages = []
+    mocks.hydrateSession.mockImplementation((_sessionKey, session) => {
+      if (session.messages) mocks.messages = session.messages
+    })
   })
 
   it('uses a compact context strip and inline composer without the full-width send bar', () => {
@@ -180,6 +192,49 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
 
     expect(JSON.stringify(renderer.toJSON())).not.toContain('使用原请求重试')
     expect(mocks.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('reuses the failed turn request ID and explicit Document identities', async () => {
+    mocks.retryRequest = {
+      requestId: 'request-document',
+      content: 'Discuss the document',
+      conversationId: 'conversation-experimental',
+      explicitDocumentNodeIds: ['document-node-1']
+    }
+    const documentContext: AgentWorkspaceContext = {
+      ...workspaceContext,
+      snapshot: {
+        nodes: [{
+          id: 'document-node-1', kind: 'document', title: 'Creative brief', revision: 4, digest: 'digest-1'
+        }]
+      }
+    }
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={documentContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '使用原请求重试' }).props.onClick()
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      'Discuss the document',
+      [],
+      expect.objectContaining({
+        requestId: 'request-document',
+        explicitDocumentNodeIds: ['document-node-1']
+      })
+    )
   })
 
   it('renders assistant Markdown as semantic conversation content', () => {
@@ -578,5 +633,141 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
 
     expect(JSON.stringify(renderer.toJSON())).toContain('TXT-ABC123')
+  })
+
+  it('sends current document and explicit Document node IDs, clearing them only after success', async () => {
+    const documentContext: AgentWorkspaceContext = {
+      ...workspaceContext,
+      snapshot: {
+        nodes: [
+          ...(workspaceContext.snapshot.nodes as Array<Record<string, unknown>>),
+          { id: 'document-node-1', kind: 'document', title: 'Creative brief', revision: 4, digest: 'digest-1' }
+        ]
+      }
+    }
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={documentContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    const attachment = {
+      resourceId: 'document-resource-1', name: 'plan.md', contentType: 'text/markdown' as const,
+      size: 7, sha256: 'a'.repeat(64)
+    }
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([attachment]))
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit(
+        'Discuss @Creative brief',
+        [{ nodeId: 'document-node-1', label: 'Creative brief' }]
+      )
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      'Discuss @Creative brief',
+      [],
+      expect.objectContaining({
+        documentResourceIds: ['document-resource-1'],
+        explicitDocumentNodeIds: ['document-node-1'],
+        documentAttachments: [attachment]
+      })
+    )
+    expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([])
+  })
+
+  it('retains current document selection after a failed send', async () => {
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    const attachment = {
+      resourceId: 'document-resource-1', name: 'plan.md', contentType: 'text/markdown' as const,
+      size: 7, sha256: 'a'.repeat(64)
+    }
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([attachment]))
+    mocks.sessionError = 'runtime failed'
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Discuss the plan', [])
+    })
+
+    expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([attachment])
+  })
+
+  it('hydrates durable attachment audit as read-only history without preselecting it', () => {
+    mocks.storedMessages = [{
+      id: 'stored-user-message', role: 'user', text: 'Discuss the plan', createdAt: 1,
+      documentAttachments: [{
+        resourceId: 'document-resource-1', name: 'historic-plan.md', contentType: 'text/markdown', size: 7
+      }]
+    }]
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('historic-plan.md')
+    expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([])
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('does not carry a current document selection into another project identity', () => {
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([{
+      resourceId: 'document-resource-1', name: 'plan.md', contentType: 'text/markdown',
+      size: 7, sha256: 'a'.repeat(64)
+    }]))
+
+    act(() => renderer.update(
+      <AgentCollaborationPanel
+        title="Free Canvas Agent"
+        mode="free-canvas-workspace"
+        workspaceContext={{ ...workspaceContext, projectId: 'project-b', projectTitle: 'Project B' }}
+        onApplyWorkspaceProposal={vi.fn()}
+        embedded
+      />
+    ))
+
+    expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([])
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
   })
 })

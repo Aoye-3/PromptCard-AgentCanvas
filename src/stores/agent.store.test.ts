@@ -148,6 +148,32 @@ describe('agent store', () => {
     expect(serviceMock.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ canvasNodeContext }))
   })
 
+  it('forwards document identities and records only metadata on the optimistic user message', async () => {
+    const documentAttachments = [{
+      resourceId: 'document-resource-1',
+      name: 'plan.md',
+      contentType: 'text/markdown' as const,
+      size: 7,
+      sha256: 'a'.repeat(64)
+    }]
+
+    await useAgentStore.getState().sendMessage('Discuss the plan', [], {
+      sessionKey: 'workspace:free-canvas:project-1',
+      mode: 'free-canvas-workspace',
+      interactionMode: 'chat-experimental',
+      documentResourceIds: ['document-resource-1'],
+      explicitDocumentNodeIds: ['document-node-1'],
+      documentAttachments
+    })
+
+    expect(serviceMock.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      documentResourceIds: ['document-resource-1'],
+      explicitDocumentNodeIds: ['document-node-1']
+    }))
+    expect(useAgentStore.getState().getAgentSession('workspace:free-canvas:project-1').messages[0])
+      .toMatchObject({ role: 'user', documentAttachments })
+  })
+
   it('returns validated Canvas edits separately without storing them as pending proposals', async () => {
     const canvasEdit = {
       id: 'canvas-edit-1',

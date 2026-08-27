@@ -1,5 +1,46 @@
-import { describe, expect, it } from 'vitest'
-import { parseAgentWorkspaceProposals } from './agent-runtime-service'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { agentRuntimeService, parseAgentWorkspaceProposals } from './agent-runtime-service'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
+
+describe('agent runtime message contract', () => {
+  it('serializes only project document and explicit Document node IDs', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-1',
+      conversationId: 'conversation-1',
+      text: 'ok',
+      proposals: [],
+      canvasEdits: []
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await agentRuntimeService.sendMessage({
+      content: 'Discuss the attached plan',
+      projectId: 'project-1',
+      documentResourceIds: ['document-resource-1'],
+      explicitDocumentNodeIds: ['document-node-1'],
+      file: new File(['secret'], 'secret.txt'),
+      path: 'F:\\private\\secret.txt',
+      providerFileId: 'provider-file-secret'
+    } as Parameters<typeof agentRuntimeService.sendMessage>[0] & Record<string, unknown>)
+
+    const request = fetchMock.mock.calls[0][1] as RequestInit
+    const body = JSON.parse(String(request.body))
+    expect(body).toMatchObject({
+      content: 'Discuss the attached plan',
+      projectId: 'project-1',
+      documentResourceIds: ['document-resource-1'],
+      explicitDocumentNodeIds: ['document-node-1']
+    })
+    expect(body).not.toHaveProperty('file')
+    expect(body).not.toHaveProperty('path')
+    expect(body).not.toHaveProperty('providerFileId')
+    expect(JSON.stringify(body)).not.toContain('secret.txt')
+  })
+})
 
 describe('agent runtime proposal parsing', () => {
   it('parses bounded interleaved text insertions and a rewrite basis', () => {

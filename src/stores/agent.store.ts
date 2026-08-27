@@ -4,6 +4,7 @@ import type {
   AgentAuthStatus,
   AgentCanvasEdit,
   AgentConversationSession,
+  AgentDocumentAttachment,
   AgentInfo,
   AgentInteractionMode,
   AgentMessage,
@@ -55,6 +56,9 @@ interface AgentState {
       interactionMode?: AgentInteractionMode
       selectedSkillIds?: string[]
       canvasNodeContext?: CanvasAgentNodeContext
+      documentResourceIds?: string[]
+      explicitDocumentNodeIds?: string[]
+      documentAttachments?: AgentDocumentAttachment[]
     }
   ) => Promise<{ proposals: AgentWorkspaceProposal[]; canvasEdits: AgentCanvasEdit[] }>
   getAgentSession: (sessionKey: AgentSessionKey) => AgentConversationSession
@@ -205,7 +209,16 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       id: messageId(),
       role: 'user',
       content,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      ...(options?.documentAttachments?.length ? {
+        documentAttachments: options.documentAttachments.map(attachment => ({
+          resourceId: attachment.resourceId,
+          name: attachment.name,
+          contentType: attachment.contentType,
+          size: attachment.size,
+          sha256: attachment.sha256
+        }))
+      } : {})
     }
     const errorMessageId = isRetry && pendingRetry ? pendingRetry.errorMessageId : messageId()
     set(state => ({
@@ -237,6 +250,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         workspaceContext: options?.workspaceContext,
         ...(options?.selectedSkillIds?.length ? { selectedSkillIds: options.selectedSkillIds } : {}),
         ...(options?.canvasNodeContext ? { canvasNodeContext: options.canvasNodeContext } : {}),
+        ...(options?.documentResourceIds?.length ? { documentResourceIds: options.documentResourceIds } : {}),
+        ...(options?.explicitDocumentNodeIds?.length ? { explicitDocumentNodeIds: options.explicitDocumentNodeIds } : {}),
         promptLibrary: (
           options?.permissionScope === 'prompt-library-agent'
           || options?.canvasNodeContext?.mode === 'prompt-library'
@@ -300,7 +315,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             content,
             conversationId,
             userMessageId: isRetry && pendingRetry ? pendingRetry.userMessageId : userMessage.id,
-            errorMessageId
+            errorMessageId,
+            ...(options?.documentResourceIds?.length ? { documentResourceIds: [...options.documentResourceIds] } : {}),
+            ...(options?.explicitDocumentNodeIds?.length ? { explicitDocumentNodeIds: [...options.explicitDocumentNodeIds] } : {}),
+            ...(options?.documentAttachments?.length ? {
+              documentAttachments: options.documentAttachments.map(attachment => ({ ...attachment }))
+            } : {})
           } as ScopedRetryRequest,
           messages: [
             ...session.messages.filter(message => message.id !== errorMessageId),

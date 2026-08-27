@@ -83,4 +83,30 @@ describe('CanvasAgentComposer model and edit controls', () => {
     expect(getData).toHaveBeenCalledWith('text/plain')
     expect(execCommand).toHaveBeenCalledWith('insertText', false, '帮我补全提示词')
   })
+
+  it('offers compact Document identities as explicit mention candidates', () => {
+    let renderer!: ReturnType<typeof create>
+    act(() => {
+      renderer = create(
+        <CanvasAgentComposer
+          {...baseProps}
+          documentNodes={[{
+            id: 'document-node-1',
+            title: 'Creative brief',
+            displayText: '',
+            userText: '',
+            kind: 'document'
+          }]}
+        />
+      )
+    })
+
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: '@Creative' }
+    }))
+
+    expect(renderer.root.findByProps({ 'aria-label': '可引用的文字节点' })).toBeTruthy()
+    expect(JSON.stringify(renderer.toJSON())).toContain('Creative brief')
+    expect(JSON.stringify(renderer.toJSON())).toContain('文档')
+  })
 })

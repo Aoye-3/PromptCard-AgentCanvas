@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, Check, Loader2, MoreHorizontal, Puzzle, RefreshCw, Send, Wand2, X } from 'lucide-react'
+import { Bot, Check, FileText, Loader2, MoreHorizontal, Puzzle, RefreshCw, Send, Wand2, X } from 'lucide-react'
 import { useAgentStore } from '@/stores/agent.store'
 import { usePresetStore } from '@/stores/preset.store'
 import { agentRuntimeService } from '@/services/agent-runtime-service'
 import type {
   AgentMessage,
   AgentCanvasEdit,
+  AgentDocumentAttachment,
   AgentModelInfo,
   AgentInteractionMode,
   AgentWorkspaceContext,
@@ -17,6 +18,7 @@ import type {
 import { AgentConversationMenu } from '@/components/agent/AgentConversationMenu'
 import { AgentMarkdownMessage } from '@/components/agent/AgentMarkdownMessage'
 import { CanvasAgentComposer, type CanvasAgentModelOption, type CanvasAgentNodeSummary } from '@/components/agent/CanvasAgentComposer'
+import { AgentDocumentAttachments } from '@/components/agent/AgentDocumentAttachments'
 import {
   attachCanvasAgentNode,
   clearCanvasAgentTarget,
@@ -113,6 +115,7 @@ export function AgentCollaborationPanel({
   const [boundSkillIds, setBoundSkillIds] = useState<string[]>([])
   const [conversationRevision, setConversationRevision] = useState(1)
   const [canvasAttachments, setCanvasAttachments] = useState<CanvasAgentAttachment[]>([])
+  const [documentAttachments, setDocumentAttachments] = useState<AgentDocumentAttachment[]>([])
   const [canvasEditMode, setCanvasEditMode] = useState<CanvasAgentEditMode>('complete')
   const [canvasSelection, setCanvasSelection] = useState<(CanvasAgentSelection & { nodeId: string }) | undefined>()
   const [composerResetKey, setComposerResetKey] = useState(0)
@@ -126,6 +129,7 @@ export function AgentCollaborationPanel({
   const lastDraftRequestIdRef = useRef<string>()
   const externalSkills = skills.filter(skill => skill.source === 'external' && skill.id)
   const canvasNodes = useMemo(() => readCanvasNodeSummaries(workspaceContext), [workspaceContext])
+  const documentNodes = useMemo(() => readDocumentNodeSummaries(workspaceContext), [workspaceContext])
   const canvasTextPreviewNodes = useMemo(() => readCanvasTextPreviewNodes(workspaceContext), [workspaceContext])
   const modelOptions = useMemo(() => models.flatMap(model => {
     const option = canvasAgentModelOption(model)
@@ -180,6 +184,7 @@ export function AgentCollaborationPanel({
     if (canvasIdentityRef.current === identity) return
     canvasIdentityRef.current = identity
     setCanvasAttachments([])
+    setDocumentAttachments([])
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
     setComposerResetKey(key => key + 1)
@@ -197,7 +202,12 @@ export function AgentCollaborationPanel({
   const handleSend = async (
     content = draft,
     mentions: Array<{ nodeId: string; label: string }> = [],
-    requestId?: string
+    requestId?: string,
+    retryDocuments?: {
+      documentResourceIds?: string[]
+      explicitDocumentNodeIds?: string[]
+      documentAttachments?: AgentDocumentAttachment[]
+    }
   ) => {
     if (!content.trim() || running) return
     const promptLibraryMode = canvasEditMode === 'prompt-library'
@@ -216,6 +226,13 @@ export function AgentCollaborationPanel({
           mentions,
         }
       : undefined
+    const activeDocumentAttachments = retryDocuments?.documentAttachments || documentAttachments
+    const documentResourceIds = retryDocuments?.documentResourceIds
+      || activeDocumentAttachments.map(attachment => attachment.resourceId)
+    const explicitDocumentNodeIds = retryDocuments?.explicitDocumentNodeIds
+      || mentions
+        .map(mention => mention.nodeId)
+        .filter(nodeId => documentNodes.some(node => node.id === nodeId))
     const returned = await sendMessage(content.trim(), presets, {
       workspaceContext,
       mode,
@@ -225,7 +242,14 @@ export function AgentCollaborationPanel({
       requestId,
       interactionMode,
       selectedSkillIds: interactionMode === 'prompt-edit' ? selectedSkillIds : undefined,
-      canvasNodeContext
+      canvasNodeContext,
+      ...(interactionMode === 'chat-experimental' && documentResourceIds.length ? {
+        documentResourceIds,
+        documentAttachments: activeDocumentAttachments
+      } : {}),
+      ...(interactionMode === 'chat-experimental' ? {
+        explicitDocumentNodeIds
+      } : {})
     })
     const succeeded = !getAgentSession(sessionKey).runtimeError
     if (!succeeded) return
@@ -275,6 +299,7 @@ export function AgentCollaborationPanel({
 
     setDraft('')
     setCanvasAttachments([])
+    setDocumentAttachments([])
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
     setComposerResetKey(key => key + 1)
@@ -437,6 +462,19 @@ export function AgentCollaborationPanel({
                 ) : (
                   <pre className="whitespace-pre-wrap break-words font-sans">{message.content}</pre>
                 )}
+                {message.documentAttachments?.length ? (
+                  <div className="mt-2 flex flex-wrap gap-1" aria-label="历史文档附件">
+                    {message.documentAttachments.map(attachment => (
+                      <span
+                        key={attachment.resourceId}
+                        className="inline-flex max-w-full items-center gap-1 rounded-md border border-current/20 px-1.5 py-1 text-[10px] font-semibold"
+                      >
+                        <FileText className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        <span className="max-w-40 truncate">{attachment.name}</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </div>
           ))
@@ -498,8 +536,16 @@ export function AgentCollaborationPanel({
                 if (currentRetryRequest.conversationId !== conversationId) return
                 void handleSend(
                   currentRetryRequest.content,
-                  [],
-                  currentRetryRequest.requestId
+                  (currentRetryRequest.explicitDocumentNodeIds || []).map(nodeId => ({
+                    nodeId,
+                    label: documentNodes.find(node => node.id === nodeId)?.title || nodeId
+                  })),
+                  currentRetryRequest.requestId,
+                  {
+                    documentResourceIds: currentRetryRequest.documentResourceIds,
+                    explicitDocumentNodeIds: currentRetryRequest.explicitDocumentNodeIds,
+                    documentAttachments: currentRetryRequest.documentAttachments
+                  }
                 )
               }}
             >
@@ -570,8 +616,18 @@ export function AgentCollaborationPanel({
               </div>
             ) : null}
           </div>
+          {interactionMode === 'chat-experimental' ? (
+            <AgentDocumentAttachments
+              projectId={workspaceContext.projectId}
+              attachments={documentAttachments}
+              disabled={running}
+              resetKey={`${sessionKey}:${conversationId || 'new'}:${composerResetKey}`}
+              onChange={setDocumentAttachments}
+            />
+          ) : null}
           <CanvasAgentComposer
             nodes={canvasNodes}
+            documentNodes={interactionMode === 'chat-experimental' ? documentNodes : []}
             attachments={canvasAttachments}
             editMode={canvasEditMode}
             selection={canvasSelection ? withoutNodeId(canvasSelection) : undefined}
@@ -648,12 +704,22 @@ export function AgentCollaborationPanel({
         id: message.id || `stored-message-${index}`,
         role: message.role,
         content: message.text,
-        createdAt: message.createdAt || conversation.createdAt + index
+        createdAt: message.createdAt || conversation.createdAt + index,
+        ...(message.documentAttachments?.length ? {
+          documentAttachments: message.documentAttachments.map(attachment => ({
+            resourceId: attachment.resourceId,
+            name: attachment.name,
+            contentType: attachment.contentType,
+            size: attachment.size,
+            ...(attachment.sha256 ? { sha256: attachment.sha256 } : {})
+          }))
+        } : {})
       })),
       proposals: conversation.proposals as unknown as AgentWorkspaceProposal[],
       updatedAt: conversation.updatedAt
     })
     setCanvasAttachments([])
+    setDocumentAttachments([])
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
     setComposerResetKey(key => key + 1)
@@ -698,6 +764,7 @@ export function AgentCollaborationPanel({
       setBoundSkillIds(updated.boundSkillIds)
       setConversationRevision(updated.revision)
       setSelectedSkillIds([])
+      setDocumentAttachments([])
       hydrateSession(sessionKey, {
         interactionMode: updated.interactionMode,
         boundSkillIds: updated.boundSkillIds,
@@ -758,6 +825,22 @@ function readCanvasNodeSummaries(workspaceContext: AgentWorkspaceContext): Canva
       title: String(node.title || node.id),
       displayText: String(node.displayText || ''),
       userText: String(node.userText || '')
+    }]
+  })
+}
+
+function readDocumentNodeSummaries(workspaceContext: AgentWorkspaceContext): CanvasAgentNodeSummary[] {
+  const nodes = Array.isArray(workspaceContext.snapshot.nodes) ? workspaceContext.snapshot.nodes : []
+  return nodes.flatMap(value => {
+    if (!value || typeof value !== 'object') return []
+    const node = value as Record<string, unknown>
+    if (node.kind !== 'document' || typeof node.id !== 'string') return []
+    return [{
+      id: node.id,
+      kind: 'document' as const,
+      title: String(node.title || node.id),
+      displayText: '',
+      userText: ''
     }]
   })
 }

@@ -45,6 +45,24 @@ export interface AgentConversationModelBinding {
   modelId: string
 }
 
+export interface AgentRuntimeMessageRequest {
+  threadId?: string
+  conversationId?: string
+  requestId?: string
+  content: string
+  mode?: string
+  permissionScope?: AgentPermissionScope
+  sessionKey?: string
+  projectId?: string
+  workspaceContext?: unknown
+  promptLibrary?: Array<Record<string, unknown>>
+  selectedSkillIds?: string[]
+  interactionMode?: AgentInteractionMode
+  canvasNodeContext?: CanvasAgentNodeContext
+  documentResourceIds?: string[]
+  explicitDocumentNodeIds?: string[]
+}
+
 const jsonHeaders = () => {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json'
@@ -145,21 +163,7 @@ export const agentRuntimeService = {
 
   agents: async () => normalizeItems<AgentInfo>(await agentRuntimeService.catalog(), ['agents', 'items']),
 
-  sendMessage: (body: {
-    threadId?: string
-    conversationId?: string
-    requestId?: string
-    content: string
-    mode?: string
-    permissionScope?: AgentPermissionScope
-    sessionKey?: string
-    projectId?: string
-    workspaceContext?: unknown
-    promptLibrary?: Array<Record<string, unknown>>
-    selectedSkillIds?: string[]
-    interactionMode?: AgentInteractionMode
-    canvasNodeContext?: CanvasAgentNodeContext
-  }) =>
+  sendMessage: (body: AgentRuntimeMessageRequest) =>
     requestJson<{
       threadId: string
       conversationId?: string
@@ -171,7 +175,7 @@ export const agentRuntimeService = {
     }>(`${PROMPTCARD_RUNTIME_BASE}/messages`, {
       method: 'POST',
       headers: jsonHeaders(),
-      body: JSON.stringify(body)
+      body: JSON.stringify(agentRuntimeMessageBody(body))
     }).then(response => ({
       ...response,
       proposals: filterProposalsForPermissionScope(response.proposals, body.permissionScope)
@@ -232,6 +236,26 @@ export const agentRuntimeService = {
 
   parsePromptLibraryProposals,
   parseAgentWorkspaceProposals
+}
+
+function agentRuntimeMessageBody(body: AgentRuntimeMessageRequest): AgentRuntimeMessageRequest {
+  return {
+    content: body.content,
+    ...(body.threadId !== undefined ? { threadId: body.threadId } : {}),
+    ...(body.conversationId !== undefined ? { conversationId: body.conversationId } : {}),
+    ...(body.requestId !== undefined ? { requestId: body.requestId } : {}),
+    ...(body.mode !== undefined ? { mode: body.mode } : {}),
+    ...(body.permissionScope !== undefined ? { permissionScope: body.permissionScope } : {}),
+    ...(body.sessionKey !== undefined ? { sessionKey: body.sessionKey } : {}),
+    ...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
+    ...(body.workspaceContext !== undefined ? { workspaceContext: body.workspaceContext } : {}),
+    ...(body.promptLibrary !== undefined ? { promptLibrary: body.promptLibrary } : {}),
+    ...(body.selectedSkillIds !== undefined ? { selectedSkillIds: body.selectedSkillIds } : {}),
+    ...(body.interactionMode !== undefined ? { interactionMode: body.interactionMode } : {}),
+    ...(body.canvasNodeContext !== undefined ? { canvasNodeContext: body.canvasNodeContext } : {}),
+    ...(body.documentResourceIds !== undefined ? { documentResourceIds: [...body.documentResourceIds] } : {}),
+    ...(body.explicitDocumentNodeIds !== undefined ? { explicitDocumentNodeIds: [...body.explicitDocumentNodeIds] } : {})
+  }
 }
 
 export function extractAssistantText(payload: Record<string, unknown>): string {

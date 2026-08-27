@@ -2,7 +2,7 @@ import type { CardType, IPreset } from '@/models/Card.model'
 import type { IPromptProject } from '@/models/PromptHistory.model'
 import type { ImageOperationRecipeSnapshot } from '@/domain/image-actions/image-operations'
 import { validatePublicReferenceCode } from '@/domain/reference-codes/reference-code'
-import type { AgentInteractionMode } from '@/models/Agent.model'
+import type { AgentDocumentAttachmentAudit, AgentInteractionMode } from '@/models/Agent.model'
 
 export interface TrashEntry<T> {
   id: string
@@ -322,7 +322,13 @@ export interface AgentConversationModelBinding {
 }
 
 export interface AgentConversationDetail extends AgentConversationSummary {
-  messages: Array<{ id?: string; role: 'user' | 'assistant' | 'system'; text: string; createdAt?: number }>
+  messages: Array<{
+    id?: string
+    role: 'user' | 'assistant' | 'system'
+    text: string
+    createdAt?: number
+    documentAttachments?: AgentDocumentAttachmentAudit[]
+  }>
   proposals: Array<Record<string, unknown>>
   turns: Array<Record<string, unknown>>
 }

@@ -17,6 +17,25 @@ export interface AgentMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   createdAt: number
+  documentAttachments?: AgentDocumentAttachmentAudit[]
+}
+
+export type DocumentContentType =
+  | 'text/plain'
+  | 'text/markdown'
+  | 'application/pdf'
+  | 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+
+export interface AgentDocumentAttachment {
+  resourceId: string
+  name: string
+  contentType: DocumentContentType
+  size: number
+  sha256: string
+}
+
+export type AgentDocumentAttachmentAudit = Omit<AgentDocumentAttachment, 'sha256'> & {
+  sha256?: string
 }
 
 export type AgentSessionKey = string
@@ -27,7 +46,13 @@ export interface AgentConversationSession {
   interactionMode?: AgentInteractionMode
   boundSkillIds?: string[]
   revision?: number
-  retryRequest?: { requestId: string; content: string }
+  retryRequest?: {
+    requestId: string
+    content: string
+    documentResourceIds?: string[]
+    explicitDocumentNodeIds?: string[]
+    documentAttachments?: AgentDocumentAttachment[]
+  }
   messages: AgentMessage[]
   proposals: AgentWorkspaceProposal[]
   running: boolean
