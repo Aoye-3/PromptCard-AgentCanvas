@@ -22,6 +22,12 @@ interface AgentDocumentAttachmentsProps {
   disabled?: boolean
   resetKey?: string | number
   onChange: (attachments: AgentDocumentAttachment[]) => void
+  onUploadingChange?: (uploadingCount: number) => void
+}
+
+interface ActiveUploadBatch {
+  identity: string
+  controller: AbortController
 }
 
 export function AgentDocumentAttachments({
@@ -29,25 +35,39 @@ export function AgentDocumentAttachments({
   attachments,
   disabled = false,
   resetKey,
-  onChange
+  onChange,
+  onUploadingChange
 }: AgentDocumentAttachmentsProps) {
   const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number }>()
   const [error, setError] = useState<string>()
-  const uploadGenerationRef = useRef(0)
+  const activeBatchRef = useRef<ActiveUploadBatch>()
+  const identity = `${projectId}:${String(resetKey ?? '')}`
+  const latestIdentityRef = useRef(identity)
+  latestIdentityRef.current = identity
 
   useEffect(() => {
-    const generation = uploadGenerationRef.current + 1
-    uploadGenerationRef.current = generation
-    setUploadProgress(undefined)
     setError(undefined)
-    return () => {
-      if (uploadGenerationRef.current === generation) uploadGenerationRef.current += 1
+    const activeBatch = activeBatchRef.current
+    if (activeBatch && activeBatch.identity !== identity) {
+      activeBatch.controller.abort('document-upload-identity-changed')
+      activeBatchRef.current = undefined
+      setUploadProgress(undefined)
+      onUploadingChange?.(0)
     }
-  }, [projectId, resetKey])
+    return () => {
+      const currentBatch = activeBatchRef.current
+      if (currentBatch?.identity === identity) {
+        currentBatch.controller.abort('document-upload-identity-changed')
+        activeBatchRef.current = undefined
+        setUploadProgress(undefined)
+        onUploadingChange?.(0)
+      }
+    }
+  }, [identity, onUploadingChange])
 
   const uploadFiles = async (fileList: FileList | File[]) => {
     const files = Array.from(fileList)
-    if (!files.length || disabled) return
+    if (!files.length || disabled || activeBatchRef.current) return
     const validationError = validateFiles(attachments, files)
     if (validationError) {
       setError(validationError)
@@ -55,29 +75,48 @@ export function AgentDocumentAttachments({
     }
 
     setError(undefined)
-    const uploadGeneration = uploadGenerationRef.current
+    const batch: ActiveUploadBatch = { identity, controller: new AbortController() }
+    activeBatchRef.current = batch
     setUploadProgress({ completed: 0, total: files.length })
-    let next = attachments
+    onUploadingChange?.(files.length)
+    const uploaded: AgentDocumentAttachment[] = []
+    const failures: string[] = []
+    const isCurrentBatch = () => (
+      activeBatchRef.current === batch
+      && latestIdentityRef.current === batch.identity
+      && !batch.controller.signal.aborted
+    )
     try {
       for (const [index, file] of files.entries()) {
-        const resource = await storageServiceClient.projectDocumentResources.upload(projectId, file)
-        if (uploadGeneration !== uploadGenerationRef.current) return
-        next = [...next, {
-          resourceId: resource.id,
-          name: resource.originalFilename,
-          contentType: resource.contentType,
-          size: resource.size,
-          sha256: resource.sha256
-        }]
-        onChange(next)
-        setUploadProgress({ completed: index + 1, total: files.length })
-      }
-    } catch (uploadError) {
-      if (uploadGeneration === uploadGenerationRef.current) {
-        setError(uploadError instanceof Error ? uploadError.message : String(uploadError))
+        if (!isCurrentBatch()) return
+        try {
+          const resource = await storageServiceClient.projectDocumentResources.upload(
+            projectId,
+            file,
+            batch.controller.signal
+          )
+          if (!isCurrentBatch()) return
+          uploaded.push({
+            resourceId: resource.id,
+            name: resource.originalFilename,
+            contentType: resource.contentType,
+            size: resource.size,
+            sha256: resource.sha256
+          })
+          onChange(mergeDocumentAttachments(attachments, uploaded))
+        } catch (uploadError) {
+          if (!isCurrentBatch()) return
+          failures.push(`${file.name}: ${uploadError instanceof Error ? uploadError.message : String(uploadError)}`)
+        }
+        if (isCurrentBatch()) setUploadProgress({ completed: index + 1, total: files.length })
       }
     } finally {
-      if (uploadGeneration === uploadGenerationRef.current) setUploadProgress(undefined)
+      if (activeBatchRef.current === batch) {
+        activeBatchRef.current = undefined
+        setUploadProgress(undefined)
+        onUploadingChange?.(0)
+        if (failures.length) setError(`部分文档上传失败：${failures.join('；')}`)
+      }
     }
   }
 
@@ -96,6 +135,8 @@ export function AgentDocumentAttachments({
     <div className="mb-2" aria-label="项目文档附件">
       <div
         data-agent-document-dropzone
+        aria-busy={uploadProgress !== undefined}
+        aria-disabled={disabled || uploadProgress !== undefined}
         className="flex min-h-8 flex-wrap items-center gap-1.5 rounded-lg border border-dashed border-[#d1d5db] bg-[#f9fafb] px-2 py-1.5"
         onDragOver={event => event.preventDefault()}
         onDrop={handleDrop}
@@ -163,4 +204,13 @@ function validateFiles(attachments: AgentDocumentAttachment[], files: File[]): s
     + files.reduce((sum, file) => sum + file.size, 0)
   if (totalBytes > MAX_TOTAL_BYTES) return '每条消息的文档总大小不能超过 100 MiB。'
   return undefined
+}
+
+function mergeDocumentAttachments(
+  current: AgentDocumentAttachment[],
+  incoming: AgentDocumentAttachment[]
+): AgentDocumentAttachment[] {
+  const byResourceId = new Map(current.map(attachment => [attachment.resourceId, attachment]))
+  incoming.forEach(attachment => byResourceId.set(attachment.resourceId, attachment))
+  return [...byResourceId.values()].sort((left, right) => left.resourceId.localeCompare(right.resourceId))
 }

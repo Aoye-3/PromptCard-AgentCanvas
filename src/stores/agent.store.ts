@@ -205,13 +205,30 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       && pendingRetry.conversationId === conversationId
       && initialSession.messages.some(message => message.id === pendingRetry.userMessageId)
     )
+    const documentRequest = isRetry && pendingRetry
+      ? {
+          documentResourceIds: [...pendingRetry.documentResourceIds],
+          explicitDocumentNodeIds: [...pendingRetry.explicitDocumentNodeIds],
+          documentAttachments: pendingRetry.documentAttachments.map(attachment => ({ ...attachment }))
+        }
+      : {
+          documentResourceIds: [...(options?.documentResourceIds ?? [])],
+          explicitDocumentNodeIds: [...(options?.explicitDocumentNodeIds ?? [])],
+          documentAttachments: (options?.documentAttachments ?? []).map(attachment => ({ ...attachment }))
+        }
+    const includesDocumentRequest = Boolean(
+      isRetry
+      || options?.documentResourceIds !== undefined
+      || options?.explicitDocumentNodeIds !== undefined
+      || options?.documentAttachments !== undefined
+    )
     const userMessage: AgentMessage = {
       id: messageId(),
       role: 'user',
       content,
       createdAt: Date.now(),
-      ...(options?.documentAttachments?.length ? {
-        documentAttachments: options.documentAttachments.map(attachment => ({
+      ...(documentRequest.documentAttachments.length ? {
+        documentAttachments: documentRequest.documentAttachments.map(attachment => ({
           resourceId: attachment.resourceId,
           name: attachment.name,
           contentType: attachment.contentType,
@@ -250,8 +267,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         workspaceContext: options?.workspaceContext,
         ...(options?.selectedSkillIds?.length ? { selectedSkillIds: options.selectedSkillIds } : {}),
         ...(options?.canvasNodeContext ? { canvasNodeContext: options.canvasNodeContext } : {}),
-        ...(options?.documentResourceIds?.length ? { documentResourceIds: options.documentResourceIds } : {}),
-        ...(options?.explicitDocumentNodeIds?.length ? { explicitDocumentNodeIds: options.explicitDocumentNodeIds } : {}),
+        ...(includesDocumentRequest ? {
+          documentResourceIds: documentRequest.documentResourceIds,
+          explicitDocumentNodeIds: documentRequest.explicitDocumentNodeIds
+        } : {}),
         promptLibrary: (
           options?.permissionScope === 'prompt-library-agent'
           || options?.canvasNodeContext?.mode === 'prompt-library'
@@ -316,11 +335,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             conversationId,
             userMessageId: isRetry && pendingRetry ? pendingRetry.userMessageId : userMessage.id,
             errorMessageId,
-            ...(options?.documentResourceIds?.length ? { documentResourceIds: [...options.documentResourceIds] } : {}),
-            ...(options?.explicitDocumentNodeIds?.length ? { explicitDocumentNodeIds: [...options.explicitDocumentNodeIds] } : {}),
-            ...(options?.documentAttachments?.length ? {
-              documentAttachments: options.documentAttachments.map(attachment => ({ ...attachment }))
-            } : {})
+            documentResourceIds: documentRequest.documentResourceIds,
+            explicitDocumentNodeIds: documentRequest.explicitDocumentNodeIds,
+            documentAttachments: documentRequest.documentAttachments
           } as ScopedRetryRequest,
           messages: [
             ...session.messages.filter(message => message.id !== errorMessageId),

@@ -49,9 +49,9 @@ export interface AgentConversationSession {
   retryRequest?: {
     requestId: string
     content: string
-    documentResourceIds?: string[]
-    explicitDocumentNodeIds?: string[]
-    documentAttachments?: AgentDocumentAttachment[]
+    documentResourceIds: string[]
+    explicitDocumentNodeIds: string[]
+    documentAttachments: AgentDocumentAttachment[]
   }
   messages: AgentMessage[]
   proposals: AgentWorkspaceProposal[]

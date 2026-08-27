@@ -18,6 +18,26 @@ export type PromptLanguageMode = 'zh' | 'en' | 'mixed'
 
 const AGENT_API_BASE = '/agent-api'
 const PROMPTCARD_RUNTIME_BASE = `${AGENT_API_BASE}/promptcard/runtime`
+const MAX_DOCUMENT_IDENTITIES = 5
+const DOCUMENT_RESOURCE_ID_PATTERN = /^[0-9a-f]{32}$/
+const CANVAS_NODE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/
+const AGENT_RUNTIME_MESSAGE_KEYS = new Set([
+  'threadId',
+  'conversationId',
+  'requestId',
+  'content',
+  'mode',
+  'permissionScope',
+  'sessionKey',
+  'projectId',
+  'workspaceContext',
+  'promptLibrary',
+  'selectedSkillIds',
+  'interactionMode',
+  'canvasNodeContext',
+  'documentResourceIds',
+  'explicitDocumentNodeIds'
+])
 
 export interface DeepSeekModelConfig {
   enabled: boolean
@@ -163,8 +183,9 @@ export const agentRuntimeService = {
 
   agents: async () => normalizeItems<AgentInfo>(await agentRuntimeService.catalog(), ['agents', 'items']),
 
-  sendMessage: (body: AgentRuntimeMessageRequest) =>
-    requestJson<{
+  sendMessage: async (body: AgentRuntimeMessageRequest) => {
+    const requestBody = agentRuntimeMessageBody(body)
+    const response = await requestJson<{
       threadId: string
       conversationId?: string
       requestId?: string
@@ -175,11 +196,13 @@ export const agentRuntimeService = {
     }>(`${PROMPTCARD_RUNTIME_BASE}/messages`, {
       method: 'POST',
       headers: jsonHeaders(),
-      body: JSON.stringify(agentRuntimeMessageBody(body))
-    }).then(response => ({
+      body: JSON.stringify(requestBody)
+    })
+    return {
       ...response,
       proposals: filterProposalsForPermissionScope(response.proposals, body.permissionScope)
-    })),
+    }
+  },
 
   updateConversationModel: (
     projectId: string,
@@ -239,6 +262,25 @@ export const agentRuntimeService = {
 }
 
 function agentRuntimeMessageBody(body: AgentRuntimeMessageRequest): AgentRuntimeMessageRequest {
+  if (
+    !body
+    || typeof body !== 'object'
+    || Array.isArray(body)
+    || typeof body.content !== 'string'
+    || Object.keys(body).some(key => !AGENT_RUNTIME_MESSAGE_KEYS.has(key))
+  ) {
+    throw new Error('Invalid agent runtime message request.')
+  }
+  const documentResourceIds = validateIdentityArray(
+    body.documentResourceIds,
+    DOCUMENT_RESOURCE_ID_PATTERN,
+    'Invalid documentResourceIds.'
+  )
+  const explicitDocumentNodeIds = validateIdentityArray(
+    body.explicitDocumentNodeIds,
+    CANVAS_NODE_ID_PATTERN,
+    'Invalid explicitDocumentNodeIds.'
+  )
   return {
     content: body.content,
     ...(body.threadId !== undefined ? { threadId: body.threadId } : {}),
@@ -253,9 +295,26 @@ function agentRuntimeMessageBody(body: AgentRuntimeMessageRequest): AgentRuntime
     ...(body.selectedSkillIds !== undefined ? { selectedSkillIds: body.selectedSkillIds } : {}),
     ...(body.interactionMode !== undefined ? { interactionMode: body.interactionMode } : {}),
     ...(body.canvasNodeContext !== undefined ? { canvasNodeContext: body.canvasNodeContext } : {}),
-    ...(body.documentResourceIds !== undefined ? { documentResourceIds: [...body.documentResourceIds] } : {}),
-    ...(body.explicitDocumentNodeIds !== undefined ? { explicitDocumentNodeIds: [...body.explicitDocumentNodeIds] } : {})
+    ...(documentResourceIds !== undefined ? { documentResourceIds } : {}),
+    ...(explicitDocumentNodeIds !== undefined ? { explicitDocumentNodeIds } : {})
   }
+}
+
+function validateIdentityArray(
+  value: unknown,
+  pattern: RegExp,
+  errorMessage: string
+): string[] | undefined {
+  if (value === undefined) return undefined
+  if (
+    !Array.isArray(value)
+    || value.length > MAX_DOCUMENT_IDENTITIES
+    || value.some(item => typeof item !== 'string' || !pattern.test(item))
+    || new Set(value).size !== value.length
+  ) {
+    throw new Error(errorMessage)
+  }
+  return [...value]
 }
 
 export function extractAssistantText(payload: Record<string, unknown>): string {

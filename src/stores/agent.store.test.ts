@@ -27,6 +27,9 @@ const serviceMock = vi.hoisted(() => ({
   testModelConfig: vi.fn()
 }))
 
+const DOCUMENT_RESOURCE_A = 'a'.repeat(32)
+const DOCUMENT_RESOURCE_B = 'b'.repeat(32)
+
 vi.mock('@/services/agent-runtime-service', () => ({
   agentRuntimeService: serviceMock
 }))
@@ -150,7 +153,7 @@ describe('agent store', () => {
 
   it('forwards document identities and records only metadata on the optimistic user message', async () => {
     const documentAttachments = [{
-      resourceId: 'document-resource-1',
+      resourceId: DOCUMENT_RESOURCE_A,
       name: 'plan.md',
       contentType: 'text/markdown' as const,
       size: 7,
@@ -161,13 +164,13 @@ describe('agent store', () => {
       sessionKey: 'workspace:free-canvas:project-1',
       mode: 'free-canvas-workspace',
       interactionMode: 'chat-experimental',
-      documentResourceIds: ['document-resource-1'],
+      documentResourceIds: [DOCUMENT_RESOURCE_A],
       explicitDocumentNodeIds: ['document-node-1'],
       documentAttachments
     })
 
     expect(serviceMock.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-      documentResourceIds: ['document-resource-1'],
+      documentResourceIds: [DOCUMENT_RESOURCE_A],
       explicitDocumentNodeIds: ['document-node-1']
     }))
     expect(useAgentStore.getState().getAgentSession('workspace:free-canvas:project-1').messages[0])
@@ -328,6 +331,71 @@ describe('agent store', () => {
       ['user', 'continue'],
       ['assistant', 'saved response']
     ])
+  })
+
+  it('freezes empty document identity arrays on a failed original request', async () => {
+    serviceMock.sendMessage.mockRejectedValueOnce(new Error('response lost'))
+
+    await useAgentStore.getState().sendMessage('continue without documents', [], {
+      sessionKey: 'workspace:free-canvas:project-1',
+      conversationId: 'conversation-1',
+      requestId: 'request-empty-documents'
+    })
+
+    expect(useAgentStore.getState().getAgentSession('workspace:free-canvas:project-1').retryRequest)
+      .toMatchObject({
+        requestId: 'request-empty-documents',
+        documentResourceIds: [],
+        explicitDocumentNodeIds: [],
+        documentAttachments: []
+      })
+  })
+
+  it('uses the failed turn document snapshot authoritatively for the same request id', async () => {
+    serviceMock.sendMessage
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce({
+        threadId: 'thread-1', conversationId: 'conversation-1', requestId: 'request-documents',
+        text: 'saved response', proposals: [], canvasEdits: [], diagnostics: { idempotent: true }
+      })
+    const originalAttachment = {
+      resourceId: DOCUMENT_RESOURCE_A,
+      name: 'original.md',
+      contentType: 'text/markdown' as const,
+      size: 7,
+      sha256: 'a'.repeat(64)
+    }
+    const replacementAttachment = {
+      resourceId: DOCUMENT_RESOURCE_B,
+      name: 'replacement.md',
+      contentType: 'text/markdown' as const,
+      size: 8,
+      sha256: 'b'.repeat(64)
+    }
+    const baseOptions = {
+      sessionKey: 'workspace:free-canvas:project-1',
+      conversationId: 'conversation-1',
+      requestId: 'request-documents'
+    }
+
+    await useAgentStore.getState().sendMessage('continue with documents', [], {
+      ...baseOptions,
+      documentResourceIds: [DOCUMENT_RESOURCE_A],
+      explicitDocumentNodeIds: ['document-node-original'],
+      documentAttachments: [originalAttachment]
+    })
+    await useAgentStore.getState().sendMessage('continue with documents', [], {
+      ...baseOptions,
+      documentResourceIds: [DOCUMENT_RESOURCE_B],
+      explicitDocumentNodeIds: ['document-node-replacement'],
+      documentAttachments: [replacementAttachment]
+    })
+
+    expect(serviceMock.sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      documentResourceIds: [DOCUMENT_RESOURCE_A],
+      explicitDocumentNodeIds: ['document-node-original']
+    }))
+    expect(useAgentStore.getState().getAgentSession(baseOptions.sessionKey).retryRequest).toBeUndefined()
   })
 
   it('clears a failed conversation retry when another conversation is hydrated', async () => {

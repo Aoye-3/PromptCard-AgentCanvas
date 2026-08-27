@@ -790,7 +790,7 @@ export const storageServiceClient = {
     }
   },
   projectDocumentResources: {
-    async upload(projectId: string, file: File): Promise<ProjectDocumentResource> {
+    async upload(projectId: string, file: File, signal?: AbortSignal): Promise<ProjectDocumentResource> {
       const contentType = inferDocumentContentType(file)
       if (!contentType) {
         throw new StorageHttpError(
@@ -807,7 +807,8 @@ export const storageServiceClient = {
             'Content-Type': contentType,
             'X-File-Name': encodeURIComponent(file.name)
           },
-          body: file
+          body: file,
+          signal
         },
         60_000
       )

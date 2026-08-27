@@ -40,7 +40,7 @@ interface CanvasAgentComposerProps {
   onRemoveNode: (nodeId: string) => void
   onSetTarget: (nodeId: string) => void
   onClearTarget: () => void
-  onSubmit: (content: string, mentions: Array<{ nodeId: string; label: string }>) => void
+  onSubmit: (content: string, mentions: Array<{ nodeId: string; label: string }>) => void | Promise<void>
 }
 
 export function CanvasAgentComposer({

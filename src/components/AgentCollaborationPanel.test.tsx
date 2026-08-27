@@ -1,7 +1,10 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentMessage, AgentWorkspaceContext, AgentWorkspaceProposal } from '@/models/Agent.model'
+import type { AgentDocumentAttachment, AgentMessage, AgentWorkspaceContext, AgentWorkspaceProposal } from '@/models/Agent.model'
+
+const DOCUMENT_RESOURCE_A = 'a'.repeat(32)
+const DOCUMENT_RESOURCE_B = 'b'.repeat(32)
 
 const mocks = vi.hoisted(() => ({
   checkRuntime: vi.fn(),
@@ -13,7 +16,9 @@ const mocks = vi.hoisted(() => ({
     requestId: string
     content: string
     conversationId: string
-    explicitDocumentNodeIds?: string[]
+    documentResourceIds: string[]
+    explicitDocumentNodeIds: string[]
+    documentAttachments: AgentDocumentAttachment[]
   },
   messages: [] as AgentMessage[],
   proposals: [] as AgentWorkspaceProposal[],
@@ -173,7 +178,8 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
   it('does not expose a failed conversation retry after switching conversations', () => {
     mocks.sessionError = 'response lost'
     mocks.retryRequest = {
-      requestId: 'request-a', content: 'continue A', conversationId: 'conversation-a'
+      requestId: 'request-a', content: 'continue A', conversationId: 'conversation-a',
+      documentResourceIds: [], explicitDocumentNodeIds: [], documentAttachments: []
     }
     let renderer!: ReactTestRenderer
     act(() => {
@@ -199,7 +205,12 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
       requestId: 'request-document',
       content: 'Discuss the document',
       conversationId: 'conversation-experimental',
-      explicitDocumentNodeIds: ['document-node-1']
+      documentResourceIds: [DOCUMENT_RESOURCE_A],
+      explicitDocumentNodeIds: ['document-node-1'],
+      documentAttachments: [{
+        resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown',
+        size: 7, sha256: 'a'.repeat(64)
+      }]
     }
     const documentContext: AgentWorkspaceContext = {
       ...workspaceContext,
@@ -232,6 +243,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
       [],
       expect.objectContaining({
         requestId: 'request-document',
+        documentResourceIds: [DOCUMENT_RESOURCE_A],
         explicitDocumentNodeIds: ['document-node-1']
       })
     )
@@ -659,7 +671,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
     act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
     const attachment = {
-      resourceId: 'document-resource-1', name: 'plan.md', contentType: 'text/markdown' as const,
+      resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown' as const,
       size: 7, sha256: 'a'.repeat(64)
     }
     act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([attachment]))
@@ -675,7 +687,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
       'Discuss @Creative brief',
       [],
       expect.objectContaining({
-        documentResourceIds: ['document-resource-1'],
+        documentResourceIds: [DOCUMENT_RESOURCE_A],
         explicitDocumentNodeIds: ['document-node-1'],
         documentAttachments: [attachment]
       })
@@ -698,7 +710,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
     act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
     const attachment = {
-      resourceId: 'document-resource-1', name: 'plan.md', contentType: 'text/markdown' as const,
+      resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown' as const,
       size: 7, sha256: 'a'.repeat(64)
     }
     act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([attachment]))
@@ -715,7 +727,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     mocks.storedMessages = [{
       id: 'stored-user-message', role: 'user', text: 'Discuss the plan', createdAt: 1,
       documentAttachments: [{
-        resourceId: 'document-resource-1', name: 'historic-plan.md', contentType: 'text/markdown', size: 7
+        resourceId: DOCUMENT_RESOURCE_A, name: 'historic-plan.md', contentType: 'text/markdown', size: 7
       }]
     }]
     let renderer!: ReactTestRenderer
@@ -753,7 +765,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
     act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
     act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([{
-      resourceId: 'document-resource-1', name: 'plan.md', contentType: 'text/markdown',
+      resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown',
       size: 7, sha256: 'a'.repeat(64)
     }]))
 
@@ -769,5 +781,149 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
 
     expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([])
     expect(mocks.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [1, 'single-file upload'],
+    [3, 'batch upload']
+  ] as const)('disables and guards send during a %i-file upload (%s)', async (uploadingCount, _label) => {
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onUploadingChange(uploadingCount))
+
+    expect(renderer.root.findByType(CanvasAgentComposer).props.disabled).toBe(true)
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Do not send yet', [])
+    })
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('freezes an empty retry document snapshot instead of falling back to the current selection', async () => {
+    mocks.sessionError = 'response lost'
+    mocks.retryRequest = {
+      requestId: 'request-empty-documents',
+      content: 'Retry without documents',
+      conversationId: 'conversation-experimental',
+      documentResourceIds: [],
+      explicitDocumentNodeIds: [],
+      documentAttachments: []
+    }
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([{
+      resourceId: DOCUMENT_RESOURCE_B, name: 'current.md', contentType: 'text/markdown',
+      size: 8, sha256: 'b'.repeat(64)
+    }]))
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '使用原请求重试' }).props.onClick()
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      'Retry without documents',
+      [],
+      expect.objectContaining({
+        requestId: 'request-empty-documents',
+        documentResourceIds: [],
+        explicitDocumentNodeIds: [],
+        documentAttachments: []
+      })
+    )
+  })
+
+  it('deduplicates explicit Document mentions in first-use order and caps them at five', async () => {
+    const documentNodes = Array.from({ length: 6 }, (_, index) => ({
+      id: `document-node-${index + 1}`,
+      kind: 'document',
+      title: `Document ${index + 1}`,
+      revision: 1,
+      digest: `digest-${index + 1}`
+    }))
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={{ ...workspaceContext, snapshot: { nodes: documentNodes } }}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    const mentions = [
+      documentNodes[0], documentNodes[0], documentNodes[1], documentNodes[2],
+      documentNodes[3], documentNodes[4], documentNodes[5]
+    ].map(node => ({ nodeId: node.id, label: node.title }))
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Discuss documents', mentions)
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      'Discuss documents',
+      [],
+      expect.objectContaining({
+        explicitDocumentNodeIds: documentNodes.slice(0, 5).map(node => node.id)
+      })
+    )
+  })
+
+  it('clears transient attachments after the durable send even when Canvas apply throws', async () => {
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [],
+      canvasEdits: [{ id: 'edit-1', kind: 'free_canvas_text_create' }]
+    })
+    const applyCanvasEdit = vi.fn().mockRejectedValue(new Error('apply failed'))
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([{
+      resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown',
+      size: 7, sha256: 'a'.repeat(64)
+    }]))
+
+    await act(async () => {
+      await expect(renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Apply edit', []))
+        .rejects.toThrow('apply failed')
+    })
+
+    expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([])
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('使用原请求重试')
   })
 })

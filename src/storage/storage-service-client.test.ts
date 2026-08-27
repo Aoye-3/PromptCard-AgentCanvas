@@ -80,6 +80,34 @@ describe('storageServiceClient', () => {
     })
   })
 
+  test('cancels a project document upload through the caller AbortSignal', async () => {
+    const lifecycle = new AbortController()
+    let requestSignal: AbortSignal | undefined
+    let resolveFetch!: (response: Response) => void
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      requestSignal = init?.signal ?? undefined
+      resolveFetch = resolve
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const file = new File(['# plan'], 'plan.md', { type: 'text/markdown' })
+
+    const upload = storageServiceClient.projectDocumentResources.upload('project/one', file, lifecycle.signal)
+    lifecycle.abort('project-changed')
+    await Promise.resolve()
+    if (!requestSignal?.aborted) {
+      resolveFetch(jsonResponse({
+        id: 'a'.repeat(32), projectId: 'project/one', originalFilename: 'plan.md',
+        contentType: 'text/markdown', size: 7, sha256: 'a'.repeat(64), extractionKind: 'utf-8',
+        extractionStatus: 'complete', normalizedTextDigest: 'b'.repeat(64), revision: 1,
+        lifecycleStatus: 'active', createdAt: 1, updatedAt: 1
+      }))
+    }
+
+    await expect(upload).rejects.toMatchObject({ code: 'request_aborted', status: 0 })
+    expect(requestSignal?.aborted).toBe(true)
+  })
+
   test('creates, inspects and idempotently revokes a closed context-pack inspection', async () => {
     const inspection = contextPackInspection()
     const fetchMock = vi.fn()

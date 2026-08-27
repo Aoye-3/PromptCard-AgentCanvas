@@ -116,6 +116,7 @@ export function AgentCollaborationPanel({
   const [conversationRevision, setConversationRevision] = useState(1)
   const [canvasAttachments, setCanvasAttachments] = useState<CanvasAgentAttachment[]>([])
   const [documentAttachments, setDocumentAttachments] = useState<AgentDocumentAttachment[]>([])
+  const [documentUploadingCount, setDocumentUploadingCount] = useState(0)
   const [canvasEditMode, setCanvasEditMode] = useState<CanvasAgentEditMode>('complete')
   const [canvasSelection, setCanvasSelection] = useState<(CanvasAgentSelection & { nodeId: string }) | undefined>()
   const [composerResetKey, setComposerResetKey] = useState(0)
@@ -185,6 +186,7 @@ export function AgentCollaborationPanel({
     canvasIdentityRef.current = identity
     setCanvasAttachments([])
     setDocumentAttachments([])
+    setDocumentUploadingCount(0)
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
     setComposerResetKey(key => key + 1)
@@ -204,12 +206,12 @@ export function AgentCollaborationPanel({
     mentions: Array<{ nodeId: string; label: string }> = [],
     requestId?: string,
     retryDocuments?: {
-      documentResourceIds?: string[]
-      explicitDocumentNodeIds?: string[]
-      documentAttachments?: AgentDocumentAttachment[]
+      documentResourceIds: string[]
+      explicitDocumentNodeIds: string[]
+      documentAttachments: AgentDocumentAttachment[]
     }
   ) => {
-    if (!content.trim() || running) return
+    if (!content.trim() || running || documentUploadingCount > 0) return
     const promptLibraryMode = canvasEditMode === 'prompt-library'
     const target = promptLibraryMode
       ? undefined
@@ -226,13 +228,15 @@ export function AgentCollaborationPanel({
           mentions,
         }
       : undefined
-    const activeDocumentAttachments = retryDocuments?.documentAttachments || documentAttachments
-    const documentResourceIds = retryDocuments?.documentResourceIds
-      || activeDocumentAttachments.map(attachment => attachment.resourceId)
-    const explicitDocumentNodeIds = retryDocuments?.explicitDocumentNodeIds
-      || mentions
-        .map(mention => mention.nodeId)
-        .filter(nodeId => documentNodes.some(node => node.id === nodeId))
+    const activeDocumentAttachments = retryDocuments
+      ? retryDocuments.documentAttachments
+      : documentAttachments
+    const documentResourceIds = retryDocuments
+      ? retryDocuments.documentResourceIds
+      : activeDocumentAttachments.map(attachment => attachment.resourceId)
+    const explicitDocumentNodeIds = retryDocuments
+      ? retryDocuments.explicitDocumentNodeIds
+      : explicitDocumentMentions(mentions, documentNodes)
     const returned = await sendMessage(content.trim(), presets, {
       workspaceContext,
       mode,
@@ -243,12 +247,10 @@ export function AgentCollaborationPanel({
       interactionMode,
       selectedSkillIds: interactionMode === 'prompt-edit' ? selectedSkillIds : undefined,
       canvasNodeContext,
-      ...(interactionMode === 'chat-experimental' && documentResourceIds.length ? {
-        documentResourceIds,
-        documentAttachments: activeDocumentAttachments
-      } : {}),
       ...(interactionMode === 'chat-experimental' ? {
-        explicitDocumentNodeIds
+        documentResourceIds,
+        explicitDocumentNodeIds,
+        documentAttachments: activeDocumentAttachments
       } : {})
     })
     const succeeded = !getAgentSession(sessionKey).runtimeError
@@ -256,6 +258,13 @@ export function AgentCollaborationPanel({
     const updatedConversationId = getAgentSession(sessionKey).conversationId
     if (updatedConversationId) setConversationId(updatedConversationId)
     if (interactionMode === 'prompt-edit') setSelectedSkillIds([])
+
+    setDraft('')
+    setCanvasAttachments([])
+    setDocumentAttachments([])
+    setCanvasSelection(undefined)
+    setCanvasEditMode('complete')
+    setComposerResetKey(key => key + 1)
 
     const appliedCanvasEdits: AgentCanvasEdit[] = []
     if (onApplyCanvasEdit) {
@@ -296,13 +305,6 @@ export function AgentCollaborationPanel({
         ])
       }
     }
-
-    setDraft('')
-    setCanvasAttachments([])
-    setDocumentAttachments([])
-    setCanvasSelection(undefined)
-    setCanvasEditMode('complete')
-    setComposerResetKey(key => key + 1)
   }
 
   const setDraftText = (content: string) => {
@@ -536,7 +538,7 @@ export function AgentCollaborationPanel({
                 if (currentRetryRequest.conversationId !== conversationId) return
                 void handleSend(
                   currentRetryRequest.content,
-                  (currentRetryRequest.explicitDocumentNodeIds || []).map(nodeId => ({
+                  currentRetryRequest.explicitDocumentNodeIds.map(nodeId => ({
                     nodeId,
                     label: documentNodes.find(node => node.id === nodeId)?.title || nodeId
                   })),
@@ -623,6 +625,7 @@ export function AgentCollaborationPanel({
               disabled={running}
               resetKey={`${sessionKey}:${conversationId || 'new'}:${composerResetKey}`}
               onChange={setDocumentAttachments}
+              onUploadingChange={setDocumentUploadingCount}
             />
           ) : null}
           <CanvasAgentComposer
@@ -632,7 +635,7 @@ export function AgentCollaborationPanel({
             editMode={canvasEditMode}
             selection={canvasSelection ? withoutNodeId(canvasSelection) : undefined}
             running={running}
-            disabled={runtimeStatus !== 'connected' || running || modelSaving || !effectiveModel || effectiveModel.available === false || (interactionMode === 'chat-experimental' && !conversationId)}
+            disabled={runtimeStatus !== 'connected' || running || documentUploadingCount > 0 || modelSaving || !effectiveModel || effectiveModel.available === false || (interactionMode === 'chat-experimental' && !conversationId)}
             externalDraft={composerDraft}
             resetKey={composerResetKey}
             modelOptions={modelOptions}
@@ -658,7 +661,7 @@ export function AgentCollaborationPanel({
               setCanvasSelection(undefined)
             }}
             onModelChange={modelKey => void persistConversationModel(modelKey)}
-            onSubmit={(content, mentions) => void handleSend(content, mentions)}
+            onSubmit={handleSend}
           />
         </div>
       ) : (
@@ -720,6 +723,7 @@ export function AgentCollaborationPanel({
     })
     setCanvasAttachments([])
     setDocumentAttachments([])
+    setDocumentUploadingCount(0)
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
     setComposerResetKey(key => key + 1)
@@ -765,6 +769,7 @@ export function AgentCollaborationPanel({
       setConversationRevision(updated.revision)
       setSelectedSkillIds([])
       setDocumentAttachments([])
+      setDocumentUploadingCount(0)
       hydrateSession(sessionKey, {
         interactionMode: updated.interactionMode,
         boundSkillIds: updated.boundSkillIds,
@@ -843,6 +848,22 @@ function readDocumentNodeSummaries(workspaceContext: AgentWorkspaceContext): Can
       userText: ''
     }]
   })
+}
+
+function explicitDocumentMentions(
+  mentions: Array<{ nodeId: string; label: string }>,
+  documentNodes: CanvasAgentNodeSummary[]
+): string[] {
+  const documentNodeIds = new Set(documentNodes.map(node => node.id))
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const mention of mentions) {
+    if (!documentNodeIds.has(mention.nodeId) || seen.has(mention.nodeId)) continue
+    seen.add(mention.nodeId)
+    result.push(mention.nodeId)
+    if (result.length === 5) break
+  }
+  return result
 }
 
 function readCanvasTextPreviewNodes(workspaceContext: AgentWorkspaceContext): IFreeCanvasTextNode[] {
