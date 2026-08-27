@@ -90,7 +90,7 @@ class SkillHostsV14Tests(unittest.TestCase):
         )
 
     def test_schema_v14_persists_independent_host_pins(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 15)
+        self.assertEqual(self.store.health()["schemaVersion"], SCHEMA_VERSION)
         self.assertEqual(self.pin("codex", 1).status_code, 200)
         self.assertEqual(self.pin("local-agent", 1).status_code, 200)
         revision_two = self.add_reviewed_revision("host-skill", {
@@ -1176,14 +1176,15 @@ class SkillHostsV14Tests(unittest.TestCase):
             connection.execute("DROP TABLE skill_revision_reviews")
             connection.execute("DROP TABLE skill_host_pins")
             connection.execute(
-                "UPDATE schema_migrations SET version=13, name='legacy-v13' WHERE version=15"
+                "UPDATE schema_migrations SET version=13, name='legacy-v13' WHERE version=?",
+                (SCHEMA_VERSION,),
             )
             connection.commit()
         finally:
             connection.close()
 
         reopened = SqliteStore(self.root / "storage")
-        self.assertEqual(reopened.health()["schemaVersion"], 15)
+        self.assertEqual(reopened.health()["schemaVersion"], SCHEMA_VERSION)
         self.assertEqual(reopened.get_skill("host-skill")["revisions"], before)
 
 

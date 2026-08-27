@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Any, Callable, Literal
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from .assets import MAX_IMAGE_IMPORT_BYTES
+from .document_resources import (
+    DocumentTooLargeError,
+    DocumentValidationError,
+    document_size_limit,
+)
 from .reference_codes import ReferenceCodeError
 from .remote_images import RemoteImage, RemoteImageError, fetch_remote_image
 from .skill_importer import SkillPackageImportError, SkillPackageImportService
@@ -34,6 +40,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.environ.get("PROMPTCARD_STORAGE_DATA_DIR", ROOT_DIR / "data"))
 SEED_FILE = ROOT_DIR / "public" / "prompt-library-presets.json"
 MAX_ASSET_UPLOAD_BYTES = 200 * 1024 * 1024
+INTERNAL_AUTH_HEADER_NAME = "X-PromptCard-Internal-Token"
 
 
 def load_seed_presets() -> list[dict[str, Any]]:
@@ -135,6 +142,17 @@ class CodexProjectionRepairPayload(BaseModel):
     repositoryScope: str
     expectedRevision: int = Field(ge=1)
     expectedDigest: str
+
+
+class ProviderFileCleanupPayload(BaseModel):
+    providerId: str
+    connectionId: str
+    remoteFileId: str
+
+
+class ProviderFileCleanupRetryPayload(BaseModel):
+    nextAttemptAt: int = Field(ge=0)
+    errorCode: str
 
 
 def create_app(
@@ -758,6 +776,154 @@ def create_app(
     def resolve_prompt_reference(reference_code: str) -> dict[str, Any]:
         return _handle(lambda: storage.resolve_prompt_reference(reference_code))
 
+    @application.post("/api/projects/{project_id}/document-resources")
+    async def create_project_document_resource(
+        project_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        filename = unquote(request.headers.get("x-file-name", ""))
+        content_type = request.headers.get("content-type", "")
+        try:
+            limit = document_size_limit(filename, content_type)
+            content_length = request.headers.get("content-length")
+            if content_length is not None and int(content_length) > limit:
+                raise DocumentTooLargeError("Document exceeds the format size limit")
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > limit:
+                    raise DocumentTooLargeError("Document exceeds the format size limit")
+                chunks.append(chunk)
+            return storage.create_project_document_resource(
+                project_id,
+                filename,
+                content_type,
+                b"".join(chunks),
+            )
+        except DocumentTooLargeError as exc:
+            raise _http_error(413, "document_too_large", str(exc)) from exc
+        except (DocumentValidationError, ValueError) as exc:
+            raise _http_error(400, "invalid_document", str(exc)) from exc
+
+    @application.get("/api/projects/{project_id}/document-resources")
+    def list_project_document_resources(project_id: str) -> dict[str, Any]:
+        return _handle(
+            lambda: {
+                "resources": storage.list_project_document_resources(project_id)
+            }
+        )
+
+    @application.get(
+        "/api/projects/{project_id}/document-resources/{resource_id}"
+    )
+    def get_project_document_resource(
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.get_project_document_resource(project_id, resource_id)
+        )
+
+    @application.delete(
+        "/api/projects/{project_id}/document-resources/{resource_id}"
+    )
+    def trash_project_document_resource(
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.trash_project_document_resource(project_id, resource_id)
+        )
+
+    @application.post(
+        "/api/projects/{project_id}/document-resources/{resource_id}/restore"
+    )
+    def restore_project_document_resource(
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.restore_project_document_resource(project_id, resource_id)
+        )
+
+    @application.get(
+        "/api/internal/projects/{project_id}/document-resources/{resource_id}/content"
+    )
+    def read_project_document_resource(
+        project_id: str,
+        resource_id: str,
+        request: Request,
+    ) -> Response:
+        _require_internal_auth(request)
+        try:
+            content, metadata = storage.read_project_document_resource(
+                project_id, resource_id
+            )
+        except MissingItem as exc:
+            raise _http_error(404, "not_found", "Storage item not found") from exc
+        except DocumentValidationError as exc:
+            raise _http_error(
+                409, "document_integrity_failed", "Stored document failed validation"
+            ) from exc
+        return Response(
+            content=content,
+            media_type=metadata["contentType"],
+            headers={
+                "X-File-Name": quote(metadata["originalFilename"], safe=""),
+                "X-Document-Resource-Id": metadata["id"],
+            },
+        )
+
+    @application.post("/api/internal/provider-file-cleanup")
+    def enqueue_provider_file_cleanup(
+        payload: ProviderFileCleanupPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(
+            lambda: storage.enqueue_provider_file_cleanup(
+                payload.providerId, payload.connectionId, payload.remoteFileId
+            )
+        )
+
+    @application.get("/api/internal/provider-file-cleanup/due")
+    def get_due_provider_file_cleanup(
+        request: Request,
+        now: int,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(
+            lambda: {
+                "items": storage.get_due_provider_file_cleanup(now=now, limit=limit)
+            }
+        )
+
+    @application.post(
+        "/api/internal/provider-file-cleanup/{cleanup_id}/succeeded"
+    )
+    def mark_provider_file_cleanup_succeeded(
+        cleanup_id: str,
+        request: Request,
+    ) -> dict[str, bool]:
+        _require_internal_auth(request)
+        storage.mark_provider_file_cleanup_succeeded(cleanup_id)
+        return {"ok": True}
+
+    @application.post("/api/internal/provider-file-cleanup/{cleanup_id}/retry")
+    def mark_provider_file_cleanup_retry(
+        cleanup_id: str,
+        payload: ProviderFileCleanupRetryPayload,
+        request: Request,
+    ) -> dict[str, Any] | None:
+        _require_internal_auth(request)
+        return _handle(
+            lambda: storage.mark_provider_file_cleanup_retry(
+                cleanup_id, payload.nextAttemptAt, payload.errorCode
+            )
+        )
+
     return application
 
 
@@ -829,6 +995,19 @@ def _http_error(status: int, code: str, message: str, detail: Any = None, curren
     if current is not None:
         payload["current"] = current
     return HTTPException(status_code=status, detail=payload)
+
+
+def _require_internal_auth(request: Request) -> None:
+    expected = os.environ.get("PROMPTCARD_INTERNAL_TOKEN", "").strip()
+    supplied = request.headers.get(INTERNAL_AUTH_HEADER_NAME)
+    if not expected:
+        raise _http_error(
+            503,
+            "internal_auth_unavailable",
+            "Storage internal authentication is unavailable",
+        )
+    if not supplied or not secrets.compare_digest(supplied, expected):
+        raise _http_error(401, "internal_auth_required", "Internal authentication is required")
 
 
 def _delete_storage_artifacts(storage: SqliteStore, ids: list[str]) -> dict[str, bool]:

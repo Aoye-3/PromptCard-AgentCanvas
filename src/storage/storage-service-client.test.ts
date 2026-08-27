@@ -10,6 +10,76 @@ afterEach(() => {
 })
 
 describe('storageServiceClient', () => {
+  test('uses an isolated project document identity client and strips internal fields', async () => {
+    const unsafeResource = {
+      id: 'document/one',
+      projectId: 'project/one',
+      originalFilename: 'plan.md',
+      contentType: 'text/markdown',
+      size: 7,
+      sha256: 'a'.repeat(64),
+      extractionKind: 'utf-8',
+      extractionStatus: 'complete',
+      normalizedTextDigest: 'b'.repeat(64),
+      revision: 1,
+      lifecycleStatus: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      relativePath: 'documents/secret.md',
+      normalizedText: '# secret',
+      remoteFileId: 'provider-secret'
+    }
+    const expectedResource = {
+      id: 'document/one',
+      projectId: 'project/one',
+      originalFilename: 'plan.md',
+      contentType: 'text/markdown',
+      size: 7,
+      sha256: 'a'.repeat(64),
+      extractionKind: 'utf-8',
+      extractionStatus: 'complete',
+      normalizedTextDigest: 'b'.repeat(64),
+      revision: 1,
+      lifecycleStatus: 'active',
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(unsafeResource))
+      .mockResolvedValueOnce(jsonResponse({ resources: [unsafeResource] }))
+      .mockResolvedValueOnce(jsonResponse(unsafeResource))
+      .mockResolvedValueOnce(jsonResponse({ ...unsafeResource, lifecycleStatus: 'trash', revision: 2 }))
+      .mockResolvedValueOnce(jsonResponse({ ...unsafeResource, lifecycleStatus: 'active', revision: 3 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const file = new File(['# plan'], 'plan.md', { type: 'text/markdown' })
+
+    await expect(storageServiceClient.projectDocumentResources.upload('project/one', file))
+      .resolves.toEqual(expectedResource)
+    await expect(storageServiceClient.projectDocumentResources.list('project/one'))
+      .resolves.toEqual([expectedResource])
+    await expect(storageServiceClient.projectDocumentResources.get('project/one', 'document/one'))
+      .resolves.toEqual(expectedResource)
+    await expect(storageServiceClient.projectDocumentResources.delete('project/one', 'document/one'))
+      .resolves.toMatchObject({ lifecycleStatus: 'trash', revision: 2 })
+    await expect(storageServiceClient.projectDocumentResources.restore('project/one', 'document/one'))
+      .resolves.toMatchObject({ lifecycleStatus: 'active', revision: 3 })
+
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1]?.method])).toEqual([
+      ['/storage-api/projects/project%2Fone/document-resources', 'POST'],
+      ['/storage-api/projects/project%2Fone/document-resources', undefined],
+      ['/storage-api/projects/project%2Fone/document-resources/document%2Fone', undefined],
+      ['/storage-api/projects/project%2Fone/document-resources/document%2Fone', 'DELETE'],
+      ['/storage-api/projects/project%2Fone/document-resources/document%2Fone/restore', 'POST']
+    ])
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      body: file,
+      headers: expect.objectContaining({
+        'Content-Type': 'text/markdown',
+        'X-File-Name': 'plan.md'
+      })
+    })
+  })
+
   test('creates, inspects and idempotently revokes a closed context-pack inspection', async () => {
     const inspection = contextPackInspection()
     const fetchMock = vi.fn()

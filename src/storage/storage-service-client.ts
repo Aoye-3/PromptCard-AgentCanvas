@@ -231,6 +231,23 @@ export interface ImageAssetImportResult {
   height: number
 }
 
+export interface ProjectDocumentResource {
+  id: string
+  projectId: string
+  originalFilename: string
+  contentType: 'text/plain' | 'text/markdown' | 'application/pdf' |
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  size: number
+  sha256: string
+  extractionKind: 'utf-8' | 'docx' | 'none'
+  extractionStatus: 'complete' | 'not-applicable'
+  normalizedTextDigest: string | null
+  revision: number
+  lifecycleStatus: 'active' | 'trash'
+  createdAt: number
+  updatedAt: number
+}
+
 export interface ImageAssetDerivation {
   id: string
   sourceAssetId: string
@@ -596,6 +613,51 @@ export interface ContextPackCreateRequest {
   creator: 'promptcard-ui'
 }
 
+const parseProjectDocumentResource = (value: unknown): ProjectDocumentResource => {
+  if (!value || typeof value !== 'object') {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid document resource.')
+  }
+  const candidate = value as Record<string, unknown>
+  const contentTypes = new Set([
+    'text/plain',
+    'text/markdown',
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ])
+  if (
+    typeof candidate.id !== 'string' ||
+    typeof candidate.projectId !== 'string' ||
+    typeof candidate.originalFilename !== 'string' ||
+    typeof candidate.contentType !== 'string' || !contentTypes.has(candidate.contentType) ||
+    typeof candidate.size !== 'number' ||
+    typeof candidate.sha256 !== 'string' ||
+    !['utf-8', 'docx', 'none'].includes(String(candidate.extractionKind)) ||
+    !['complete', 'not-applicable'].includes(String(candidate.extractionStatus)) ||
+    !(typeof candidate.normalizedTextDigest === 'string' || candidate.normalizedTextDigest === null) ||
+    typeof candidate.revision !== 'number' ||
+    !['active', 'trash'].includes(String(candidate.lifecycleStatus)) ||
+    typeof candidate.createdAt !== 'number' ||
+    typeof candidate.updatedAt !== 'number'
+  ) {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid document resource.')
+  }
+  return {
+    id: candidate.id,
+    projectId: candidate.projectId,
+    originalFilename: candidate.originalFilename,
+    contentType: candidate.contentType as ProjectDocumentResource['contentType'],
+    size: candidate.size,
+    sha256: candidate.sha256,
+    extractionKind: candidate.extractionKind as ProjectDocumentResource['extractionKind'],
+    extractionStatus: candidate.extractionStatus as ProjectDocumentResource['extractionStatus'],
+    normalizedTextDigest: candidate.normalizedTextDigest,
+    revision: candidate.revision,
+    lifecycleStatus: candidate.lifecycleStatus as ProjectDocumentResource['lifecycleStatus'],
+    createdAt: candidate.createdAt,
+    updatedAt: candidate.updatedAt
+  }
+}
+
 export const storageServiceClient = {
   health: isHealthy,
 
@@ -719,6 +781,57 @@ export const storageServiceClient = {
         method: 'POST',
         body: JSON.stringify(payload)
       })
+    }
+  },
+  projectDocumentResources: {
+    async upload(projectId: string, file: File): Promise<ProjectDocumentResource> {
+      const contentType = inferDocumentContentType(file)
+      if (!contentType) {
+        throw new StorageHttpError(
+          400,
+          'invalid_document',
+          'Only TXT, Markdown, PDF, and DOCX documents are supported.'
+        )
+      }
+      const payload = await request<unknown>(
+        `/storage-api/projects/${encodeURIComponent(projectId)}/document-resources`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': contentType,
+            'X-File-Name': encodeURIComponent(file.name)
+          },
+          body: file
+        },
+        60_000
+      )
+      return parseProjectDocumentResource(payload)
+    },
+    async list(projectId: string): Promise<ProjectDocumentResource[]> {
+      const payload = await request<{ resources?: unknown[] }>(
+        `/storage-api/projects/${encodeURIComponent(projectId)}/document-resources`
+      )
+      if (!Array.isArray(payload.resources)) {
+        throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid document list.')
+      }
+      return payload.resources.map(parseProjectDocumentResource)
+    },
+    async get(projectId: string, resourceId: string): Promise<ProjectDocumentResource> {
+      return parseProjectDocumentResource(await request<unknown>(
+        `/storage-api/projects/${encodeURIComponent(projectId)}/document-resources/${encodeURIComponent(resourceId)}`
+      ))
+    },
+    async delete(projectId: string, resourceId: string): Promise<ProjectDocumentResource> {
+      return parseProjectDocumentResource(await request<unknown>(
+        `/storage-api/projects/${encodeURIComponent(projectId)}/document-resources/${encodeURIComponent(resourceId)}`,
+        { method: 'DELETE' }
+      ))
+    },
+    async restore(projectId: string, resourceId: string): Promise<ProjectDocumentResource> {
+      return parseProjectDocumentResource(await request<unknown>(
+        `/storage-api/projects/${encodeURIComponent(projectId)}/document-resources/${encodeURIComponent(resourceId)}/restore`,
+        { method: 'POST' }
+      ))
     }
   },
   imageGenerationRuns: {
@@ -1176,6 +1289,18 @@ const inferImageImportContentType = (file: File): string | null => {
     heif: 'image/heif'
   }
   return extension ? byExtension[extension] || null : null
+}
+
+const inferDocumentContentType = (file: File): ProjectDocumentResource['contentType'] | null => {
+  const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0]
+  const expected = extension ? {
+    '.txt': 'text/plain',
+    '.md': 'text/markdown',
+    '.pdf': 'application/pdf',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  }[extension] : undefined
+  if (!expected || (file.type && file.type.toLowerCase() !== expected)) return null
+  return expected as ProjectDocumentResource['contentType']
 }
 
 const normalizeImageGenerationRun = (candidate: unknown): ImageGenerationRun[] => {

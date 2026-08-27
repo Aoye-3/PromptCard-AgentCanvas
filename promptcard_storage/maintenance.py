@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .backup import BackupManager
+from .document_resources import DocumentValidationError, validate_document
 from .reference_codes import ReferenceCodeError, ReferenceNamespace, parse_reference_code
 from .store import (
     DATABASE_NAME,
@@ -62,6 +63,7 @@ def _restore_backup_locked(data_dir: Path, source: Path) -> None:
     if not (source / "manifest.json").is_file() or not (source / DATABASE_NAME).is_file():
         raise MigrationError("Backup is missing manifest.json or promptcard.sqlite3")
     _validate_assets_path(source / "assets")
+    _validate_documents_path(source / "documents")
     data_dir.parent.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex
     staging_dir = data_dir.parent / f".{data_dir.name}.restore-{token}"
@@ -69,6 +71,7 @@ def _restore_backup_locked(data_dir: Path, source: Path) -> None:
     try:
         shutil.copytree(source, staging_dir)
         _validate_assets_path(staging_dir / "assets")
+        _validate_documents_path(staging_dir / "documents")
         manifest_version = _read_manifest_version(staging_dir / "manifest.json")
         _validate_database(
             staging_dir / DATABASE_NAME,
@@ -88,6 +91,7 @@ def _restore_backup_locked(data_dir: Path, source: Path) -> None:
             if isinstance(exc, MigrationError):
                 raise
             raise MigrationError("Backup staging migration failed") from exc
+        (staging_dir / "documents").mkdir(exist_ok=True)
         _checkpoint_database(staging_dir / DATABASE_NAME)
         _validate_database(
             staging_dir / DATABASE_NAME,
@@ -98,6 +102,10 @@ def _restore_backup_locked(data_dir: Path, source: Path) -> None:
             validation_dir / DATABASE_NAME,
         )
         _validate_reference_rows(staging_dir / DATABASE_NAME)
+        _validate_document_resources(
+            staging_dir / DATABASE_NAME,
+            staging_dir / "documents",
+        )
 
         data_dir.mkdir(parents=True, exist_ok=True)
         if (data_dir / DATABASE_NAME).exists():
@@ -304,16 +312,24 @@ def _validate_reference_rows(database_path: Path) -> None:
 
 
 def _validate_assets_path(assets_path: Path) -> None:
+    _validate_regular_tree(assets_path, "assets")
+
+
+def _validate_documents_path(documents_path: Path) -> None:
+    _validate_regular_tree(documents_path, "documents")
+
+
+def _validate_regular_tree(tree_path: Path, label: str) -> None:
     try:
-        root_metadata = os.lstat(assets_path)
+        root_metadata = os.lstat(tree_path)
     except FileNotFoundError:
         return
     except OSError as exc:
-        raise MigrationError("Backup assets tree cannot be inspected") from exc
+        raise MigrationError(f"Backup {label} tree cannot be inspected") from exc
     if _is_reparse_point(root_metadata) or not stat.S_ISDIR(root_metadata.st_mode):
-        raise MigrationError("Backup assets entry must be a regular directory")
+        raise MigrationError(f"Backup {label} entry must be a regular directory")
 
-    pending = [assets_path]
+    pending = [tree_path]
     try:
         while pending:
             directory = pending.pop()
@@ -323,18 +339,63 @@ def _validate_assets_path(assets_path: Path) -> None:
                     metadata = os.lstat(path)
                     if _is_reparse_point(metadata):
                         raise MigrationError(
-                            "Backup assets tree contains a link or reparse point"
+                            f"Backup {label} tree contains a link or reparse point"
                         )
                     if stat.S_ISDIR(metadata.st_mode):
                         pending.append(path)
                     elif not stat.S_ISREG(metadata.st_mode):
                         raise MigrationError(
-                            "Backup assets tree contains a special file"
+                            f"Backup {label} tree contains a special file"
                         )
     except MigrationError:
         raise
     except OSError as exc:
-        raise MigrationError("Backup assets tree cannot be inspected") from exc
+        raise MigrationError(f"Backup {label} tree cannot be inspected") from exc
+
+
+def _validate_document_resources(database_path: Path, documents_dir: Path) -> None:
+    connection = sqlite3.connect(database_path)
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_document_resources'"
+        ).fetchone()
+        if table is None:
+            return
+        rows = connection.execute(
+            """SELECT relative_path, original_filename, content_type, size, sha256,
+                      normalized_text_digest
+               FROM project_document_resources"""
+        ).fetchall()
+    finally:
+        connection.close()
+
+    expected_paths: set[str] = set()
+    try:
+        for relative_path, filename, content_type, size, sha256, text_digest in rows:
+            path_parts = Path(relative_path).parts
+            if len(path_parts) != 2 or path_parts[0] != "documents":
+                raise MigrationError("Backup document resource path is invalid")
+            document_path = documents_dir / path_parts[1]
+            expected_paths.add(path_parts[1])
+            metadata = os.lstat(document_path)
+            if _is_reparse_point(metadata) or not stat.S_ISREG(metadata.st_mode):
+                raise MigrationError("Backup document resource is not a regular file")
+            validated = validate_document(filename, content_type, document_path.read_bytes())
+            if (
+                validated.size != size
+                or validated.sha256 != sha256
+                or validated.normalized_text_digest != text_digest
+            ):
+                raise MigrationError("Backup document resource integrity check failed")
+        on_disk = {
+            path.name for path in documents_dir.iterdir() if path.is_file()
+        } if documents_dir.exists() else set()
+        if on_disk != expected_paths:
+            raise MigrationError("Backup documents do not match registered resources")
+    except MigrationError:
+        raise
+    except (OSError, DocumentValidationError) as exc:
+        raise MigrationError("Backup document resource validation failed") from exc
 
 
 def _is_reparse_point(metadata: object) -> bool:
@@ -428,17 +489,24 @@ def _checkpoint_database(database_path: Path) -> None:
 def _commit_staged_restore(data_dir: Path, staging_dir: Path, token: str) -> None:
     target_database = data_dir / DATABASE_NAME
     target_assets = data_dir / "assets"
+    target_documents = data_dir / "documents"
     staged_database = staging_dir / DATABASE_NAME
     staged_assets = staging_dir / "assets"
+    staged_documents = staging_dir / "documents"
     rollback_database = data_dir / f".{DATABASE_NAME}.rollback-{token}"
     rollback_assets = data_dir / f".assets.rollback-{token}"
+    rollback_documents = data_dir / f".documents.rollback-{token}"
     had_database = target_database.exists()
     replace_assets = staged_assets.exists()
     had_assets = replace_assets and target_assets.exists()
+    replace_documents = staged_documents.exists()
+    had_documents = replace_documents and target_documents.exists()
     database_moved = False
     assets_moved = False
+    documents_moved = False
     database_installed = False
     assets_installed = False
+    documents_installed = False
     try:
         if had_database:
             os.replace(target_database, rollback_database)
@@ -446,10 +514,14 @@ def _commit_staged_restore(data_dir: Path, staging_dir: Path, token: str) -> Non
         if had_assets:
             os.replace(target_assets, rollback_assets)
             assets_moved = True
+        if had_documents:
+            os.replace(target_documents, rollback_documents)
+            documents_moved = True
         if had_database:
             _backup_rollback_copy(
                 rollback_database,
                 rollback_assets if assets_moved else target_assets,
+                rollback_documents if documents_moved else target_documents,
                 data_dir,
             )
         os.replace(staged_database, target_database)
@@ -457,6 +529,9 @@ def _commit_staged_restore(data_dir: Path, staging_dir: Path, token: str) -> Non
         if replace_assets:
             os.replace(staged_assets, target_assets)
             assets_installed = True
+        if replace_documents:
+            os.replace(staged_documents, target_documents)
+            documents_installed = True
     except Exception as exc:
         recovery_failures: list[str] = []
         if database_moved:
@@ -481,9 +556,21 @@ def _commit_staged_restore(data_dir: Path, staging_dir: Path, token: str) -> Non
                 _remove_path(target_assets)
             except OSError as recovery_error:
                 recovery_failures.append(f"assets cleanup: {recovery_error}")
+        if documents_moved:
+            documents_error = _restore_tree_with_fallback(
+                rollback_documents, target_documents
+            )
+            if documents_error is not None:
+                recovery_failures.append(f"documents: {documents_error}")
+        elif documents_installed:
+            try:
+                _remove_path(target_documents)
+            except OSError as recovery_error:
+                recovery_failures.append(f"documents cleanup: {recovery_error}")
         if recovery_failures:
             rescue_paths = [
-                str(path) for path in (rollback_database, rollback_assets)
+                str(path)
+                for path in (rollback_database, rollback_assets, rollback_documents)
                 if path.exists()
             ]
             raise MigrationError(
@@ -494,6 +581,7 @@ def _commit_staged_restore(data_dir: Path, staging_dir: Path, token: str) -> Non
     else:
         _remove_path_best_effort(rollback_database)
         _remove_path_best_effort(rollback_assets)
+        _remove_path_best_effort(rollback_documents)
 
 
 def _restore_file_with_fallback(rollback_path: Path, target_path: Path) -> str | None:
@@ -556,6 +644,7 @@ def _tree_fingerprint(root: Path) -> tuple[tuple[str, str], ...]:
 def _backup_rollback_copy(
     rollback_database: Path,
     current_assets: Path,
+    current_documents: Path,
     data_dir: Path,
 ) -> None:
     @contextmanager
@@ -575,6 +664,7 @@ def _backup_rollback_copy(
     BackupManager(
         rollback_database,
         current_assets,
+        current_documents,
         DATABASE_NAME,
         SERVICE_VERSION,
         SCHEMA_VERSION,

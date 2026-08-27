@@ -13,7 +13,7 @@ from promptcard_storage.reference_codes import (
     ReferenceNamespace,
     generate_reference_code,
 )
-from promptcard_storage.store import DuplicateItem, JsonCollectionStore
+from promptcard_storage.store import SCHEMA_VERSION, DuplicateItem, JsonCollectionStore
 
 
 SKILL_CODE = re.compile(r"^SKL-[0-7][0-9A-HJKMNP-TV-Z]{25}$")
@@ -120,7 +120,12 @@ class SkillPackagesV13Tests(unittest.TestCase):
     def test_fresh_v13_schema_contains_canonical_entry_columns_and_immutability_triggers(self) -> None:
         connection = sqlite3.connect(self.data_dir / "promptcard.sqlite3")
         try:
-            self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 15)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0],
+                SCHEMA_VERSION,
+            )
             entry_columns = {
                 row[1]: row[2] for row in connection.execute("PRAGMA table_info(skill_package_entries)")
             }

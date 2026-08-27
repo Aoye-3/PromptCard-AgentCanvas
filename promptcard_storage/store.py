@@ -23,6 +23,7 @@ from .assets import (
     prepare_provider_image,
 )
 from .backup import BackupManager
+from .document_resources import DocumentResourceStore
 from .image_runs import (
     decode_cursor,
     encode_cursor,
@@ -33,6 +34,7 @@ from .image_runs import (
     transition_image_run,
 )
 from .migration import MigrationError, StorageInitializer
+from .provider_file_cleanup import ProviderFileCleanupRepository
 from .reference_codes import (
     ReferenceCodeError,
     ReferenceNamespace,
@@ -52,7 +54,7 @@ from .skill_packages import (
 
 Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 DATABASE_NAME = "promptcard.sqlite3"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE = " \t\n\v\f\r"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
@@ -139,6 +141,7 @@ class SqliteStore:
         self.data_dir = data_dir
         self.database_path = data_dir / DATABASE_NAME
         self.assets_dir = data_dir / "assets"
+        self.documents_dir = data_dir / "documents"
         self.backups_dir = data_dir.parent / "backups"
         self.projects_seed = projects_seed or []
         self.presets_seed = presets_seed or []
@@ -160,9 +163,22 @@ class SqliteStore:
             + self._project_resource_asset_payloads(),
             now_ms,
         )
+        self._documents = DocumentResourceStore(
+            self.data_dir,
+            self._connect,
+            self._transaction,
+            self._require_active_project,
+            now_ms,
+        )
+        self._provider_file_cleanup = ProviderFileCleanupRepository(
+            self._connect,
+            self._transaction,
+            now_ms,
+        )
         self._backups = BackupManager(
             self.database_path,
             self.assets_dir,
+            self.documents_dir,
             DATABASE_NAME,
             SERVICE_VERSION,
             SCHEMA_VERSION,
@@ -190,6 +206,7 @@ class SqliteStore:
                 "imageGenerationPlacements": True,
                 "imageAssetDerivations": True,
                 "projectResources": True,
+                "projectDocumentResources": True,
                 "agentConversations": True,
                 "skillHub": True,
                 "contextPacks": True,
@@ -1676,6 +1693,92 @@ class SqliteStore:
                 f"DELETE FROM projects WHERE status='trash' AND id IN ({retired_placeholders})",
                 tuple(retired_ids),
             )
+
+    def create_project_document_resource(
+        self,
+        project_id: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        return self._documents.create(project_id, filename, content_type, content)
+
+    def list_project_document_resources(self, project_id: str) -> list[dict[str, Any]]:
+        return self._documents.list(project_id)
+
+    def get_project_document_resource(
+        self,
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._documents.get(project_id, resource_id)
+        except LookupError as exc:
+            raise MissingItem() from exc
+
+    def trash_project_document_resource(
+        self,
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._documents.trash(project_id, resource_id)
+        except LookupError as exc:
+            raise MissingItem() from exc
+
+    def restore_project_document_resource(
+        self,
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._documents.restore(project_id, resource_id)
+        except LookupError as exc:
+            raise MissingItem() from exc
+
+    def read_project_document_resource(
+        self,
+        project_id: str,
+        resource_id: str,
+    ) -> tuple[bytes, dict[str, Any]]:
+        try:
+            return self._documents.read(project_id, resource_id)
+        except LookupError as exc:
+            raise MissingItem() from exc
+
+    def enqueue_provider_file_cleanup(
+        self,
+        provider_id: str,
+        connection_id: str,
+        remote_file_id: str,
+    ) -> dict[str, Any]:
+        return self._provider_file_cleanup.enqueue(
+            provider_id, connection_id, remote_file_id
+        )
+
+    def get_due_provider_file_cleanup(
+        self,
+        *,
+        now: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        return self._provider_file_cleanup.get_due(now, limit)
+
+    def mark_provider_file_cleanup_succeeded(self, cleanup_id: str) -> None:
+        self._provider_file_cleanup.mark_succeeded(cleanup_id)
+
+    def mark_provider_file_cleanup_retry(
+        self,
+        cleanup_id: str,
+        next_attempt_at: int,
+        redacted_error_code: str,
+    ) -> dict[str, Any] | None:
+        return self._provider_file_cleanup.mark_retry(
+            cleanup_id, next_attempt_at, redacted_error_code
+        )
+
+    def provider_file_cleanup_diagnostics(self, *, now: int) -> dict[str, int]:
+        return self._provider_file_cleanup.diagnostics(now)
 
     def list_project_resources(self, project_id: str) -> dict[str, list[dict[str, Any]]]:
         with self._connect() as connection:
@@ -3544,6 +3647,23 @@ class SqliteStore:
                 except Exception:
                     connection.rollback()
                     raise
+            if current_version == 15:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self._create_document_resources_v16_schema(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (
+                            16,
+                            "add-project-document-resources-and-provider-file-cleanup",
+                            now_ms(),
+                        ),
+                    )
+                    connection.commit()
+                    current_version = 16
+                except Exception:
+                    connection.rollback()
+                    raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
             connection.execute("BEGIN IMMEDIATE")
@@ -3597,6 +3717,65 @@ class SqliteStore:
         self._create_skill_packages_v13_schema(connection)
         self._create_skill_hosts_v14_schema(connection)
         self._create_skill_reviews_v15_schema(connection)
+        self._create_document_resources_v16_schema(connection)
+
+    @staticmethod
+    def _create_document_resources_v16_schema(connection: sqlite3.Connection) -> None:
+        statements = (
+            """CREATE TABLE IF NOT EXISTS project_document_resources(
+                resource_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                relative_path TEXT NOT NULL UNIQUE,
+                original_filename TEXT NOT NULL,
+                content_type TEXT NOT NULL CHECK(content_type IN (
+                    'text/plain',
+                    'text/markdown',
+                    'application/pdf',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                )),
+                size INTEGER NOT NULL CHECK(size > 0 AND size <= 52428800),
+                sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+                extraction_kind TEXT NOT NULL CHECK(extraction_kind IN ('utf-8','docx','none')),
+                extraction_status TEXT NOT NULL CHECK(extraction_status IN ('complete','not-applicable')),
+                normalized_text TEXT,
+                normalized_text_digest TEXT CHECK(
+                    normalized_text_digest IS NULL OR length(normalized_text_digest)=64
+                ),
+                revision INTEGER NOT NULL CHECK(revision >= 1),
+                lifecycle_status TEXT NOT NULL CHECK(lifecycle_status IN ('active','trash')),
+                created_at INTEGER NOT NULL CHECK(created_at >= 0),
+                updated_at INTEGER NOT NULL CHECK(updated_at >= created_at),
+                CHECK(
+                    (extraction_kind IN ('utf-8','docx') AND extraction_status='complete'
+                        AND normalized_text IS NOT NULL AND normalized_text_digest IS NOT NULL)
+                    OR
+                    (extraction_kind='none' AND extraction_status='not-applicable'
+                        AND normalized_text IS NULL AND normalized_text_digest IS NULL)
+                )
+            )""",
+            """CREATE INDEX IF NOT EXISTS project_document_resources_project_lifecycle_order
+                ON project_document_resources(
+                    project_id, lifecycle_status, created_at DESC, resource_id DESC
+                )""",
+            """CREATE TABLE IF NOT EXISTS provider_file_cleanup(
+                cleanup_id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                remote_file_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL CHECK(created_at >= 0),
+                last_attempt_at INTEGER,
+                attempt_count INTEGER NOT NULL CHECK(attempt_count >= 0),
+                next_attempt_at INTEGER NOT NULL CHECK(next_attempt_at >= 0),
+                last_error_code TEXT CHECK(
+                    last_error_code IS NULL OR length(last_error_code) BETWEEN 1 AND 64
+                ),
+                UNIQUE(provider_id, connection_id, remote_file_id)
+            )""",
+            """CREATE INDEX IF NOT EXISTS provider_file_cleanup_due_order
+                ON provider_file_cleanup(next_attempt_at, created_at, cleanup_id)""",
+        )
+        for statement in statements:
+            connection.execute(statement)
 
     @staticmethod
     def _create_skill_hosts_v14_schema(connection: sqlite3.Connection) -> None:

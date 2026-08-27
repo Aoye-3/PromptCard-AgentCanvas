@@ -59,7 +59,7 @@ class SkillManagementV15Tests(unittest.TestCase):
         )
 
     def test_schema_v15_records_revision_bound_trust_reviews(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 15)
+        self.assertEqual(self.store.health()["schemaVersion"], SCHEMA_VERSION)
         revision = self.skill["revisions"][0]
 
         reviewed = self.review(1, revision["digest"])
