@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
+import threading
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -42,7 +45,8 @@ class _FakeFiles:
         self.events.append(("create", remote_id, request))
         return SimpleNamespace(id=remote_id)
 
-    def delete(self, remote_id: str):
+    def delete(self, remote_id: str, **kwargs):
+        assert kwargs == {"timeout": 2.0}
         self.events.append(("delete", remote_id))
         if remote_id in self.delete_failures:
             raise RuntimeError(f"provider body contains {remote_id}")
@@ -81,12 +85,24 @@ class _FakeArk:
 
 
 @pytest.fixture(autouse=True)
-def _reset_fake_ark():
+def _reset_fake_ark(monkeypatch):
+    from app.gateway import provider_file_cleanup
+
     _FakeArk.instances = []
     _FakeArk.response = _response()
     _FakeArk.response_failure = None
     _FakeArk.delete_failures = set()
     _FakeArk.create_failure_at = 0
+    monkeypatch.setattr(
+        provider_file_cleanup,
+        "enqueue_provider_file_cleanup",
+        lambda provider, connection, remote: f"cleanup-{remote}",
+    )
+    monkeypatch.setattr(
+        provider_file_cleanup,
+        "mark_provider_file_cleanup_succeeded",
+        lambda cleanup_id: None,
+    )
 
 
 def _assets():
@@ -260,12 +276,16 @@ def test_provider_model_error_is_rethrown_as_a_redacted_code(monkeypatch, caplog
     assert "secret-credential" not in caplog.text
 
 
-def test_delete_failure_enqueues_only_opaque_cleanup_identity(monkeypatch, caplog):
+def test_delete_failure_leaves_pre_registered_cleanup_intents_pending(monkeypatch, caplog):
     from app.gateway import ark_responses
 
     _FakeArk.delete_failures = {"remote-1", "remote-2"}
     monkeypatch.setattr(ark_responses, "Ark", _FakeArk)
     enqueued: list[tuple[str, str, str]] = []
+
+    def register(provider: str, connection: str, remote: str) -> str:
+        enqueued.append((provider, connection, remote))
+        return f"cleanup-{remote}"
 
     result = ark_responses.complete_ark_response(
         _payload(),
@@ -274,9 +294,7 @@ def test_delete_failure_enqueues_only_opaque_cleanup_identity(monkeypatch, caplo
         model_id="model-1",
         pdf_assets=_assets(),
         connection_id="connection-1",
-        enqueue_cleanup=lambda provider, connection, remote: enqueued.append(
-            (provider, connection, remote)
-        ),
+        enqueue_cleanup=register,
     )
 
     assert result["content"][0]["text"] == "Draft ready"
@@ -376,9 +394,18 @@ class _CleanupArk:
     deleted: list[tuple[str, str, str]] = []
     failure: BaseException | None = None
 
-    def __init__(self, *, api_key: str, base_url: str):
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        timeout: float,
+        max_retries: int,
+    ):
         self.api_key = api_key
         self.base_url = base_url
+        assert 0 < timeout <= 2.0
+        assert max_retries == 0
         self.files = self
 
     def delete(self, remote_file_id: str):
@@ -459,6 +486,83 @@ def test_cleanup_retry_persists_redacted_code_and_is_bounded(monkeypatch, caplog
     assert "private/file.pdf" not in caplog.text
 
 
+def test_cleanup_intent_is_durable_before_response_and_survives_marker_outage(
+    monkeypatch,
+):
+    from app.gateway import ark_responses
+
+    registered: list[tuple[str, str, str, str]] = []
+
+    def register(provider: str, connection: str, remote: str) -> str:
+        cleanup_id = f"cleanup-{len(registered) + 1}"
+        registered.append((cleanup_id, provider, connection, remote))
+        _FakeArk.instances[0].events.append(("register", remote))
+        return cleanup_id
+
+    def unavailable_marker(cleanup_id: str) -> None:
+        raise RuntimeError(f"storage unavailable for {cleanup_id}")
+
+    monkeypatch.setattr(ark_responses, "Ark", _FakeArk)
+    result = ark_responses.complete_ark_response(
+        _payload(),
+        api_base="https://ark.example/api/v3",
+        credential="secret",
+        model_id="model-1",
+        pdf_assets=_assets(),
+        connection_id="connection-1",
+        enqueue_cleanup=register,
+        mark_cleanup_succeeded=unavailable_marker,
+    )
+
+    assert result["content"][0]["text"] == "Draft ready"
+    assert registered == [
+        ("cleanup-1", "volcengine-ark", "connection-1", "remote-1"),
+        ("cleanup-2", "volcengine-ark", "connection-1", "remote-2"),
+    ]
+    assert [event[0] for event in _FakeArk.instances[0].events] == [
+        "create",
+        "register",
+        "create",
+        "register",
+        "response",
+        "delete",
+        "delete",
+    ]
+
+
+def test_cleanup_registration_failure_aborts_model_and_returns_only_fixed_code(
+    monkeypatch,
+    caplog,
+):
+    from app.gateway import ark_responses
+
+    remote_file_id = "remote-sensitive-registration"
+
+    def fail_registration(provider: str, connection: str, remote: str) -> str:
+        raise RuntimeError(
+            f"storage raw body {remote_file_id} C:/private.pdf secret-credential"
+        )
+
+    monkeypatch.setattr(ark_responses, "Ark", _FakeArk)
+    with pytest.raises(ark_responses.ArkResponsesError) as error:
+        ark_responses.complete_ark_response(
+            _payload(),
+            api_base="https://ark.example/api/v3",
+            credential="secret-credential",
+            model_id="model-1",
+            pdf_assets=_assets()[:1],
+            connection_id="connection-1",
+            enqueue_cleanup=fail_registration,
+        )
+
+    assert str(error.value) == "provider_cleanup_persistence_failed"
+    assert all(event[0] != "response" for event in _FakeArk.instances[0].events)
+    assert [event[0] for event in _FakeArk.instances[0].events] == ["create", "delete"]
+    assert remote_file_id not in caplog.text
+    assert "private.pdf" not in caplog.text
+    assert "secret-credential" not in caplog.text
+
+
 def test_cleanup_retry_treats_already_absent_remote_file_as_idempotent_success():
     from app.gateway.provider_file_cleanup import retry_provider_file_cleanup
 
@@ -482,9 +586,45 @@ def test_cleanup_retry_treats_already_absent_remote_file_as_idempotent_success()
     assert storage.succeeded == ["cleanup-1"]
 
 
-def test_cleanup_storage_client_uses_authenticated_internal_contract(monkeypatch):
-    import httpx
+def test_cleanup_retry_bounds_provider_delete_and_stops_at_batch_deadline():
+    from app.gateway.provider_file_cleanup import retry_provider_file_cleanup
 
+    storage = _CleanupStorage(
+        [_due_cleanup(), {**_due_cleanup(), "cleanupId": "cleanup-2"}]
+    )
+    credentials = _CleanupCredentials({"connection-1": "fresh-secret"})
+    ark_options: list[dict] = []
+
+    class BoundedArk:
+        def __init__(self, **kwargs):
+            ark_options.append(kwargs)
+            self.files = self
+
+        def delete(self, remote_file_id: str):
+            assert remote_file_id == "opaque-remote-id"
+
+    clock = iter([10.0, 10.1, 12.1])
+    summary = retry_provider_file_cleanup(
+        storage=storage,
+        connection_store=_CleanupConnections(credentials),
+        ark_factory=BoundedArk,
+        now_ms=lambda: 1_000_000,
+        monotonic=lambda: next(clock),
+        batch_budget_seconds=2.0,
+    )
+
+    assert summary.attempted == 1
+    assert ark_options == [
+        {
+            "api_key": "fresh-secret",
+            "base_url": "https://ark.example/api/v3",
+            "timeout": pytest.approx(1.9),
+            "max_retries": 0,
+        }
+    ]
+
+
+def test_cleanup_storage_client_uses_authenticated_internal_contract(monkeypatch):
     from app.gateway.provider_file_cleanup import ProviderCleanupStorageClient
 
     requests: list[httpx.Request] = []
@@ -493,6 +633,8 @@ def test_cleanup_storage_client_uses_authenticated_internal_contract(monkeypatch
         requests.append(request)
         if request.url.path.endswith("/due"):
             return httpx.Response(200, json={"items": [_due_cleanup()]})
+        if request.url.path == "/api/internal/provider-file-cleanup":
+            return httpx.Response(200, json={"cleanupId": "cleanup-1"})
         return httpx.Response(200, json={"ok": True})
 
     monkeypatch.setenv("PROMPTCARD_INTERNAL_TOKEN", "internal-token")
@@ -503,7 +645,10 @@ def test_cleanup_storage_client_uses_authenticated_internal_contract(monkeypatch
     client = ProviderCleanupStorageClient(client=http)
 
     assert client.get_due(now=1_000_000, limit=20) == [_due_cleanup()]
-    client.enqueue("volcengine-ark", "connection-1", "opaque-remote-id")
+    assert (
+        client.enqueue("volcengine-ark", "connection-1", "opaque-remote-id")
+        == "cleanup-1"
+    )
     client.mark_succeeded("cleanup-1")
     client.mark_retry(
         "cleanup-1",
@@ -521,6 +666,32 @@ def test_cleanup_storage_client_uses_authenticated_internal_contract(monkeypatch
         request.headers["X-PromptCard-Internal-Token"] == "internal-token"
         for request in requests
     )
+
+
+def test_gateway_suppresses_http_client_urls_with_provider_and_cleanup_ids(
+    caplog,
+):
+    from app.gateway.app import create_app
+    from app.gateway.provider_file_cleanup import ProviderCleanupStorageClient
+
+    remote_file_id = "remote-file-sensitive-3"
+    cleanup_id = "cleanup-sensitive-7"
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"ok": True})
+    )
+    raw_client = httpx.Client(
+        base_url="https://provider.invalid",
+        transport=transport,
+    )
+    storage = ProviderCleanupStorageClient(client=raw_client)
+
+    create_app()
+    with caplog.at_level(logging.INFO):
+        raw_client.delete(f"/files/{remote_file_id}")
+        storage.mark_succeeded(cleanup_id)
+
+    assert remote_file_id not in caplog.text
+    assert cleanup_id not in caplog.text
 
 
 def _descriptor(*, provider: str = "volcengine-ark", inputs=None):
@@ -587,6 +758,11 @@ async def test_document_ids_are_resolved_before_model_and_handle_is_request_scop
         return {"text": "ok", "canvasEdits": [], "proposals": []}
 
     monkeypatch.setattr(promptcard_runtime, "_load_document_resources", load_documents)
+    monkeypatch.setattr(
+        promptcard_runtime,
+        "require_pdf_text_model",
+        lambda binding: _descriptor(),
+    )
     monkeypatch.setattr(promptcard_runtime, "resolve_text_model", resolve_model)
     monkeypatch.setattr(promptcard_runtime, "_invoke_text_agent", invoke)
     monkeypatch.setattr(promptcard_runtime, "_load_canvas_image_attachments", _empty_attachments)
@@ -626,6 +802,11 @@ async def test_text_agent_disconnect_discards_request_scoped_pdf_handle(monkeypa
         raise HTTPException(status_code=503, detail="text_agent_unavailable")
 
     monkeypatch.setattr(promptcard_runtime, "_load_document_resources", load_documents)
+    monkeypatch.setattr(
+        promptcard_runtime,
+        "require_pdf_text_model",
+        lambda binding: _descriptor(),
+    )
     monkeypatch.setattr(promptcard_runtime, "resolve_text_model", lambda binding: _descriptor())
     monkeypatch.setattr(promptcard_runtime, "_invoke_text_agent", disconnect)
     monkeypatch.setattr(promptcard_runtime, "_load_canvas_image_attachments", _empty_attachments)
@@ -718,6 +899,13 @@ async def test_pdf_capability_rejects_before_text_agent_invocation(monkeypatch):
         invoked = True
 
     monkeypatch.setattr(promptcard_runtime, "_load_document_resources", load_documents)
+    monkeypatch.setattr(
+        promptcard_runtime,
+        "require_pdf_text_model",
+        lambda binding: (_ for _ in ()).throw(
+            promptcard_runtime.ModelManagementError("document_input_not_supported")
+        ),
+    )
     monkeypatch.setattr(
         promptcard_runtime,
         "resolve_text_model",
@@ -921,6 +1109,37 @@ def test_startup_cleanup_failure_does_not_block_health_or_log_sensitive_values(
     assert "private/document.pdf" not in caplog.text
     assert "secret-credential" not in caplog.text
     assert "raw-body" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_lifespan_yields_health_before_a_stuck_cleanup_and_cancels_on_shutdown(
+    monkeypatch,
+):
+    import asyncio
+    import importlib
+
+    gateway_app = importlib.import_module("app.gateway.app")
+    started = threading.Event()
+    release = threading.Event()
+    worker_daemon: list[bool] = []
+
+    def never_returns():
+        worker_daemon.append(threading.current_thread().daemon)
+        started.set()
+        release.wait()
+
+    monkeypatch.setattr(gateway_app, "retry_provider_file_cleanup", never_returns)
+    context = gateway_app.lifespan(gateway_app.create_app())
+    release_timer = threading.Timer(1.0, release.set)
+    release_timer.start()
+    try:
+        await asyncio.wait_for(context.__aenter__(), timeout=0.2)
+        assert await asyncio.to_thread(started.wait, 0.2)
+        assert worker_daemon == [True]
+        await asyncio.wait_for(context.__aexit__(None, None, None), timeout=0.2)
+    finally:
+        release.set()
+        release_timer.cancel()
 
 
 @pytest.mark.anyio

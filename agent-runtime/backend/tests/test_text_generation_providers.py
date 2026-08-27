@@ -13,11 +13,13 @@ from app.gateway.text_generation import service
 class MemoryCredentialStore:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.lookups: list[str] = []
 
     def set(self, connection_id: str, secret: str) -> None:
         self.values[connection_id] = secret
 
     def get(self, connection_id: str) -> str | None:
+        self.lookups.append(connection_id)
         return self.values.get(connection_id)
 
     def delete(self, connection_id: str) -> None:
@@ -195,3 +197,55 @@ def test_pdf_document_dispatch_uses_responses_only_for_declared_ark_capability(
     assert calls[0][1]["credential"] == "secret-value"
     assert calls[0][1]["connection_id"] == connection_id
     assert calls[0][1]["pdf_assets"] == [pdf]
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "model_id", "unavailable_state"),
+    [
+        ("volcengine-ark", "doubao-seed-2-0-pro-260215", "credential_missing"),
+        ("deepseek", "deepseek-chat", "not_tested"),
+    ],
+)
+def test_unsupported_pdf_preflight_wins_before_availability_or_provider(
+    tmp_path,
+    monkeypatch,
+    provider_id,
+    model_id,
+    unavailable_state,
+):
+    from app.gateway.ark_responses import ResolvedDocumentAsset
+
+    store = configured_store(tmp_path, provider_id, model_id)
+    connection_id = store.read_state()["connections"][0]["id"]
+    if unavailable_state == "credential_missing":
+        store.credential_store.delete(connection_id)
+    else:
+        state = store.read_state()
+        state["connections"][0].pop("lastTest", None)
+        store.replace_state(state)
+    store.credential_store.lookups.clear()
+    provider_called = False
+
+    def complete(*args, **kwargs):
+        nonlocal provider_called
+        provider_called = True
+
+    monkeypatch.setattr(service, "get_connection_store", lambda: store)
+    monkeypatch.setattr(service, "complete_ark_response", complete)
+    pdf = ResolvedDocumentAsset(
+        resource_id="pdf-unsupported",
+        filename="scan.pdf",
+        content_type="application/pdf",
+        content=b"%PDF-scan",
+    )
+
+    with pytest.raises(ModelManagementError, match="document_input_not_supported"):
+        service.complete_sdk_text_with_documents(
+            {"messages": []},
+            connection_id=connection_id,
+            model_id=model_id,
+            pdf_assets=[pdf],
+        )
+
+    assert store.credential_store.lookups == []
+    assert provider_called is False

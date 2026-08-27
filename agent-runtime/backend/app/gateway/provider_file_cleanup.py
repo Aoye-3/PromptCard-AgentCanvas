@@ -14,6 +14,8 @@ from app.gateway.internal_auth import create_internal_auth_headers
 from app.gateway.model_management.connection_store import get_connection_store
 
 MAX_CLEANUP_RETRY_BATCH = 20
+DEFAULT_CLEANUP_BATCH_BUDGET_SECONDS = 10.0
+PROVIDER_DELETE_TIMEOUT_SECONDS = 2.0
 _BASE_RETRY_DELAY_MS = 60_000
 _MAX_RETRY_DELAY_MS = 60 * 60 * 1000
 
@@ -56,8 +58,8 @@ class ProviderCleanupStorageClient:
         provider_id: str,
         connection_id: str,
         remote_file_id: str,
-    ) -> None:
-        self._json(
+    ) -> str:
+        payload = self._json(
             "POST",
             "/api/internal/provider-file-cleanup",
             json={
@@ -66,6 +68,10 @@ class ProviderCleanupStorageClient:
                 "remoteFileId": remote_file_id,
             },
         )
+        cleanup_id = payload.get("cleanupId")
+        if not isinstance(cleanup_id, str) or not cleanup_id:
+            raise ProviderCleanupStorageError("provider_cleanup_storage_invalid")
+        return cleanup_id
 
     def get_due(self, *, now: int, limit: int) -> list[dict[str, Any]]:
         payload = self._json(
@@ -120,10 +126,18 @@ def enqueue_provider_file_cleanup(
     provider_id: str,
     connection_id: str,
     remote_file_id: str,
-) -> None:
+) -> str:
     storage = ProviderCleanupStorageClient()
     try:
-        storage.enqueue(provider_id, connection_id, remote_file_id)
+        return storage.enqueue(provider_id, connection_id, remote_file_id)
+    finally:
+        storage.close()
+
+
+def mark_provider_file_cleanup_succeeded(cleanup_id: str) -> None:
+    storage = ProviderCleanupStorageClient()
+    try:
+        storage.mark_succeeded(cleanup_id)
     finally:
         storage.close()
 
@@ -135,11 +149,16 @@ def retry_provider_file_cleanup(
     connection_store: Any | None = None,
     ark_factory: Callable[..., Any] = Ark,
     now_ms: Callable[[], int] | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    batch_budget_seconds: float = DEFAULT_CLEANUP_BATCH_BUDGET_SECONDS,
 ) -> CleanupSummary:
     if type(limit) is not int or not 1 <= limit <= MAX_CLEANUP_RETRY_BATCH:
         raise ValueError("provider cleanup limit is invalid")
+    if batch_budget_seconds <= 0:
+        raise ValueError("provider cleanup budget is invalid")
     current_time = now_ms or (lambda: int(time.time() * 1000))
     now = current_time()
+    deadline = monotonic() + batch_budget_seconds
     owned_storage = storage is None
     cleanup_storage = storage or ProviderCleanupStorageClient()
     store = connection_store or get_connection_store()
@@ -149,6 +168,9 @@ def retry_provider_file_cleanup(
     try:
         due_items = cleanup_storage.get_due(now=now, limit=limit)[:limit]
         for item in due_items:
+            remaining_seconds = deadline - monotonic()
+            if remaining_seconds <= 0:
+                break
             attempted += 1
             cleanup_id = str(item.get("cleanupId") or "")
             error_code: str | None = None
@@ -171,6 +193,8 @@ def retry_provider_file_cleanup(
                 client = ark_factory(
                     api_key=credential,
                     base_url=str(connection.get("apiBase") or ""),
+                    timeout=min(PROVIDER_DELETE_TIMEOUT_SECONDS, remaining_seconds),
+                    max_retries=0,
                 )
                 try:
                     client.files.delete(str(item.get("remoteFileId") or ""))

@@ -1178,7 +1178,9 @@ async def test_rejected_canvas_edit_does_not_claim_that_a_modification_was_gener
 
 
 @pytest.mark.anyio
-async def test_persistent_message_reuses_saved_turn_before_model_resolution(monkeypatch):
+async def test_persistent_message_reuses_saved_turn_before_document_model_skill_or_provider_resolution(
+    monkeypatch,
+):
     saved_snapshot = {
         "connectionId": "connection-previous", "providerId": "deepseek", "modelId": "deepseek-chat",
         "displayName": "DeepSeek Chat", "capabilities": {"input": ["text"]},
@@ -1193,7 +1195,14 @@ async def test_persistent_message_reuses_saved_turn_before_model_resolution(monk
             "modelBinding": {"connectionId": "connection-new", "providerId": "deepseek", "modelId": "deepseek-reasoner"},
             "turns": [{
                 "requestId": "request-1",
-                "messages": [{"role": "assistant", "text": "Saved answer"}],
+                "messages": [
+                    {
+                        "role": "user",
+                        "text": "Question",
+                        "documentAttachments": [{"resourceId": "document-now-trashed"}],
+                    },
+                    {"role": "assistant", "text": "Saved answer"},
+                ],
                 "proposals": [{"id": "proposal-1"}],
                 "modelSnapshot": saved_snapshot,
             }],
@@ -1211,7 +1220,20 @@ async def test_persistent_message_reuses_saved_turn_before_model_resolution(monk
     body = PromptCardRuntimeMessageRequest.model_validate({
         "conversationId": "conversation-1", "requestId": "request-1",
         "content": "Question", "projectId": "project-1", "mode": "free-canvas",
+        "documentResourceIds": ["document-now-trashed"],
     })
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime._load_document_resources",
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError("trashed document resolution must be skipped")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime._resolve_skill_snapshots",
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError("Skill resolution must be skipped")
+        ),
+    )
 
     result = await promptcard_runtime.runtime_service.send_message(body, None)
 

@@ -39,6 +39,7 @@ from app.gateway.text_generation.service import (
     assigned_text_model,
     complete_sdk_text,
     complete_sdk_text_with_documents,
+    require_pdf_text_model,
     resolve_text_model,
 )
 
@@ -288,32 +289,6 @@ class PromptCardRuntimeService:
         payload = body.model_dump(by_alias=True)
         payload.pop("documentResourceIds", None)
         payload.pop("explicitDocumentNodeIds", None)
-        _validate_document_resource_ids(body.project_id, body.document_resource_ids)
-        if body.explicit_document_node_ids:
-            if len(set(body.explicit_document_node_ids)) != len(
-                body.explicit_document_node_ids
-            ):
-                raise HTTPException(
-                    status_code=422,
-                    detail="explicit_document_node_ids_duplicate",
-                )
-            raise HTTPException(
-                status_code=422,
-                detail="document_context_unavailable",
-            )
-        document_assets = await _load_document_resources(
-            body.project_id,
-            body.document_resource_ids,
-        )
-        if sum(len(asset.content) for asset in document_assets) > MAX_DOCUMENT_TURN_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail="document_attachments_too_large",
-            )
-        payload["content"] = _content_with_document_text(
-            body.content,
-            document_assets,
-        )
         resolved_canvas_context: dict[str, Any] | None = None
         conversation_id = body.conversation_id
         model_binding: dict[str, Any] | None = None
@@ -378,21 +353,47 @@ class PromptCardRuntimeService:
             })
             skill_snapshots = await _resolve_skill_snapshots(skill_request)
             payload["skillSnapshots"] = skill_snapshots
+        _validate_document_resource_ids(body.project_id, body.document_resource_ids)
+        if body.explicit_document_node_ids:
+            if len(set(body.explicit_document_node_ids)) != len(
+                body.explicit_document_node_ids
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="explicit_document_node_ids_duplicate",
+                )
+            raise HTTPException(
+                status_code=422,
+                detail="document_context_unavailable",
+            )
+        document_assets = await _load_document_resources(
+            body.project_id,
+            body.document_resource_ids,
+        )
+        if sum(len(asset.content) for asset in document_assets) > MAX_DOCUMENT_TURN_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="document_attachments_too_large",
+            )
+        payload["content"] = _content_with_document_text(
+            body.content,
+            document_assets,
+        )
         if interaction_mode == "prompt-edit":
             resolved_canvas_context = _resolve_canvas_node_context(body)
         payload["canvasNodeContext"] = resolved_canvas_context
         payload["interactionMode"] = interaction_mode
-        descriptor = resolve_text_model(model_binding)
         if any(asset.content_type == "application/pdf" for asset in document_assets):
-            capabilities = (descriptor.get("model") or {}).get("capabilities") or {}
-            if (
-                descriptor.get("providerId") != "volcengine-ark"
-                or "pdf" not in (capabilities.get("input") or [])
-            ):
+            try:
+                require_pdf_text_model(model_binding)
+            except ModelManagementError as exc:
+                if str(exc) != "document_input_not_supported":
+                    raise
                 raise HTTPException(
                     status_code=422,
                     detail="document_input_not_supported",
-                )
+                ) from None
+        descriptor = resolve_text_model(model_binding)
         normalized_binding = _model_binding_from_descriptor(descriptor)
         if conversation_id and body.project_id and model_binding is None:
             await _storage_request(

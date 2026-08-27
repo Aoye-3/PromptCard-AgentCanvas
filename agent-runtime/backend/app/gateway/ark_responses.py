@@ -21,7 +21,9 @@ class ResolvedDocumentAsset:
     normalized_text: str | None = None
 
 
-CleanupEnqueuer = Callable[[str, str, str], Any]
+CleanupEnqueuer = Callable[[str, str, str], str]
+CleanupMarker = Callable[[str], Any]
+_PROVIDER_DELETE_TIMEOUT_SECONDS = 2.0
 
 
 class ArkResponsesError(RuntimeError):
@@ -39,9 +41,10 @@ def complete_ark_response(
     pdf_assets: list[ResolvedDocumentAsset],
     connection_id: str | None = None,
     enqueue_cleanup: CleanupEnqueuer | None = None,
+    mark_cleanup_succeeded: CleanupMarker | None = None,
 ) -> dict[str, Any]:
     client = Ark(api_key=credential, base_url=api_base)
-    remote_file_ids: list[str] = []
+    cleanup_records: list[tuple[str, str | None]] = []
     try:
         for asset in pdf_assets:
             try:
@@ -52,11 +55,24 @@ def complete_ark_response(
                 )
             except Exception:
                 raise ArkResponsesError("provider_file_upload_failed") from None
-            remote_file_ids.append(str(uploaded.id))
+            remote_file_id = str(uploaded.id)
+            cleanup_records.append((remote_file_id, None))
+            try:
+                cleanup_id = _persist_cleanup_intent(
+                    enqueue_cleanup,
+                    connection_id,
+                    remote_file_id,
+                )
+            except Exception:
+                raise ArkResponsesError("provider_cleanup_persistence_failed") from None
+            cleanup_records[-1] = (remote_file_id, cleanup_id)
 
         request: dict[str, Any] = {
             "model": model_id,
-            "input": _response_input(payload.get("messages") or [], remote_file_ids),
+            "input": _response_input(
+                payload.get("messages") or [],
+                [remote_file_id for remote_file_id, _ in cleanup_records],
+            ),
             "instructions": str(payload.get("systemPrompt") or "") or None,
             "store": False,
         }
@@ -75,33 +91,51 @@ def complete_ark_response(
             raise ArkResponsesError("provider_response_failed") from None
         return _normalize_response(response)
     finally:
-        for remote_file_id in remote_file_ids:
+        for remote_file_id, cleanup_id in cleanup_records:
             try:
-                client.files.delete(remote_file_id)
-            except Exception:
-                _enqueue_failed_delete(
-                    enqueue_cleanup,
-                    connection_id,
+                client.files.delete(
                     remote_file_id,
+                    timeout=_PROVIDER_DELETE_TIMEOUT_SECONDS,
                 )
+            except Exception:
+                continue
+            if cleanup_id is not None:
+                _mark_cleanup_succeeded(mark_cleanup_succeeded, cleanup_id)
 
 
-def _enqueue_failed_delete(
+def _persist_cleanup_intent(
     enqueue_cleanup: CleanupEnqueuer | None,
     connection_id: str | None,
     remote_file_id: str,
-) -> None:
+) -> str:
     if not connection_id:
-        logger.warning("Ark provider file cleanup could not be persisted: cleanup_context_missing")
-        return
-    try:
-        if enqueue_cleanup is None:
-            from app.gateway.provider_file_cleanup import enqueue_provider_file_cleanup
+        raise ArkResponsesError("provider_cleanup_persistence_failed")
+    if enqueue_cleanup is None:
+        from app.gateway.provider_file_cleanup import enqueue_provider_file_cleanup
 
-            enqueue_cleanup = enqueue_provider_file_cleanup
-        enqueue_cleanup("volcengine-ark", connection_id, remote_file_id)
+        enqueue_cleanup = enqueue_provider_file_cleanup
+    cleanup_id = enqueue_cleanup("volcengine-ark", connection_id, remote_file_id)
+    if not isinstance(cleanup_id, str) or not cleanup_id:
+        raise ArkResponsesError("provider_cleanup_persistence_failed")
+    return cleanup_id
+
+
+def _mark_cleanup_succeeded(
+    marker: CleanupMarker | None,
+    cleanup_id: str,
+) -> None:
+    try:
+        if marker is None:
+            from app.gateway.provider_file_cleanup import (
+                mark_provider_file_cleanup_succeeded,
+            )
+
+            marker = mark_provider_file_cleanup_succeeded
+        marker(cleanup_id)
     except Exception:
-        logger.warning("Ark provider file cleanup could not be persisted: cleanup_enqueue_failed")
+        logger.warning(
+            "Ark provider file cleanup completion could not be persisted: cleanup_completion_update_failed"
+        )
 
 
 def _response_input(
