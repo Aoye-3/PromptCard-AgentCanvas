@@ -621,6 +621,106 @@ describe('free canvas project domain', () => {
     expect(project.nodes[2]).toMatchObject({ id: 'legacy-arrow', text: 'Next', color: '#123456' })
   })
 
+  test('keeps planning documents and storyboards isolated from Prompt text normalization', () => {
+    const document = {
+      id: 'document-1',
+      kind: 'document',
+      title: 'Creative brief',
+      position: { x: 10, y: 20 },
+      width: 560,
+      height: 420,
+      document: {
+        version: 1,
+        blocks: [{ id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Private planning prose', bold: true }] }],
+        revision: 3,
+        digest: 'document-digest',
+        suggestions: []
+      },
+      linkedDocumentResourceIds: ['resource-1'],
+      meta: { collapsed: false }
+    }
+    const storyboard = {
+      id: 'storyboard-1',
+      kind: 'storyboard',
+      title: 'Opening sequence',
+      position: { x: 620, y: 20 },
+      width: 640,
+      height: 480,
+      sequence: {
+        id: 'sequence-1',
+        name: 'Opening',
+        description: 'Arrival',
+        style: 'Cinematic',
+        constraints: 'No dialogue',
+        rows: [],
+        createdAt: 1,
+        updatedAt: 2,
+        meta: {}
+      },
+      source: {
+        documentNodeId: 'document-1',
+        documentRevision: 3,
+        documentDigest: 'document-digest',
+        documentResourceDigests: ['resource-digest'],
+        model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1' },
+        skills: [{ skillId: 'skill-1', revision: 2, digest: 'skill-digest' }]
+      },
+      pendingFieldChanges: [],
+      meta: {}
+    }
+
+    const project = normalizeFreeCanvasProject({
+      nodes: [document, storyboard] as never,
+      edges: [],
+      meta: {}
+    }, 100)
+
+    expect(project.nodes.map(node => node.kind)).toEqual(['document', 'storyboard'])
+    expect(project.nodes[0]).toMatchObject(document)
+    expect(project.nodes[1]).toMatchObject(storyboard)
+    expect(project.nodes.every(node => node.kind !== 'text')).toBe(true)
+  })
+
+  test('projects unknown node kinds as detached read-only data and drops their connections', () => {
+    const unknownNode = {
+      id: 'future-1',
+      kind: 'future-layout',
+      title: 'Future node',
+      position: { x: 40, y: 50 },
+      width: 360,
+      height: 220,
+      payload: { nested: [{ value: 'preserve exactly' }] },
+      meta: { futureFlag: true }
+    }
+    const textNode = {
+      id: 'text-1', kind: 'text', title: 'Prompt', position: { x: 0, y: 0 }, width: 420, height: 180,
+      fontSize: 'large', segments: [], meta: {}
+    }
+    const project = normalizeFreeCanvasProject({
+      nodes: [unknownNode, textNode] as never,
+      edges: [{ id: 'future-edge', source: 'future-1', target: 'text-1', createdAt: 1 }],
+      selectedNodeId: 'future-1',
+      meta: {}
+    }, 100)
+
+    expect(project.nodes[0]).toMatchObject({
+      id: 'future-1',
+      kind: 'unsupported',
+      originalKind: 'future-layout',
+      originalNode: unknownNode
+    })
+    if (project.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(project.nodes[0].originalNode).not.toBe(unknownNode)
+    expect(Object.isFrozen(project.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen((project.nodes[0].originalNode.payload as { nested: unknown[] }).nested)).toBe(true)
+    unknownNode.payload.nested[0].value = 'mutated source'
+    expect(project.nodes[0].originalNode).toMatchObject({
+      payload: { nested: [{ value: 'preserve exactly' }] }
+    })
+    expect(project.edges).toEqual([])
+    expect(project.selectedNodeId).toBe('future-1')
+  })
+
   test('keeps malformed generator payloads as safe generator nodes with a validation warning', () => {
     const project = createFreeCanvasProject(100, {
       nodes: [{

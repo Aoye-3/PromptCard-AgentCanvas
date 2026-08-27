@@ -285,13 +285,25 @@ function compactFreeCanvasNode(node: IFreeCanvasNode) {
   if (node.kind === 'text') {
     return compactFreeCanvasTextNode(node)
   }
-  return {
+  const identity = {
     id: node.id,
     kind: node.kind,
-    title: compactText(node.title),
-    assetId: node.kind === 'image' ? node.assetId || null : undefined,
-    text: node.kind === 'arrow' ? compactText(node.text) : undefined
+    title: compactText(node.title)
   }
+  if (node.kind === 'image') {
+    return { ...identity, assetId: node.assetId || null }
+  }
+  if (node.kind === 'arrow') {
+    return { ...identity, text: compactText(node.text) }
+  }
+  if (node.kind === 'document') {
+    return { ...identity, revision: node.document.revision, digest: node.document.digest }
+  }
+  if (node.kind === 'storyboard') return identity
+  if (node.kind === 'unsupported') return identity
+  if (node.kind === 'image-generator') return identity
+  const exhaustiveNode: never = node
+  return exhaustiveNode
 }
 
 function compactFreeCanvasTextNode(node: IFreeCanvasTextNode) {

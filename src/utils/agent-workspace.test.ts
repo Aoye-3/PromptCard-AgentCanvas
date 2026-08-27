@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { IPromptProject } from '@/models/PromptHistory.model'
+import type { IFreeCanvasProject, IPromptProject } from '@/models/PromptHistory.model'
 import type { IPage } from '@/stores/card-initial-state'
 import { buildCardWorkspaceContext, buildFreeCanvasWorkspaceContext, buildStoryboardWorkspaceContext, buildThreeStageWorkspaceContext } from './agent-workspace'
 
@@ -352,5 +352,64 @@ describe('agent workspace context', () => {
 
     expect(textNode.presetText).toBe('Template  spacing\n')
     expect(textNode.userText).toBe('  User  spacing\nline  ')
+  })
+
+  it('packs only isolated node identity metadata without planning or unknown payload content', () => {
+    const freeCanvas: IFreeCanvasProject = {
+      nodes: [
+        {
+          id: 'document-1', kind: 'document', title: 'Creative brief', position: { x: 0, y: 0 }, width: 560, height: 420,
+          document: {
+            version: 1,
+            blocks: [{ id: 'secret-block', type: 'paragraph', content: [{ text: 'PRIVATE DOCUMENT BODY' }] }],
+            revision: 4,
+            digest: 'document-digest',
+            suggestions: [{ id: 'private-suggestion', text: 'PRIVATE SUGGESTION' }]
+          },
+          linkedDocumentResourceIds: ['private-resource-id'],
+          meta: {}
+        },
+        {
+          id: 'storyboard-1', kind: 'storyboard', title: 'Opening shots', position: { x: 600, y: 0 }, width: 640, height: 480,
+          sequence: {
+            id: 'sequence-1', name: 'Opening', description: 'PRIVATE STORYBOARD BODY', style: '', constraints: '',
+            rows: [], createdAt: 1, updatedAt: 1, meta: {}
+          },
+          source: {
+            documentNodeId: 'document-1', documentRevision: 4, documentDigest: 'document-digest',
+            documentResourceDigests: ['private-resource-digest'],
+            model: { connectionId: 'connection', providerId: 'provider', modelId: 'model' }, skills: []
+          },
+          pendingFieldChanges: [], meta: {}
+        },
+        {
+          id: 'future-1', kind: 'unsupported', originalKind: 'future-layout', title: 'Future node',
+          position: { x: 1200, y: 0 }, width: 360, height: 220,
+          originalNode: { id: 'future-1', kind: 'future-layout', secret: 'PRIVATE UNKNOWN PAYLOAD' },
+          meta: {}
+        }
+      ],
+      edges: [], viewport: null, selectedNodeId: 'document-1', meta: {}
+    }
+    const project: IPromptProject = {
+      id: 'project-isolated', title: 'Isolated canvas', type: 'free-canvas', revision: 8,
+      pages: [], currentPage: 0, freeCanvas,
+      createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+
+    const context = buildFreeCanvasWorkspaceContext({ activeProject: project, freeCanvas })
+    const nodes = context.snapshot.nodes as Array<Record<string, unknown>>
+
+    expect(nodes).toEqual([
+      { id: 'document-1', kind: 'document', title: 'Creative brief', revision: 4, digest: 'document-digest' },
+      { id: 'storyboard-1', kind: 'storyboard', title: 'Opening shots' },
+      { id: 'future-1', kind: 'unsupported', title: 'Future node' }
+    ])
+    const serialized = JSON.stringify(context.snapshot)
+    expect(serialized).not.toContain('PRIVATE DOCUMENT BODY')
+    expect(serialized).not.toContain('PRIVATE SUGGESTION')
+    expect(serialized).not.toContain('private-resource-id')
+    expect(serialized).not.toContain('PRIVATE STORYBOARD BODY')
+    expect(serialized).not.toContain('PRIVATE UNKNOWN PAYLOAD')
   })
 })

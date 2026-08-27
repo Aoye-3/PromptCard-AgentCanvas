@@ -1,5 +1,8 @@
 import type { CardType, IPreset } from './Card.model'
 import type { IStoryboardRow, IStoryboardSequence } from './PromptHistory.model'
+import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
+
+export type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 
 export type AgentRuntimeStatus = 'unknown' | 'connected' | 'disconnected'
 
@@ -124,6 +127,8 @@ export interface AgentWorkspaceContext {
 
 /** Prompt-text edit operations only; conversation interaction modes are a separate policy boundary. See ADR-020. */
 export type CanvasAgentEditMode = 'complete' | 'rewrite' | 'prompt-library'
+
+export type AgentInteractionMode = 'prompt-edit' | 'chat-experimental'
 
 export interface CanvasAgentSelection {
   start: number
@@ -252,17 +257,6 @@ export interface AgentFreeCanvasTextProposalBasis {
   baseNodeRevision: number
   templateDigest: string
   baseSegmentsDigest: string
-}
-
-export interface AgentRunProvenance {
-  model: {
-    connectionId: string
-    providerId: string
-    modelId: string
-    displayName?: string
-    capabilities?: Record<string, unknown>
-  }
-  skills: Array<{ skillId: string; revision: number; digest: string }>
 }
 
 export interface AgentFreeCanvasTextInsertionsEdit {

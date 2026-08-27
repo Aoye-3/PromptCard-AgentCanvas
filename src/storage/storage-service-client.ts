@@ -527,13 +527,14 @@ async function isHealthy(): Promise<boolean> {
   }
 }
 
-const projectWritePayload = (project: Partial<IPromptProject>): Partial<IPromptProject> => {
-  const payload = { ...project }
+const projectWritePayload = (project: Partial<IPromptProject>): Record<string, unknown> => {
+  const payload: Record<string, unknown> = { ...project }
   delete payload.referenceCode
-  if (!payload.freeCanvas) return payload
+  if (!project.freeCanvas) return payload
   payload.freeCanvas = {
-    ...payload.freeCanvas,
-    nodes: payload.freeCanvas.nodes.map(node => {
+    ...project.freeCanvas,
+    nodes: project.freeCanvas.nodes.map(node => {
+      if (node.kind === 'unsupported') return structuredClone(node.originalNode)
       const nodePayload = { ...node }
       delete nodePayload.referenceCode
       if (nodePayload.meta.referenceCodePending === true) {

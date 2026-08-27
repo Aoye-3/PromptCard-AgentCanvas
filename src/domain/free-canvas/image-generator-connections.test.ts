@@ -84,6 +84,39 @@ describe('image generator canvas connections', () => {
     })).toEqual([{ code: 'prompt_input_limit' }])
   })
 
+  test.each<[string, IFreeCanvasProject['nodes'][number]]>([
+    ['document', {
+      id: 'document-source', kind: 'document', title: 'Plan', position: { x: 0, y: 0 }, width: 560, height: 420,
+      document: { version: 1, blocks: [], revision: 1, digest: 'digest', suggestions: [] },
+      linkedDocumentResourceIds: [], meta: {}
+    }],
+    ['storyboard', {
+      id: 'storyboard-source', kind: 'storyboard', title: 'Shots', position: { x: 0, y: 0 }, width: 640, height: 480,
+      sequence: {
+        id: 'sequence', name: 'Shots', description: '', style: '', constraints: '', rows: [],
+        createdAt: 1, updatedAt: 1, meta: {}
+      },
+      source: {
+        documentNodeId: 'document-source', documentRevision: 1, documentDigest: 'digest',
+        documentResourceDigests: [], model: { connectionId: 'c', providerId: 'p', modelId: 'm' }, skills: []
+      },
+      pendingFieldChanges: [], meta: {}
+    }],
+    ['unsupported', {
+      id: 'unsupported-source', kind: 'unsupported', originalKind: 'future-layout',
+      title: 'Future', position: { x: 0, y: 0 }, width: 360, height: 220,
+      originalNode: { id: 'unsupported-source', kind: 'future-layout' }, meta: {}
+    }]
+  ])('rejects a %s node as an image-generator Prompt source', (_kind, sourceNode) => {
+    const project = projectWith([generatorNode as never, sourceNode])
+
+    expect(validateImageGeneratorConnection(project, {
+      source: sourceNode.id,
+      target: generatorNode.id,
+      targetHandle: 'prompt'
+    })).toEqual([{ code: 'prompt_input_requires_text_source' }])
+  })
+
   test('rejects an eleventh reference image input', () => {
     const images = Array.from({ length: 11 }, (_, index) => imageNode(`image-${index + 1}`))
     const project = projectWith([

@@ -1850,9 +1850,14 @@ const FreeCanvasBuilderInner = ({
   const deleteCanvasNodes = useCallback((nodeId: string) => {
     const current = freeCanvasRef.current
     if (!current.nodes.some(node => node.id === nodeId)) return
-    const nodeIds = selectedNodeIds.includes(nodeId) && selectedNodeIds.length > 0
+    const requestedNodeIds = selectedNodeIds.includes(nodeId) && selectedNodeIds.length > 0
       ? selectedNodeIds
       : [nodeId]
+    const nodeIds = requestedNodeIds.filter(candidateId => {
+      const candidate = current.nodes.find(node => node.id === candidateId)
+      return candidate && !isIsolatedReadOnlyCanvasNode(candidate)
+    })
+    if (nodeIds.length === 0) return
     applyCanvasCommand({ kind: 'delete-nodes', nodeIds })
     setTextSelections(current => Object.fromEntries(
       Object.entries(current).filter(([candidateId]) => !nodeIds.includes(candidateId))
@@ -2272,7 +2277,9 @@ const FreeCanvasBuilderInner = ({
     type: node.kind === 'image-generator' ? 'imageGeneratorNode' : 'freeCanvasNode',
     position: node.position,
     selected: selectedNodeIds.includes(node.id),
-    deletable: !isRunningFreeCanvasImageGeneration(node),
+    draggable: !isIsolatedReadOnlyCanvasNode(node),
+    connectable: !isIsolatedReadOnlyCanvasNode(node),
+    deletable: !isIsolatedReadOnlyCanvasNode(node) && !isRunningFreeCanvasImageGeneration(node),
     initialWidth: node.kind === 'image' ? node.width : undefined,
     initialHeight: node.kind === 'image' ? node.height : undefined,
     style: node.kind === 'image' ? { width: node.width, height: node.height } : undefined,
@@ -2345,7 +2352,13 @@ const FreeCanvasBuilderInner = ({
     if (nonRemovalChanges.length > 0) {
       setFlowNodes(current => applyNodeChanges(nonRemovalChanges, current) as FreeCanvasFlowNode[])
     }
-    const removedNodeIds = changes.filter(change => change.type === 'remove').map(change => change.id)
+    const removedNodeIds = changes
+      .filter(change => change.type === 'remove')
+      .map(change => change.id)
+      .filter(nodeId => {
+        const node = freeCanvasRef.current.nodes.find(candidate => candidate.id === nodeId)
+        return node && !isIsolatedReadOnlyCanvasNode(node)
+      })
     if (removedNodeIds.length > 0 && !isCanvasKeyboardLocked) {
       const nextCanvas = removeFreeCanvasProjectNodes(freeCanvasRef.current, removedNodeIds)
       commitCanvasSelection(nextCanvas, nextCanvas.selectedNodeId || null)
@@ -2411,12 +2424,16 @@ const FreeCanvasBuilderInner = ({
   }
 
   const handleNodeDragStop: OnNodeDrag<FreeCanvasFlowNode> = (_event, node) => {
+    if (isIsolatedReadOnlyCanvasNode(node.data.canvasNode)) return
     emitGenerationCanvas(updateFreeCanvasNodePosition(freeCanvasRef.current, node.id, node.position))
   }
 
   const handleConnect: OnConnect = (connection: Connection) => {
     if (!connection.source || !connection.target || connection.source === connection.target) return
+    const sourceNode = freeCanvas.nodes.find(node => node.id === connection.source)
     const targetNode = freeCanvas.nodes.find(node => node.id === connection.target)
+    if (!sourceNode || !targetNode) return
+    if (isIsolatedReadOnlyCanvasNode(sourceNode) || isIsolatedReadOnlyCanvasNode(targetNode)) return
     if (targetNode?.kind === 'image-generator') {
       setUploadError('旧图片生成节点为只读预览，不能新增连线。请打开“图片生成”页签继续创作。')
       return
@@ -2439,8 +2456,11 @@ const FreeCanvasBuilderInner = ({
 
   const isValidConnection = useCallback((connection: Connection | Edge) => {
     if (!connection.source || !connection.target || connection.source === connection.target) return false
+    const sourceNode = freeCanvas.nodes.find(node => node.id === connection.source)
     const targetNode = freeCanvas.nodes.find(node => node.id === connection.target)
-    return targetNode?.kind !== 'image-generator'
+    if (!sourceNode || !targetNode) return false
+    if (isIsolatedReadOnlyCanvasNode(sourceNode) || isIsolatedReadOnlyCanvasNode(targetNode)) return false
+    return targetNode.kind !== 'image-generator'
   }, [freeCanvas])
 
   const handleEdgeClick: EdgeMouseHandler<Edge> = (_event, edge) => {
@@ -3304,8 +3324,47 @@ const FreeCanvasNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
   if (node.kind === 'arrow') {
     return <FreeCanvasArrowNodeView node={node} selected={selected} />
   }
+  if (node.kind === 'document') {
+    return <FreeCanvasReadOnlyNodeView node={node} selected={selected} label="规划文档" detail="文档编辑器将在专用工作区中启用。" />
+  }
+  if (node.kind === 'storyboard') {
+    return <FreeCanvasReadOnlyNodeView node={node} selected={selected} label="分镜表" detail="分镜节点将在专用工作区中启用。" />
+  }
+  if (node.kind === 'unsupported') {
+    return <FreeCanvasReadOnlyNodeView node={node} selected={selected} label="不支持的节点" detail={`${node.originalKind} · 原始数据将无损保留`} />
+  }
   return null
 }
+
+const FreeCanvasReadOnlyNodeView = ({
+  node,
+  selected,
+  label,
+  detail
+}: {
+  node: Extract<IFreeCanvasNode, { kind: 'document' | 'storyboard' | 'unsupported' }>
+  selected: boolean
+  label: string
+  detail: string
+}) => (
+  <article
+    data-read-only-canvas-node={node.kind}
+    role="status"
+    aria-label={`${label}：${node.title}`}
+    className={`rounded-[8px] border bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.12)] ${
+      selected ? 'border-sky-500 ring-2 ring-sky-200' : 'border-gray-200'
+    }`}
+    style={{ width: node.width, minHeight: node.height }}
+  >
+    <span className="text-[11px] font-black uppercase tracking-[0.14em] text-gray-400">{label}</span>
+    <strong className="mt-2 block text-sm text-gray-900">{node.title}</strong>
+    <span className="mt-2 block text-xs text-gray-500">{detail}</span>
+  </article>
+)
+
+const isIsolatedReadOnlyCanvasNode = (node: IFreeCanvasNode): boolean => (
+  node.kind === 'document' || node.kind === 'storyboard' || node.kind === 'unsupported'
+)
 
 const ImageGeneratorFlowNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
   if (data.canvasNode.kind !== 'image-generator') return null

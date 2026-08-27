@@ -97,6 +97,48 @@ describe('Canvas reference-code copy actions', () => {
     expect(html.match(/disabled=""/g)).toHaveLength(5)
   })
 
+  it('never treats planning or unknown nodes as image reference-code resources', () => {
+    const referenceCode = `CVM-${validUlid}`
+    const nodes: IFreeCanvasNode[] = [
+      {
+        id: 'document', kind: 'document', title: 'Plan', position: { x: 0, y: 0 }, width: 560, height: 420,
+        referenceCode,
+        document: { version: 1, blocks: [], revision: 1, digest: 'document-digest', suggestions: [] },
+        linkedDocumentResourceIds: [], meta: {}
+      },
+      {
+        id: 'storyboard', kind: 'storyboard', title: 'Shots', position: { x: 0, y: 0 }, width: 640, height: 480,
+        referenceCode,
+        sequence: {
+          id: 'sequence', name: 'Shots', description: '', style: '', constraints: '', rows: [],
+          createdAt: 1, updatedAt: 1, meta: {}
+        },
+        source: {
+          documentNodeId: 'document', documentRevision: 1, documentDigest: 'document-digest',
+          documentResourceDigests: [],
+          model: { connectionId: 'connection', providerId: 'provider', modelId: 'model' },
+          skills: []
+        },
+        pendingFieldChanges: [], meta: {}
+      },
+      {
+        id: 'unknown', kind: 'unsupported', originalKind: 'future-layout',
+        title: 'Future', position: { x: 0, y: 0 }, width: 360, height: 220,
+        referenceCode,
+        originalNode: { id: 'unknown', kind: 'future-layout', payload: { secret: true } },
+        meta: {}
+      }
+    ]
+
+    const html = nodes.map(node => renderToStaticMarkup(<CanvasNodeReferenceCodeAction node={node} />)).join('\n')
+
+    expect(html).toContain('文档节点不支持节点代码')
+    expect(html).toContain('分镜节点不支持节点代码')
+    expect(html).toContain('future-layout 节点不支持节点代码')
+    expect(html).not.toContain(validUlid)
+    expect(html.match(/disabled=""/g)).toHaveLength(3)
+  })
+
   it.each([
     ['running', { meta: { generationState: 'running' } }, '仍在生成'],
     ['failed', { meta: { generationState: 'failed' } }, '生成失败'],

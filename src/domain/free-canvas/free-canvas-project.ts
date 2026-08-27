@@ -15,6 +15,9 @@ import type {
   IFreeCanvasNode,
   IFreeCanvasPosition,
   IFreeCanvasProject,
+  IFreeCanvasDocumentNode,
+  IFreeCanvasStoryboardNode,
+  IFreeCanvasUnsupportedNode,
   IFreeCanvasTextNode,
   IFreeCanvasTextSegment,
   IFreeCanvasViewport,
@@ -23,7 +26,7 @@ import type {
   IPromptProject
 } from '@/models/PromptHistory.model'
 import type { ImageRegion } from '@/domain/image-generation/image-generation'
-import type { AgentRunProvenance } from '@/models/Agent.model'
+import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 
 const DEFAULT_USER_COLOR = '#111827'
 const DEFAULT_PRESET_COLOR = '#ef4423'
@@ -676,8 +679,13 @@ export const normalizeFreeCanvasProject = (
 ): IFreeCanvasProject => {
   const nodes = Array.isArray(value?.nodes) ? value.nodes.map(node => normalizeNode(node, timestamp)).filter((node): node is IFreeCanvasNode => Boolean(node)) : []
   const nodeIds = new Set(nodes.map(node => node.id))
+  const connectableNodeIds = new Set(nodes
+    .filter(node => node.kind !== 'document' && node.kind !== 'storyboard' && node.kind !== 'unsupported')
+    .map(node => node.id))
   const edges = Array.isArray(value?.edges)
-    ? value.edges.map(edge => normalizeEdge(edge, timestamp)).filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+    ? value.edges.map(edge => normalizeEdge(edge, timestamp)).filter(edge => (
+        connectableNodeIds.has(edge.source) && connectableNodeIds.has(edge.target)
+      ))
     : []
   const selectedNodeId = value?.selectedNodeId && nodeIds.has(value.selectedNodeId) ? value.selectedNodeId : null
   return {
@@ -994,21 +1002,125 @@ const normalizeNode = (node: Partial<IFreeCanvasNode>, timestamp: number): IFree
       meta: node.meta || {}
     }
   }
-  const textNode = node as Partial<IFreeCanvasTextNode>
-  return {
-    id: textNode.id || `free-text-${timestamp}`,
-    kind: 'text',
-    title: !textNode.title || textNode.title === 'Text'
-      ? defaultFreeCanvasTextNodeTitle(textNode.id || `free-text-${timestamp}`)
-      : textNode.title,
-    position: normalizePosition(textNode.position),
-    width: Number(textNode.width || 420),
-    height: Number(textNode.height || 180),
-    fontSize: textNode.fontSize || 'large',
-    segments: Array.isArray(textNode.segments) ? textNode.segments.map(normalizeTextSegment) : [],
-    ...(typeof textNode.referenceCode === 'string' ? { referenceCode: textNode.referenceCode } : {}),
-    meta: textNode.meta || {}
+  if (node.kind === 'text') {
+    return {
+      id: node.id || `free-text-${timestamp}`,
+      kind: 'text',
+      title: !node.title || node.title === 'Text'
+        ? defaultFreeCanvasTextNodeTitle(node.id || `free-text-${timestamp}`)
+        : node.title,
+      position: normalizePosition(node.position),
+      width: Number(node.width || 420),
+      height: Number(node.height || 180),
+      fontSize: node.fontSize || 'large',
+      segments: Array.isArray(node.segments) ? node.segments.map(normalizeTextSegment) : [],
+      ...(typeof node.referenceCode === 'string' ? { referenceCode: node.referenceCode } : {}),
+      meta: node.meta || {}
+    }
   }
+  if (node.kind === 'document') {
+    return normalizeDocumentNode(node, timestamp)
+  }
+  if (node.kind === 'storyboard') {
+    return normalizeStoryboardNode(node, timestamp)
+  }
+  if (node.kind === 'unsupported') {
+    return normalizeUnsupportedNode(node, timestamp)
+  }
+
+  // ADR-020: the terminal dispatch is lossless and inert; never reinterpret a future node as Prompt text or image.
+  return normalizeUnsupportedNode({
+    ...node,
+    kind: 'unsupported',
+    originalKind: typeof node.kind === 'string' ? node.kind : 'unknown',
+    originalNode: cloneFrozenRecord({ ...node })
+  }, timestamp)
+}
+
+const normalizeDocumentNode = (
+  node: Partial<IFreeCanvasDocumentNode>,
+  timestamp: number
+): IFreeCanvasDocumentNode => ({
+  id: node.id || `free-document-${timestamp}`,
+  kind: 'document',
+  title: node.title || 'Document',
+  position: normalizePosition(node.position),
+  width: Number(node.width || 560),
+  height: Number(node.height || 420),
+  document: cloneStructuredValue(node.document || {
+    version: 1,
+    blocks: [],
+    revision: 0,
+    digest: '',
+    suggestions: []
+  }),
+  linkedDocumentResourceIds: Array.isArray(node.linkedDocumentResourceIds)
+    ? node.linkedDocumentResourceIds.filter((resourceId): resourceId is string => typeof resourceId === 'string')
+    : [],
+  ...(node.provenance ? { provenance: cloneStructuredValue(node.provenance) } : {}),
+  meta: node.meta || {}
+})
+
+const normalizeStoryboardNode = (
+  node: Partial<IFreeCanvasStoryboardNode>,
+  timestamp: number
+): IFreeCanvasStoryboardNode => ({
+  id: node.id || `free-storyboard-${timestamp}`,
+  kind: 'storyboard',
+  title: node.title || 'Storyboard',
+  position: normalizePosition(node.position),
+  width: Number(node.width || 640),
+  height: Number(node.height || 480),
+  sequence: cloneStructuredValue(node.sequence || {
+    id: `sequence-${timestamp}`,
+    name: 'Storyboard',
+    description: '',
+    style: '',
+    constraints: '',
+    rows: [],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    meta: {}
+  }),
+  source: cloneStructuredValue(node.source || {
+    documentNodeId: '',
+    documentRevision: 0,
+    documentDigest: '',
+    documentResourceDigests: [],
+    model: { connectionId: '', providerId: '', modelId: '' },
+    skills: []
+  }),
+  pendingFieldChanges: Array.isArray(node.pendingFieldChanges)
+    ? cloneStructuredValue(node.pendingFieldChanges)
+    : [],
+  meta: node.meta || {}
+})
+
+const normalizeUnsupportedNode = (
+  node: Partial<IFreeCanvasUnsupportedNode>,
+  timestamp: number
+): IFreeCanvasUnsupportedNode => ({
+  id: node.id || `free-unsupported-${timestamp}`,
+  kind: 'unsupported',
+  title: node.title || 'Unsupported node',
+  position: normalizePosition(node.position),
+  width: Number(node.width || 360),
+  height: Number(node.height || 220),
+  originalKind: typeof node.originalKind === 'string' ? node.originalKind : 'unknown',
+  originalNode: cloneFrozenRecord(node.originalNode || {}),
+  meta: node.meta || {}
+})
+
+const cloneStructuredValue = <T>(value: T): T => structuredClone(value)
+
+const cloneFrozenRecord = (value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> => (
+  deepFreeze(cloneStructuredValue({ ...value }))
+)
+
+const deepFreeze = <T>(value: T): T => {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value
+  Reflect.ownKeys(value).forEach(key => deepFreeze(Reflect.get(value, key)))
+  return Object.freeze(value)
 }
 
 const normalizeImageGeneratorNode = (

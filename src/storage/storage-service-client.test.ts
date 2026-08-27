@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import type { IPromptProject } from '@/models/PromptHistory.model'
+import { normalizeFreeCanvasProject } from '@/domain/free-canvas/free-canvas-project'
 import { storageServiceClient } from './storage-service-client'
 
 afterEach(() => {
@@ -210,6 +211,42 @@ describe('storageServiceClient', () => {
       expect(payload.freeCanvas.nodes[0].id).toBe('text-1')
       expect(payload.freeCanvas.nodes[1].transient).toBe(true)
     }
+  })
+
+  test('writes an unsupported Canvas projection back as its untouched original node', async () => {
+    const originalNode = {
+      id: 'future-node',
+      kind: 'future-layout',
+      title: 'Future layout',
+      position: { x: 10, y: 20 },
+      width: 360,
+      height: 220,
+      referenceCode: 'FUTURE-opaque-code',
+      payload: { nested: [{ keep: true }] },
+      meta: { referenceCodePending: true, futureFlag: 'preserve' }
+    }
+    const freeCanvas = normalizeFreeCanvasProject({
+      nodes: [originalNode] as never,
+      edges: [],
+      meta: {}
+    }, 1)
+    const project: IPromptProject = {
+      id: 'project-future', title: 'Future project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0, freeCanvas,
+      createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes).toEqual([originalNode])
+    expect(payload.freeCanvas.nodes[0].kind).toBe('future-layout')
+    expect(payload.freeCanvas.nodes[0].originalNode).toBeUndefined()
   })
 
   test('manages project agent conversations and skills through scoped endpoints', async () => {

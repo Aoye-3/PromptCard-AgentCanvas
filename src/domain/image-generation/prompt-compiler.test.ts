@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type {
   IFreeCanvasImageGeneratorNode,
   IFreeCanvasImageNode,
+  IFreeCanvasNode,
   IFreeCanvasProject,
   IFreeCanvasTextNode,
   PromptDocument
@@ -202,6 +203,43 @@ describe('compileImageGeneratorPrompt', () => {
       code: 'unresolved_reference',
       referenceId: 'ref-product'
     })
+  })
+
+  it('rejects planning and unknown nodes from connected Prompt and image inputs', () => {
+    const isolatedNodes: IFreeCanvasNode[] = [
+      {
+        id: 'document', kind: 'document', title: 'Plan', position: { x: 0, y: 0 }, width: 560, height: 420,
+        document: {
+          version: 1,
+          blocks: [{ id: 'paragraph', type: 'paragraph', content: [{ text: 'PRIVATE DOCUMENT BODY' }] }],
+          revision: 1, digest: 'digest', suggestions: []
+        },
+        linkedDocumentResourceIds: [], meta: {}
+      },
+      {
+        id: 'unknown', kind: 'unsupported', originalKind: 'future-layout', title: 'Future',
+        position: { x: 0, y: 0 }, width: 360, height: 220,
+        originalNode: { id: 'unknown', kind: 'future-layout', assetId: 'private-asset' }, meta: {}
+      }
+    ]
+    const project = projectWith([generatorNode(), ...isolatedNodes], [
+      { id: 'document-prompt', source: 'document', target: 'generator-1', targetHandle: 'prompt', createdAt: 1 },
+      {
+        id: 'unknown-image', source: 'unknown', target: 'generator-1', targetHandle: 'reference-image',
+        referenceId: 'unknown-reference', createdAt: 2
+      }
+    ])
+
+    const result = compileImageGeneratorPrompt(project, 'generator-1')
+
+    expect(result.inputAssets).toEqual([])
+    expect(result.prompt).toBe('')
+    expect(result.validationErrors).toContainEqual({ code: 'connected_prompt_unresolved', edgeId: 'document-prompt' })
+    expect(result.validationErrors).toContainEqual({
+      code: 'unresolved_reference', referenceId: 'unknown-reference', edgeId: 'unknown-image'
+    })
+    expect(JSON.stringify(result)).not.toContain('PRIVATE DOCUMENT BODY')
+    expect(JSON.stringify(result)).not.toContain('private-asset')
   })
 
   it('lists only connected source/reference images with stable reference and asset identities', () => {

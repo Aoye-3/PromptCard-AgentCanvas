@@ -183,6 +183,16 @@ const nodeReferenceState = (node: IFreeCanvasNode): {
   if (node.kind === 'image-generator') {
     return { expectedPrefix: null, code: null, kindLabel: '图片生成器节点', unavailableReason: '图片生成器节点不支持节点代码' }
   }
+  if (node.kind === 'document') {
+    return { expectedPrefix: null, code: null, kindLabel: '文档节点', unavailableReason: '文档节点不支持节点代码' }
+  }
+  if (node.kind === 'storyboard') {
+    return { expectedPrefix: null, code: null, kindLabel: '分镜节点', unavailableReason: '分镜节点不支持节点代码' }
+  }
+  if (node.kind === 'unsupported') {
+    const kindLabel = `${node.originalKind} 节点`
+    return { expectedPrefix: null, code: null, kindLabel, unavailableReason: `${kindLabel}不支持节点代码` }
+  }
   const expectedPrefix = node.kind === 'text' ? 'CVT' : 'CVM'
   const kindLabel = node.kind === 'text' ? '文字节点' : '图片节点'
   if (isCanvasNodeReferencePending(node)) {

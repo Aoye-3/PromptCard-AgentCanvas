@@ -2,6 +2,7 @@ import type { ICard } from './Card.model'
 import type { IPage } from '@/stores/card-initial-state'
 import type { ImageGenerationMode, ImageRegion } from '@/domain/image-generation/image-generation'
 import type { ImageModelBinding } from '@/domain/models/model-management'
+import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 
 export interface IPromptHistory {
   id: string
@@ -33,7 +34,7 @@ export interface IPromptProject {
   meta: Record<string, any>
 }
 
-export type FreeCanvasProjectNodeKind = 'text' | 'image' | 'arrow' | 'image-generator'
+export type FreeCanvasProjectNodeKind = 'text' | 'image' | 'arrow' | 'image-generator' | 'document' | 'storyboard' | 'unsupported'
 export type FreeCanvasTextSegmentSource = 'preset' | 'user'
 export type FreeCanvasTextSize = 'small' | 'medium' | 'large' | 'extra-large' | 'huge'
 export type FreeCanvasImageAnnotationKind = 'text' | 'rect' | 'arrow' | 'freehand' | 'shotNumber'
@@ -50,6 +51,38 @@ export interface PromptDocument {
   version: 1
   segments: PromptSegment[]
 }
+
+export type PlanningInlineV1 = { text: string; bold?: true; italic?: true; href?: string }
+
+export type PlanningDocumentBlockV1 =
+  | { id: string; type: 'paragraph' | 'blockquote'; content: PlanningInlineV1[] }
+  | { id: string; type: 'heading'; level: 1 | 2 | 3; content: PlanningInlineV1[] }
+  | { id: string; type: 'bulletList' | 'orderedList'; items: Array<{ id: string; content: PlanningInlineV1[] }> }
+  | { id: string; type: 'checkList'; items: Array<{ id: string; checked: boolean; content: PlanningInlineV1[] }> }
+  | { id: string; type: 'table'; rows: Array<{ id: string; cells: Array<{ id: string; content: PlanningInlineV1[] }> }> }
+
+/** Task 15.6 freezes suggestion storage as editor-neutral data; Task 15.9 owns its operation schema. */
+export type DocumentSuggestion = Readonly<Record<string, unknown>>
+
+export interface PlanningDocumentV1 {
+  version: 1
+  blocks: PlanningDocumentBlockV1[]
+  revision: number
+  digest: string
+  suggestions: DocumentSuggestion[]
+}
+
+export interface StoryboardSourceProvenance {
+  documentNodeId: string
+  documentRevision: number
+  documentDigest: string
+  documentResourceDigests: string[]
+  model: AgentRunProvenance['model']
+  skills: AgentRunProvenance['skills']
+}
+
+/** Task 15.6 freezes pending field differences as neutral data; Task 15.10 owns field operations. */
+export type StoryboardFieldChange = Readonly<Record<string, unknown>>
 
 export interface IFreeCanvasImageGeneratorSettings {
   resolution: FreeCanvasImageResolution
@@ -150,7 +183,34 @@ export interface IFreeCanvasImageGeneratorNode extends IFreeCanvasBaseNode {
   primaryAssetId?: string
 }
 
-export type IFreeCanvasNode = IFreeCanvasTextNode | IFreeCanvasImageNode | IFreeCanvasArrowNode | IFreeCanvasImageGeneratorNode
+export interface IFreeCanvasDocumentNode extends IFreeCanvasBaseNode {
+  kind: 'document'
+  document: PlanningDocumentV1
+  linkedDocumentResourceIds: string[]
+  provenance?: AgentRunProvenance
+}
+
+export interface IFreeCanvasStoryboardNode extends IFreeCanvasBaseNode {
+  kind: 'storyboard'
+  sequence: IStoryboardSequence
+  source: StoryboardSourceProvenance
+  pendingFieldChanges: StoryboardFieldChange[]
+}
+
+export interface IFreeCanvasUnsupportedNode extends IFreeCanvasBaseNode {
+  kind: 'unsupported'
+  readonly originalKind: string
+  readonly originalNode: Readonly<Record<string, unknown>>
+}
+
+export type IFreeCanvasNode =
+  | IFreeCanvasTextNode
+  | IFreeCanvasImageNode
+  | IFreeCanvasArrowNode
+  | IFreeCanvasImageGeneratorNode
+  | IFreeCanvasDocumentNode
+  | IFreeCanvasStoryboardNode
+  | IFreeCanvasUnsupportedNode
 
 export interface IFreeCanvasEdge {
   id: string

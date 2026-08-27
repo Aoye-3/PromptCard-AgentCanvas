@@ -110,6 +110,37 @@ describe('context-pack selection domain', () => {
     expect(preview.omittedCount).toBe(6)
   })
 
+  it('omits planning and unknown nodes even when they carry stale image reference codes', () => {
+    const staleCode = `CVM-${ulids.image}`
+    const nodes: IFreeCanvasNode[] = [
+      {
+        id: 'document', kind: 'document', title: 'Plan', position: { x: 0, y: 0 }, width: 560, height: 420,
+        referenceCode: staleCode,
+        document: { version: 1, blocks: [], revision: 1, digest: 'digest', suggestions: [] },
+        linkedDocumentResourceIds: [], meta: {}
+      },
+      {
+        id: 'storyboard', kind: 'storyboard', title: 'Shots', position: { x: 0, y: 0 }, width: 640, height: 480,
+        referenceCode: staleCode,
+        sequence: { id: 'sequence', name: 'Shots', description: '', style: '', constraints: '', rows: [], createdAt: 1, updatedAt: 1, meta: {} },
+        source: {
+          documentNodeId: 'document', documentRevision: 1, documentDigest: 'digest', documentResourceDigests: [],
+          model: { connectionId: 'c', providerId: 'p', modelId: 'm' }, skills: []
+        },
+        pendingFieldChanges: [], meta: {}
+      },
+      {
+        id: 'unknown', kind: 'unsupported', originalKind: 'future-layout', title: 'Future',
+        position: { x: 0, y: 0 }, width: 360, height: 220, referenceCode: staleCode,
+        originalNode: { id: 'unknown', kind: 'future-layout' }, meta: {}
+      }
+    ]
+
+    expect(createContextPackSelectionPreview(nodes, nodes.map(node => node.id))).toEqual({
+      items: [], selectedCount: 3, omittedCount: 3
+    })
+  })
+
   it('builds the exact Task 10 payload with placement anchors matching the ordered explicit selection', () => {
     const preview = createContextPackSelectionPreview([
       imageNode('image', 'Image', `CVM-${ulids.image}`),

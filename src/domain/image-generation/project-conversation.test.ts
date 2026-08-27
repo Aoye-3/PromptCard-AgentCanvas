@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { IFreeCanvasImageNode, IFreeCanvasTextNode } from '@/models/PromptHistory.model'
+import type { IFreeCanvasImageNode, IFreeCanvasNode, IFreeCanvasTextNode } from '@/models/PromptHistory.model'
 import type { ImageGenerationRun } from '@/storage/storage-service-client'
 import {
   buildConversationGenerationRequest,
@@ -97,6 +97,44 @@ describe('project image generation conversations', () => {
       role: 'reference-image'
     }])
     expect(result.rejected).toEqual([{ nodeId: 'image-missing', reason: '图片节点没有可用的本地资产。' }])
+  })
+
+  it('rejects planning and unknown nodes without adding Prompt text or image inputs', () => {
+    const nodes: IFreeCanvasNode[] = [
+      {
+        id: 'document', kind: 'document', title: 'Plan', position: { x: 0, y: 0 }, width: 560, height: 420,
+        document: {
+          version: 1,
+          blocks: [{ id: 'paragraph', type: 'paragraph', content: [{ text: 'PRIVATE DOCUMENT BODY' }] }],
+          revision: 1, digest: 'digest', suggestions: []
+        },
+        linkedDocumentResourceIds: [], meta: {}
+      },
+      {
+        id: 'storyboard', kind: 'storyboard', title: 'Shots', position: { x: 0, y: 0 }, width: 640, height: 480,
+        sequence: { id: 'sequence', name: 'Shots', description: 'PRIVATE SHOTS', style: '', constraints: '', rows: [], createdAt: 1, updatedAt: 1, meta: {} },
+        source: {
+          documentNodeId: 'document', documentRevision: 1, documentDigest: 'digest', documentResourceDigests: [],
+          model: { connectionId: 'c', providerId: 'p', modelId: 'm' }, skills: []
+        },
+        pendingFieldChanges: [], meta: {}
+      },
+      {
+        id: 'unknown', kind: 'unsupported', originalKind: 'future-layout', title: 'Future',
+        position: { x: 0, y: 0 }, width: 360, height: 220,
+        originalNode: { id: 'unknown', kind: 'future-layout', secret: 'PRIVATE UNKNOWN' }, meta: {}
+      }
+    ]
+
+    const result = injectCanvasNodesIntoDraft(createEmptyConversationDraft(), nodes)
+
+    expect(result.draft.textReferences).toEqual([])
+    expect(result.draft.inputs).toEqual([])
+    expect(result.rejected).toEqual(nodes.map(node => ({
+      nodeId: node.id,
+      reason: '该节点类型不能作为图片生成输入。'
+    })))
+    expect(JSON.stringify(result.draft)).not.toContain('PRIVATE')
   })
 
   it('refreshes a repeated text reference without changing its order or visible prompt', () => {
