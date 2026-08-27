@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import stat
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable, ContextManager
 
@@ -20,6 +21,7 @@ class BackupManager:
         schema_version: int,
         connect: Callable[[], ContextManager[Any]],
         iso_now: Callable[[], str],
+        consistency_lock: ContextManager[Any] | None = None,
     ) -> None:
         self.database_path = database_path
         self.assets_dir = assets_dir
@@ -29,23 +31,25 @@ class BackupManager:
         self.schema_version = schema_version
         self._connect = connect
         self._iso_now = iso_now
+        self._consistency_lock = consistency_lock or nullcontext()
 
     def create(self, destination: Path) -> dict[str, Any]:
         destination.mkdir(parents=True, exist_ok=False)
         database_copy = destination / self.database_name
-        target = sqlite3.connect(database_copy)
-        try:
-            with self._connect() as source:
-                source.backup(target)
-            target.commit()
-        finally:
-            target.close()
+        with self._consistency_lock:
+            target = sqlite3.connect(database_copy)
+            try:
+                with self._connect() as source:
+                    source.backup(target)
+                target.commit()
+            finally:
+                target.close()
+            if self.documents_dir.exists():
+                _copy_regular_tree(self.documents_dir, destination / "documents")
+            else:
+                (destination / "documents").mkdir()
         if self.assets_dir.exists():
             shutil.copytree(self.assets_dir, destination / "assets")
-        if self.documents_dir.exists():
-            _copy_regular_tree(self.documents_dir, destination / "documents")
-        else:
-            (destination / "documents").mkdir()
         manifest = {
             "createdAt": self._iso_now(),
             "serviceVersion": self.service_version,

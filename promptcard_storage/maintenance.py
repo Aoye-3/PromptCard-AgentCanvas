@@ -388,7 +388,9 @@ def _validate_document_resources(database_path: Path, documents_dir: Path) -> No
             ):
                 raise MigrationError("Backup document resource integrity check failed")
         on_disk = {
-            path.name for path in documents_dir.iterdir() if path.is_file()
+            path.relative_to(documents_dir).as_posix()
+            for path in documents_dir.rglob("*")
+            if path.is_file()
         } if documents_dir.exists() else set()
         if on_disk != expected_paths:
             raise MigrationError("Backup documents do not match registered resources")

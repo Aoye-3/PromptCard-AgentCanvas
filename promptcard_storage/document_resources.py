@@ -166,6 +166,8 @@ def _decode_text(content: bytes) -> str:
 
 
 def _validate_docx_container(content: bytes) -> None:
+    if not content.startswith(b"PK\x03\x04"):
+        raise DocumentValidationError("DOCX bytes do not start with a ZIP local file header")
     try:
         with zipfile.ZipFile(BytesIO(content)) as archive:
             entries = archive.infolist()
@@ -294,6 +296,7 @@ class DocumentResourceStore:
         transaction: Callable[[], ContextManager[Any]],
         require_active_project: Callable[[Any, str], None],
         now_ms: Callable[[], int],
+        consistency_lock: ContextManager[Any],
     ) -> None:
         self.data_dir = data_dir
         self.documents_dir = data_dir / "documents"
@@ -301,6 +304,7 @@ class DocumentResourceStore:
         self._transaction = transaction
         self._require_active_project = require_active_project
         self._now_ms = now_ms
+        self._consistency_lock = consistency_lock
 
     def create(
         self,
@@ -310,6 +314,15 @@ class DocumentResourceStore:
         content: bytes,
     ) -> dict[str, Any]:
         validated = validate_document(filename, content_type, content)
+        with self._consistency_lock:
+            return self._create_validated(project_id, content, validated)
+
+    def _create_validated(
+        self,
+        project_id: str,
+        content: bytes,
+        validated: ValidatedDocument,
+    ) -> dict[str, Any]:
         self.documents_dir.mkdir(parents=True, exist_ok=True)
         resource_id = uuid.uuid4().hex
         stored_name = f"{resource_id}{validated.extension}"
@@ -355,6 +368,58 @@ class DocumentResourceStore:
             final_path.unlink(missing_ok=True)
             raise
         return self.get(project_id, resource_id)
+
+    def stage_project_deletion(
+        self,
+        connection: Any,
+        project_ids: list[str],
+    ) -> tuple[Path, list[tuple[Path, Path]]] | None:
+        if not project_ids:
+            return None
+        placeholders = ",".join("?" for _ in project_ids)
+        relative_paths = [
+            row[0]
+            for row in connection.execute(
+                f"""SELECT relative_path FROM project_document_resources
+                    WHERE project_id IN ({placeholders})
+                    ORDER BY resource_id""",
+                tuple(project_ids),
+            )
+        ]
+        if not relative_paths:
+            return None
+        staging_dir = self.data_dir / f".documents-delete-{uuid.uuid4().hex}"
+        staging_dir.mkdir()
+        staged: list[tuple[Path, Path]] = []
+        try:
+            for relative_path in relative_paths:
+                source = self._safe_path(relative_path)
+                temporary = staging_dir / source.name
+                os.replace(source, temporary)
+                staged.append((temporary, source))
+        except Exception:
+            self.restore_staged_deletion((staging_dir, staged))
+            raise
+        return staging_dir, staged
+
+    @staticmethod
+    def restore_staged_deletion(
+        deletion: tuple[Path, list[tuple[Path, Path]]],
+    ) -> None:
+        staging_dir, staged = deletion
+        for temporary, original in reversed(staged):
+            if temporary.exists():
+                os.replace(temporary, original)
+        staging_dir.rmdir()
+
+    @staticmethod
+    def discard_staged_deletion(
+        deletion: tuple[Path, list[tuple[Path, Path]]],
+    ) -> None:
+        staging_dir, staged = deletion
+        for temporary, _original in staged:
+            temporary.unlink(missing_ok=True)
+        staging_dir.rmdir()
 
     def list(self, project_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:

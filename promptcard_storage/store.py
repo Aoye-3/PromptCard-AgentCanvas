@@ -147,6 +147,7 @@ class SqliteStore:
         self.presets_seed = presets_seed or []
         self._prepare_provider_image = image_preparer or prepare_provider_image
         self._initialize_lock = threading.Lock()
+        self._document_consistency_lock = threading.RLock()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._initialize()
         self._assets = AssetStore(
@@ -169,6 +170,7 @@ class SqliteStore:
             self._transaction,
             self._require_active_project,
             now_ms,
+            self._document_consistency_lock,
         )
         self._provider_file_cleanup = ProviderFileCleanupRepository(
             self._connect,
@@ -184,6 +186,7 @@ class SqliteStore:
             SCHEMA_VERSION,
             self._connect,
             iso_now,
+            self._document_consistency_lock,
         )
 
     def health(self) -> dict[str, Any]:
@@ -1665,34 +1668,47 @@ class SqliteStore:
     def delete_project_trash(self, ids: list[str]) -> None:
         if not ids:
             return
-        with self._transaction() as connection:
-            placeholders = ",".join("?" for _ in ids)
-            retired_ids = [
-                row[0]
-                for row in connection.execute(
-                    f"SELECT id FROM projects WHERE status='trash' AND id IN ({placeholders})",
-                    tuple(ids),
-                )
-            ]
-            if not retired_ids:
-                return
-            retired_placeholders = ",".join("?" for _ in retired_ids)
-            connection.execute(
-                f"""DELETE FROM public_references
-                    WHERE namespace IN ('CVT','CVM')
-                      AND owner_scope IN ({retired_placeholders})""",
-                tuple(retired_ids),
-            )
-            connection.execute(
-                f"""DELETE FROM public_references
-                    WHERE namespace='PRJ' AND owner_scope=''
-                      AND internal_id IN ({retired_placeholders})""",
-                tuple(retired_ids),
-            )
-            connection.execute(
-                f"DELETE FROM projects WHERE status='trash' AND id IN ({retired_placeholders})",
-                tuple(retired_ids),
-            )
+        staged_documents = None
+        with self._document_consistency_lock:
+            try:
+                with self._transaction() as connection:
+                    placeholders = ",".join("?" for _ in ids)
+                    retired_ids = [
+                        row[0]
+                        for row in connection.execute(
+                            f"SELECT id FROM projects WHERE status='trash' AND id IN ({placeholders})",
+                            tuple(ids),
+                        )
+                    ]
+                    if not retired_ids:
+                        return
+                    staged_documents = self._documents.stage_project_deletion(
+                        connection, retired_ids
+                    )
+                    retired_placeholders = ",".join("?" for _ in retired_ids)
+                    connection.execute(
+                        f"""DELETE FROM public_references
+                            WHERE namespace IN ('CVT','CVM')
+                              AND owner_scope IN ({retired_placeholders})""",
+                        tuple(retired_ids),
+                    )
+                    connection.execute(
+                        f"""DELETE FROM public_references
+                            WHERE namespace='PRJ' AND owner_scope=''
+                              AND internal_id IN ({retired_placeholders})""",
+                        tuple(retired_ids),
+                    )
+                    connection.execute(
+                        f"DELETE FROM projects WHERE status='trash' AND id IN ({retired_placeholders})",
+                        tuple(retired_ids),
+                    )
+            except Exception:
+                if staged_documents is not None:
+                    self._documents.restore_staged_deletion(staged_documents)
+                raise
+            else:
+                if staged_documents is not None:
+                    self._documents.discard_staged_deletion(staged_documents)
 
     def create_project_document_resource(
         self,

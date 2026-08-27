@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 import zipfile
 from pathlib import Path
@@ -27,6 +28,9 @@ from promptcard_storage.document_resources import (
     DocumentValidationError,
     validate_document,
 )
+from promptcard_storage.maintenance import restore_backup
+from promptcard_storage.migration import MigrationError
+import promptcard_storage.backup as backup_module
 from promptcard_storage.store import MissingItem, SqliteStore
 
 
@@ -202,6 +206,10 @@ class DocumentFormatValidationTest(unittest.TestCase):
         self.assertGreater(MAX_DOCX_EXPANSION_RATIO, 1)
         self.assertGreater(MAX_DOCX_UNCOMPRESSED_BYTES, DOCX_MAX_BYTES)
 
+    def test_rejects_executable_prefix_before_valid_docx_zip(self) -> None:
+        with self.assertRaises(DocumentValidationError):
+            validate_document("polyglot.docx", DOCX_CONTENT_TYPE, b"MZ" + make_docx())
+
 
 class ProjectDocumentResourceStoreTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -313,6 +321,108 @@ class ProjectDocumentResourceStoreTest(unittest.TestCase):
         self.assertIn("project_document_resources", tables)
         self.assertIn("provider_file_cleanup", tables)
         self.assertEqual(cleanup_count, 1)
+
+    def test_permanent_project_delete_removes_document_bytes_and_keeps_backup_recoverable(self) -> None:
+        resource = self.store.create_project_document_resource(
+            "project-one", "notes.txt", "text/plain", b"delete me"
+        )
+        document_path = next(self.store.documents_dir.iterdir())
+        self.store.trash_projects(["project-one"])
+
+        self.store.delete_project_trash(["project-one"])
+
+        self.assertFalse(document_path.exists())
+        backup = Path(self.temp_dir.name) / "deleted-project-backup"
+        self.store.backup(backup)
+        restored_dir = Path(self.temp_dir.name) / "deleted-project-restored"
+        restore_backup(restored_dir, backup)
+        restored = SqliteStore(restored_dir)
+        with self.assertRaises(MissingItem):
+            restored.get_project_document_resource("project-one", resource["id"])
+
+    def test_failed_permanent_project_delete_restores_staged_document_bytes(self) -> None:
+        content = b"must survive rollback"
+        self.store.create_project_document_resource(
+            "project-one", "notes.txt", "text/plain", content
+        )
+        document_path = next(self.store.documents_dir.iterdir())
+        self.store.trash_projects(["project-one"])
+        connection = sqlite3.connect(self.store.database_path)
+        try:
+            connection.execute(
+                """CREATE TRIGGER reject_project_delete
+                   BEFORE DELETE ON projects WHEN OLD.id='project-one'
+                   BEGIN SELECT RAISE(ABORT, 'fixture rejection'); END"""
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.delete_project_trash(["project-one"])
+
+        self.assertEqual(document_path.read_bytes(), content)
+        self.assertEqual(self.store.list_project_trash()[0]["payload"]["id"], "project-one")
+
+    def test_backup_serializes_document_upload_between_snapshot_and_tree_copy(self) -> None:
+        self.store.documents_dir.mkdir(parents=True, exist_ok=True)
+        backup = Path(self.temp_dir.name) / "concurrent-backup"
+        copy_entered = threading.Event()
+        allow_copy = threading.Event()
+        upload_finished = threading.Event()
+        failures: list[BaseException] = []
+        real_copy = backup_module._copy_regular_tree
+
+        def blocked_copy(source: Path, destination: Path) -> None:
+            copy_entered.set()
+            if not allow_copy.wait(5):
+                raise AssertionError("timed out waiting to copy document tree")
+            real_copy(source, destination)
+
+        def run_backup() -> None:
+            try:
+                self.store.backup(backup)
+            except BaseException as exc:
+                failures.append(exc)
+
+        def run_upload() -> None:
+            try:
+                self.store.create_project_document_resource(
+                    "project-one", "racing.txt", "text/plain", b"racing upload"
+                )
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                upload_finished.set()
+
+        with patch.object(backup_module, "_copy_regular_tree", side_effect=blocked_copy):
+            backup_thread = threading.Thread(target=run_backup)
+            backup_thread.start()
+            self.assertTrue(copy_entered.wait(5))
+            upload_thread = threading.Thread(target=run_upload)
+            upload_thread.start()
+            upload_completed_during_backup = upload_finished.wait(0.5)
+            allow_copy.set()
+            backup_thread.join(5)
+            upload_thread.join(5)
+
+        self.assertFalse(backup_thread.is_alive())
+        self.assertFalse(upload_thread.is_alive())
+        self.assertEqual(failures, [])
+        self.assertFalse(upload_completed_during_backup)
+        restored_dir = Path(self.temp_dir.name) / "concurrent-restored"
+        restore_backup(restored_dir, backup)
+        SqliteStore(restored_dir)
+
+    def test_restore_rejects_nested_unregistered_document_content(self) -> None:
+        backup = Path(self.temp_dir.name) / "nested-orphan-backup"
+        self.store.backup(backup)
+        nested = backup / "documents" / "nested"
+        nested.mkdir()
+        (nested / "orphan.bin").write_bytes(b"orphan")
+
+        with self.assertRaises(MigrationError):
+            restore_backup(Path(self.temp_dir.name) / "nested-orphan-restored", backup)
 
     def test_cleanup_repository_is_idempotent_bounded_and_redacted(self) -> None:
         first = self.store.enqueue_provider_file_cleanup(
