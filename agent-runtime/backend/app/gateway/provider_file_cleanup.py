@@ -5,7 +5,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 from volcenginesdkarkruntime import Ark
@@ -87,8 +86,8 @@ class ProviderCleanupStorageClient:
     def mark_succeeded(self, cleanup_id: str) -> None:
         self._json(
             "POST",
-            "/api/internal/provider-file-cleanup/"
-            f"{quote(cleanup_id, safe='')}/succeeded",
+            "/api/internal/provider-file-cleanup/succeeded",
+            json={"cleanupId": cleanup_id},
         )
 
     def mark_retry(
@@ -100,9 +99,12 @@ class ProviderCleanupStorageClient:
     ) -> None:
         self._json(
             "POST",
-            "/api/internal/provider-file-cleanup/"
-            f"{quote(cleanup_id, safe='')}/retry",
-            json={"nextAttemptAt": next_attempt_at, "errorCode": error_code},
+            "/api/internal/provider-file-cleanup/retry",
+            json={
+                "cleanupId": cleanup_id,
+                "nextAttemptAt": next_attempt_at,
+                "errorCode": error_code,
+            },
         )
 
     def _json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:

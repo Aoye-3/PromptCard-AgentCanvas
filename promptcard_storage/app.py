@@ -150,7 +150,12 @@ class ProviderFileCleanupPayload(BaseModel):
     remoteFileId: str
 
 
+class ProviderFileCleanupSucceededPayload(BaseModel):
+    cleanupId: str
+
+
 class ProviderFileCleanupRetryPayload(BaseModel):
+    cleanupId: str
     nextAttemptAt: int = Field(ge=0)
     errorCode: str
 
@@ -900,29 +905,28 @@ def create_app(
             }
         )
 
-    @application.post(
-        "/api/internal/provider-file-cleanup/{cleanup_id}/succeeded"
-    )
+    @application.post("/api/internal/provider-file-cleanup/succeeded")
     def mark_provider_file_cleanup_succeeded(
-        cleanup_id: str,
+        payload: ProviderFileCleanupSucceededPayload,
         request: Request,
     ) -> dict[str, bool]:
         _require_internal_auth(request)
-        storage.mark_provider_file_cleanup_succeeded(cleanup_id)
+        storage.mark_provider_file_cleanup_succeeded(payload.cleanupId)
         return {"ok": True}
 
-    @application.post("/api/internal/provider-file-cleanup/{cleanup_id}/retry")
+    @application.post("/api/internal/provider-file-cleanup/retry")
     def mark_provider_file_cleanup_retry(
-        cleanup_id: str,
         payload: ProviderFileCleanupRetryPayload,
         request: Request,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, bool]:
         _require_internal_auth(request)
-        return _handle(
-            lambda: storage.mark_provider_file_cleanup_retry(
-                cleanup_id, payload.nextAttemptAt, payload.errorCode
+        def mark_retry() -> dict[str, bool]:
+            storage.mark_provider_file_cleanup_retry(
+                payload.cleanupId, payload.nextAttemptAt, payload.errorCode
             )
-        )
+            return {"ok": True}
+
+        return _handle(mark_retry)
 
     return application
 

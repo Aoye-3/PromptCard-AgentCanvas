@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from types import SimpleNamespace
@@ -659,13 +660,57 @@ def test_cleanup_storage_client_uses_authenticated_internal_contract(monkeypatch
     assert [request.url.path for request in requests] == [
         "/api/internal/provider-file-cleanup/due",
         "/api/internal/provider-file-cleanup",
-        "/api/internal/provider-file-cleanup/cleanup-1/succeeded",
-        "/api/internal/provider-file-cleanup/cleanup-1/retry",
+        "/api/internal/provider-file-cleanup/succeeded",
+        "/api/internal/provider-file-cleanup/retry",
     ]
+    assert all(not request.url.query for request in requests[2:])
+    assert requests[2].read() == b'{"cleanupId":"cleanup-1"}'
+    assert json.loads(requests[3].read()) == {
+        "cleanupId": "cleanup-1",
+        "nextAttemptAt": 1_060_000,
+        "errorCode": "provider_cleanup_failed",
+    }
     assert all(
         request.headers["X-PromptCard-Internal-Token"] == "internal-token"
         for request in requests
     )
+
+
+def test_cleanup_storage_client_keeps_cleanup_id_out_of_request_target(monkeypatch):
+    from app.gateway.provider_file_cleanup import ProviderCleanupStorageClient
+
+    requests: list[httpx.Request] = []
+    cleanup_id = "cleanup-sensitive/../private.pdf?token=secret"
+    monkeypatch.setenv("PROMPTCARD_INTERNAL_TOKEN", "internal-token")
+    client = ProviderCleanupStorageClient(
+        client=httpx.Client(
+            base_url="http://storage.test",
+            transport=httpx.MockTransport(
+                lambda request: requests.append(request)
+                or httpx.Response(200, json={"ok": True})
+            ),
+        )
+    )
+
+    client.mark_succeeded(cleanup_id)
+    client.mark_retry(
+        cleanup_id,
+        next_attempt_at=1_060_000,
+        error_code="provider_cleanup_failed",
+    )
+
+    assert [request.url.raw_path for request in requests] == [
+        b"/api/internal/provider-file-cleanup/succeeded",
+        b"/api/internal/provider-file-cleanup/retry",
+    ]
+    assert [json.loads(request.read()) for request in requests] == [
+        {"cleanupId": cleanup_id},
+        {
+            "cleanupId": cleanup_id,
+            "nextAttemptAt": 1_060_000,
+            "errorCode": "provider_cleanup_failed",
+        },
+    ]
 
 
 def test_gateway_suppresses_http_client_urls_with_provider_and_cleanup_ids(

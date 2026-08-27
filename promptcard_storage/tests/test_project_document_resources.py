@@ -535,5 +535,109 @@ class ProjectDocumentResourceApiTest(unittest.TestCase):
         self.assertNotIn("remote-secret", json.dumps(health))
 
 
+def test_cleanup_completion_uses_fixed_authenticated_routes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    if TestClient is None or create_app is None:
+        import pytest
+
+        pytest.skip("FastAPI contract dependencies are not installed")
+    cleanup_id = "cleanup-sensitive/../private.pdf?token=secret"
+    store = SqliteStore(tmp_path / "data")
+    enqueued = store.enqueue_provider_file_cleanup(
+        "volcengine-ark", "connection-one", "remote-secret"
+    )
+    with store._transaction() as connection:
+        connection.execute(
+            "UPDATE provider_file_cleanup SET cleanup_id = ? WHERE cleanup_id = ?",
+            (cleanup_id, enqueued["cleanupId"]),
+        )
+    monkeypatch.setenv("PROMPTCARD_INTERNAL_TOKEN", "internal-secret")
+    client = TestClient(create_app(store))
+
+    routes = {getattr(route, "path", "") for route in client.app.routes}
+    assert "/api/internal/provider-file-cleanup/succeeded" in routes
+    assert "/api/internal/provider-file-cleanup/retry" in routes
+    assert not any(
+        "{cleanup_id}" in route
+        for route in routes
+        if route.startswith("/api/internal/provider-file-cleanup")
+    )
+
+    unauthorized = client.post(
+        "/api/internal/provider-file-cleanup/retry",
+        json={
+            "cleanupId": cleanup_id,
+            "nextAttemptAt": 1234,
+            "errorCode": "provider_cleanup_failed",
+        },
+    )
+    assert unauthorized.status_code == 401
+    retried = client.post(
+        "/api/internal/provider-file-cleanup/retry",
+        headers={"X-PromptCard-Internal-Token": "internal-secret"},
+        json={
+            "cleanupId": cleanup_id,
+            "nextAttemptAt": 1234,
+            "errorCode": "provider_cleanup_failed",
+        },
+    )
+    assert retried.status_code == 200
+    assert retried.request.url.raw_path == b"/api/internal/provider-file-cleanup/retry"
+    assert cleanup_id not in retried.text
+    retry_replay = client.post(
+        "/api/internal/provider-file-cleanup/retry",
+        headers={"X-PromptCard-Internal-Token": "internal-secret"},
+        json={
+            "cleanupId": cleanup_id,
+            "nextAttemptAt": 1234,
+            "errorCode": "provider_cleanup_failed",
+        },
+    )
+    assert retry_replay.json() == {"ok": True}
+    assert cleanup_id not in retry_replay.text
+    due = store.get_due_provider_file_cleanup(now=1234, limit=1)
+    assert due[0]["cleanupId"] == cleanup_id
+    assert due[0]["attemptCount"] == 1
+
+    succeeded = client.post(
+        "/api/internal/provider-file-cleanup/succeeded",
+        headers={"X-PromptCard-Internal-Token": "internal-secret"},
+        json={"cleanupId": cleanup_id},
+    )
+    replay = client.post(
+        "/api/internal/provider-file-cleanup/succeeded",
+        headers={"X-PromptCard-Internal-Token": "internal-secret"},
+        json={"cleanupId": cleanup_id},
+    )
+    assert succeeded.json() == {"ok": True}
+    assert replay.json() == {"ok": True}
+    assert succeeded.request.url.raw_path == (
+        b"/api/internal/provider-file-cleanup/succeeded"
+    )
+    assert cleanup_id not in succeeded.text + replay.text
+
+
+def test_cleanup_fixed_routes_require_internal_auth(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    if TestClient is None or create_app is None:
+        import pytest
+
+        pytest.skip("FastAPI contract dependencies are not installed")
+    monkeypatch.setenv("PROMPTCARD_INTERNAL_TOKEN", "internal-secret")
+    client = TestClient(create_app(SqliteStore(tmp_path / "data")))
+
+    response = client.post(
+        "/api/internal/provider-file-cleanup/succeeded",
+        json={"cleanupId": "cleanup-sensitive-token-secret"},
+    )
+
+    assert response.status_code == 401
+    assert "cleanup-sensitive-token-secret" not in response.text
+
+
 if __name__ == "__main__":
     unittest.main()
