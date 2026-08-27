@@ -248,18 +248,19 @@ export function buildFreeCanvasWorkspaceContext({
   activeProject: IPromptProject
   freeCanvas: IFreeCanvasProject
 }): AgentWorkspaceContext {
-  const selectedNode = freeCanvas.nodes.find(node => node.id === freeCanvas.selectedNodeId) || null
+  const workspaceNodes = freeCanvas.nodes.filter(isWorkspaceFreeCanvasNode)
+  const selectedNode = workspaceNodes.find(node => node.id === freeCanvas.selectedNodeId) || null
 
   return {
-    contextId: `free-canvas:${activeProject.id}:${freeCanvas.selectedNodeId || 'canvas'}`,
+    contextId: `free-canvas:${activeProject.id}:${selectedNode?.id || 'canvas'}`,
     mode: 'free-canvas-workspace',
     projectId: activeProject.id,
     projectTitle: activeProject.title,
     snapshot: {
       projectType: activeProject.type,
-      selectedNodeId: freeCanvas.selectedNodeId || null,
+      selectedNodeId: selectedNode?.id || null,
       selectedNode: selectedNode ? compactFreeCanvasNode(selectedNode) : null,
-      nodes: freeCanvas.nodes.slice(0, MAX_CARDS).map(compactFreeCanvasNode),
+      nodes: workspaceNodes.slice(0, MAX_CARDS).map(compactFreeCanvasNode),
       edges: freeCanvas.edges.slice(0, MAX_CARDS).map(edge => ({
         id: edge.id,
         source: edge.source,
@@ -281,7 +282,21 @@ function compactThreeStageSection(section: IThreeStageSectionLike) {
 
 type IThreeStageSectionLike = IThreeStageProject['character']
 
-function compactFreeCanvasNode(node: IFreeCanvasNode) {
+type IWorkspaceFreeCanvasNode = Exclude<IFreeCanvasNode, { kind: 'unsupported' }>
+
+function isWorkspaceFreeCanvasNode(node: IFreeCanvasNode): node is IWorkspaceFreeCanvasNode {
+  if (node.kind === 'text') return true
+  if (node.kind === 'image') return true
+  if (node.kind === 'arrow') return true
+  if (node.kind === 'image-generator') return true
+  if (node.kind === 'document') return true
+  if (node.kind === 'storyboard') return true
+  if (node.kind === 'unsupported') return false
+  const exhaustiveNode: never = node
+  return exhaustiveNode
+}
+
+function compactFreeCanvasNode(node: IWorkspaceFreeCanvasNode) {
   if (node.kind === 'text') {
     return compactFreeCanvasTextNode(node)
   }
@@ -300,7 +315,6 @@ function compactFreeCanvasNode(node: IFreeCanvasNode) {
     return { ...identity, revision: node.document.revision, digest: node.document.digest }
   }
   if (node.kind === 'storyboard') return identity
-  if (node.kind === 'unsupported') return identity
   if (node.kind === 'image-generator') return identity
   const exhaustiveNode: never = node
   return exhaustiveNode

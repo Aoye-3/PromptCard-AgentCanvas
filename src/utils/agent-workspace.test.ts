@@ -354,7 +354,7 @@ describe('agent workspace context', () => {
     expect(textNode.userText).toBe('  User  spacing\nline  ')
   })
 
-  it('packs only isolated node identity metadata without planning or unknown payload content', () => {
+  it('excludes unsupported nodes and their selection from workspace context', () => {
     const freeCanvas: IFreeCanvasProject = {
       nodes: [
         {
@@ -389,7 +389,7 @@ describe('agent workspace context', () => {
           meta: {}
         }
       ],
-      edges: [], viewport: null, selectedNodeId: 'document-1', meta: {}
+      edges: [], viewport: null, selectedNodeId: 'future-1', meta: {}
     }
     const project: IPromptProject = {
       id: 'project-isolated', title: 'Isolated canvas', type: 'free-canvas', revision: 8,
@@ -400,16 +400,20 @@ describe('agent workspace context', () => {
     const context = buildFreeCanvasWorkspaceContext({ activeProject: project, freeCanvas })
     const nodes = context.snapshot.nodes as Array<Record<string, unknown>>
 
+    expect(context.snapshot.selectedNodeId).toBe(null)
+    expect(context.snapshot.selectedNode).toBe(null)
     expect(nodes).toEqual([
       { id: 'document-1', kind: 'document', title: 'Creative brief', revision: 4, digest: 'document-digest' },
-      { id: 'storyboard-1', kind: 'storyboard', title: 'Opening shots' },
-      { id: 'future-1', kind: 'unsupported', title: 'Future node' }
+      { id: 'storyboard-1', kind: 'storyboard', title: 'Opening shots' }
     ])
     const serialized = JSON.stringify(context.snapshot)
     expect(serialized).not.toContain('PRIVATE DOCUMENT BODY')
     expect(serialized).not.toContain('PRIVATE SUGGESTION')
     expect(serialized).not.toContain('private-resource-id')
     expect(serialized).not.toContain('PRIVATE STORYBOARD BODY')
+    expect(serialized).not.toContain('future-1')
+    expect(serialized).not.toContain('unsupported')
+    expect(serialized).not.toContain('Future node')
     expect(serialized).not.toContain('PRIVATE UNKNOWN PAYLOAD')
   })
 })
