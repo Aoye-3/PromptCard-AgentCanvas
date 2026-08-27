@@ -109,4 +109,42 @@ describe('CanvasAgentComposer model and edit controls', () => {
     expect(JSON.stringify(renderer.toJSON())).toContain('Creative brief')
     expect(JSON.stringify(renderer.toJSON())).toContain('文档')
   })
+
+  it('consumes a rejected submit Promise from the real send button event boundary', async () => {
+    const onSubmit = vi.fn().mockRejectedValue(new Error('submit failed'))
+    let renderer!: ReturnType<typeof create>
+    act(() => {
+      renderer = create(<CanvasAgentComposer {...baseProps} onSubmit={onSubmit} />)
+    })
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Send with button' }
+    }))
+
+    await act(async () => {
+      await expect(renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick())
+        .resolves.toBeUndefined()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith('Send with button', [])
+  })
+
+  it('consumes a rejected submit Promise from the real Enter event boundary', async () => {
+    const onSubmit = vi.fn().mockRejectedValue(new Error('submit failed'))
+    let renderer!: ReturnType<typeof create>
+    act(() => {
+      renderer = create(<CanvasAgentComposer {...baseProps} onSubmit={onSubmit} />)
+    })
+    const editor = renderer.root.findByProps({ 'data-agent-composer': true })
+    act(() => editor.props.onInput({ currentTarget: { textContent: 'Send with Enter' } }))
+
+    await act(async () => {
+      const submission = editor.props.onKeyDown({
+        key: 'Enter', shiftKey: false, nativeEvent: { isComposing: false }, preventDefault: vi.fn()
+      })
+      expect(submission).toBeInstanceOf(Promise)
+      await expect(submission).resolves.toBeUndefined()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith('Send with Enter', [])
+  })
 })

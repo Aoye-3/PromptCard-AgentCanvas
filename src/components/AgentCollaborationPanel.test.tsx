@@ -65,7 +65,10 @@ vi.mock('@/components/agent/AgentConversationMenu', () => ({
       onClick={() => onConversationChange({
         id: 'conversation-experimental', projectId: 'project-a',
         entrypoint: 'workspace-chatbot-agent', mode: 'free-canvas-workspace', title: 'Experimental',
-        status: 'active', createdAt: 1, updatedAt: 2, modelBinding: null,
+        status: 'active', createdAt: 1, updatedAt: 2,
+        modelBinding: {
+          connectionId: 'connection-chat', providerId: 'volcengine-ark', modelId: 'doubao-seed-2-0-lite-260215'
+        },
         interactionMode: 'chat-experimental', boundSkillIds: ['SKL-tone'], revision: 4,
         messages: mocks.storedMessages, proposals: [], turns: []
       })}
@@ -892,7 +895,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     )
   })
 
-  it('clears transient attachments after the durable send even when Canvas apply throws', async () => {
+  it('shows a fixed post-send error without restoring attachments or runtime retry when Canvas apply throws', async () => {
     mocks.sendMessage.mockResolvedValueOnce({
       proposals: [],
       canvasEdits: [{ id: 'edit-1', kind: 'free_canvas_text_create' }]
@@ -916,14 +919,88 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
       resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown',
       size: 7, sha256: 'a'.repeat(64)
     }]))
+    const composer = renderer.root.findByProps({ 'data-agent-composer': true })
+    act(() => composer.props.onInput({ currentTarget: { textContent: 'Apply edit' } }))
 
     await act(async () => {
-      await expect(renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Apply edit', []))
-        .rejects.toThrow('apply failed')
+      await renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
     })
 
     expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([])
     expect(mocks.sendMessage).toHaveBeenCalledTimes(1)
+    expect(mocks.retryRequest).toBeUndefined()
     expect(JSON.stringify(renderer.toJSON())).not.toContain('使用原请求重试')
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('shows the same fixed post-send error when automatic workspace apply throws', async () => {
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [{
+        id: 'proposal-1', kind: 'workspace_card_update', agentName: 'PromptCard Agent',
+        updates: [{ cardId: 'card-1', content: 'Updated' }], rationale: 'Apply update',
+        status: 'pending', createdAt: 1
+      }],
+      canvasEdits: []
+    })
+    const applyWorkspaceProposal = vi.fn().mockRejectedValue(new Error('workspace apply failed'))
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={applyWorkspaceProposal}
+          autoApplyWorkspaceChanges
+          embedded
+        />
+      )
+    })
+    const composer = renderer.root.findByProps({ 'data-agent-composer': true })
+    act(() => composer.props.onInput({ currentTarget: { textContent: 'Apply workspace proposal' } }))
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+    })
+
+    expect(applyWorkspaceProposal).toHaveBeenCalledOnce()
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1)
+    expect(mocks.retryRequest).toBeUndefined()
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('使用原请求重试')
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('contains a rejected post-send apply from the actual retry button without another runtime turn', async () => {
+    mocks.retryRequest = {
+      requestId: 'request-apply-retry', content: 'Retry and apply',
+      conversationId: 'conversation-experimental', documentResourceIds: [],
+      explicitDocumentNodeIds: [], documentAttachments: []
+    }
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [],
+      canvasEdits: [{ id: 'edit-retry', kind: 'free_canvas_text_create' }]
+    })
+    const applyCanvasEdit = vi.fn().mockRejectedValue(new Error('retry apply failed'))
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '使用原请求重试' }).props.onClick()
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
   })
 })

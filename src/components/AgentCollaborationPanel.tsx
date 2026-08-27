@@ -67,6 +67,8 @@ const agentQuickPrompts = [
   }
 ] as const
 
+const POST_SEND_APPLY_ERROR = '消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。'
+
 export function AgentCollaborationPanel({
   title,
   mode,
@@ -125,6 +127,7 @@ export function AgentCollaborationPanel({
   const [modelSelectionRequired, setModelSelectionRequired] = useState(false)
   const [modelSaving, setModelSaving] = useState(false)
   const [modelSwitchError, setModelSwitchError] = useState<string>()
+  const [postSendApplyError, setPostSendApplyError] = useState<string>()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const canvasIdentityRef = useRef(`${sessionKey}:${workspaceContext.projectId}`)
   const lastDraftRequestIdRef = useRef<string>()
@@ -143,6 +146,7 @@ export function AgentCollaborationPanel({
     ? selectedModelKey
     : selectedModelKey || (defaultModel ? canvasAgentModelOption(defaultModel)?.key || '' : '')
   const effectiveModel = models.find(model => canvasAgentModelOption(model)?.key === effectiveModelKey)
+  const visiblePanelError = visibleRuntimeError || postSendApplyError || modelSwitchError
 
   useEffect(() => {
     if (!initialized) init()
@@ -187,6 +191,7 @@ export function AgentCollaborationPanel({
     setCanvasAttachments([])
     setDocumentAttachments([])
     setDocumentUploadingCount(0)
+    setPostSendApplyError(undefined)
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
     setComposerResetKey(key => key + 1)
@@ -212,6 +217,7 @@ export function AgentCollaborationPanel({
     }
   ) => {
     if (!content.trim() || running || documentUploadingCount > 0) return
+    setPostSendApplyError(undefined)
     const promptLibraryMode = canvasEditMode === 'prompt-library'
     const target = promptLibraryMode
       ? undefined
@@ -266,44 +272,48 @@ export function AgentCollaborationPanel({
     setCanvasEditMode('complete')
     setComposerResetKey(key => key + 1)
 
-    const appliedCanvasEdits: AgentCanvasEdit[] = []
-    if (onApplyCanvasEdit) {
-      for (const edit of returned.canvasEdits) {
-        const applied = await onApplyCanvasEdit(edit)
-        if (applied === false) continue
-        appliedCanvasEdits.push(edit)
-      }
-    }
-    if (appliedCanvasEdits.length > 0) {
-      setAppliedMessages(current => [
-        ...current,
-        {
-          id: `agent-canvas-applied-${Date.now()}`,
-          role: 'system',
-          content: summarizeAppliedCanvasEdits(appliedCanvasEdits),
-          createdAt: Date.now()
+    try {
+      const appliedCanvasEdits: AgentCanvasEdit[] = []
+      if (onApplyCanvasEdit) {
+        for (const edit of returned.canvasEdits) {
+          const applied = await onApplyCanvasEdit(edit)
+          if (applied === false) continue
+          appliedCanvasEdits.push(edit)
         }
-      ])
-    }
-
-    if (autoApplyWorkspaceChanges) {
-      const workspaceProposals = returned.proposals.filter(isDirectWorkspaceProposal)
-      for (const proposal of workspaceProposals) {
-        const applied = await onApplyWorkspaceProposal(proposal)
-        if (applied === false) continue
-        await setProposalStatus(proposal.id, 'approved')
       }
-      if (workspaceProposals.length > 0) {
+      if (appliedCanvasEdits.length > 0) {
         setAppliedMessages(current => [
           ...current,
           {
-            id: `agent-applied-${Date.now()}`,
+            id: `agent-canvas-applied-${Date.now()}`,
             role: 'system',
-            content: summarizeAppliedChanges(workspaceProposals),
+            content: summarizeAppliedCanvasEdits(appliedCanvasEdits),
             createdAt: Date.now()
           }
         ])
       }
+
+      if (autoApplyWorkspaceChanges) {
+        const workspaceProposals = returned.proposals.filter(isDirectWorkspaceProposal)
+        for (const proposal of workspaceProposals) {
+          const applied = await onApplyWorkspaceProposal(proposal)
+          if (applied === false) continue
+          await setProposalStatus(proposal.id, 'approved')
+        }
+        if (workspaceProposals.length > 0) {
+          setAppliedMessages(current => [
+            ...current,
+            {
+              id: `agent-applied-${Date.now()}`,
+              role: 'system',
+              content: summarizeAppliedChanges(workspaceProposals),
+              createdAt: Date.now()
+            }
+          ])
+        }
+      }
+    } catch {
+      setPostSendApplyError(POST_SEND_APPLY_ERROR)
     }
   }
 
@@ -371,14 +381,14 @@ export function AgentCollaborationPanel({
             <RefreshCw className="h-4 w-4" />
           </button>
         </div>
-        {(visibleRuntimeError || modelSwitchError) && (
-          <RuntimeErrorNotice error={visibleRuntimeError || modelSwitchError!} />
+        {visiblePanelError && (
+          <RuntimeErrorNotice error={visiblePanelError} />
         )}
       </div>
       )}
 
-      {embedded && (visibleRuntimeError || modelSwitchError) && (
-        <div className="mx-3 mt-2 shrink-0"><RuntimeErrorNotice error={visibleRuntimeError || modelSwitchError!} dense /></div>
+      {embedded && visiblePanelError && (
+        <div className="mx-3 mt-2 shrink-0"><RuntimeErrorNotice error={visiblePanelError} dense /></div>
       )}
 
       {embedded ? (
@@ -536,7 +546,7 @@ export function AgentCollaborationPanel({
               className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900"
               onClick={() => {
                 if (currentRetryRequest.conversationId !== conversationId) return
-                void handleSend(
+                return handleSend(
                   currentRetryRequest.content,
                   currentRetryRequest.explicitDocumentNodeIds.map(nodeId => ({
                     nodeId,
@@ -548,7 +558,7 @@ export function AgentCollaborationPanel({
                     explicitDocumentNodeIds: currentRetryRequest.explicitDocumentNodeIds,
                     documentAttachments: currentRetryRequest.documentAttachments
                   }
-                )
+                ).catch(() => undefined)
               }}
             >
               使用原请求重试
@@ -693,6 +703,7 @@ export function AgentCollaborationPanel({
   )
 
   function handleConversationChange(conversation: AgentConversationDetail) {
+    setPostSendApplyError(undefined)
     setConversationId(conversation.id)
     setInteractionMode(conversation.interactionMode || 'prompt-edit')
     setBoundSkillIds(conversation.boundSkillIds || [])

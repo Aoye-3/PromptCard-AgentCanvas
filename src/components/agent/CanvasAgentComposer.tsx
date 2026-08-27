@@ -170,6 +170,17 @@ export function CanvasAgentComposer({
     )
   }
 
+  const submitCurrentMessage = () => {
+    if (disabled || modelSaving || !selectedModelAvailable || !serialized.content) return
+    try {
+      const submission = onSubmit(serialized.content, serialized.mentions)
+      if (submission) return Promise.resolve(submission).catch(() => undefined)
+    } catch {
+      // React event handlers cannot surface caller failures; the owning panel reports actionable errors.
+      return Promise.resolve()
+    }
+  }
+
   const insertMention = (node: CanvasAgentNodeSummary) => {
     const editor = editorRef.current
     const range = mentionRangeRef.current
@@ -217,7 +228,7 @@ export function CanvasAgentComposer({
     }
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
     event.preventDefault()
-    if (!disabled && serialized.content) onSubmit(serialized.content, serialized.mentions)
+    return submitCurrentMessage()
   }
 
   const handleReferenceContextMenu = (event: MouseEvent, nodeId: string) => {
@@ -373,7 +384,7 @@ export function CanvasAgentComposer({
             aria-label="发送给 Agent"
             title="发送给 Agent"
             className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#141413] text-white transition hover:bg-[#30302e] disabled:bg-[#d1cfc5]"
-            onClick={() => onSubmit(serialized.content, serialized.mentions)}
+            onClick={submitCurrentMessage}
             disabled={disabled || modelSaving || !selectedModelAvailable || !serialized.content}
           >
             {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
