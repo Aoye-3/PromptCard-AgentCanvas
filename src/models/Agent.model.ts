@@ -52,7 +52,7 @@ export interface AgentModelInfo {
   modelId?: string
   displayName?: string
   capabilities?: {
-    input?: Array<'text' | 'image'>
+    input?: Array<'text' | 'image' | 'pdf'>
     toolCalling?: boolean
     contextWindow?: number
     [key: string]: unknown

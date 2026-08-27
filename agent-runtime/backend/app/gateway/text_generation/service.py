@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.gateway.ark_responses import (
+    ArkResponsesError,
+    ResolvedDocumentAsset,
+    complete_ark_response,
+)
 from app.gateway.model_management.catalog import (
     connection_models_response,
     model_by_id,
@@ -104,6 +109,48 @@ def complete_sdk_text(
         credential=credential,
         model_id=str(model["id"]),
     )
+
+
+def complete_sdk_text_with_documents(
+    payload: dict[str, Any],
+    *,
+    connection_id: str,
+    model_id: str,
+    pdf_assets: list[ResolvedDocumentAsset],
+) -> dict[str, Any]:
+    if not pdf_assets:
+        return complete_sdk_text(
+            payload,
+            connection_id=connection_id,
+            model_id=model_id,
+        )
+    resolved = resolve_text_model(
+        {"connectionId": connection_id, "modelId": model_id}
+    )
+    model = resolved["model"]
+    capabilities = model.get("capabilities") or {}
+    if (
+        resolved["providerId"] != "volcengine-ark"
+        or "pdf" not in (capabilities.get("input") or [])
+        or (model.get("integrationGroup") or {}).get("kind") != "sdk"
+    ):
+        raise ModelManagementError("document_input_not_supported")
+    store = get_connection_store()
+    connection = store.get_connection_config(connection_id)
+    credential = store.credential_store.get(connection_id)
+    if not credential:
+        raise ModelManagementError("credential_missing")
+    try:
+        return complete_ark_response(
+            payload,
+            api_base=str(connection["apiBase"]),
+            credential=credential,
+            model_id=str(model["id"]),
+            pdf_assets=pdf_assets,
+            connection_id=connection_id,
+        )
+    except ArkResponsesError as exc:
+        raise ModelManagementError(exc.code) from None
 
 
 def resolve_pi_native_proxy(connection_id: str, model_id: str) -> dict[str, str]:

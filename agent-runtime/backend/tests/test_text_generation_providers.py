@@ -156,3 +156,42 @@ def test_agent_catalog_contains_only_connection_whitelisted_models_with_availabi
         "unavailableReason": None,
         "isDefault": True,
     }]
+
+
+def test_pdf_document_dispatch_uses_responses_only_for_declared_ark_capability(
+    tmp_path,
+    monkeypatch,
+):
+    from app.gateway.ark_responses import ResolvedDocumentAsset
+
+    store = configured_store(
+        tmp_path,
+        "volcengine-ark",
+        "doubao-seed-2-0-lite-260215",
+    )
+    connection_id = store.read_state()["connections"][0]["id"]
+    monkeypatch.setattr(service, "get_connection_store", lambda: store)
+    calls = []
+
+    def complete(payload, **kwargs):
+        calls.append((payload, kwargs))
+        return {"content": [], "stopReason": "stop", "usage": {}}
+
+    monkeypatch.setattr(service, "complete_ark_response", complete)
+    pdf = ResolvedDocumentAsset(
+        resource_id="pdf-1",
+        filename="scan.pdf",
+        content_type="application/pdf",
+        content=b"%PDF-scan",
+    )
+
+    service.complete_sdk_text_with_documents(
+        {"messages": []},
+        connection_id=connection_id,
+        model_id="doubao-seed-2-0-lite-260215",
+        pdf_assets=[pdf],
+    )
+
+    assert calls[0][1]["credential"] == "secret-value"
+    assert calls[0][1]["connection_id"] == connection_id
+    assert calls[0][1]["pdf_assets"] == [pdf]

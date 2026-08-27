@@ -19,7 +19,7 @@ export interface TextModelDescriptor {
     displayName: string
     modality: string
     capabilities?: {
-      input?: Array<'text' | 'image'>
+      input?: Array<'text' | 'image' | 'pdf'>
     }
     integrationGroup: {
       id: string
@@ -37,7 +37,8 @@ export interface TextProviderRuntime {
 }
 
 export async function createTextProviderRuntime(
-  descriptorValue: unknown
+  descriptorValue: unknown,
+  documentInvocationHandle?: string
 ): Promise<TextProviderRuntime> {
   const gatewayUrl = requiredUrl('PROMPTCARD_GATEWAY_INTERNAL_URL')
   const internalToken = requiredEnv('PROMPTCARD_INTERNAL_TOKEN')
@@ -54,12 +55,20 @@ export async function createTextProviderRuntime(
       ? `${gatewayUrl}/internal/pi-proxy/${encodeURIComponent(descriptor.connectionId)}`
       : gatewayUrl,
     reasoning: false,
-    input: descriptor.model.capabilities?.input || ['text'],
+    input: (descriptor.model.capabilities?.input || ['text'])
+      .filter((input): input is 'text' | 'image' => input !== 'pdf'),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128000,
     maxTokens: 8192
   }
-  ;(model as Model<Api> & { promptcardConnectionId?: string }).promptcardConnectionId = descriptor.connectionId
+  const promptcardModel = model as Model<Api> & {
+    promptcardConnectionId?: string
+    promptcardDocumentInvocationHandle?: string
+  }
+  promptcardModel.promptcardConnectionId = descriptor.connectionId
+  if (group.kind === 'sdk' && documentInvocationHandle) {
+    promptcardModel.promptcardDocumentInvocationHandle = documentInvocationHandle
+  }
   const provider = createProvider({
     id: runtimeProviderId,
     name: group.displayName,

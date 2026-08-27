@@ -21,7 +21,7 @@ MODELS: tuple[dict[str, Any], ...] = (
         "displayName": "Doubao Seed 2.0 Lite",
         "modality": "chat",
         "capabilities": {
-            "input": ["text", "image"],
+            "input": ["text", "image", "pdf"],
             "toolCalling": True,
             "contextWindow": 256_000,
         },

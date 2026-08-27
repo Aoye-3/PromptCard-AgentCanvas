@@ -5,11 +5,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 
 from app.gateway.auth_middleware import AuthMiddleware
 from app.gateway.config import get_gateway_config
 from app.gateway.csrf_middleware import CSRFMiddleware, get_configured_cors_origins
 from app.gateway.deps import image_generation_runtime
+from app.gateway.provider_file_cleanup import retry_provider_file_cleanup
 from app.gateway.routers import image_generation, model_management, promptcard_runtime
 
 logging.basicConfig(
@@ -22,6 +24,18 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with image_generation_runtime(app):
+        try:
+            summary = await run_in_threadpool(retry_provider_file_cleanup)
+            logger.info(
+                "Provider file cleanup retry finished: attempted=%d succeeded=%d retry_scheduled=%d",
+                summary.attempted,
+                summary.succeeded,
+                summary.retry_scheduled,
+            )
+        except Exception:
+            logger.warning(
+                "Provider file cleanup retry was unavailable: provider_cleanup_startup_failed"
+            )
         logger.info("PromptCard gateway started")
         yield
     logger.info("PromptCard gateway stopped")

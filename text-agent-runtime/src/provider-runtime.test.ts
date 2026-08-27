@@ -43,6 +43,17 @@ describe('PI text provider runtime', () => {
       .toBe('connection-1')
   })
 
+  it('carries only the Gateway-issued document invocation handle on SDK models', async () => {
+    const runtime = await createTextProviderRuntime(
+      descriptor('sdk', 'volcengine-ark', 'doubao-seed-2-0-lite-260215'),
+      'opaque-request-handle'
+    )
+
+    expect((runtime.model as typeof runtime.model & {
+      promptcardDocumentInvocationHandle?: string
+    }).promptcardDocumentInvocationHandle).toBe('opaque-request-handle')
+  })
+
   it('rejects image model descriptors at the text boundary', async () => {
     const value = descriptor('sdk', 'volcengine-ark', 'seedream')
     value.model.modality = 'image'
@@ -63,7 +74,7 @@ function descriptor(
       id: modelId,
       displayName: modelId,
       modality: 'chat',
-      capabilities: { input: ['text'] as Array<'text' | 'image'> },
+      capabilities: { input: ['text'] as Array<'text' | 'image' | 'pdf'> },
       integrationGroup: {
         id: kind === 'pi-native' ? 'pi-native' : 'volcengine-ark-sdk',
         displayName: kind === 'pi-native' ? 'PI 原生' : '方舟 SDK',

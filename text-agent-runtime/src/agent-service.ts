@@ -14,6 +14,7 @@ export interface AgentRequest extends InvocationInput {
   projectId?: string
   mode?: string
   modelDescriptor: TextModelDescriptor
+  documentInvocationHandle?: string
 }
 
 export async function invokeAgent(request: AgentRequest) {
@@ -22,7 +23,10 @@ export async function invokeAgent(request: AgentRequest) {
   const proposals: Record<string, unknown>[] = []
   const canvasEdits: Record<string, unknown>[] = []
   const tools = buildAgentTools(invocation.policy, invocation.promptLibrary, proposals, canvasEdits)
-  const providerRuntime = await createTextProviderRuntime(request.modelDescriptor)
+  const providerRuntime = await createTextProviderRuntime(
+    request.modelDescriptor,
+    request.documentInvocationHandle
+  )
   const agent = new Agent({
     initialState: {
       systemPrompt: buildAgentSystemPrompt(invocation),

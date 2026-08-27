@@ -161,7 +161,7 @@ def test_ark_multimodal_text_model_is_in_catalog():
     assert model is not None
     assert model["providerId"] == "volcengine-ark"
     assert model["modality"] == "chat"
-    assert model["capabilities"]["input"] == ["text", "image"]
+    assert model["capabilities"]["input"] == ["text", "image", "pdf"]
 
 
 def test_ark_pro_text_model_is_in_catalog():

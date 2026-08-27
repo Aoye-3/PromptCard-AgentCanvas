@@ -2,19 +2,25 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
+import secrets
+import threading
 import time
+import unicodedata
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import httpx
 from fastapi import HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
+from app.gateway.ark_responses import ResolvedDocumentAsset
 from app.gateway.csrf_middleware import is_secure_request
 from app.gateway.image_generation.service import PromptCardStorageClient, StorageGatewayError
 from app.gateway.internal_auth import create_internal_auth_headers
@@ -32,10 +38,77 @@ from app.gateway.text_generation.service import (
     agent_chat_model_catalog,
     assigned_text_model,
     complete_sdk_text,
+    complete_sdk_text_with_documents,
     resolve_text_model,
 )
 
 MAX_CANVAS_AGENT_IMAGE_BYTES = 30 * 1024 * 1024
+MAX_DOCUMENT_ATTACHMENTS = 5
+MAX_DOCUMENT_TURN_BYTES = 100 * 1024 * 1024
+MAX_DOCUMENT_MODEL_TEXT_CHARS = 500_000
+_DOCUMENT_INVOCATION_TTL_SECONDS = 300
+_MAX_DOCUMENT_INVOCATIONS = 32
+
+
+@dataclass(frozen=True)
+class DocumentInvocation:
+    assets: tuple[ResolvedDocumentAsset, ...]
+    connection_id: str
+    provider_id: str
+    model_id: str
+    expires_at: float
+
+
+class DocumentInvocationRegistry:
+    def __init__(self) -> None:
+        self._items: dict[str, DocumentInvocation] = {}
+        self._lock = threading.Lock()
+
+    def register(
+        self,
+        assets: list[ResolvedDocumentAsset],
+        descriptor: dict[str, Any],
+    ) -> str:
+        now = time.monotonic()
+        model = descriptor.get("model") or {}
+        invocation = DocumentInvocation(
+            assets=tuple(assets),
+            connection_id=str(descriptor.get("connectionId") or ""),
+            provider_id=str(descriptor.get("providerId") or ""),
+            model_id=str(model.get("id") or ""),
+            expires_at=now + _DOCUMENT_INVOCATION_TTL_SECONDS,
+        )
+        with self._lock:
+            self._prune(now)
+            if len(self._items) >= _MAX_DOCUMENT_INVOCATIONS:
+                raise HTTPException(status_code=503, detail="document_context_busy")
+            handle = secrets.token_urlsafe(32)
+            self._items[handle] = invocation
+        return handle
+
+    def resolve(self, handle: str) -> DocumentInvocation | None:
+        if not isinstance(handle, str) or not handle:
+            return None
+        now = time.monotonic()
+        with self._lock:
+            self._prune(now)
+            return self._items.get(handle)
+
+    def discard(self, handle: str) -> None:
+        with self._lock:
+            self._items.pop(handle, None)
+
+    def _prune(self, now: float) -> None:
+        expired = [
+            handle
+            for handle, invocation in self._items.items()
+            if invocation.expires_at <= now
+        ]
+        for handle in expired:
+            self._items.pop(handle, None)
+
+
+_document_invocations = DocumentInvocationRegistry()
 
 
 class PromptCardRuntimeMessageRequest(BaseModel):
@@ -73,6 +146,16 @@ class PromptCardRuntimeMessageRequest(BaseModel):
     canvas_node_context: dict[str, Any] | None = Field(
         default=None,
         alias="canvasNodeContext",
+    )
+    document_resource_ids: list[str] = Field(
+        default_factory=list,
+        alias="documentResourceIds",
+        max_length=MAX_DOCUMENT_ATTACHMENTS,
+    )
+    explicit_document_node_ids: list[str] = Field(
+        default_factory=list,
+        alias="explicitDocumentNodeIds",
+        max_length=MAX_DOCUMENT_ATTACHMENTS,
     )
 
 
@@ -113,6 +196,11 @@ class PromptCardInternalChatRequest(BaseModel):
     tools: list[dict[str, Any]] = Field(default_factory=list)
     temperature: float | None = None
     max_tokens: int | None = Field(default=None, alias="maxTokens")
+    document_invocation_handle: str | None = Field(
+        default=None,
+        alias="documentInvocationHandle",
+        exclude=True,
+    )
 
 
 class PromptCardConversationModelRequest(BaseModel):
@@ -198,6 +286,34 @@ class PromptCardRuntimeService:
         request: Request,
     ) -> dict[str, Any]:
         payload = body.model_dump(by_alias=True)
+        payload.pop("documentResourceIds", None)
+        payload.pop("explicitDocumentNodeIds", None)
+        _validate_document_resource_ids(body.project_id, body.document_resource_ids)
+        if body.explicit_document_node_ids:
+            if len(set(body.explicit_document_node_ids)) != len(
+                body.explicit_document_node_ids
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="explicit_document_node_ids_duplicate",
+                )
+            raise HTTPException(
+                status_code=422,
+                detail="document_context_unavailable",
+            )
+        document_assets = await _load_document_resources(
+            body.project_id,
+            body.document_resource_ids,
+        )
+        if sum(len(asset.content) for asset in document_assets) > MAX_DOCUMENT_TURN_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="document_attachments_too_large",
+            )
+        payload["content"] = _content_with_document_text(
+            body.content,
+            document_assets,
+        )
         resolved_canvas_context: dict[str, Any] | None = None
         conversation_id = body.conversation_id
         model_binding: dict[str, Any] | None = None
@@ -267,6 +383,16 @@ class PromptCardRuntimeService:
         payload["canvasNodeContext"] = resolved_canvas_context
         payload["interactionMode"] = interaction_mode
         descriptor = resolve_text_model(model_binding)
+        if any(asset.content_type == "application/pdf" for asset in document_assets):
+            capabilities = (descriptor.get("model") or {}).get("capabilities") or {}
+            if (
+                descriptor.get("providerId") != "volcengine-ark"
+                or "pdf" not in (capabilities.get("input") or [])
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="document_input_not_supported",
+                )
         normalized_binding = _model_binding_from_descriptor(descriptor)
         if conversation_id and body.project_id and model_binding is None:
             await _storage_request(
@@ -283,7 +409,23 @@ class PromptCardRuntimeService:
         )
         if attachments:
             payload["attachments"] = attachments
-        response = await _invoke_text_agent(payload)
+        document_handle: str | None = None
+        try:
+            pdf_assets = [
+                asset
+                for asset in document_assets
+                if asset.content_type == "application/pdf"
+            ]
+            if pdf_assets:
+                document_handle = _document_invocations.register(
+                    pdf_assets,
+                    descriptor,
+                )
+                payload["documentInvocationHandle"] = document_handle
+            response = await _invoke_text_agent(payload)
+        finally:
+            if document_handle is not None:
+                _document_invocations.discard(document_handle)
         raw_canvas_edits = response.get("canvasEdits")
         raw_canvas_edits = raw_canvas_edits if isinstance(raw_canvas_edits, list) else []
         validation_permission_scope = (
@@ -344,6 +486,21 @@ class PromptCardRuntimeService:
                     "userMessage": {
                         "role": "user",
                         "text": body.content,
+                        **(
+                            {
+                                "documentAttachments": [
+                                    {
+                                        "resourceId": asset.resource_id,
+                                        "name": asset.filename,
+                                        "contentType": asset.content_type,
+                                        "size": len(asset.content),
+                                    }
+                                    for asset in document_assets
+                                ]
+                            }
+                            if document_assets
+                            else {}
+                        ),
                         **(
                             {"canvasNodeContext": _canvas_node_context_audit(resolved_canvas_context)}
                             if resolved_canvas_context is not None
@@ -418,6 +575,32 @@ class PromptCardRuntimeService:
         self,
         body: PromptCardInternalChatRequest,
     ) -> dict[str, Any]:
+        handle = body.document_invocation_handle
+        if handle is not None:
+            invocation = _document_invocations.resolve(handle)
+            if (
+                invocation is None
+                or invocation.connection_id != body.connection_id
+                or invocation.provider_id != "volcengine-ark"
+                or invocation.model_id != body.model
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="document_context_unavailable",
+                )
+            payload = body.model_dump(by_alias=True)
+            pdf_assets = [
+                asset
+                for asset in invocation.assets
+                if asset.content_type == "application/pdf"
+            ]
+            return await run_in_threadpool(
+                complete_sdk_text_with_documents,
+                payload,
+                connection_id=body.connection_id,
+                model_id=body.model,
+                pdf_assets=pdf_assets,
+            )
         return await run_in_threadpool(
             complete_sdk_text,
             body.model_dump(by_alias=True),
@@ -1010,6 +1193,159 @@ async def _load_canvas_image_attachments(
     finally:
         storage.close()
     return attachments
+
+
+async def _load_document_resources(
+    project_id: str | None,
+    resource_ids: list[str],
+) -> list[ResolvedDocumentAsset]:
+    _validate_document_resource_ids(project_id, resource_ids)
+    if not resource_ids:
+        return []
+
+    base_url = os.getenv(
+        "PROMPTCARD_STORAGE_URL",
+        "http://127.0.0.1:8002",
+    ).rstrip("/")
+    assets: list[ResolvedDocumentAsset] = []
+    total_bytes = 0
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            for resource_id in resource_ids:
+                response = await client.get(
+                    f"{base_url}/api/internal/projects/"
+                    f"{quote(project_id, safe='')}/document-resources/"
+                    f"{quote(resource_id, safe='')}/content",
+                    headers=create_internal_auth_headers(),
+                )
+                if response.status_code == 404:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="document_resource_invalid",
+                    )
+                if response.status_code == 409:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="document_integrity_failed",
+                    )
+                if response.status_code != 200:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="document_storage_failed",
+                    )
+                if response.headers.get("x-document-resource-id") != resource_id:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="document_storage_invalid_response",
+                    )
+                content = response.content
+                total_bytes += len(content)
+                if total_bytes > MAX_DOCUMENT_TURN_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="document_attachments_too_large",
+                    )
+                content_type = response.headers.get("content-type", "").split(";", 1)[0]
+                filename = unquote(response.headers.get("x-file-name", ""))
+                if (
+                    not filename
+                    or len(filename) > 255
+                    or "/" in filename
+                    or "\\" in filename
+                    or Path(filename).name != filename
+                    or any(ord(character) < 32 for character in filename)
+                ):
+                    raise HTTPException(
+                        status_code=502,
+                        detail="document_storage_invalid_response",
+                    )
+                normalized_text = _normalized_document_text(content_type, content)
+                assets.append(
+                    ResolvedDocumentAsset(
+                        resource_id=resource_id,
+                        filename=filename,
+                        content_type=content_type,
+                        content=content,
+                        normalized_text=normalized_text,
+                    )
+                )
+    except HTTPException:
+        raise
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="document_storage_unavailable") from None
+    return assets
+
+
+def _validate_document_resource_ids(
+    project_id: str | None,
+    resource_ids: list[str],
+) -> None:
+    if not resource_ids:
+        return
+    if not project_id:
+        raise HTTPException(status_code=422, detail="document_project_required")
+    if len(resource_ids) > MAX_DOCUMENT_ATTACHMENTS:
+        raise HTTPException(status_code=413, detail="document_attachments_too_many")
+    if any(
+        not resource_id or resource_id != resource_id.strip()
+        for resource_id in resource_ids
+    ):
+        raise HTTPException(status_code=422, detail="document_resource_id_invalid")
+    if len(set(resource_ids)) != len(resource_ids):
+        raise HTTPException(status_code=422, detail="document_resource_ids_duplicate")
+
+
+def _normalized_document_text(content_type: str, content: bytes) -> str | None:
+    if content_type == "application/pdf":
+        return None
+    if content_type in {"text/plain", "text/markdown"}:
+        try:
+            text = content.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=502, detail="document_content_invalid") from None
+        return unicodedata.normalize(
+            "NFC",
+            text.replace("\r\n", "\n").replace("\r", "\n"),
+        )[:MAX_DOCUMENT_MODEL_TEXT_CHARS]
+    if content_type == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ):
+        try:
+            from docx import Document
+            from docx.table import Table
+            from docx.text.paragraph import Paragraph
+
+            document = Document(io.BytesIO(content))
+            lines: list[str] = []
+            for block in document.iter_inner_content():
+                if isinstance(block, Paragraph) and block.text:
+                    lines.append(block.text)
+                elif isinstance(block, Table):
+                    for row in block.rows:
+                        lines.append("\t".join(cell.text for cell in row.cells))
+            return unicodedata.normalize("NFC", "\n".join(lines))[
+                :MAX_DOCUMENT_MODEL_TEXT_CHARS
+            ]
+        except (KeyError, ValueError, OSError):
+            raise HTTPException(status_code=502, detail="document_content_invalid") from None
+    raise HTTPException(status_code=502, detail="document_content_type_invalid")
+
+
+def _content_with_document_text(
+    content: str,
+    assets: list[ResolvedDocumentAsset],
+) -> str:
+    remaining = MAX_DOCUMENT_MODEL_TEXT_CHARS
+    sections = [content]
+    for asset in assets:
+        if not asset.normalized_text or remaining <= 0:
+            continue
+        text = asset.normalized_text[:remaining]
+        remaining -= len(text)
+        sections.append(
+            f"[Attached document: {asset.filename}]\n{text}"
+        )
+    return "\n\n".join(sections)
 
 
 def _canvas_node_context_audit(context: dict[str, Any]) -> dict[str, Any]:
