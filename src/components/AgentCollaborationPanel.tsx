@@ -130,6 +130,13 @@ export function AgentCollaborationPanel({
   const [postSendApplyError, setPostSendApplyError] = useState<string>()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const canvasIdentityRef = useRef(`${sessionKey}:${workspaceContext.projectId}`)
+  const postSendApplyIdentity = `${sessionKey}:${workspaceContext.projectId}:${conversationId || 'new'}`
+  const postSendApplyIdentityRef = useRef(postSendApplyIdentity)
+  const postSendApplyAttemptRef = useRef(0)
+  if (postSendApplyIdentityRef.current !== postSendApplyIdentity) {
+    postSendApplyIdentityRef.current = postSendApplyIdentity
+    postSendApplyAttemptRef.current += 1
+  }
   const lastDraftRequestIdRef = useRef<string>()
   const externalSkills = skills.filter(skill => skill.source === 'external' && skill.id)
   const canvasNodes = useMemo(() => readCanvasNodeSummaries(workspaceContext), [workspaceContext])
@@ -217,6 +224,9 @@ export function AgentCollaborationPanel({
     }
   ) => {
     if (!content.trim() || running || documentUploadingCount > 0) return
+    const applyAttempt = postSendApplyAttemptRef.current + 1
+    postSendApplyAttemptRef.current = applyAttempt
+    let applyIdentity = postSendApplyIdentityRef.current
     setPostSendApplyError(undefined)
     const promptLibraryMode = canvasEditMode === 'prompt-library'
     const target = promptLibraryMode
@@ -262,7 +272,16 @@ export function AgentCollaborationPanel({
     const succeeded = !getAgentSession(sessionKey).runtimeError
     if (!succeeded) return
     const updatedConversationId = getAgentSession(sessionKey).conversationId
-    if (updatedConversationId) setConversationId(updatedConversationId)
+    if (
+      updatedConversationId
+      && updatedConversationId !== conversationId
+      && postSendApplyAttemptRef.current === applyAttempt
+      && postSendApplyIdentityRef.current === applyIdentity
+    ) {
+      applyIdentity = `${sessionKey}:${workspaceContext.projectId}:${updatedConversationId}`
+      postSendApplyIdentityRef.current = applyIdentity
+      setConversationId(updatedConversationId)
+    }
     if (interactionMode === 'prompt-edit') setSelectedSkillIds([])
 
     setDraft('')
@@ -313,7 +332,12 @@ export function AgentCollaborationPanel({
         }
       }
     } catch {
-      setPostSendApplyError(POST_SEND_APPLY_ERROR)
+      if (
+        postSendApplyAttemptRef.current === applyAttempt
+        && postSendApplyIdentityRef.current === applyIdentity
+      ) {
+        setPostSendApplyError(POST_SEND_APPLY_ERROR)
+      }
     }
   }
 
@@ -703,6 +727,8 @@ export function AgentCollaborationPanel({
   )
 
   function handleConversationChange(conversation: AgentConversationDetail) {
+    postSendApplyIdentityRef.current = `${sessionKey}:${workspaceContext.projectId}:${conversation.id}`
+    postSendApplyAttemptRef.current += 1
     setPostSendApplyError(undefined)
     setConversationId(conversation.id)
     setInteractionMode(conversation.interactionMode || 'prompt-edit')
