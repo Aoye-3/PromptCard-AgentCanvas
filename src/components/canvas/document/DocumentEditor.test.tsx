@@ -52,6 +52,10 @@ vi.mock('@tiptap/react', () => {
 
 import { DocumentEditor } from './DocumentEditor'
 
+const blankDocument = () => createPlanningDocumentV1([
+  { id: 'paragraph-empty', type: 'paragraph', content: [] }
+])
+
 describe('DocumentEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -80,7 +84,7 @@ describe('DocumentEditor', () => {
 
   it('keeps lists and links visibly semantic under Tailwind preflight', () => {
     const renderer = create(
-      <DocumentEditor document={createPlanningDocumentV1([])} mode="expanded" onChange={vi.fn()} />
+      <DocumentEditor document={blankDocument()} mode="expanded" onChange={vi.fn()} />
     )
     const editorContent = renderer.root.findByProps({ role: 'textbox' })
 
@@ -92,7 +96,7 @@ describe('DocumentEditor', () => {
 
   it('routes toolbar actions through the restricted Tiptap command chain', () => {
     const renderer = create(
-      <DocumentEditor document={createPlanningDocumentV1([])} mode="expanded" onChange={vi.fn()} />
+      <DocumentEditor document={blankDocument()} mode="expanded" onChange={vi.fn()} />
     )
 
     act(() => renderer.root.findByProps({ 'aria-label': '粗体' }).props.onClick())
@@ -103,7 +107,7 @@ describe('DocumentEditor', () => {
   it('removes the active link when the link prompt is submitted empty', () => {
     vi.stubGlobal('window', { prompt: vi.fn(() => '   ') })
     const renderer = create(
-      <DocumentEditor document={createPlanningDocumentV1([])} mode="expanded" onChange={vi.fn()} />
+      <DocumentEditor document={blankDocument()} mode="expanded" onChange={vi.fn()} />
     )
 
     act(() => renderer.root.findByProps({ 'aria-label': '插入链接' }).props.onClick())

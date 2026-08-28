@@ -43,6 +43,38 @@ describe('planning document Tiptap adapter', () => {
     expect(JSON.stringify(json)).not.toContain('suggestion')
   })
 
+  test.each([
+    ['empty paragraph', [{ id: 'paragraph-empty', type: 'paragraph', content: [] }]],
+    ['all inline marks', [{
+      id: 'paragraph-marks',
+      type: 'paragraph',
+      content: [{ text: 'Bold', bold: true }, { text: 'Italic', italic: true }, { text: 'Link', href: 'https://example.com' }]
+    }]],
+    ['heading levels', [
+      { id: 'heading-1', type: 'heading', level: 1, content: [] },
+      { id: 'heading-2', type: 'heading', level: 2, content: [] },
+      { id: 'heading-3', type: 'heading', level: 3, content: [] }
+    ]],
+    ['blockquote', [{ id: 'quote-empty', type: 'blockquote', content: [] }]],
+    ['bullet list', [{ id: 'bullets', type: 'bulletList', items: [{ id: 'bullet-1', content: [] }] }]],
+    ['ordered list', [{ id: 'ordered', type: 'orderedList', items: [{ id: 'ordered-1', content: [] }] }]],
+    ['check list', [{ id: 'checks', type: 'checkList', items: [{ id: 'check-1', checked: false, content: [] }] }]],
+    ['table headers and cells', [{
+      id: 'table',
+      type: 'table',
+      rows: [
+        { id: 'row-header', cells: [{ id: 'header', header: true, content: [] }] },
+        { id: 'row-body', cells: [{ id: 'cell', content: [] }] }
+      ]
+    }]]
+  ] as Array<[string, PlanningDocumentBlockV1[]]>)('emits a real Tiptap-valid schema document for accepted neutral fixture: %s', (_label, fixtureBlocks) => {
+    const document = createPlanningDocumentV1(fixtureBlocks)
+    const schema = getSchema(createPlanningDocumentTiptapExtensions())
+    const node = schema.nodeFromJSON(planningDocumentToTiptapJson(document))
+
+    expect(() => node.check()).not.toThrow()
+  })
+
   test('accepts only real Tiptap 3.30.3 null defaults across every allowed node and mark', () => {
     const original = createPlanningDocumentV1(blocks(), 5)
     const schema = getSchema(createPlanningDocumentTiptapExtensions())

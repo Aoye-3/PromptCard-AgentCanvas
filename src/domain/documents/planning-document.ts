@@ -146,7 +146,7 @@ export const clonePlanningDocumentV1 = (document: PlanningDocumentV1): PlanningD
 })
 
 const normalizeBlocks = (value: unknown): PlanningDocumentBlockV1[] => {
-  if (!Array.isArray(value)) fail('planning_document_invalid_blocks')
+  if (!Array.isArray(value) || value.length === 0) fail('planning_document_invalid_blocks')
   const ids = new Set<string>()
   return value.map(item => normalizeBlock(item, ids))
 }
@@ -165,7 +165,7 @@ const normalizeBlock = (value: unknown, ids: Set<string>): PlanningDocumentBlock
   }
   if (value.type === 'bulletList' || value.type === 'orderedList') {
     assertExactKeys(value, ['id', 'type', 'items'])
-    if (!Array.isArray(value.items)) fail('planning_document_invalid_items')
+    if (!Array.isArray(value.items) || value.items.length === 0) fail('planning_document_invalid_items')
     return {
       id,
       type: value.type,
@@ -174,7 +174,7 @@ const normalizeBlock = (value: unknown, ids: Set<string>): PlanningDocumentBlock
   }
   if (value.type === 'checkList') {
     assertExactKeys(value, ['id', 'type', 'items'])
-    if (!Array.isArray(value.items)) fail('planning_document_invalid_items')
+    if (!Array.isArray(value.items) || value.items.length === 0) fail('planning_document_invalid_items')
     return {
       id,
       type: 'checkList',

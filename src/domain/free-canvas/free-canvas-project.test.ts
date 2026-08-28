@@ -33,8 +33,8 @@ import {
   matchesFreeCanvasTextProposalBasis,
   previewFreeCanvasTextInsertions
 } from './free-canvas-project'
-import type { IPromptProject } from '@/models/PromptHistory.model'
-import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
+import type { IPromptProject, PlanningDocumentBlockV1 } from '@/models/PromptHistory.model'
+import { createPlanningDocumentV1, planningDocumentDigest } from '@/domain/documents/planning-document'
 
 describe('free canvas project domain', () => {
   test('previews interleaved insertions without changing the anchored segments', () => {
@@ -677,6 +677,41 @@ describe('free canvas project domain', () => {
     expect(project.nodes[0]).toMatchObject(document)
     expect(project.nodes[1]).toMatchObject(storyboard)
     expect(project.nodes.every(node => node.kind !== 'text')).toBe(true)
+  })
+
+  test.each([
+    { label: 'empty document', blocks: [] },
+    { label: 'empty bullet list', blocks: [{ id: 'empty-list', type: 'bulletList', items: [] }] },
+    { label: 'empty ordered list', blocks: [{ id: 'empty-list', type: 'orderedList', items: [] }] },
+    { label: 'empty check list', blocks: [{ id: 'empty-list', type: 'checkList', items: [] }] }
+  ] as Array<{ label: string; blocks: PlanningDocumentBlockV1[] }>)('freezes a correct-digest unrenderable Document ($label) as lossless unsupported data', ({ blocks }) => {
+    const digestInput = { version: 1 as const, blocks, suggestions: [] }
+    const document = { ...digestInput, revision: 2, digest: planningDocumentDigest(digestInput) }
+    const originalNode = {
+      id: 'document-invalid-structure',
+      kind: 'document',
+      title: 'Preserve the invalid structure',
+      position: { x: 10, y: 20 },
+      width: 560,
+      height: 420,
+      document,
+      linkedDocumentResourceIds: ['resource-1'],
+      futureNodeAttribute: { preserve: ['exactly'] },
+      meta: { collapsed: true }
+    }
+
+    const project = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 100)
+
+    expect(project.nodes[0]).toMatchObject({
+      id: 'document-invalid-structure',
+      kind: 'unsupported',
+      originalKind: 'document',
+      originalNode
+    })
+    if (project.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(project.nodes[0].originalNode).not.toBe(originalNode)
+    expect(Object.isFrozen(project.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(project.nodes[0].originalNode.document)).toBe(true)
   })
 
   test.each([

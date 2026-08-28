@@ -215,7 +215,9 @@ describe('canvas command history', () => {
 
   it('does not update a missing or non-Document target', () => {
     const canvas = project()
-    const document = createPlanningDocumentV1([])
+    const document = createPlanningDocumentV1([
+      { id: 'paragraph-empty', type: 'paragraph', content: [] }
+    ])
 
     expect(applyCanvasLocalCommand(canvas, { kind: 'update-document', nodeId: 'missing', document }).project).toBe(canvas)
     expect(applyCanvasLocalCommand(canvas, { kind: 'update-document', nodeId: 'text-b', document }).project).toBe(canvas)

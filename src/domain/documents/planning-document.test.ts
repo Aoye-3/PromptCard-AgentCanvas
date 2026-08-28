@@ -117,6 +117,39 @@ describe('planning document domain', () => {
     expect(parsePlanningDocumentV1(document)).toEqual({ ok: true, document })
   })
 
+  test('rejects an empty document even when its persisted digest is correct', () => {
+    const digestInput = { version: 1 as const, blocks: [], suggestions: [] }
+    const persisted = { ...digestInput, revision: 0, digest: planningDocumentDigest(digestInput) }
+
+    expect(() => createPlanningDocumentV1([])).toThrow('planning_document_invalid_blocks')
+    expect(parsePlanningDocumentV1(persisted)).toEqual({
+      ok: false,
+      reason: 'planning_document_invalid_blocks'
+    })
+  })
+
+  test.each([
+    { id: 'bullets-empty', type: 'bulletList', items: [] },
+    { id: 'ordered-empty', type: 'orderedList', items: [] },
+    { id: 'checks-empty', type: 'checkList', items: [] }
+  ] as PlanningDocumentBlockV1[])('rejects an empty $type even when its persisted digest is correct', block => {
+    const digestInput = { version: 1 as const, blocks: [block], suggestions: [] }
+    const persisted = { ...digestInput, revision: 0, digest: planningDocumentDigest(digestInput) }
+
+    expect(() => createPlanningDocumentV1([block])).toThrow('planning_document_invalid_items')
+    expect(parsePlanningDocumentV1(persisted)).toEqual({
+      ok: false,
+      reason: 'planning_document_invalid_items'
+    })
+  })
+
+  test('keeps one empty paragraph as the valid renderable blank document', () => {
+    const document = createPlanningDocumentV1([{ id: 'paragraph-empty', type: 'paragraph', content: [] }])
+
+    expect(parsePlanningDocumentV1(document)).toEqual({ ok: true, document })
+    expect(planningDocumentEffectiveText(document)).toBe('')
+  })
+
   test('rejects duplicate structural and leaf IDs across the entire document', () => {
     const duplicate = richBlocks()
     const table = duplicate[6]
