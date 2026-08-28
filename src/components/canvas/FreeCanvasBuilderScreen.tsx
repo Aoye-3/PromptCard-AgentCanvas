@@ -94,6 +94,7 @@ import {
   recoverFailedCanvasHistoryStep,
   redoCanvasLocalCommand,
   undoCanvasLocalCommand,
+  type CanvasCommandHistoryEntry,
   type CanvasLocalCommand
 } from '@/domain/free-canvas/canvas-command-history'
 import { markCanvasNodeReferencePending } from '@/domain/reference-codes/canvas-node-reference-lifecycle'
@@ -247,7 +248,19 @@ const isCanvasImageDrag = (dataTransfer: DataTransfer): boolean =>
 
 type DocumentAuthorityNode = Extract<IFreeCanvasNode, { kind: 'document' }>
 
-const documentMutationQueueKey = (projectId: string): string => projectId
+interface ProjectMutationScope {
+  projectId: string
+  epoch: number
+}
+
+const documentMutationQueueKey = (scope: ProjectMutationScope): string => (
+  `${scope.projectId}:${scope.epoch}`
+)
+
+const sameProjectMutationScope = (
+  left: ProjectMutationScope,
+  right: ProjectMutationScope
+): boolean => left.projectId === right.projectId && left.epoch === right.epoch
 
 const stableSemanticJson = (value: unknown): string => {
   if (value === undefined) return 'undefined'
@@ -273,10 +286,48 @@ const hasExactDocumentAuthority = (
     && stableSemanticJson(matching[0]) === stableSemanticJson(attempted)
 }
 
-const canvasHistoryAuthorityIdentity = (canvas: IFreeCanvasProject): string => stableSemanticJson({
-  nodes: canvas.nodes,
-  edges: canvas.edges
-})
+const canvasCommandAuthorityImpact = (command: CanvasLocalCommand) => {
+  const nodeIds: string[] = []
+  const edgeIds: string[] = []
+  let nodeOrder = false
+  let edgeOrder = false
+  if (command.kind === 'update-document' || command.kind === 'flip-image') nodeIds.push(command.nodeId)
+  if (command.kind === 'reorder-node') {
+    nodeIds.push(command.nodeId)
+    nodeOrder = true
+  }
+  if (command.kind === 'insert-node') {
+    nodeIds.push(command.node.id)
+    nodeOrder = true
+  }
+  if (command.kind === 'delete-nodes') {
+    nodeIds.push(...command.nodeIds)
+    nodeOrder = true
+    edgeOrder = true
+  }
+  if (command.kind === 'restore-nodes') {
+    nodeIds.push(...command.nodes.map(item => item.node.id))
+    edgeIds.push(...command.edges.map(item => item.edge.id))
+    nodeOrder = true
+    edgeOrder = true
+  }
+  return { nodeIds, edgeIds, nodeOrder, edgeOrder }
+}
+
+const canvasHistoryAuthorityIdentity = (
+  canvas: IFreeCanvasProject,
+  entry: CanvasCommandHistoryEntry
+): string => {
+  const impacts = [entry.undo, entry.redo].map(canvasCommandAuthorityImpact)
+  const nodeIds = [...new Set(impacts.flatMap(impact => impact.nodeIds))].sort()
+  const edgeIds = [...new Set(impacts.flatMap(impact => impact.edgeIds))].sort()
+  return stableSemanticJson({
+    nodes: nodeIds.map(id => ({ id, matches: canvas.nodes.filter(node => node.id === id) })),
+    edges: edgeIds.map(id => ({ id, matches: canvas.edges.filter(edge => edge.id === id) })),
+    nodeOrder: impacts.some(impact => impact.nodeOrder) ? canvas.nodes.map(node => node.id) : undefined,
+    edgeOrder: impacts.some(impact => impact.edgeOrder) ? canvas.edges.map(edge => edge.id) : undefined
+  })
+}
 
 const isTypingTarget = (target: EventTarget | null): boolean => {
   const element = target instanceof HTMLElement ? target : null
@@ -407,6 +458,11 @@ const FreeCanvasBuilderInner = ({
   const fileDragDepthRef = useRef(0)
   const composerFileDragDepthRef = useRef(0)
   const activeProjectIdRef = useRef(activeProject.id)
+  const projectEpochRef = useRef(0)
+  const activeProjectScopeRef = useRef<ProjectMutationScope>({
+    projectId: activeProject.id,
+    epoch: projectEpochRef.current
+  })
   const placementProcessingRef = useRef(false)
   const unpersistedPlacementRunIdsRef = useRef(new Set<string>())
   const activeGenerationRunIdsRef = useRef(new Set<string>())
@@ -496,6 +552,14 @@ const FreeCanvasBuilderInner = ({
   }, [])
 
   useLayoutEffect(() => {
+    if (activeProjectIdRef.current !== activeProject.id) {
+      projectEpochRef.current += 1
+      activeProjectScopeRef.current = {
+        projectId: activeProject.id,
+        epoch: projectEpochRef.current
+      }
+      canvasCommandHistoryRef.current = createCanvasCommandHistory()
+    }
     activeProjectIdRef.current = activeProject.id
     freeCanvasRef.current = freeCanvas
     onChangeRef.current = onChange
@@ -516,7 +580,6 @@ const FreeCanvasBuilderInner = ({
     setNodeContextMenu(null)
     setActiveImageOperationDraft(null)
     setImageOperationPreparing(false)
-    canvasCommandHistoryRef.current = createCanvasCommandHistory()
     setOptimisticImageTurn(null)
     setImageGenerationBusy(false)
     setImageRegionEditorOpen(false)
@@ -1883,10 +1946,10 @@ const FreeCanvasBuilderInner = ({
   }, [commitCanvasSelection])
 
   const enqueueDocumentMutation = useCallback(<T,>(
-    projectId: string,
+    scope: ProjectMutationScope,
     operation: () => Promise<T>
   ): Promise<T> => {
-    const queueKey = documentMutationQueueKey(projectId)
+    const queueKey = documentMutationQueueKey(scope)
     const previous = documentMutationQueuesRef.current.get(queueKey)
     const result = previous ? previous.then(operation) : operation()
     const tail = result.then(() => undefined, () => undefined)
@@ -1900,9 +1963,9 @@ const FreeCanvasBuilderInner = ({
   }, [])
 
   const createDocument = useCallback(() => {
-    const projectId = activeProjectIdRef.current
-    return enqueueDocumentMutation(projectId, async () => {
-      if (activeProjectIdRef.current !== projectId) return
+    const scope = activeProjectScopeRef.current
+    return enqueueDocumentMutation(scope, async () => {
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return
       const beforeCanvas = freeCanvasRef.current
       const beforeHistory = canvasCommandHistoryRef.current
       const node = createFreeCanvasDocumentNode(nextNodePosition(reactFlow, beforeCanvas.nodes.length))
@@ -1930,7 +1993,7 @@ const FreeCanvasBuilderInner = ({
 
       const failedEntry = executed.history.past[executed.history.past.length - 1]
       const currentCanvas = freeCanvasRef.current
-      const projectIsCurrent = activeProjectIdRef.current === projectId
+      const projectIsCurrent = sameProjectMutationScope(activeProjectScopeRef.current, scope)
       if (projectIsCurrent) {
         canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
           canvasCommandHistoryRef.current,
@@ -1960,9 +2023,9 @@ const FreeCanvasBuilderInner = ({
     nodeId: string,
     document: PlanningDocumentV1
   ): Promise<boolean> => {
-    const projectId = activeProjectIdRef.current
-    return enqueueDocumentMutation(projectId, async () => {
-      if (activeProjectIdRef.current !== projectId) return true
+    const scope = activeProjectScopeRef.current
+    return enqueueDocumentMutation(scope, async () => {
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return true
       const beforeCanvas = freeCanvasRef.current
       const beforeHistory = canvasCommandHistoryRef.current
       const current = beforeCanvas.nodes.find(node => node.id === nodeId)
@@ -1993,7 +2056,7 @@ const FreeCanvasBuilderInner = ({
 
       const failedEntry = executed.history.past[executed.history.past.length - 1]
       const currentCanvas = freeCanvasRef.current
-      const projectIsCurrent = activeProjectIdRef.current === projectId
+      const projectIsCurrent = sameProjectMutationScope(activeProjectScopeRef.current, scope)
       if (projectIsCurrent) {
         canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
           canvasCommandHistoryRef.current,
@@ -2017,9 +2080,9 @@ const FreeCanvasBuilderInner = ({
     nodeId: string,
     collapsed: boolean
   ): Promise<boolean> => {
-    const projectId = activeProjectIdRef.current
-    return enqueueDocumentMutation(projectId, async () => {
-      if (activeProjectIdRef.current !== projectId) return true
+    const scope = activeProjectScopeRef.current
+    return enqueueDocumentMutation(scope, async () => {
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return true
       const beforeCanvas = freeCanvasRef.current
       const current = beforeCanvas.nodes.find(node => node.id === nodeId)
       if (!current || current.kind !== 'document') return false
@@ -2048,7 +2111,7 @@ const FreeCanvasBuilderInner = ({
 
       const currentCanvas = freeCanvasRef.current
       if (
-        activeProjectIdRef.current !== projectId ||
+        !sameProjectMutationScope(activeProjectScopeRef.current, scope) ||
         !hasExactDocumentAuthority(currentCanvas, nodeId, attemptedNode)
       ) return true
 
@@ -2234,9 +2297,9 @@ const FreeCanvasBuilderInner = ({
   }, [addCanvasTextAsComposerReference, copyTextNode, deleteCanvasNodes, sendTextNodeToAgent])
 
   const applyPersistedCanvasHistoryStep = useCallback((direction: 'undo' | 'redo') => {
-    const projectId = activeProjectIdRef.current
+    const scope = activeProjectScopeRef.current
     const run = async (): Promise<boolean> => {
-      if (activeProjectIdRef.current !== projectId) return true
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return true
       const beforeCanvas = freeCanvasRef.current
       const beforeHistory = canvasCommandHistoryRef.current
       const entry = direction === 'redo'
@@ -2247,7 +2310,7 @@ const FreeCanvasBuilderInner = ({
         ? redoCanvasLocalCommand(beforeHistory, beforeCanvas)
         : undoCanvasLocalCommand(beforeHistory, beforeCanvas)
       if (applied.project === beforeCanvas) return true
-      const attemptedCanvasAuthority = canvasHistoryAuthorityIdentity(applied.project)
+      const attemptedCanvasAuthority = canvasHistoryAuthorityIdentity(applied.project, entry)
 
       canvasCommandHistoryRef.current = applied.history
       commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
@@ -2261,8 +2324,8 @@ const FreeCanvasBuilderInner = ({
       }
       if (saved) return true
 
-      const projectIsCurrent = activeProjectIdRef.current === projectId
-      const attemptedAuthorityIsCurrent = canvasHistoryAuthorityIdentity(freeCanvasRef.current)
+      const projectIsCurrent = sameProjectMutationScope(activeProjectScopeRef.current, scope)
+      const attemptedAuthorityIsCurrent = canvasHistoryAuthorityIdentity(freeCanvasRef.current, entry)
         === attemptedCanvasAuthority
       if (!projectIsCurrent || !attemptedAuthorityIsCurrent) {
         if (projectIsCurrent) {
@@ -2292,7 +2355,7 @@ const FreeCanvasBuilderInner = ({
       return false
     }
 
-    return enqueueDocumentMutation(projectId, run)
+    return enqueueDocumentMutation(scope, run)
   }, [commitCanvasSelection, enqueueDocumentMutation, onPersistCanvas])
 
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Suspense, startTransition, useState } from 'react'
 import { act, create } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
@@ -84,6 +84,7 @@ const editorText = (): string => {
 describe('DocumentEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
     mocks.options = null
     mocks.currentJson = null
   })
@@ -161,6 +162,52 @@ describe('DocumentEditor', () => {
 
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ revision: 5 }))
     expect(onChange.mock.calls[0][0].blocks[0]).toMatchObject({ id: 'p1', content: [{ text: 'After' }] })
+  })
+
+  it('does not publish document, callback, or revision refs from a suspended render that never commits', async () => {
+    const committedDocument = createPlanningDocumentV1([
+      { id: 'p1', type: 'paragraph', content: [{ text: 'A' }] }
+    ], 4)
+    const suspendedDocument = createPlanningDocumentV1([
+      { id: 'p1', type: 'paragraph', content: [{ text: 'Z' }] }
+    ], 9)
+    const committedChange = vi.fn()
+    const suspendedChange = vi.fn()
+    const never = new Promise<void>(() => undefined)
+    let suspend = false
+    const Suspender = () => {
+      if (suspend) throw never
+      return null
+    }
+    const view = (document: PlanningDocumentV1, onChange: (next: PlanningDocumentV1) => void) => (
+      <Suspense fallback={<span data-suspended-document-editor />}>
+        <DocumentEditor document={document} mode="inline" onChange={onChange} />
+        <Suspender />
+      </Suspense>
+    )
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(view(committedDocument, committedChange), {
+        unstable_isConcurrent: true
+      } as unknown as Parameters<typeof create>[1])
+      await Promise.resolve()
+    })
+    const committedOnUpdate = mocks.options?.onUpdate as ((input: {
+      editor: { getJSON: () => unknown }
+    }) => void) | undefined
+    if (!committedOnUpdate) throw new Error('Expected committed Tiptap update callback')
+
+    act(() => {
+      suspend = true
+      startTransition(() => renderer.update(view(suspendedDocument, suspendedChange)))
+    })
+    const committedEdit = editorJson('Committed edit')
+    act(() => committedOnUpdate({ editor: { getJSON: () => committedEdit } }))
+
+    expect(committedChange).toHaveBeenCalledTimes(1)
+    expect(committedChange).toHaveBeenCalledWith(expect.objectContaining({ revision: 5 }))
+    expect(planningDocumentEffectiveText(committedChange.mock.calls[0][0])).toBe('Committed edit')
+    expect(suspendedChange).not.toHaveBeenCalled()
   })
 
   it('preserves B/C/D typed while queued parent acknowledgements advance from authoritative A', async () => {

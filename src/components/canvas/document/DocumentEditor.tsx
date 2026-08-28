@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import type { Editor } from '@tiptap/core'
 import type { PlanningDocumentV1 } from '@/models/PromptHistory.model'
@@ -28,9 +28,12 @@ export const DocumentEditor = ({
   const revisionClockRef = useRef(document.revision)
   const authoritativeIdentityRef = useRef(planningDocumentIdentity(document))
   const pendingLocalIdentitiesRef = useRef<string[]>([])
-  documentRef.current = document
-  onChangeRef.current = onChange
-  revisionClockRef.current = Math.max(revisionClockRef.current, document.revision)
+
+  useLayoutEffect(() => {
+    documentRef.current = document
+    onChangeRef.current = onChange
+    revisionClockRef.current = Math.max(revisionClockRef.current, document.revision)
+  }, [document, onChange])
 
   const initialContent = useMemo(() => planningDocumentToTiptapJson(document), [document])
   const editor = useEditor({

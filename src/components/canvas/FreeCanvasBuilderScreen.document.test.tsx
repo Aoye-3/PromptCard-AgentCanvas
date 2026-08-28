@@ -680,6 +680,74 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     expect(canvasDocumentTexts(latestByProject['project-2'])).toEqual({ 'document-1': 'B' })
   })
 
+  it('isolates a returning same-id project epoch from its old queued save and undo intent', async () => {
+    const oldSave = deferred<boolean>()
+    const oldP1Persist = vi.fn()
+      .mockImplementationOnce(() => oldSave.promise)
+      .mockResolvedValue(true)
+    const newP1Persist = vi.fn().mockResolvedValue(true)
+    const p2Persist = vi.fn().mockResolvedValue(true)
+    const epochA = documentNode('document-1', 'A')
+    epochA.document = createPlanningDocumentV1([
+      { id: 'document-1-paragraph', type: 'paragraph', content: [{ text: 'A' }] }
+    ], 1)
+    const epochACanvas: IFreeCanvasProject = {
+      ...initialCanvas(),
+      nodes: [epochA]
+    }
+    let latestNewP1 = epochACanvas
+    const Harness = () => {
+      const [view, setView] = useState<'old-p1' | 'p2' | 'new-p1'>('old-p1')
+      const [oldP1, setOldP1] = useState(initialCanvas())
+      const [p2, setP2] = useState(initialCanvas())
+      const [newP1, setNewP1] = useState(epochACanvas)
+      latestNewP1 = newP1
+      const activeProjectId = view === 'p2' ? 'project-2' : 'project-1'
+      const canvas = view === 'old-p1' ? oldP1 : view === 'p2' ? p2 : newP1
+      const setCanvas = view === 'old-p1' ? setOldP1 : view === 'p2' ? setP2 : setNewP1
+      const persist = view === 'old-p1' ? oldP1Persist : view === 'p2' ? p2Persist : newP1Persist
+      return (
+        <>
+          <button type="button" aria-label="切换 epoch P2" onClick={() => setView('p2')}>P2</button>
+          <button type="button" aria-label="返回新 epoch P1" onClick={() => setView('new-p1')}>P1</button>
+          <FreeCanvasBuilderScreen
+            activeProject={project(canvas, activeProjectId)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+            onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={persist}
+          />
+        </>
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    let oldEdit!: Promise<boolean>
+    act(() => { oldEdit = renderer.root.findByProps({ 'aria-label': '测试编辑文档 A' }).props.onClick() })
+    await dispatchWindowKey('z')
+    await act(async () => renderer.root.findByProps({ 'aria-label': '切换 epoch P2' }).props.onClick())
+    await act(async () => renderer.root.findByProps({ 'aria-label': '返回新 epoch P1' }).props.onClick())
+
+    let newEdit!: Promise<boolean>
+    act(() => { newEdit = renderer.root.findByProps({ 'aria-label': '测试编辑文档 B' }).props.onClick() })
+    await act(async () => { await Promise.resolve() })
+    expect(newP1Persist).toHaveBeenCalledTimes(1)
+    expect(canvasDocumentTexts(latestNewP1)).toEqual({ 'document-1': 'B' })
+
+    await act(async () => {
+      oldSave.resolve(false)
+      await Promise.all([oldEdit, newEdit])
+      for (let index = 0; index < 8; index += 1) await Promise.resolve()
+    })
+
+    expect(oldP1Persist).toHaveBeenCalledTimes(1)
+    expect(p2Persist).not.toHaveBeenCalled()
+    expect(newP1Persist).toHaveBeenCalledTimes(1)
+    expect(canvasDocumentTexts(latestNewP1)).toEqual({ 'document-1': 'B' })
+
+    await dispatchWindowKey('z')
+    expect(newP1Persist).toHaveBeenCalledTimes(2)
+    expect(canvasDocumentTexts(latestNewP1)).toEqual({ 'document-1': 'A' })
+  })
+
   it('keeps a queued undo bound to Document A when a different Document B edit becomes the current history top', async () => {
     const pendingA = deferred<boolean>()
     const persisted: Array<Record<string, string>> = []
@@ -1195,6 +1263,79 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     expect(persistedTexts).toEqual(['After', 'Before', 'After', 'Before'])
     expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-text']).toBe('Before')
     expect(renderer.root.findByProps({ 'data-flow-node': 'async-text-1' })).toBeDefined()
+  })
+
+  it.each([
+    { direction: 'undo', outcome: 'false', external: 'node' },
+    { direction: 'redo', outcome: 'throw', external: 'edge' }
+  ] as const)('recovers a failed $direction while preserving a truly unrelated external $external update', async ({ direction, outcome, external }) => {
+    const delayedHistory = deferred<boolean>()
+    const failureCall = direction === 'undo' ? 2 : 3
+    let persistenceCall = 0
+    const persisted: IFreeCanvasProject[] = []
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      persisted.push(canvas)
+      persistenceCall += 1
+      return persistenceCall === failureCall ? delayedHistory.promise : Promise.resolve(true)
+    })
+    let latestCanvas = mixedDocumentImageCanvas()
+    let publishExternal!: () => void
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(mixedDocumentImageCanvas())
+      latestCanvas = canvas
+      publishExternal = () => setCanvas(current => external === 'node'
+        ? {
+            ...current,
+            nodes: current.nodes.map(node => node.id === 'async-text-1'
+              ? { ...node, meta: { ...node.meta, unrelatedAuthority: 'Z' } }
+              : node)
+          }
+        : {
+            ...current,
+            edges: current.edges.map(edge => edge.id === 'edge-image-text'
+              ? { ...edge, label: 'unrelated Z' }
+              : edge)
+          })
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试编辑文档 B' }).props.onClick())
+    if (direction === 'redo') await dispatchWindowKey('z')
+    await dispatchWindowKey(direction === 'undo' ? 'z' : 'y')
+    act(() => publishExternal())
+
+    await act(async () => {
+      if (outcome === 'throw') delayedHistory.reject(new Error('storage unavailable'))
+      else delayedHistory.resolve(false)
+      for (let index = 0; index < 8; index += 1) await Promise.resolve()
+    })
+
+    expect(onPersistCanvas).toHaveBeenCalledTimes(failureCall + 1)
+    expect(canvasDocumentTexts(latestCanvas)).toEqual({
+      'document-1': direction === 'undo' ? 'B' : 'Before'
+    })
+    if (external === 'node') {
+      expect(latestCanvas.nodes.find(node => node.id === 'async-text-1')?.meta)
+        .toMatchObject({ unrelatedAuthority: 'Z' })
+    } else {
+      expect(latestCanvas.edges.find(edge => edge.id === 'edge-image-text')?.label).toBe('unrelated Z')
+    }
+    const recovery = persisted[persisted.length - 1]
+    expect(canvasDocumentTexts(recovery)).toEqual({
+      'document-1': direction === 'undo' ? 'B' : 'Before'
+    })
+
+    await dispatchWindowKey(direction === 'undo' ? 'z' : 'y')
+    expect(canvasDocumentTexts(latestCanvas)).toEqual({
+      'document-1': direction === 'undo' ? 'Before' : 'B'
+    })
   })
 
   it('removes only delayed failed Document A history while successful Document B remains undoable and redoable', async () => {
