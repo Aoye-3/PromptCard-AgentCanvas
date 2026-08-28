@@ -75,8 +75,13 @@ const DocumentEditorToolbar = ({ editor }: { editor: Editor | null }) => {
   const setLink = () => {
     if (!editor || typeof window === 'undefined') return
     const current = editor.getAttributes('link').href as string | undefined
-    const href = window.prompt('输入 http、https 或 mailto 链接', current || '')?.trim()
-    if (!href) return
+    const response = window.prompt('输入 http、https 或 mailto 链接；留空移除现有链接', current || '')
+    if (response === null) return
+    const href = response.trim()
+    if (!href) {
+      editor.chain().focus().extendMarkRange('link').unsetLink().run()
+      return
+    }
     if (!safeEditorLink(href)) return
     editor.chain().focus().extendMarkRange('link').setLink({ href }).run()
   }

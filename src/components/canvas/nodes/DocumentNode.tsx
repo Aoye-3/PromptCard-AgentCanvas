@@ -9,10 +9,11 @@ interface DocumentNodeProps {
   node: IFreeCanvasDocumentNode
   selected: boolean
   onDocumentChange: (document: PlanningDocumentV1) => Promise<boolean> | boolean
+  onCollapsedChange?: (collapsed: boolean) => Promise<boolean> | boolean
   onDelete: () => void
 }
 
-export const DocumentNode = ({ node, selected, onDocumentChange, onDelete }: DocumentNodeProps) => {
+export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChange, onDelete }: DocumentNodeProps) => {
   const expandButtonRef = useRef<HTMLButtonElement>(null)
   const requestTokenRef = useRef(0)
   const [collapsed, setCollapsed] = useState(node.meta.collapsed === true)
@@ -45,6 +46,26 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onDelete }: Doc
     closeExpanded()
   }
 
+  const toggleCollapsed = async () => {
+    const next = !collapsed
+    setCollapsed(next)
+    if (!onCollapsedChange) return
+    const saved = await onCollapsedChange(next)
+    if (!saved) setCollapsed(!next)
+  }
+
+  const retryAlert = retryDocument ? (
+    <div role="alert" className="nodrag flex items-center gap-2 border-b border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
+      <span className="flex-1">保存失败，文档已恢复到上次保存状态。</span>
+      <button
+        type="button"
+        aria-label="重试保存文档"
+        className="flex items-center gap-1 rounded-md bg-white px-2 py-1 text-red-700 shadow-sm hover:bg-red-100"
+        onClick={() => { void commit(retryDocument) }}
+      ><RotateCcw className="h-3 w-3" />重试</button>
+    </div>
+  ) : null
+
   const expandedEditor = expanded ? (
     <div
       role="dialog"
@@ -65,6 +86,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onDelete }: Doc
             onClick={closeExpanded}
           ><X className="h-4 w-4" /></button>
         </header>
+        {retryAlert}
         <DocumentEditor document={node.document} mode="expanded" autoFocus onChange={document => { void commit(document) }} />
       </section>
     </div>
@@ -93,7 +115,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onDelete }: Doc
           type="button"
           aria-label={collapsed ? '展开文档' : '折叠文档'}
           className="nodrag flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-950"
-          onClick={() => setCollapsed(value => !value)}
+          onClick={() => { void toggleCollapsed() }}
         ><ChevronDown className={`h-3.5 w-3.5 transition-transform ${collapsed ? '-rotate-90' : ''}`} /></button>
         <button
           type="button"
@@ -103,17 +125,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onDelete }: Doc
         ><Trash2 className="h-3.5 w-3.5" /></button>
       </header>
 
-      {retryDocument && (
-        <div role="alert" className="nodrag flex items-center gap-2 border-b border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
-          <span className="flex-1">保存失败，文档已恢复到上次保存状态。</span>
-          <button
-            type="button"
-            aria-label="重试保存文档"
-            className="flex items-center gap-1 rounded-md bg-white px-2 py-1 text-red-700 shadow-sm hover:bg-red-100"
-            onClick={() => { void commit(retryDocument) }}
-          ><RotateCcw className="h-3 w-3" />重试</button>
-        </div>
-      )}
+      {!expanded && retryAlert}
 
       {collapsed ? (
         <p data-document-collapsed-summary className="px-4 py-3 text-xs leading-5 text-gray-500">

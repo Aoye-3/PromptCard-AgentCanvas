@@ -5,7 +5,9 @@ import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
 const mocks = vi.hoisted(() => ({
   options: null as Record<string, unknown> | null,
   run: vi.fn(),
-  setContent: vi.fn()
+  setContent: vi.fn(),
+  setLink: vi.fn(),
+  unsetLink: vi.fn()
 }))
 
 vi.mock('@tiptap/react', () => {
@@ -21,8 +23,8 @@ vi.mock('@tiptap/react', () => {
     toggleTaskList: vi.fn(),
     insertTable: vi.fn(),
     extendMarkRange: vi.fn(),
-    setLink: vi.fn(),
-    unsetLink: vi.fn(),
+    setLink: mocks.setLink,
+    unsetLink: mocks.unsetLink,
     run: mocks.run
   }
   Object.keys(chain).forEach(key => {
@@ -32,6 +34,7 @@ vi.mock('@tiptap/react', () => {
     chain: () => chain,
     commands: { setContent: mocks.setContent },
     getJSON: vi.fn(),
+    getAttributes: vi.fn(() => ({ href: 'https://example.test/original' })),
     isActive: vi.fn(() => false),
     isEditable: true,
     setEditable: vi.fn()
@@ -82,6 +85,19 @@ describe('DocumentEditor', () => {
 
     act(() => renderer.root.findByProps({ 'aria-label': '粗体' }).props.onClick())
 
+    expect(mocks.run).toHaveBeenCalledTimes(1)
+  })
+
+  it('removes the active link when the link prompt is submitted empty', () => {
+    vi.stubGlobal('window', { prompt: vi.fn(() => '   ') })
+    const renderer = create(
+      <DocumentEditor document={createPlanningDocumentV1([])} mode="expanded" onChange={vi.fn()} />
+    )
+
+    act(() => renderer.root.findByProps({ 'aria-label': '插入链接' }).props.onClick())
+
+    expect(mocks.unsetLink).toHaveBeenCalledTimes(1)
+    expect(mocks.setLink).not.toHaveBeenCalled()
     expect(mocks.run).toHaveBeenCalledTimes(1)
   })
 

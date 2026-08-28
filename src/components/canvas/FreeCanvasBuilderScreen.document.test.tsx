@@ -2,7 +2,9 @@ import { Fragment, useState, type ReactNode } from 'react'
 import { act, create } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
-import type { IFreeCanvasDocumentNode, IFreeCanvasProject, IPromptProject, PlanningDocumentV1 } from '@/models/PromptHistory.model'
+import type { IFreeCanvasDocumentNode, IFreeCanvasProject, IFreeCanvasTextNode, IPromptProject, PlanningDocumentV1 } from '@/models/PromptHistory.model'
+
+const windowListeners = new Map<string, Set<(event: KeyboardEvent) => void>>()
 
 const mocks = vi.hoisted(() => ({
   bootstrapRuntime: vi.fn(),
@@ -60,12 +62,17 @@ vi.mock('@xyflow/react', () => {
 })
 
 vi.mock('@/components/canvas/nodes/DocumentNode', () => ({
-  DocumentNode: ({ node, onDocumentChange, onDelete }: {
+  DocumentNode: ({ node, onDocumentChange, onCollapsedChange, onDelete }: {
     node: IFreeCanvasDocumentNode
     onDocumentChange: (document: PlanningDocumentV1) => Promise<boolean>
+    onCollapsedChange: (collapsed: boolean) => Promise<boolean>
     onDelete: () => void
   }) => (
-    <div data-screen-document-node={node.id} data-document-text={planningDocumentEffectiveText(node.document)}>
+    <div
+      data-screen-document-node={node.id}
+      data-document-text={planningDocumentEffectiveText(node.document)}
+      data-document-collapsed={node.meta.collapsed === true}
+    >
       <button
         type="button"
         aria-label="测试编辑文档"
@@ -73,6 +80,17 @@ vi.mock('@/components/canvas/nodes/DocumentNode', () => ({
           { id: `${node.id}-paragraph`, type: 'paragraph', content: [{ text: 'After' }] }
         ], node.document.revision + 1))}
       >Edit</button>
+      {(['A', 'B'] as const).map(text => (
+        <button
+          key={text}
+          type="button"
+          aria-label={`测试编辑文档 ${text}`}
+          onClick={() => onDocumentChange(createPlanningDocumentV1([
+            { id: `${node.id}-paragraph`, type: 'paragraph', content: [{ text }] }
+          ], node.document.revision + 1))}
+        >Edit {text}</button>
+      ))}
+      <button type="button" aria-label="测试折叠文档" onClick={() => onCollapsedChange(true)}>Collapse</button>
       <button type="button" aria-label="测试删除文档" onClick={onDelete}>Delete</button>
     </div>
   )
@@ -152,11 +170,59 @@ const initialCanvas = (): IFreeCanvasProject => ({
   meta: {}
 })
 
+const unrelatedTextNode = (): IFreeCanvasTextNode => ({
+  id: 'async-text-1',
+  kind: 'text',
+  title: 'Async result',
+  position: { x: 700, y: 80 },
+  width: 320,
+  height: 160,
+  fontSize: 'medium',
+  segments: [{
+    id: 'async-segment-1', source: 'user', text: 'Unrelated async node', color: '#111827', createdAt: 1, updatedAt: 1
+  }],
+  meta: {}
+})
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(complete => { resolve = complete })
+  return { promise, resolve }
+}
+
+const dispatchWindowKey = async (key: string, options: Partial<KeyboardEvent> = {}) => {
+  const event = {
+    key,
+    ctrlKey: true,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    target: null,
+    preventDefault: vi.fn(),
+    ...options
+  } as unknown as KeyboardEvent
+  await act(async () => {
+    windowListeners.get('keydown')?.forEach(listener => listener(event))
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+  return event
+}
+
 describe('FreeCanvasBuilderScreen Document integration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    windowListeners.clear()
     vi.stubGlobal('window', {
-      addEventListener: vi.fn(), removeEventListener: vi.fn(), setTimeout, clearTimeout,
+      addEventListener: vi.fn((type: string, listener: (event: KeyboardEvent) => void) => {
+        const listeners = windowListeners.get(type) || new Set()
+        listeners.add(listener)
+        windowListeners.set(type, listeners)
+      }),
+      removeEventListener: vi.fn((type: string, listener: (event: KeyboardEvent) => void) => {
+        windowListeners.get(type)?.delete(listener)
+      }),
+      setTimeout, clearTimeout,
       innerWidth: 1200, innerHeight: 800
     })
     vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn(), activeElement: null })
@@ -240,11 +306,143 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
         />
       )
     }
-    const renderer = create(<Harness />)
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
 
     await act(async () => renderer.root.findByProps({ 'aria-label': '测试编辑文档' }).props.onClick())
 
     expect(persistedTexts).toEqual(['After', 'Before'])
     expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-text']).toBe('Before')
+  })
+
+  it('serializes rapid Document edits so double failures cannot stale-roll back the newer edit', async () => {
+    const requests = [deferred<boolean>(), deferred<boolean>(), deferred<boolean>(), deferred<boolean>()]
+    const persistedTexts: string[] = []
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      const current = canvas.nodes.find(candidate => candidate.kind === 'document') as IFreeCanvasDocumentNode
+      persistedTexts.push(planningDocumentEffectiveText(current.document))
+      return requests[persistedTexts.length - 1].promise
+    })
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    const renderer = create(<Harness />)
+
+    let editA!: Promise<boolean>
+    let editB!: Promise<boolean>
+    act(() => {
+      editA = renderer.root.findByProps({ 'aria-label': '测试编辑文档 A' }).props.onClick()
+      editB = renderer.root.findByProps({ 'aria-label': '测试编辑文档 B' }).props.onClick()
+    })
+    expect(persistedTexts).toEqual(['A'])
+
+    await act(async () => { requests[0].resolve(false); await Promise.resolve() })
+    expect(persistedTexts).toEqual(['A', 'Before'])
+    await act(async () => { requests[1].resolve(false); await Promise.resolve(); await Promise.resolve() })
+    expect(persistedTexts).toEqual(['A', 'Before', 'B'])
+    await act(async () => { requests[2].resolve(false); await Promise.resolve() })
+    expect(persistedTexts).toEqual(['A', 'Before', 'B', 'Before'])
+    await act(async () => { requests[3].resolve(false); await Promise.all([editA, editB]) })
+
+    expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-text']).toBe('Before')
+    expect(persistedTexts).toEqual(['A', 'Before', 'B', 'Before'])
+  })
+
+  it('persists keyboard undo and redo snapshots for Document commands', async () => {
+    const persistedTexts: string[] = []
+    const onPersistCanvas = vi.fn(async (canvas: IFreeCanvasProject) => {
+      const current = canvas.nodes.find(candidate => candidate.kind === 'document') as IFreeCanvasDocumentNode
+      persistedTexts.push(planningDocumentEffectiveText(current.document))
+      return true
+    })
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试编辑文档' }).props.onClick())
+    const undoEvent = await dispatchWindowKey('z')
+    const redoEvent = await dispatchWindowKey('y')
+
+    expect(undoEvent.preventDefault).toHaveBeenCalled()
+    expect(redoEvent.preventDefault).toHaveBeenCalled()
+    expect(persistedTexts).toEqual(['After', 'Before', 'After'])
+    expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-text']).toBe('After')
+  })
+
+  it('recovers a failed Document undo without dropping unrelated async nodes or corrupting history', async () => {
+    const outcomes = [true, false, false, true]
+    const persistedTexts: string[] = []
+    const onPersistCanvas = vi.fn(async (canvas: IFreeCanvasProject) => {
+      const current = canvas.nodes.find(candidate => candidate.kind === 'document') as IFreeCanvasDocumentNode
+      persistedTexts.push(planningDocumentEffectiveText(current.document))
+      return outcomes.shift() ?? true
+    })
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      return (
+        <>
+          <button
+            type="button"
+            aria-label="添加无关异步节点"
+            onClick={() => setCanvas(current => ({ ...current, nodes: [...current.nodes, unrelatedTextNode()] }))}
+          >Async</button>
+          <FreeCanvasBuilderScreen
+            activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+            onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+          />
+        </>
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试编辑文档' }).props.onClick())
+    act(() => renderer.root.findByProps({ 'aria-label': '添加无关异步节点' }).props.onClick())
+    const failedUndoEvent = await dispatchWindowKey('z')
+
+    expect(failedUndoEvent.preventDefault).toHaveBeenCalled()
+    expect(persistedTexts).toEqual(['After', 'Before', 'After'])
+    expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-text']).toBe('After')
+    expect(renderer.root.findByProps({ 'data-flow-node': 'async-text-1' })).toBeDefined()
+
+    await dispatchWindowKey('z')
+    expect(persistedTexts).toEqual(['After', 'Before', 'After', 'Before'])
+    expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-text']).toBe('Before')
+    expect(renderer.root.findByProps({ 'data-flow-node': 'async-text-1' })).toBeDefined()
+  })
+
+  it('persists collapsed Document metadata through the canvas snapshot', async () => {
+    const persisted: IFreeCanvasProject[] = []
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas}
+          onPersistCanvas={async next => { persisted.push(next); return true }}
+        />
+      )
+    }
+    const renderer = create(<Harness />)
+
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试折叠文档' }).props.onClick())
+
+    const savedNode = persisted[persisted.length - 1]?.nodes.find(candidate => candidate.id === 'document-1') as IFreeCanvasDocumentNode
+    expect(savedNode.meta.collapsed).toBe(true)
+    expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-collapsed']).toBe(true)
   })
 })

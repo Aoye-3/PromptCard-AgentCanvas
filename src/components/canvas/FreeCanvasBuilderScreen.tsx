@@ -198,6 +198,7 @@ type FreeCanvasFlowNodeData = {
   onTextRename: (nodeId: string, title: string) => string | null
   onTextSelectionChange: (nodeId: string, selection?: Omit<CanvasAgentSelection, 'baseContentDigest'>) => void
   onDocumentChange: (nodeId: string, document: PlanningDocumentV1) => Promise<boolean>
+  onDocumentCollapsedChange: (nodeId: string, collapsed: boolean) => Promise<boolean>
   onDocumentDelete: (nodeId: string) => void
   onImageResize: (nodeId: string, frame: { position?: { x: number; y: number }; width: number; height: number }) => void
   resultThumbnailUrl?: string
@@ -366,6 +367,7 @@ const FreeCanvasBuilderInner = ({
   const selectedImageNodeRef = useRef<IFreeCanvasImageNode | null>(selectedImageNode)
   const copiedImageNodeRef = useRef<IFreeCanvasImageNode | null>(null)
   const canvasCommandHistoryRef = useRef(createCanvasCommandHistory())
+  const documentMutationQueuesRef = useRef(new Map<string, Promise<void>>())
   const fileDragDepthRef = useRef(0)
   const composerFileDragDepthRef = useRef(0)
   const activeProjectIdRef = useRef(activeProject.id)
@@ -1844,6 +1846,24 @@ const FreeCanvasBuilderInner = ({
     }
   }, [commitCanvasSelection])
 
+  const enqueueDocumentMutation = useCallback(<T,>(
+    nodeId: string,
+    operation: () => Promise<T>
+  ): Promise<T> => {
+    const previous = documentMutationQueuesRef.current.get(nodeId)
+    const result = previous
+      ? previous.then(operation)
+      : operation()
+    const tail = result.then(() => undefined, () => undefined)
+    documentMutationQueuesRef.current.set(nodeId, tail)
+    void tail.finally(() => {
+      if (documentMutationQueuesRef.current.get(nodeId) === tail) {
+        documentMutationQueuesRef.current.delete(nodeId)
+      }
+    })
+    return result
+  }, [])
+
   const createDocument = useCallback(async () => {
     const beforeCanvas = freeCanvasRef.current
     const beforeHistory = canvasCommandHistoryRef.current
@@ -1877,10 +1897,10 @@ const FreeCanvasBuilderInner = ({
     setUploadError('文档创建保存失败，请重试。')
   }, [commitCanvasSelection, onPersistCanvas, reactFlow])
 
-  const updateDocumentNode = useCallback(async (
+  const updateDocumentNode = useCallback((
     nodeId: string,
     document: PlanningDocumentV1
-  ): Promise<boolean> => {
+  ): Promise<boolean> => enqueueDocumentMutation(nodeId, async () => {
     const beforeCanvas = freeCanvasRef.current
     const beforeHistory = canvasCommandHistoryRef.current
     const current = beforeCanvas.nodes.find(node => node.id === nodeId)
@@ -1914,7 +1934,52 @@ const FreeCanvasBuilderInner = ({
       // Replacing the retained request with recovery is best-effort while Storage is unavailable.
     }
     return false
-  }, [emitGenerationCanvas, onPersistCanvas])
+  }), [emitGenerationCanvas, enqueueDocumentMutation, onPersistCanvas])
+
+  const updateDocumentCollapsed = useCallback((
+    nodeId: string,
+    collapsed: boolean
+  ): Promise<boolean> => enqueueDocumentMutation(nodeId, async () => {
+    const beforeCanvas = freeCanvasRef.current
+    const current = beforeCanvas.nodes.find(node => node.id === nodeId)
+    if (!current || current.kind !== 'document') return false
+    if ((current.meta.collapsed === true) === collapsed) return true
+    const previousCollapsed = current.meta.collapsed
+    const next = {
+      ...beforeCanvas,
+      nodes: beforeCanvas.nodes.map(node => node.id === nodeId
+        ? { ...node, meta: { ...node.meta, collapsed } }
+        : node)
+    }
+    emitGenerationCanvas(next)
+    if (!onPersistCanvas) return true
+
+    let saved = false
+    try {
+      saved = Boolean(await onPersistCanvas(next))
+    } catch {
+      saved = false
+    }
+    if (saved) return true
+
+    const recovery = {
+      ...freeCanvasRef.current,
+      nodes: freeCanvasRef.current.nodes.map(node => {
+        if (node.id !== nodeId || node.kind !== 'document') return node
+        const meta = { ...node.meta }
+        if (previousCollapsed === undefined) delete meta.collapsed
+        else meta.collapsed = previousCollapsed
+        return { ...node, meta }
+      })
+    }
+    emitGenerationCanvas(recovery)
+    try {
+      await onPersistCanvas(recovery)
+    } catch {
+      // The recovery snapshot remains the newest retained request for an explicit retry.
+    }
+    return false
+  }), [emitGenerationCanvas, enqueueDocumentMutation, onPersistCanvas])
 
   const closeNodeContextMenu = useCallback(() => {
     setNodeContextMenu(current => {
@@ -2077,6 +2142,50 @@ const FreeCanvasBuilderInner = ({
     deleteCanvasNodes(nodeId)
   }, [addCanvasTextAsComposerReference, copyTextNode, deleteCanvasNodes, sendTextNodeToAgent])
 
+  const applyPersistedCanvasHistoryStep = useCallback((direction: 'undo' | 'redo') => {
+    const run = async (): Promise<boolean> => {
+      const beforeCanvas = freeCanvasRef.current
+      const beforeHistory = canvasCommandHistoryRef.current
+      const applied = direction === 'redo'
+        ? redoCanvasLocalCommand(beforeHistory, beforeCanvas)
+        : undoCanvasLocalCommand(beforeHistory, beforeCanvas)
+      if (applied.project === beforeCanvas) return true
+
+      canvasCommandHistoryRef.current = applied.history
+      commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
+      if (!onPersistCanvas) return true
+
+      let saved = false
+      try {
+        saved = Boolean(await onPersistCanvas(applied.project))
+      } catch {
+        saved = false
+      }
+      if (saved) return true
+
+      const recovered = direction === 'redo'
+        ? undoCanvasLocalCommand(applied.history, freeCanvasRef.current)
+        : redoCanvasLocalCommand(applied.history, freeCanvasRef.current)
+      canvasCommandHistoryRef.current = beforeHistory
+      commitCanvasSelection(recovered.project, recovered.project.selectedNodeId || null)
+      try {
+        await onPersistCanvas(recovered.project)
+      } catch {
+        // The recovery snapshot remains the newest retained request for an explicit retry.
+      }
+      setUploadError(`画布${direction === 'undo' ? '撤销' : '重做'}保存失败，请重试。`)
+      return false
+    }
+
+    const history = canvasCommandHistoryRef.current
+    const entry = direction === 'redo' ? history.future[0] : history.past[history.past.length - 1]
+    const command = direction === 'redo' ? entry?.redo : entry?.undo
+    if (command?.kind === 'update-document') return enqueueDocumentMutation(command.nodeId, run)
+    const selected = freeCanvasRef.current.nodes.find(node => node.id === freeCanvasRef.current.selectedNodeId)
+    if (selected?.kind === 'document') return enqueueDocumentMutation(selected.id, run)
+    return run()
+  }, [commitCanvasSelection, enqueueDocumentMutation, onPersistCanvas])
+
   useEffect(() => {
     const handleLocalShortcut = (event: KeyboardEvent) => {
       if (isCanvasKeyboardLocked || isTypingTarget(event.target)) return
@@ -2090,18 +2199,12 @@ const FreeCanvasBuilderInner = ({
       const key = event.key.toLowerCase()
       if (modifier && key === 'z') {
         event.preventDefault()
-        const applied = event.shiftKey
-          ? redoCanvasLocalCommand(canvasCommandHistoryRef.current, freeCanvasRef.current)
-          : undoCanvasLocalCommand(canvasCommandHistoryRef.current, freeCanvasRef.current)
-        canvasCommandHistoryRef.current = applied.history
-        commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
+        void applyPersistedCanvasHistoryStep(event.shiftKey ? 'redo' : 'undo')
         return
       }
       if (modifier && key === 'y') {
         event.preventDefault()
-        const applied = redoCanvasLocalCommand(canvasCommandHistoryRef.current, freeCanvasRef.current)
-        canvasCommandHistoryRef.current = applied.history
-        commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
+        void applyPersistedCanvasHistoryStep('redo')
         return
       }
       const node = selectedImageNodeRef.current
@@ -2128,7 +2231,7 @@ const FreeCanvasBuilderInner = ({
     }
     window.addEventListener('keydown', handleLocalShortcut)
     return () => window.removeEventListener('keydown', handleLocalShortcut)
-  }, [commitCanvasSelection, deleteCanvasNodes, executeImageCommand, isCanvasKeyboardLocked])
+  }, [applyPersistedCanvasHistoryStep, deleteCanvasNodes, executeImageCommand, isCanvasKeyboardLocked])
 
   const maximumOperationInputs = selectedImageModel?.capabilities?.references?.maxCount
     ?? selectedImageModel?.capabilities?.maxReferenceImages
@@ -2369,6 +2472,7 @@ const FreeCanvasBuilderInner = ({
       onTextRename: renameTextNode,
       onTextSelectionChange: rememberTextSelection,
       onDocumentChange: updateDocumentNode,
+      onDocumentCollapsedChange: updateDocumentCollapsed,
       onDocumentDelete: deleteCanvasNodes,
       onImageResize: resizeImageNode,
       resultThumbnailUrl: node.kind === 'image-generator' && node.primaryAssetId
@@ -2389,7 +2493,7 @@ const FreeCanvasBuilderInner = ({
         referenceCount: freeCanvas.edges.filter(edge => edge.target === node.id && edge.targetHandle === 'reference-image').length
       } : undefined
     }
-  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, deleteCanvasNodes, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, resizeImageNode, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateDocumentNode, updateTextStyle])
+  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, deleteCanvasNodes, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, resizeImageNode, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateDocumentCollapsed, updateDocumentNode, updateTextStyle])
 
   const [flowNodes, setFlowNodes] = useState<FreeCanvasFlowNode[]>(nodes)
   useEffect(() => {
@@ -3410,6 +3514,7 @@ const FreeCanvasNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
         node={node}
         selected={selected}
         onDocumentChange={document => data.onDocumentChange(node.id, document)}
+        onCollapsedChange={collapsed => data.onDocumentCollapsedChange(node.id, collapsed)}
         onDelete={() => data.onDocumentDelete(node.id)}
       />
     )

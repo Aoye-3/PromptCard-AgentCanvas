@@ -14,6 +14,7 @@ vi.mock('@/components/canvas/document/DocumentEditor', () => ({
       type="button"
       data-mock-document-editor={mode}
       data-document-digest={document.digest}
+      data-on-test-change={onChange}
       onClick={() => onChange(createPlanningDocumentV1([
         { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Edited canonical draft' }] }
       ], document.revision + 1))}
@@ -99,5 +100,80 @@ describe('DocumentNode', () => {
 
     expect(onDocumentChange).toHaveBeenCalledTimes(2)
     expect(onDocumentChange.mock.calls[1][0]).toEqual(onDocumentChange.mock.calls[0][0])
+  })
+
+  it('keeps the failure and exact-snapshot Retry reachable inside the expanded dialog', async () => {
+    const onDocumentChange = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    const renderer = create(
+      <DocumentNode node={node()} selected onDocumentChange={onDocumentChange} onDelete={vi.fn()} />
+    )
+
+    act(() => renderer.root.findByProps({ 'aria-label': '展开编辑器' }).props.onClick())
+    await act(async () => renderer.root.findByProps({ 'data-mock-document-editor': 'expanded' }).props.onClick())
+
+    const dialog = renderer.root.findByProps({ role: 'dialog' })
+    expect(dialog.findByProps({ role: 'alert' }).findByType('span').children.join('')).toContain('保存失败')
+    await act(async () => dialog.findByProps({ 'aria-label': '重试保存文档' }).props.onClick())
+
+    expect(onDocumentChange).toHaveBeenCalledTimes(2)
+    expect(onDocumentChange.mock.calls[1][0]).toEqual(onDocumentChange.mock.calls[0][0])
+  })
+
+  it('keeps rapid A/B failures pinned to B so the retry cannot be overwritten by stale A', async () => {
+    let resolveA!: (saved: boolean) => void
+    let resolveB!: (saved: boolean) => void
+    const pendingA = new Promise<boolean>(resolve => { resolveA = resolve })
+    const pendingB = new Promise<boolean>(resolve => { resolveB = resolve })
+    const onDocumentChange = vi.fn()
+      .mockReturnValueOnce(pendingA)
+      .mockReturnValueOnce(pendingB)
+      .mockResolvedValueOnce(true)
+    const renderer = create(
+      <DocumentNode node={node()} selected onDocumentChange={onDocumentChange} onDelete={vi.fn()} />
+    )
+    const editor = renderer.root.findByProps({ 'data-mock-document-editor': 'inline' })
+    const documentA = createPlanningDocumentV1([{ id: 'paragraph-1', type: 'paragraph', content: [{ text: 'A' }] }], 2)
+    const documentB = createPlanningDocumentV1([{ id: 'paragraph-1', type: 'paragraph', content: [{ text: 'B' }] }], 3)
+
+    act(() => {
+      editor.props['data-on-test-change'](documentA)
+      editor.props['data-on-test-change'](documentB)
+    })
+    await act(async () => { resolveA(false); await pendingA })
+    expect(renderer.root.findAllByProps({ role: 'alert' })).toHaveLength(0)
+    await act(async () => { resolveB(false); await pendingB })
+    await act(async () => renderer.root.findByProps({ 'aria-label': '重试保存文档' }).props.onClick())
+
+    expect(onDocumentChange).toHaveBeenCalledTimes(3)
+    expect(onDocumentChange.mock.calls[2][0]).toEqual(documentB)
+  })
+
+  it('persists collapsed state through node metadata and restores it on reload', async () => {
+    const onCollapsedChange = vi.fn().mockResolvedValue(true)
+    const Wrapper = () => {
+      const [current, setCurrent] = useState(node())
+      return (
+        <DocumentNode
+          node={current}
+          selected
+          onDocumentChange={vi.fn().mockResolvedValue(true)}
+          onCollapsedChange={async collapsed => {
+            const saved = await onCollapsedChange(collapsed)
+            if (saved) setCurrent(value => ({ ...value, meta: { ...value.meta, collapsed } }))
+            return saved
+          }}
+          onDelete={vi.fn()}
+        />
+      )
+    }
+    const renderer = create(<Wrapper />)
+
+    await act(async () => renderer.root.findByProps({ 'aria-label': '折叠文档' }).props.onClick())
+
+    expect(onCollapsedChange).toHaveBeenCalledWith(true)
+    expect(renderer.root.findAllByProps({ 'data-mock-document-editor': 'inline' })).toHaveLength(0)
+    expect(renderer.root.findByProps({ 'data-document-collapsed-summary': true })).toBeDefined()
   })
 })

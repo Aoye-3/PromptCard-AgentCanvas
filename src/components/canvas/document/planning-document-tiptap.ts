@@ -89,7 +89,13 @@ export const createPlanningDocumentEditorProps = (
     if (event.clipboardData?.files.length) return true
     const text = event.clipboardData?.getData('text/plain')
     if (typeof text !== 'string' || text.length === 0) return true
-    const nodes = planningDocumentPlainTextPasteJson(text, idFactory)
+    const normalized = text.replace(/\r\n?/g, '\n').normalize('NFC')
+    const { $from, $to } = view.state.selection
+    if ($from.sameParent($to) && $from.parent.type.name === 'paragraph') {
+      view.dispatch(view.state.tr.replaceSelectionWith(view.state.schema.text(normalized)))
+      return true
+    }
+    const nodes = planningDocumentPlainTextPasteJson(normalized, idFactory)
       .map(node => view.state.schema.nodeFromJSON(node))
     view.dispatch(view.state.tr.replaceSelection(new Slice(Fragment.fromArray(nodes), 0, 0)))
     return true
@@ -133,11 +139,15 @@ export const repairPlanningDocumentTiptapIds = (
       ...(node.attrs ? { attrs: { ...node.attrs } } : {}),
       ...(node.marks ? { marks: node.marks.map(mark => ({ ...mark, ...(mark.attrs ? { attrs: { ...mark.attrs } } : {}) })) } : {})
     }
-    if (nodeNeedsCanonicalId(node.type, parentType)) {
+    if (node.type === 'paragraph' && parentType !== 'doc') {
+      cloned.attrs = { ...(cloned.attrs || {}), blockId: null }
+    } else if (nodeNeedsCanonicalId(node.type, parentType)) {
       const current = typeof cloned.attrs?.blockId === 'string' && cloned.attrs.blockId.length > 0
         ? cloned.attrs.blockId
         : null
-      const blockId = current && !seen.has(current) ? current : uniqueGeneratedId(seen, idFactory)
+      const inherited = inheritedNestedParagraphId(node)
+      const preferred = current || inherited
+      const blockId = preferred && !seen.has(preferred) ? preferred : uniqueGeneratedId(seen, idFactory)
       seen.add(blockId)
       cloned.attrs = { ...(cloned.attrs || {}), blockId }
     }
@@ -167,31 +177,45 @@ const planningDocumentBlockIdExtension = (idFactory: IdFactory): Extension => Ex
     }]
   },
   addProseMirrorPlugins() {
-    return [new Plugin({
-      key: new PluginKey('planningDocumentBlockId'),
-      appendTransaction: (transactions, _oldState, state) => {
-        if (!transactions.some(transaction => transaction.docChanged)) return null
-        const seen = new Set<string>()
-        const updates: Array<{ position: number; attrs: Record<string, unknown> }> = []
-        state.doc.descendants((node, position, parent) => {
-          if (!nodeNeedsCanonicalId(node.type.name, parent?.type.name || null)) return
-          const current = typeof node.attrs.blockId === 'string' && node.attrs.blockId.length > 0
-            ? node.attrs.blockId
-            : null
-          if (current && !seen.has(current)) {
-            seen.add(current)
-            return
-          }
-          const blockId = uniqueGeneratedId(seen, idFactory)
-          seen.add(blockId)
-          updates.push({ position, attrs: { ...node.attrs, blockId } })
-        })
-        if (updates.length === 0) return null
-        const transaction = state.tr
-        updates.forEach(update => transaction.setNodeMarkup(update.position, undefined, update.attrs))
-        return transaction
+    return [createPlanningDocumentBlockIdPlugin(idFactory)]
+  }
+})
+
+export const createPlanningDocumentBlockIdPlugin = (
+  idFactory: IdFactory = generatePlanningDocumentBlockId
+): Plugin => new Plugin({
+  key: new PluginKey('planningDocumentBlockId'),
+  appendTransaction: (transactions, oldState, state) => {
+    if (!transactions.some(transaction => transaction.docChanged)) return null
+    const seen = new Set<string>()
+    const updates: Array<{ position: number; attrs: Record<string, unknown> }> = []
+    state.doc.descendants((node, position, parent) => {
+      if (node.type.name === 'paragraph' && parent?.type.name !== 'doc') {
+        if (node.attrs.blockId !== null && node.attrs.blockId !== undefined) {
+          updates.push({ position, attrs: { ...node.attrs, blockId: null } })
+        }
+        return
       }
-    })]
+      if (!nodeNeedsCanonicalId(node.type.name, parent?.type.name || null)) return
+      const current = typeof node.attrs.blockId === 'string' && node.attrs.blockId.length > 0
+        ? node.attrs.blockId
+        : null
+      const inherited = inheritedNestedParagraphId(node.toJSON())
+      const previous = previousTextBlockId(oldState.doc.nodeAt(position), node)
+      const preferred = current || inherited || previous
+      if (preferred && !seen.has(preferred)) {
+        seen.add(preferred)
+        if (!current) updates.push({ position, attrs: { ...node.attrs, blockId: preferred } })
+        return
+      }
+      const blockId = uniqueGeneratedId(seen, idFactory)
+      seen.add(blockId)
+      updates.push({ position, attrs: { ...node.attrs, blockId } })
+    })
+    if (updates.length === 0) return null
+    const transaction = state.tr
+    updates.forEach(update => transaction.setNodeMarkup(update.position, undefined, update.attrs))
+    return transaction
   }
 })
 
@@ -274,9 +298,12 @@ const blockFromJson = (json: JSONContent): PlanningDocumentBlockV1 => {
   }
   if (json.type === 'bulletList' || json.type === 'orderedList') {
     assertJsonKeys(json, ['type', 'attrs', 'content'])
-    assertAttrs(json, json.type === 'orderedList' ? ['blockId', 'start'] : ['blockId'])
+    assertAttrs(json, json.type === 'orderedList' ? ['blockId', 'start', 'type'] : ['blockId'])
     if (json.type === 'orderedList' && json.attrs?.start !== undefined && json.attrs.start !== 1) {
       throw new Error('planning_document_tiptap_ordered_start')
+    }
+    if (json.type === 'orderedList' && json.attrs?.type !== undefined && json.attrs.type !== null) {
+      throw new Error('planning_document_tiptap_ordered_type')
     }
     const items = requireContent(json).map(item => {
       if (item.type !== 'listItem') throw new Error('planning_document_tiptap_list_item')
@@ -308,11 +335,12 @@ const blockFromJson = (json: JSONContent): PlanningDocumentBlockV1 => {
       const cells = requireContent(row).map(cell => {
         if (cell.type !== 'tableHeader' && cell.type !== 'tableCell') throw new Error('planning_document_tiptap_table_cell')
         assertJsonKeys(cell, ['type', 'attrs', 'content'])
-        assertAttrs(cell, ['blockId', 'colspan', 'rowspan', 'colwidth'])
+        assertAttrs(cell, ['blockId', 'colspan', 'rowspan', 'colwidth', 'align'])
         const attrs = cell.attrs || {}
         if ((attrs.colspan ?? 1) !== 1 || (attrs.rowspan ?? 1) !== 1 || (attrs.colwidth ?? null) !== null) {
           throw new Error('planning_document_tiptap_merged_cell')
         }
+        if (attrs.align !== undefined && attrs.align !== null) throw new Error('planning_document_tiptap_cell_align')
         const paragraph = onlyParagraph(cell.content)
         return {
           id: blockId(cell),
@@ -358,9 +386,9 @@ const inlineContentFromJson = (content: JSONContent[] | undefined): PlanningInli
       }
       if (mark.type === 'link') {
         assertJsonKeys(mark, ['type', 'attrs'])
-        assertAttrs(mark, ['href', 'target', 'rel', 'class'])
+        assertAttrs(mark, ['href', 'target', 'rel', 'class', 'title'])
         if (typeof mark.attrs?.href !== 'string') throw new Error('planning_document_tiptap_link')
-        if ([mark.attrs.target, mark.attrs.rel, mark.attrs.class].some(value => value !== undefined && value !== null)) {
+        if ([mark.attrs.target, mark.attrs.rel, mark.attrs.class, mark.attrs.title].some(value => value !== undefined && value !== null)) {
           throw new Error('planning_document_tiptap_link_attrs')
         }
         inline.href = mark.attrs.href.normalize('NFC')
@@ -381,10 +409,10 @@ const blockId = (json: JSONContent): string => {
 }
 
 const permittedAttrs = (type: string | undefined): string[] => {
-  if (type === 'orderedList') return ['blockId', 'start']
+  if (type === 'orderedList') return ['blockId', 'start', 'type']
   if (type === 'taskItem') return ['blockId', 'checked']
   if (type === 'table') return ['blockId', 'style']
-  if (type === 'tableCell' || type === 'tableHeader') return ['blockId', 'colspan', 'rowspan', 'colwidth']
+  if (type === 'tableCell' || type === 'tableHeader') return ['blockId', 'colspan', 'rowspan', 'colwidth', 'align']
   return ['blockId']
 }
 
@@ -418,6 +446,22 @@ const assertAttrs = (json: JSONContent, allowed: string[]): void => {
 const nodeNeedsCanonicalId = (type: string | undefined, parentType: string | null): boolean => (
   type === 'paragraph' ? parentType === 'doc' : Boolean(type && canonicalIdNodes.has(type))
 )
+
+const inheritedNestedParagraphId = (node: JSONContent): string | null => {
+  if (node.type !== 'blockquote' && node.type !== 'listItem' && node.type !== 'taskItem') return null
+  const paragraph = node.content?.[0]
+  const id = paragraph?.type === 'paragraph' ? paragraph.attrs?.blockId : null
+  return typeof id === 'string' && id.length > 0 ? id : null
+}
+
+const previousTextBlockId = (
+  previous: { isTextblock: boolean; textContent: string; attrs: Record<string, unknown> } | null,
+  current: { isTextblock: boolean; textContent: string }
+): string | null => {
+  if (!previous?.isTextblock || !current.isTextblock || previous.textContent !== current.textContent) return null
+  const id = previous.attrs.blockId
+  return typeof id === 'string' && id.length > 0 ? id : null
+}
 
 const uniqueGeneratedId = (seen: Set<string>, idFactory: IdFactory): string => {
   for (let attempt = 0; attempt < 100; attempt += 1) {
