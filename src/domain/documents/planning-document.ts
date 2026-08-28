@@ -326,10 +326,12 @@ const cloneBlock = (block: PlanningDocumentBlockV1): PlanningDocumentBlockV1 => 
 const cloneInline = (inline: PlanningInlineV1): PlanningInlineV1 => ({ ...inline })
 
 const normalizeId = (value: unknown, ids: Set<string>): string => {
-  if (typeof value !== 'string' || value.length === 0) fail('planning_document_invalid_id')
-  if (ids.has(value)) fail('planning_document_duplicate_id')
-  ids.add(value)
-  return value
+  if (typeof value !== 'string') fail('planning_document_invalid_id')
+  const normalized = value.normalize('NFC')
+  if (normalized.length === 0) fail('planning_document_invalid_id')
+  if (ids.has(normalized)) fail('planning_document_duplicate_id')
+  ids.add(normalized)
+  return normalized
 }
 
 const isSafeLink = (href: string): boolean => {

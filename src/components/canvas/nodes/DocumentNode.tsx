@@ -26,8 +26,11 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   const authoritativeIdentity = planningDocumentNodeIdentity(node)
   const authoritativeIdentityRef = useRef(authoritativeIdentity)
   const authoritativeDocumentRef = useRef(node.document)
+  const authoritativeNodeIdRef = useRef(node.id)
+  const renderedNodeIdRef = useRef(node.id)
   authoritativeIdentityRef.current = authoritativeIdentity
   authoritativeDocumentRef.current = node.document
+  authoritativeNodeIdRef.current = node.id
   const pendingRequestTokensRef = useRef(new Set<number>())
   const revisionClockRef = useRef(node.document.revision)
   const [draftDocument, setDraftDocument] = useState(node.document)
@@ -48,6 +51,16 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   }, [authoritativeIdentity])
 
   useEffect(() => {
+    if (renderedNodeIdRef.current !== node.id) {
+      renderedNodeIdRef.current = node.id
+      requestTokenRef.current += 1
+      pendingRequestTokensRef.current.clear()
+      revisionClockRef.current = node.document.revision
+      setDraftDocument(node.document)
+      setRetryRequest(null)
+      setSaving(false)
+      return
+    }
     revisionClockRef.current = Math.max(revisionClockRef.current, node.document.revision)
     if (pendingRequestTokensRef.current.size > 0) return
     setDraftDocument(current => planningDocumentIdentity(current) === planningDocumentIdentity(node.document)
@@ -69,7 +82,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
 
   const commit = async (document: PlanningDocumentV1) => {
     const token = ++requestTokenRef.current
-    const submittedFromIdentity = authoritativeIdentityRef.current
+    const submittedNodeId = authoritativeNodeIdRef.current
     pendingRequestTokensRef.current.add(token)
     revisionClockRef.current = Math.max(revisionClockRef.current, document.revision)
     setDraftDocument(current => planningDocumentIdentity(current) === planningDocumentIdentity(document)
@@ -79,15 +92,25 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
     setSaving(true)
     const saved = await onDocumentChange(document)
     pendingRequestTokensRef.current.delete(token)
-    setSaving(pendingRequestTokensRef.current.size > 0)
-    if (token !== requestTokenRef.current) return
+    const pendingDrained = pendingRequestTokensRef.current.size === 0
+    setSaving(!pendingDrained)
+    if (token !== requestTokenRef.current) {
+      if (pendingDrained) setDraftDocument(authoritativeDocumentRef.current)
+      return
+    }
+    if (submittedNodeId !== authoritativeNodeIdRef.current) {
+      setDraftDocument(authoritativeDocumentRef.current)
+      setRetryRequest(null)
+      return
+    }
     if (saved) {
       setRetryRequest(null)
+      if (pendingDrained) setDraftDocument(authoritativeDocumentRef.current)
       return
     }
     const restoredDocument = authoritativeDocumentRef.current
     setDraftDocument(restoredDocument)
-    setRetryRequest({ document, token, authoritativeIdentity: submittedFromIdentity })
+    setRetryRequest({ document, token, authoritativeIdentity: authoritativeIdentityRef.current })
   }
 
   const commitEditorChange = (document: PlanningDocumentV1) => {

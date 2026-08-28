@@ -209,6 +209,84 @@ describe('planning document domain', () => {
     expect(() => createPlanningDocumentV1(duplicate)).toThrow('planning_document_duplicate_id')
   })
 
+  test('NFC-normalizes structural IDs before storing and digesting equivalent AST forms', () => {
+    const decomposedId = 'cafe\u0301-block'
+    const composedId = 'café-block'
+    const decomposedBlocks: PlanningDocumentBlockV1[] = [{
+      id: decomposedId,
+      type: 'paragraph',
+      content: [{ text: 'Same body' }]
+    }]
+    const composedBlocks: PlanningDocumentBlockV1[] = [{
+      id: composedId,
+      type: 'paragraph',
+      content: [{ text: 'Same body' }]
+    }]
+    const decomposedDocument = createPlanningDocumentV1(decomposedBlocks, 2)
+    const composedDocument = createPlanningDocumentV1(composedBlocks, 2)
+    const persistedInput = { version: 1 as const, blocks: decomposedBlocks, suggestions: [] }
+    const persisted = { ...persistedInput, revision: 2, digest: planningDocumentDigest(persistedInput) }
+
+    expect(decomposedDocument.blocks[0].id).toBe(composedId)
+    expect(decomposedDocument).toEqual(composedDocument)
+    expect(parsePlanningDocumentV1(persisted)).toEqual({ ok: true, document: composedDocument })
+  })
+
+  test.each([
+    {
+      label: 'block',
+      blocks: [
+        { id: 'café', type: 'paragraph', content: [] },
+        { id: 'cafe\u0301', type: 'paragraph', content: [] }
+      ]
+    },
+    {
+      label: 'list item',
+      blocks: [{
+        id: 'list',
+        type: 'bulletList',
+        items: [
+          { id: 'café', content: [] },
+          { id: 'cafe\u0301', content: [] }
+        ]
+      }]
+    },
+    {
+      label: 'table row',
+      blocks: [{
+        id: 'table',
+        type: 'table',
+        rows: [
+          { id: 'café', cells: [{ id: 'cell-1', content: [] }] },
+          { id: 'cafe\u0301', cells: [{ id: 'cell-2', content: [] }] }
+        ]
+      }]
+    },
+    {
+      label: 'table cell',
+      blocks: [{
+        id: 'table',
+        type: 'table',
+        rows: [{
+          id: 'row',
+          cells: [
+            { id: 'café', content: [] },
+            { id: 'cafe\u0301', content: [] }
+          ]
+        }]
+      }]
+    }
+  ] as Array<{ label: string; blocks: PlanningDocumentBlockV1[] }>)('rejects canonically duplicate $label IDs', ({ blocks }) => {
+    const digestInput = { version: 1 as const, blocks, suggestions: [] }
+    const persisted = { ...digestInput, revision: 0, digest: planningDocumentDigest(digestInput) }
+
+    expect(() => createPlanningDocumentV1(blocks)).toThrow('planning_document_duplicate_id')
+    expect(parsePlanningDocumentV1(persisted)).toEqual({
+      ok: false,
+      reason: 'planning_document_duplicate_id'
+    })
+  })
+
   test.each([
     'javascript:alert(1)',
     'data:text/html,unsafe',

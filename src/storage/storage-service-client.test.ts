@@ -432,6 +432,48 @@ describe('storageServiceClient', () => {
     expect(payload.freeCanvas.nodes[0].tiptap).toBeUndefined()
   })
 
+  test('normalizes decomposed persisted Document IDs before exact Storage writeback', async () => {
+    const rawBlocks: PlanningDocumentBlockV1[] = [{
+      id: 'cafe\u0301-block',
+      type: 'paragraph',
+      content: [{ text: 'Plan' }]
+    }]
+    const digestInput = { version: 1 as const, blocks: rawBlocks, suggestions: [] }
+    const expectedDocument = createPlanningDocumentV1([{
+      id: 'café-block',
+      type: 'paragraph',
+      content: [{ text: 'Plan' }]
+    }], 3)
+    const freeCanvas = normalizeFreeCanvasProject({
+      nodes: [{
+        id: 'document-nfc', kind: 'document', title: 'NFC plan', position: { x: 0, y: 0 },
+        width: 560, height: 420,
+        document: { ...digestInput, revision: 3, digest: planningDocumentDigest(digestInput) },
+        linkedDocumentResourceIds: [], meta: {}
+      }] as never,
+      edges: [],
+      meta: {}
+    }, 1)
+    const normalizedNode = freeCanvas.nodes[0]
+    if (normalizedNode.kind !== 'document') throw new Error('Expected Document node')
+    expect(normalizedNode.document).toEqual(expectedDocument)
+    const project: IPromptProject = {
+      id: 'project-document-nfc', title: 'NFC Document project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0, freeCanvas,
+      createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes[0].document).toEqual(expectedDocument)
+  })
+
   test('manages project agent conversations and skills through scoped endpoints', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
       conversations: [], skills: []
