@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { act, create } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
+import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
 import type { IFreeCanvasDocumentNode, PlanningDocumentV1 } from '@/models/PromptHistory.model'
 
 vi.mock('@/components/canvas/document/DocumentEditor', () => ({
@@ -41,6 +41,12 @@ const node = (): IFreeCanvasDocumentNode => ({
   linkedDocumentResourceIds: [],
   meta: {}
 })
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(complete => { resolve = complete })
+  return { promise, resolve }
+}
 
 describe('DocumentNode', () => {
   beforeEach(() => {
@@ -277,6 +283,61 @@ describe('DocumentNode', () => {
 
     expect(onDocumentChange).toHaveBeenCalledTimes(3)
     expect(onDocumentChange.mock.calls[2][0]).toEqual(documentB)
+  })
+
+  it('makes a captured failed-A Retry a no-op as soon as a newer B commit starts', async () => {
+    const pendingB = deferred<boolean>()
+    const received: string[] = []
+    const persisted: string[] = []
+    const documentA = createPlanningDocumentV1([
+      { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'A' }] }
+    ], 1)
+    const documentB = createPlanningDocumentV1([
+      { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'B' }] }
+    ], 2)
+    const Wrapper = () => {
+      const [current, setCurrent] = useState(node())
+      return (
+        <DocumentNode
+          node={current}
+          selected
+          onDocumentChange={async document => {
+            const text = planningDocumentEffectiveText(document)
+            received.push(text)
+            if (text === 'A') return false
+            if (text === 'B') {
+              setCurrent(value => ({ ...value, document }))
+              const saved = await pendingB.promise
+              if (saved) persisted.push(text)
+              return saved
+            }
+            return false
+          }}
+          onDelete={vi.fn()}
+        />
+      )
+    }
+    const renderer = create(<Wrapper />)
+    const editor = renderer.root.findByProps({ 'data-mock-document-editor': 'inline' })
+
+    await act(async () => editor.props['data-on-test-change'](documentA))
+    const capturedStaleRetry = renderer.root.findByProps({ 'aria-label': '重试保存文档' }).props.onClick
+    act(() => editor.props['data-on-test-change'](documentB))
+    expect(renderer.root.findAllByProps({ 'aria-label': '重试保存文档' })).toHaveLength(0)
+
+    act(() => capturedStaleRetry())
+    expect(received).toEqual(['A', 'B'])
+
+    await act(async () => {
+      pendingB.resolve(true)
+      await pendingB.promise
+      await Promise.resolve()
+    })
+
+    expect(received).toEqual(['A', 'B'])
+    expect(persisted).toEqual(['B'])
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-digest'])
+      .toBe(documentB.digest)
   })
 
   it('persists collapsed state through node metadata and restores it on reload', async () => {

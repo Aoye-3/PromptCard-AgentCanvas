@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import type { IPromptProject } from '@/models/PromptHistory.model'
+import type { IPromptProject, PlanningDocumentBlockV1 } from '@/models/PromptHistory.model'
 import { normalizeFreeCanvasProject } from '@/domain/free-canvas/free-canvas-project'
-import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
+import { createPlanningDocumentV1, planningDocumentDigest } from '@/domain/documents/planning-document'
 import { storageServiceClient } from './storage-service-client'
 
 afterEach(() => {
@@ -346,6 +346,58 @@ describe('storageServiceClient', () => {
     expect(payload.freeCanvas.nodes).toEqual([originalNode])
     expect(payload.freeCanvas.nodes[0].kind).toBe('future-layout')
     expect(payload.freeCanvas.nodes[0].originalNode).toBeUndefined()
+  })
+
+  test.each([
+    {
+      label: 'zero-length inline',
+      blocks: [{ id: 'empty-inline', type: 'paragraph', content: [{ text: '' }] }]
+    },
+    {
+      label: 'adjacent identical marked runs',
+      blocks: [{
+        id: 'adjacent-inline',
+        type: 'paragraph',
+        content: [
+          { text: 'A', bold: true, href: 'https://example.com/same' },
+          { text: 'B', bold: true, href: 'https://example.com/same' }
+        ]
+      }]
+    }
+  ] as Array<{ label: string; blocks: PlanningDocumentBlockV1[] }>)('writes a correct-digest invalid Document ($label) back byte-for-structure from frozen unsupported data', async ({ blocks }) => {
+    const digestInput = { version: 1 as const, blocks, suggestions: [] }
+    const originalNode = {
+      id: 'document-invalid-inline',
+      kind: 'document',
+      title: 'Preserve invalid inline data',
+      position: { x: 10, y: 20 },
+      width: 560,
+      height: 420,
+      document: { ...digestInput, revision: 2, digest: planningDocumentDigest(digestInput) },
+      linkedDocumentResourceIds: ['resource-1'],
+      futureNodeAttribute: { preserve: ['exactly'] },
+      meta: { collapsed: true }
+    }
+    const freeCanvas = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 1)
+    expect(freeCanvas.nodes[0]).toMatchObject({ kind: 'unsupported', originalNode })
+    if (freeCanvas.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(Object.isFrozen(freeCanvas.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(freeCanvas.nodes[0].originalNode.document)).toBe(true)
+    const project: IPromptProject = {
+      id: 'project-invalid-document', title: 'Invalid Document project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0, freeCanvas,
+      createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes).toEqual([originalNode])
   })
 
   test('writes a Document node as editor-neutral AST without derived or Tiptap state', async () => {

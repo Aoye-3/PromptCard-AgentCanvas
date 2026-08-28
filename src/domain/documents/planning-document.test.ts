@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import type { PlanningDocumentBlockV1 } from '@/models/PromptHistory.model'
+import type { PlanningDocumentBlockV1, PlanningInlineV1 } from '@/models/PromptHistory.model'
 import {
   canonicalPlanningDocumentJson,
   clonePlanningDocumentV1,
@@ -148,6 +148,56 @@ describe('planning document domain', () => {
 
     expect(parsePlanningDocumentV1(document)).toEqual({ ok: true, document })
     expect(planningDocumentEffectiveText(document)).toBe('')
+  })
+
+  test('rejects a zero-length inline run while preserving an empty content array as the blank representation', () => {
+    const blocks: PlanningDocumentBlockV1[] = [{
+      id: 'paragraph-empty-run',
+      type: 'paragraph',
+      content: [{ text: '' }]
+    }]
+    const digestInput = { version: 1 as const, blocks, suggestions: [] }
+    const persisted = { ...digestInput, revision: 0, digest: planningDocumentDigest(digestInput) }
+
+    expect(() => createPlanningDocumentV1(blocks)).toThrow('planning_document_invalid_inline')
+    expect(parsePlanningDocumentV1(persisted)).toEqual({
+      ok: false,
+      reason: 'planning_document_invalid_inline'
+    })
+    expect(parsePlanningDocumentV1(createPlanningDocumentV1([
+      { id: 'paragraph-blank', type: 'paragraph', content: [] }
+    ])).ok).toBe(true)
+  })
+
+  test.each([
+    { label: 'plain', content: [{ text: 'A' }, { text: 'B' }] },
+    { label: 'bold', content: [{ text: 'A', bold: true }, { text: 'B', bold: true }] },
+    { label: 'italic', content: [{ text: 'A', italic: true }, { text: 'B', italic: true }] },
+    {
+      label: 'bold and italic',
+      content: [{ text: 'A', bold: true, italic: true }, { text: 'B', bold: true, italic: true }]
+    },
+    {
+      label: 'link',
+      content: [{ text: 'A', href: 'https://example.com/same' }, { text: 'B', href: 'https://example.com/same' }]
+    },
+    {
+      label: 'bold, italic, and link',
+      content: [
+        { text: 'A', bold: true, italic: true, href: 'mailto:author@example.com' },
+        { text: 'B', bold: true, italic: true, href: 'mailto:author@example.com' }
+      ]
+    }
+  ] as Array<{ label: string; content: PlanningInlineV1[] }>)('rejects adjacent $label runs with an identical mark signature', ({ content }) => {
+    const blocks: PlanningDocumentBlockV1[] = [{ id: 'paragraph-adjacent', type: 'paragraph', content }]
+    const digestInput = { version: 1 as const, blocks, suggestions: [] }
+    const persisted = { ...digestInput, revision: 0, digest: planningDocumentDigest(digestInput) }
+
+    expect(() => createPlanningDocumentV1(blocks)).toThrow('planning_document_noncanonical_inline')
+    expect(parsePlanningDocumentV1(persisted)).toEqual({
+      ok: false,
+      reason: 'planning_document_noncanonical_inline'
+    })
   })
 
   test('rejects duplicate structural and leaf IDs across the entire document', () => {

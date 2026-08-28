@@ -13,6 +13,11 @@ interface DocumentNodeProps {
   onDelete: () => void
 }
 
+interface DocumentRetryRequest {
+  document: PlanningDocumentV1
+  token: number
+}
+
 export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChange, onDelete }: DocumentNodeProps) => {
   const expandButtonRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -20,7 +25,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   const [collapsed, setCollapsed] = useState(node.meta.collapsed === true)
   const [expanded, setExpanded] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [retryDocument, setRetryDocument] = useState<PlanningDocumentV1 | null>(null)
+  const [retryRequest, setRetryRequest] = useState<DocumentRetryRequest | null>(null)
   const summary = planningDocumentEffectiveText(node.document).replace(/\s+/g, ' ').trim().slice(0, 180)
 
   useEffect(() => {
@@ -41,11 +46,17 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
 
   const commit = async (document: PlanningDocumentV1) => {
     const token = ++requestTokenRef.current
+    setRetryRequest(null)
     setSaving(true)
     const saved = await onDocumentChange(document)
     if (token !== requestTokenRef.current) return
     setSaving(false)
-    setRetryDocument(saved ? null : document)
+    setRetryRequest(saved ? null : { document, token })
+  }
+
+  const retry = (request: DocumentRetryRequest) => {
+    if (request.token !== requestTokenRef.current) return
+    void commit(request.document)
   }
 
   const closeExpanded = () => {
@@ -84,14 +95,14 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
     if (!saved) setCollapsed(!next)
   }
 
-  const retryAlert = retryDocument ? (
+  const retryAlert = retryRequest ? (
     <div role="alert" className="nodrag flex items-center gap-2 border-b border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
       <span className="flex-1">保存失败，文档已恢复到上次保存状态。</span>
       <button
         type="button"
         aria-label="重试保存文档"
         className="flex items-center gap-1 rounded-md bg-white px-2 py-1 text-red-700 shadow-sm hover:bg-red-100"
-        onClick={() => { void commit(retryDocument) }}
+        onClick={() => retry(retryRequest)}
       ><RotateCcw className="h-3 w-3" />重试</button>
     </div>
   ) : null

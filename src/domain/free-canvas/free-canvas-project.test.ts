@@ -683,7 +683,19 @@ describe('free canvas project domain', () => {
     { label: 'empty document', blocks: [] },
     { label: 'empty bullet list', blocks: [{ id: 'empty-list', type: 'bulletList', items: [] }] },
     { label: 'empty ordered list', blocks: [{ id: 'empty-list', type: 'orderedList', items: [] }] },
-    { label: 'empty check list', blocks: [{ id: 'empty-list', type: 'checkList', items: [] }] }
+    { label: 'empty check list', blocks: [{ id: 'empty-list', type: 'checkList', items: [] }] },
+    { label: 'zero-length inline', blocks: [{ id: 'empty-inline', type: 'paragraph', content: [{ text: '' }] }] },
+    {
+      label: 'adjacent identical marked runs',
+      blocks: [{
+        id: 'adjacent-inline',
+        type: 'paragraph',
+        content: [
+          { text: 'A', bold: true, italic: true, href: 'https://example.com/same' },
+          { text: 'B', bold: true, italic: true, href: 'https://example.com/same' }
+        ]
+      }]
+    }
   ] as Array<{ label: string; blocks: PlanningDocumentBlockV1[] }>)('freezes a correct-digest unrenderable Document ($label) as lossless unsupported data', ({ blocks }) => {
     const digestInput = { version: 1 as const, blocks, suggestions: [] }
     const document = { ...digestInput, revision: 2, digest: planningDocumentDigest(digestInput) }

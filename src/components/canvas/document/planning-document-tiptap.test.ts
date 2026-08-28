@@ -67,12 +67,14 @@ describe('planning document Tiptap adapter', () => {
         { id: 'row-body', cells: [{ id: 'cell', content: [] }] }
       ]
     }]]
-  ] as Array<[string, PlanningDocumentBlockV1[]]>)('emits a real Tiptap-valid schema document for accepted neutral fixture: %s', (_label, fixtureBlocks) => {
-    const document = createPlanningDocumentV1(fixtureBlocks)
+  ] as Array<[string, PlanningDocumentBlockV1[]]>)('round-trips the exact accepted neutral AST and digest through real Tiptap 3.30.3: %s', (_label, fixtureBlocks) => {
+    const document = createPlanningDocumentV1(fixtureBlocks, 7)
     const schema = getSchema(createPlanningDocumentTiptapExtensions())
     const node = schema.nodeFromJSON(planningDocumentToTiptapJson(document))
+    const canonical = node.toJSON() as JSONContent
 
     expect(() => node.check()).not.toThrow()
+    expect(planningDocumentFromTiptapJson(canonical, 7)).toEqual(document)
   })
 
   test('accepts only real Tiptap 3.30.3 null defaults across every allowed node and mark', () => {

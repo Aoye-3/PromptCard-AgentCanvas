@@ -243,6 +243,7 @@ const normalizeTableCell = (
 
 const normalizeInlineContent = (value: unknown): PlanningInlineV1[] => {
   if (!Array.isArray(value)) fail('planning_document_invalid_inline_content')
+  let previousMarkSignature: string | null = null
   return value.map(inline => {
     if (!isRecord(inline)) fail('planning_document_invalid_inline')
     const allowed = ['text']
@@ -256,10 +257,15 @@ const normalizeInlineContent = (value: unknown): PlanningInlineV1[] => {
     if (inline.href !== undefined && (typeof inline.href !== 'string' || !isSafeLink(inline.href))) {
       fail('planning_document_invalid_link')
     }
-    const normalized: PlanningInlineV1 = { text: inline.text.normalize('NFC') }
+    const normalizedText = inline.text.normalize('NFC')
+    if (normalizedText.length === 0) fail('planning_document_invalid_inline')
+    const normalized: PlanningInlineV1 = { text: normalizedText }
     if (inline.bold === true) normalized.bold = true
     if (inline.italic === true) normalized.italic = true
     if (typeof inline.href === 'string') normalized.href = inline.href.normalize('NFC')
+    const markSignature = `${normalized.bold === true ? 'b' : ''}|${normalized.italic === true ? 'i' : ''}|${normalized.href || ''}`
+    if (markSignature === previousMarkSignature) fail('planning_document_noncanonical_inline')
+    previousMarkSignature = markSignature
     return normalized
   })
 }
