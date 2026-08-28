@@ -7,6 +7,7 @@ import type { IFreeCanvasDocumentNode, IFreeCanvasProject, IFreeCanvasTextNode, 
 const windowListeners = new Map<string, Set<(event: KeyboardEvent) => void>>()
 
 const mocks = vi.hoisted(() => ({
+  useRealDocumentNode: false,
   bootstrapRuntime: vi.fn(),
   getCatalog: vi.fn(),
   listConnections: vi.fn(),
@@ -15,6 +16,26 @@ const mocks = vi.hoisted(() => ({
   getConversations: vi.fn(),
   getConversationRuns: vi.fn(),
   getPendingPlacements: vi.fn()
+}))
+
+vi.mock('@/components/canvas/document/DocumentEditor', () => ({
+  DocumentEditor: ({ document, mode, onChange }: {
+    document: PlanningDocumentV1
+    mode: string
+    onChange: (document: PlanningDocumentV1) => void
+  }) => (
+    <button
+      type="button"
+      aria-label="真实节点编辑文档 B"
+      data-real-document-editor={mode}
+      data-document-text={planningDocumentEffectiveText(document)}
+      onClick={() => onChange(createPlanningDocumentV1([{
+        id: document.blocks[0]?.id || 'document-paragraph',
+        type: 'paragraph',
+        content: [{ text: 'B' }]
+      }], document.revision + 1))}
+    >Edit real node</button>
+  )
 }))
 
 vi.mock('@xyflow/react', () => {
@@ -61,11 +82,12 @@ vi.mock('@xyflow/react', () => {
   }
 })
 
-vi.mock('@/components/canvas/nodes/DocumentNode', () => ({
-  DocumentNode: ({ node, onDocumentChange, onCollapsedChange, onDelete }: {
+vi.mock('@/components/canvas/nodes/DocumentNode', async importOriginal => {
+  const original = await importOriginal<typeof import('@/components/canvas/nodes/DocumentNode')>()
+  const MockDocumentNode = ({ node, onDocumentChange, onCollapsedChange, onDelete }: {
     node: IFreeCanvasDocumentNode
-    onDocumentChange: (document: PlanningDocumentV1) => Promise<boolean>
-    onCollapsedChange: (collapsed: boolean) => Promise<boolean>
+    onDocumentChange: (document: PlanningDocumentV1) => Promise<boolean> | boolean
+    onCollapsedChange?: (collapsed: boolean) => Promise<boolean> | boolean
     onDelete: () => void
   }) => (
     <div
@@ -90,11 +112,18 @@ vi.mock('@/components/canvas/nodes/DocumentNode', () => ({
           ], node.document.revision + 1))}
         >Edit {text}</button>
       ))}
-      <button type="button" aria-label="测试折叠文档" onClick={() => onCollapsedChange(true)}>Collapse</button>
+      <button type="button" aria-label="测试折叠文档" onClick={() => onCollapsedChange?.(true)}>Collapse</button>
       <button type="button" aria-label="测试删除文档" onClick={onDelete}>Delete</button>
     </div>
   )
-}))
+  return {
+    DocumentNode: (props: Parameters<typeof original.DocumentNode>[0]) => (
+      mocks.useRealDocumentNode
+        ? <original.DocumentNode {...props} />
+        : <MockDocumentNode {...props} />
+    )
+  }
+})
 
 vi.mock('@/components/AgentCollaborationPanel', () => ({ AIChatbotBox: () => <div /> }))
 vi.mock('@/components/PromptLibraryPreviewMode', () => ({ PromptLibraryPreviewPanel: () => <div /> }))
@@ -200,8 +229,12 @@ const unrelatedTextNode = (): IFreeCanvasTextNode => ({
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>(complete => { resolve = complete })
-  return { promise, resolve }
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((complete, fail) => {
+    resolve = complete
+    reject = fail
+  })
+  return { promise, resolve, reject }
 }
 
 const dispatchWindowKey = async (key: string, options: Partial<KeyboardEvent> = {}) => {
@@ -226,6 +259,7 @@ const dispatchWindowKey = async (key: string, options: Partial<KeyboardEvent> = 
 describe('FreeCanvasBuilderScreen Document integration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.useRealDocumentNode = false
     windowListeners.clear()
     vi.stubGlobal('window', {
       addEventListener: vi.fn((type: string, listener: (event: KeyboardEvent) => void) => {
@@ -327,6 +361,71 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
 
     expect(persistedTexts).toEqual(['After', 'Before'])
     expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-text']).toBe('Before')
+  })
+
+  it.each(['false', 'throw'] as const)('preserves external Z when real Screen+DocumentNode B persistence settles with $outcome', async outcome => {
+    mocks.useRealDocumentNode = true
+    const pendingB = deferred<boolean>()
+    const persistedTexts: string[] = []
+    let persistCall = 0
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      const current = canvas.nodes.find(candidate => candidate.id === 'document-1') as IFreeCanvasDocumentNode
+      persistedTexts.push(planningDocumentEffectiveText(current.document))
+      persistCall += 1
+      return persistCall === 1 ? pendingB.promise : Promise.resolve(true)
+    })
+    let publishExternal!: (document: PlanningDocumentV1) => void
+    let latestCanvas = initialCanvas()
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      latestCanvas = canvas
+      publishExternal = document => setCanvas(current => ({
+        ...current,
+        nodes: current.nodes.map(node => node.id === 'document-1' && node.kind === 'document'
+          ? { ...node, document }
+          : node)
+      }))
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+    const authoritativeZ = createPlanningDocumentV1([{
+      id: 'document-1-paragraph-z',
+      type: 'paragraph',
+      content: [{ text: 'Z' }]
+    }], 8)
+
+    act(() => renderer.root.findByProps({ 'aria-label': '真实节点编辑文档 B' }).props.onClick())
+    expect(persistedTexts).toEqual(['B'])
+    act(() => publishExternal(authoritativeZ))
+    expect(renderer.root.findByProps({ 'data-real-document-editor': 'inline' }).props['data-document-text']).toBe('B')
+
+    await act(async () => {
+      if (outcome === 'throw') pendingB.reject(new Error('storage unavailable'))
+      else pendingB.resolve(false)
+      try {
+        await pendingB.promise
+      } catch {
+        // The production Screen converts persistence rejection into a failed boolean outcome.
+      }
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(canvasDocumentTexts(latestCanvas)).toEqual({ 'document-1': 'Z' })
+    expect(renderer.root.findByProps({ 'data-real-document-editor': 'inline' }).props['data-document-text']).toBe('Z')
+    expect(renderer.root.findAllByProps({ 'aria-label': '重试保存文档' })).toHaveLength(0)
+    expect(persistedTexts).toEqual(['B'])
+
+    await dispatchWindowKey('z')
+    expect(canvasDocumentTexts(latestCanvas)).toEqual({ 'document-1': 'Z' })
+    expect(persistedTexts).toEqual(['B'])
   })
 
   it('serializes rapid Document edits so double failures cannot stale-roll back the newer edit', async () => {

@@ -1939,11 +1939,18 @@ const FreeCanvasBuilderInner = ({
     if (saved) return true
 
     const failedEntry = executed.history.past[executed.history.past.length - 1]
-    const recovery = applyCanvasLocalCommand(freeCanvasRef.current, failedEntry.undo).project
+    const currentCanvas = freeCanvasRef.current
+    const currentDocumentNode = currentCanvas.nodes.find(node => node.id === nodeId)
+    const attemptedDocumentIsCurrent = currentDocumentNode?.kind === 'document' &&
+      currentDocumentNode.document.revision === document.revision &&
+      currentDocumentNode.document.digest === document.digest
     canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
       canvasCommandHistoryRef.current,
       failedEntry
     )
+    if (!attemptedDocumentIsCurrent) return true
+
+    const recovery = applyCanvasLocalCommand(currentCanvas, failedEntry.undo).project
     emitGenerationCanvas(recovery)
     try {
       await onPersistCanvas?.(recovery)
