@@ -103,7 +103,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
       aria-modal="true"
       aria-labelledby={`document-editor-title-${node.id}`}
       className="fixed inset-0 z-[100] flex items-center justify-center bg-gray-950/45 p-4 sm:p-8"
-      onKeyDown={handleExpandedKeyDown}
+      onKeyDownCapture={handleExpandedKeyDown}
     >
       <section className="flex h-full max-h-[920px] w-full max-w-5xl flex-col overflow-hidden rounded-[10px] border border-gray-200 bg-white shadow-[0_32px_100px_rgba(15,23,42,0.3)]">
         <header className="flex shrink-0 items-center gap-3 border-b border-gray-200 px-4 py-3">

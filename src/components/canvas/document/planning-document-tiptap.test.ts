@@ -68,6 +68,114 @@ describe('planning document Tiptap adapter', () => {
     }
   })
 
+  test('keeps an existing paragraph ID when a longer paragraph is inserted at the front', () => {
+    const schema = getSchema(createPlanningDocumentTiptapExtensions())
+    let state = EditorState.create({
+      schema,
+      doc: schema.nodeFromJSON(planningDocumentToTiptapJson(createPlanningDocumentV1([
+        { id: 'p1', type: 'paragraph', content: [{ text: 'Old' }] }
+      ]))),
+      plugins: [createPlanningDocumentBlockIdPlugin(sequenceIds('inserted-long'))]
+    })
+    const inserted = schema.nodes.paragraph.create(
+      { blockId: null },
+      schema.text('A substantially longer paragraph inserted before the existing block')
+    )
+
+    state = state.apply(state.tr.insert(0, inserted))
+
+    expect(state.doc.toJSON().content?.map((node: JSONContent) => node.attrs?.blockId))
+      .toEqual(['inserted-long', 'p1'])
+  })
+
+  test('keeps every existing ID when a table is inserted before the first block', () => {
+    const schema = getSchema(createPlanningDocumentTiptapExtensions())
+    let state = EditorState.create({
+      schema,
+      doc: schema.nodeFromJSON(planningDocumentToTiptapJson(createPlanningDocumentV1([
+        { id: 'p1', type: 'paragraph', content: [{ text: 'Old' }] }
+      ]))),
+      plugins: [createPlanningDocumentBlockIdPlugin(sequenceIds('unexpected'))]
+    })
+    const tableJson = planningDocumentToTiptapJson(createPlanningDocumentV1([{
+      id: 'table-new',
+      type: 'table',
+      rows: [{
+        id: 'row-new',
+        cells: [
+          { id: 'header-new', header: true, content: [{ text: 'Heading' }] },
+          { id: 'cell-new', content: [{ text: 'Value' }] }
+        ]
+      }]
+    }])).content?.[0]
+    if (!tableJson) throw new Error('Expected table JSON')
+
+    state = state.apply(state.tr.insert(0, schema.nodeFromJSON(tableJson)))
+
+    const roundTripped = planningDocumentFromTiptapJson(state.doc.toJSON(), 1)
+    expect(allNeutralIds(roundTripped.blocks)).toEqual(['table-new', 'row-new', 'header-new', 'cell-new', 'p1'])
+  })
+
+  test('does not let an identical inserted paragraph steal an existing paragraph ID', () => {
+    const schema = getSchema(createPlanningDocumentTiptapExtensions())
+    let state = EditorState.create({
+      schema,
+      doc: schema.nodeFromJSON(planningDocumentToTiptapJson(createPlanningDocumentV1([
+        { id: 'p1', type: 'paragraph', content: [{ text: 'Same' }] }
+      ]))),
+      plugins: [createPlanningDocumentBlockIdPlugin(sequenceIds('inserted-same'))]
+    })
+
+    state = state.apply(state.tr.insert(
+      0,
+      schema.nodes.paragraph.create({ blockId: null }, schema.text('Same'))
+    ))
+
+    expect(state.doc.toJSON().content?.map((node: JSONContent) => node.attrs?.blockId))
+      .toEqual(['inserted-same', 'p1'])
+  })
+
+  test('does not transfer a deleted block ID to an identical surviving paragraph', () => {
+    const schema = getSchema(createPlanningDocumentTiptapExtensions())
+    let state = EditorState.create({
+      schema,
+      doc: schema.nodeFromJSON(planningDocumentToTiptapJson(createPlanningDocumentV1([
+        { id: 'p1', type: 'paragraph', content: [{ text: 'Same' }] },
+        { id: 'p2', type: 'paragraph', content: [{ text: 'Same' }] }
+      ]))),
+      plugins: [createPlanningDocumentBlockIdPlugin(sequenceIds('unexpected'))]
+    })
+    const first = state.doc.firstChild
+    if (!first) throw new Error('Expected first paragraph')
+
+    state = state.apply(state.tr.delete(0, first.nodeSize))
+
+    expect(state.doc.toJSON().content?.map((node: JSONContent) => node.attrs?.blockId)).toEqual(['p2'])
+  })
+
+  test.each([
+    ['matching blockquote', createPlanningDocumentV1([
+      { id: 'p1', type: 'blockquote', content: [{ text: 'Same' }] }
+    ]), ['inserted-same', 'p1']],
+    ['matching list leaf', createPlanningDocumentV1([{
+      id: 'list-outer', type: 'bulletList', items: [{ id: 'p1', content: [{ text: 'Same' }] }]
+    }]), ['inserted-same', 'list-outer', 'p1']]
+  ] as const)('does not let an inserted paragraph steal an existing %s ID', (_label, source, expectedIds) => {
+    const schema = getSchema(createPlanningDocumentTiptapExtensions())
+    let state = EditorState.create({
+      schema,
+      doc: schema.nodeFromJSON(planningDocumentToTiptapJson(source)),
+      plugins: [createPlanningDocumentBlockIdPlugin(sequenceIds('inserted-same', 'unexpected'))]
+    })
+
+    state = state.apply(state.tr.insert(
+      0,
+      schema.nodes.paragraph.create({ blockId: null }, schema.text('Same'))
+    ))
+
+    expect(allNeutralIds(planningDocumentFromTiptapJson(state.doc.toJSON(), 1).blocks)).toEqual(expectedIds)
+  })
+
   test.each([
     ['paragraph to quote', (schema: ReturnType<typeof getSchema>) => [wrapIn(schema.nodes.blockquote)]],
     ['heading to quote', (schema: ReturnType<typeof getSchema>) => [

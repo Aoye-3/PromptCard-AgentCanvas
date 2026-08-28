@@ -21,6 +21,7 @@ import {
 } from '@tiptap/extension-table'
 import { Fragment, Slice, type Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
+import { Mapping } from '@tiptap/pm/transform'
 import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
 import type {
   PlanningDocumentBlockV1,
@@ -158,6 +159,10 @@ export const createPlanningDocumentBlockIdPlugin = (
   key: new PluginKey('planningDocumentBlockId'),
   appendTransaction: (transactions, oldState, state) => {
     if (!transactions.some(transaction => transaction.docChanged)) return null
+    const mapping = new Mapping()
+    transactions.forEach(transaction => mapping.appendMapping(transaction.mapping))
+    const protectedIds = mappedPlanningDocumentIds(oldState.doc, state.doc, mapping)
+    const reservedIds = new Set(protectedIds.values())
     const seen = new Set<string>()
     const updates: Array<{ position: number; attrs: Record<string, unknown> }> = []
     state.doc.descendants((node, position, parent) => {
@@ -172,14 +177,16 @@ export const createPlanningDocumentBlockIdPlugin = (
         ? node.attrs.blockId
         : null
       const inherited = inheritedNestedParagraphId(node.toJSON())
-      const previous = previousTextBlockId(oldState.doc.nodeAt(position), node)
-      const preferred = current || inherited || previous
+      const protectedId = protectedIds.get(position) || null
+      const unprotectedCurrent = current && !reservedIds.has(current) ? current : null
+      const unprotectedInherited = inherited && !reservedIds.has(inherited) ? inherited : null
+      const preferred = protectedId || unprotectedCurrent || unprotectedInherited
       if (preferred && !seen.has(preferred)) {
         seen.add(preferred)
-        if (!current) updates.push({ position, attrs: { ...node.attrs, blockId: preferred } })
+        if (current !== preferred) updates.push({ position, attrs: { ...node.attrs, blockId: preferred } })
         return
       }
-      const blockId = uniqueGeneratedId(seen, idFactory)
+      const blockId = uniqueGeneratedId(new Set([...seen, ...reservedIds]), idFactory)
       seen.add(blockId)
       updates.push({ position, attrs: { ...node.attrs, blockId } })
     })
@@ -425,30 +432,60 @@ const inheritedNestedParagraphId = (node: JSONContent): string | null => {
   return typeof id === 'string' && id.length > 0 ? id : null
 }
 
-const previousTextBlockId = (
-  previous: ProseMirrorNode | null,
-  current: ProseMirrorNode
-): string | null => {
-  if (!previous || !current.isTextblock) return null
-  if (previous.isTextblock && previous.textContent === current.textContent) {
-    const id = previous.attrs.blockId
-    return typeof id === 'string' && id.length > 0 ? id : null
-  }
-  let matched: string | null = null
-  const matchLeafContainer = (node: ProseMirrorNode) => {
-    if (matched || !previousLeafContainerNodes.has(node.type.name) || node.textContent !== current.textContent) return
-    const id = node.attrs.blockId
-    if (typeof id === 'string' && id.length > 0) matched = id
-  }
-  matchLeafContainer(previous)
-  previous.descendants(node => {
-    matchLeafContainer(node)
-    return matched === null
+const mappedPlanningDocumentIds = (
+  oldDocument: ProseMirrorNode,
+  newDocument: ProseMirrorNode,
+  mapping: Mapping
+): Map<number, string> => {
+  const protectedIds = new Map<number, string>()
+  oldDocument.descendants((node, position, parent) => {
+    if (!nodeNeedsCanonicalId(node.type.name, parent?.type.name || null)) return
+    const blockId = node.attrs.blockId
+    if (typeof blockId !== 'string' || blockId.length === 0) return
+    const probe = identityProbePosition(node, position)
+    const mapped = mapping.mapResult(probe, 1)
+    if (mapped.deletedAcross) return
+    const ownerPosition = mappedCanonicalOwnerPosition(newDocument, mapped.pos, node.type.name)
+    if (ownerPosition !== null && !protectedIds.has(ownerPosition)) protectedIds.set(ownerPosition, blockId)
   })
-  return matched
+  return protectedIds
 }
 
-const previousLeafContainerNodes = new Set(['blockquote', 'listItem', 'taskItem'])
+const identityProbePosition = (node: ProseMirrorNode, position: number): number => {
+  if (!identityProbeNodes.has(node.type.name)) return position
+  let relativeTextPosition: number | null = null
+  node.descendants((child, relativePosition) => {
+    if (relativeTextPosition === null && child.isText) relativeTextPosition = relativePosition
+    return relativeTextPosition === null
+  })
+  return position + 1 + (relativeTextPosition ?? 0)
+}
+
+const mappedCanonicalOwnerPosition = (
+  document: ProseMirrorNode,
+  mappedPosition: number,
+  oldType: string
+): number | null => {
+  if (mappedPosition < 0 || mappedPosition > document.content.size) return null
+  if (!identityProbeNodes.has(oldType)) {
+    const mappedNode = document.nodeAt(mappedPosition)
+    return mappedNode?.type.name === oldType ? mappedPosition : null
+  }
+  const resolved = document.resolve(mappedPosition)
+  for (let depth = resolved.depth; depth > 0; depth -= 1) {
+    const node = resolved.node(depth)
+    const parent = resolved.node(depth - 1)
+    if (nodeNeedsCanonicalId(node.type.name, parent.type.name)) return resolved.before(depth)
+  }
+  const nodeAfter = resolved.nodeAfter
+  return nodeAfter && nodeNeedsCanonicalId(nodeAfter.type.name, resolved.parent.type.name)
+    ? mappedPosition
+    : null
+}
+
+const identityProbeNodes = new Set([
+  'paragraph', 'heading', 'blockquote', 'listItem', 'taskItem', 'tableHeader', 'tableCell'
+])
 
 const uniqueGeneratedId = (seen: Set<string>, idFactory: IdFactory): string => {
   for (let attempt = 0; attempt < 100; attempt += 1) {

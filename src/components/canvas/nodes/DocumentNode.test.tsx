@@ -10,15 +10,19 @@ vi.mock('@/components/canvas/document/DocumentEditor', () => ({
     mode: string
     onChange: (document: PlanningDocumentV1) => void
   }) => (
-    <button
-      type="button"
-      data-mock-document-editor={mode}
-      data-document-digest={document.digest}
-      data-on-test-change={onChange}
-      onClick={() => onChange(createPlanningDocumentV1([
-        { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Edited canonical draft' }] }
-      ], document.revision + 1))}
-    >Edit</button>
+    <section data-mock-document-editor-shell={mode} onKeyDown={event => event.stopPropagation()}>
+      <button
+        type="button"
+        data-mock-document-editor={mode}
+        data-document-digest={document.digest}
+        data-on-test-change={onChange}
+        onClick={() => onChange(createPlanningDocumentV1([
+          { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Edited canonical draft' }] }
+        ], document.revision + 1))}
+      >Edit</button>
+      <div role="toolbar" data-mock-editor-toolbar={mode} />
+      <div role="textbox" contentEditable data-mock-editor-content={mode} />
+    </section>
   )
 }))
 
@@ -93,18 +97,95 @@ describe('DocumentNode', () => {
 
     activeElement = editorElement
     const forward = { key: 'Tab', shiftKey: false, currentTarget: dialogElement, nativeEvent: { isComposing: false }, preventDefault: vi.fn() }
-    act(() => dialog.props.onKeyDown(forward))
+    act(() => dialog.props.onKeyDownCapture(forward))
     expect(forward.preventDefault).toHaveBeenCalled()
     expect(closeElement.focus).toHaveBeenCalled()
 
     activeElement = closeElement
     const backward = { key: 'Tab', shiftKey: true, currentTarget: dialogElement, nativeEvent: { isComposing: false }, preventDefault: vi.fn() }
-    act(() => dialog.props.onKeyDown(backward))
+    act(() => dialog.props.onKeyDownCapture(backward))
     expect(backward.preventDefault).toHaveBeenCalled()
     expect(editorElement.focus).toHaveBeenCalledTimes(2)
 
     const escape = { key: 'Escape', shiftKey: false, currentTarget: dialogElement, nativeEvent: { isComposing: false }, preventDefault: vi.fn() }
-    act(() => dialog.props.onKeyDown(escape))
+    act(() => dialog.props.onKeyDownCapture(escape))
+    expect(escape.preventDefault).toHaveBeenCalled()
+    expect(renderer.root.findAllByProps({ role: 'dialog' })).toHaveLength(0)
+    expect(expandElement.focus).toHaveBeenCalled()
+  })
+
+  it('handles trapped Tab and Escape from editor descendants before their bubble guard stops Canvas shortcuts', () => {
+    let activeElement: unknown = null
+    const closeElement = { focus: vi.fn(() => { activeElement = closeElement }) }
+    const toolbarElement = { focus: vi.fn(() => { activeElement = toolbarElement }) }
+    const editorElement = { focus: vi.fn(() => { activeElement = editorElement }) }
+    const expandElement = { focus: vi.fn(() => { activeElement = expandElement }) }
+    const dialogElement = {
+      querySelector: vi.fn(() => editorElement),
+      querySelectorAll: vi.fn(() => [closeElement, toolbarElement, editorElement]),
+      contains: vi.fn((candidate: unknown) => (
+        candidate === closeElement || candidate === toolbarElement || candidate === editorElement
+      ))
+    }
+    vi.stubGlobal('document', {
+      get activeElement() { return activeElement }
+    })
+    const renderer = create(
+      <DocumentNode node={node()} selected onDocumentChange={vi.fn().mockResolvedValue(true)} onDelete={vi.fn()} />,
+      {
+        createNodeMock: element => {
+          if (element.props.role === 'dialog') return dialogElement
+          if (element.props['aria-label'] === '展开编辑器') return expandElement
+          return null
+        }
+      }
+    )
+    act(() => renderer.root.findByProps({ 'aria-label': '展开编辑器' }).props.onClick())
+    const dialog = renderer.root.findByProps({ role: 'dialog' })
+    const editorShell = renderer.root.findByProps({ 'data-mock-document-editor-shell': 'expanded' })
+
+    const dispatchFromEditor = (key: string, shiftKey = false) => {
+      let stopped = false
+      const event = {
+        key,
+        shiftKey,
+        currentTarget: dialogElement,
+        nativeEvent: { isComposing: false },
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(() => { stopped = true })
+      }
+      act(() => {
+        dialog.props.onKeyDownCapture?.(event)
+        editorShell.props.onKeyDown(event)
+        if (!stopped) dialog.props.onKeyDown?.(event)
+      })
+      return event
+    }
+
+    activeElement = editorElement
+    const forward = dispatchFromEditor('Tab')
+    expect(forward.preventDefault).toHaveBeenCalled()
+    expect(closeElement.focus).toHaveBeenCalled()
+
+    activeElement = closeElement
+    let stopped = false
+    const backward = {
+      key: 'Tab',
+      shiftKey: true,
+      currentTarget: dialogElement,
+      nativeEvent: { isComposing: false },
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(() => { stopped = true })
+    }
+    act(() => {
+      dialog.props.onKeyDownCapture?.(backward)
+      if (!stopped) dialog.props.onKeyDown?.(backward)
+    })
+    expect(backward.preventDefault).toHaveBeenCalled()
+    expect(editorElement.focus).toHaveBeenCalledTimes(2)
+
+    activeElement = toolbarElement
+    const escape = dispatchFromEditor('Escape')
     expect(escape.preventDefault).toHaveBeenCalled()
     expect(renderer.root.findAllByProps({ role: 'dialog' })).toHaveLength(0)
     expect(expandElement.focus).toHaveBeenCalled()
