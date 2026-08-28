@@ -329,6 +329,24 @@ const canvasHistoryAuthorityIdentity = (
   })
 }
 
+const validCanvasSelection = (
+  canvas: IFreeCanvasProject,
+  nodeId: string | null | undefined
+): string | null => nodeId && canvas.nodes.some(node => node.id === nodeId) ? nodeId : null
+
+const canvasHistoryRecoverySelection = (
+  attempted: IFreeCanvasProject,
+  current: IFreeCanvasProject,
+  recovered: IFreeCanvasProject
+): string | null => {
+  const normalSelection = validCanvasSelection(recovered, recovered.selectedNodeId)
+  const attemptedSelection = attempted.selectedNodeId || null
+  const currentSelection = current.selectedNodeId || null
+  if (currentSelection === attemptedSelection) return normalSelection
+  if (currentSelection === null) return null
+  return validCanvasSelection(recovered, currentSelection) ?? normalSelection
+}
+
 const isTypingTarget = (target: EventTarget | null): boolean => {
   const element = target instanceof HTMLElement ? target : null
   return Boolean(element?.closest('input, textarea, [contenteditable="true"], [role="textbox"]'))
@@ -2338,14 +2356,20 @@ const FreeCanvasBuilderInner = ({
       }
 
       const recoveryCommand = direction === 'redo' ? entry.undo : entry.redo
-      const recovered = applyCanvasLocalCommand(freeCanvasRef.current, recoveryCommand).project
+      const recoveredCommand = applyCanvasLocalCommand(freeCanvasRef.current, recoveryCommand).project
+      const recoveredSelection = canvasHistoryRecoverySelection(
+        applied.project,
+        freeCanvasRef.current,
+        recoveredCommand
+      )
+      const recovered = { ...recoveredCommand, selectedNodeId: recoveredSelection }
       canvasCommandHistoryRef.current = recoverFailedCanvasHistoryStep(
         canvasCommandHistoryRef.current,
         beforeHistory,
         entry,
         direction
       )
-      commitCanvasSelection(recovered, recovered.selectedNodeId || null)
+      commitCanvasSelection(recovered, recoveredSelection)
       try {
         await onPersistCanvas(recovered)
       } catch {

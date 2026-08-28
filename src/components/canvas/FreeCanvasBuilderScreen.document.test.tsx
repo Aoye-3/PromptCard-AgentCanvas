@@ -53,6 +53,21 @@ vi.mock('@xyflow/react', () => {
         aria-label="测试选择前两个画布节点"
         onClick={() => onSelectionChange?.({ nodes: nodes.slice(0, 2) })}
       >Select first two</button>
+      <button
+        type="button"
+        aria-label="测试选择最后一个画布节点"
+        onClick={() => onSelectionChange?.({ nodes: nodes.slice(-1) })}
+      >Select last</button>
+      <button
+        type="button"
+        aria-label="测试选择第二个画布节点"
+        onClick={() => onSelectionChange?.({ nodes: nodes.slice(1, 2) })}
+      >Select second</button>
+      <button
+        type="button"
+        aria-label="测试清空画布选择"
+        onClick={() => onSelectionChange?.({ nodes: [] })}
+      >Clear selection</button>
       {nodes.map(node => {
         const Component = nodeTypes[node.type]
         return (
@@ -855,6 +870,113 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     expect(canvasDocumentTexts(latestCanvas)).toEqual({ 'document-1': 'Before' })
     await dispatchWindowKey('y')
     expect(canvasDocumentTexts(latestCanvas)).toEqual({ 'document-1': 'A' })
+  })
+
+  it.each([
+    { historyStep: 'undo-create', outcome: 'false' },
+    { historyStep: 'redo-delete', outcome: 'throw' }
+  ] as const)('preserves a newer user selection when failed $historyStep persistence settles with $outcome', async ({ historyStep, outcome }) => {
+    const pendingHistory = deferred<boolean>()
+    const persisted: Array<{ selectedNodeId: string | null; texts: Record<string, string> }> = []
+    let persistenceCall = 0
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      persisted.push({ selectedNodeId: canvas.selectedNodeId || null, texts: canvasDocumentTexts(canvas) })
+      persistenceCall += 1
+      return persistenceCall === 2 ? pendingHistory.promise : Promise.resolve(true)
+    })
+    const selectionCanvas: IFreeCanvasProject = {
+      ...initialCanvas(),
+      nodes: [documentNode(), unrelatedTextNode()]
+    }
+    let latestCanvas = selectionCanvas
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(selectionCanvas)
+      latestCanvas = canvas
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+    let affectedNodeId = 'document-1'
+
+    if (historyStep === 'undo-create') {
+      await act(async () => {
+        renderer.root.findByProps({ title: 'Document' }).props.onClick()
+        for (let index = 0; index < 4; index += 1) await Promise.resolve()
+      })
+      affectedNodeId = latestCanvas.nodes.find(node => (
+        node.kind === 'document' && node.id !== 'document-1'
+      ))?.id || ''
+      await dispatchWindowKey('z')
+      act(() => renderer.root.findByProps({ 'aria-label': '测试选择最后一个画布节点' }).props.onClick())
+      expect(latestCanvas.selectedNodeId).toBe('async-text-1')
+    } else {
+      act(() => renderedDocument(renderer, 'document-1')
+        .findByProps({ 'aria-label': '测试删除文档' }).props.onClick())
+      await dispatchWindowKey('z')
+      act(() => renderer.root.findByProps({ 'aria-label': '测试选择最后一个画布节点' }).props.onClick())
+      expect(latestCanvas.selectedNodeId).toBe('async-text-1')
+      await dispatchWindowKey('y')
+      act(() => renderer.root.findByProps({ 'aria-label': '测试清空画布选择' }).props.onClick())
+      expect(latestCanvas.selectedNodeId).toBeNull()
+    }
+
+    await act(async () => {
+      if (outcome === 'throw') pendingHistory.reject(new Error('storage unavailable'))
+      else pendingHistory.resolve(false)
+      for (let index = 0; index < 8; index += 1) await Promise.resolve()
+    })
+
+    expect(onPersistCanvas).toHaveBeenCalledTimes(3)
+    expect(latestCanvas.nodes.some(node => node.id === affectedNodeId)).toBe(true)
+    expect(latestCanvas.selectedNodeId).toBe(historyStep === 'undo-create' ? 'async-text-1' : null)
+    expect(persisted[2].selectedNodeId).toBe(historyStep === 'undo-create' ? 'async-text-1' : null)
+
+    await dispatchWindowKey(historyStep === 'undo-create' ? 'z' : 'y')
+    expect(latestCanvas.nodes.some(node => node.id === affectedNodeId)).toBe(false)
+    expect(latestCanvas.selectedNodeId).toBe(historyStep === 'undo-create' ? 'async-text-1' : null)
+  })
+
+  it('falls back safely when a newer selected node is removed by failed history recovery', async () => {
+    const pendingUndo = deferred<boolean>()
+    const persistedSelections: Array<string | null> = []
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      persistedSelections.push(canvas.selectedNodeId || null)
+      return persistedSelections.length === 1 ? pendingUndo.promise : Promise.resolve(true)
+    })
+    let latestCanvas = mixedDocumentImageCanvas()
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(mixedDocumentImageCanvas())
+      latestCanvas = canvas
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '测试选择前两个画布节点' }).props.onClick())
+    act(() => renderedDocument(renderer, 'document-1')
+      .findByProps({ 'aria-label': '测试删除文档' }).props.onClick())
+    await dispatchWindowKey('z')
+    act(() => renderer.root.findByProps({ 'aria-label': '测试选择第二个画布节点' }).props.onClick())
+    expect(latestCanvas.selectedNodeId).toBe('async-image-1')
+
+    await act(async () => {
+      pendingUndo.resolve(false)
+      for (let index = 0; index < 8; index += 1) await Promise.resolve()
+    })
+
+    expect(latestCanvas.nodes.map(node => node.id)).toEqual(['async-text-1'])
+    expect(latestCanvas.selectedNodeId).toBeNull()
+    expect(persistedSelections).toEqual(['document-1', null])
   })
 
   it.each(['false', 'throw'] as const)('recovers saved B when its queued redo follows a pending undo that settles with $outcome', async outcome => {
