@@ -152,7 +152,7 @@ export const applyCanvasLocalCommand = (
     ))
     const removedEdges = project.edges.flatMap((edge, index) => (
       removable.has(edge.source) || removable.has(edge.target)
-        ? [{ index, edge: { ...edge } }]
+        ? [{ index, edge: cloneEdge(edge) }]
         : []
     ))
     return {
@@ -176,12 +176,26 @@ export const applyCanvasLocalCommand = (
   if (command.kind === 'restore-nodes') {
     const existingNodeIds = new Set(project.nodes.map(node => node.id))
     const restoredNodeIds = command.nodes.map(item => item.node.id)
+    const existingEdgeIds = new Set(project.edges.map(edge => edge.id))
+    const restoredEdgeIds = command.edges.map(item => item.edge.id)
+    const finalNodeIds = new Set([...existingNodeIds, ...restoredNodeIds])
     if (
       new Set(restoredNodeIds).size !== restoredNodeIds.length
       || restoredNodeIds.some(nodeId => existingNodeIds.has(nodeId))
+      || new Set(restoredEdgeIds).size !== restoredEdgeIds.length
+      || restoredEdgeIds.some(edgeId => existingEdgeIds.has(edgeId))
+      || command.edges.some(item => (
+        !finalNodeIds.has(item.edge.source) || !finalNodeIds.has(item.edge.target)
+      ))
     ) return { project, inverse: command }
-    const nodes = insertIndexed(project.nodes, command.nodes)
-    const edges = insertIndexed(project.edges, command.edges)
+    const nodes = insertIndexed(project.nodes, command.nodes.map(item => ({
+      index: item.index,
+      node: cloneNode(item.node)
+    })))
+    const edges = insertIndexed(project.edges, command.edges.map(item => ({
+      index: item.index,
+      edge: cloneEdge(item.edge)
+    })))
     return {
       project: {
         ...project,
@@ -239,7 +253,10 @@ export const executeCanvasLocalCommand = (
   return {
     project: applied.project,
     history: {
-      past: [...history.past, { undo: applied.inverse, redo: cloneCommand(command) }],
+      past: [...history.past, {
+        undo: cloneCommand(applied.inverse),
+        redo: cloneCommand(command)
+      }],
       future: []
     }
   }
@@ -307,31 +324,33 @@ const imagePresentation = (node: IFreeCanvasImageNode): { flipX: boolean; flipY:
 }
 
 const cloneNode = (node: IFreeCanvasNode): IFreeCanvasNode => {
-  if (node.kind === 'document') {
-    return {
-      ...node,
-      position: { ...node.position },
-      document: clonePlanningDocumentV1(node.document),
-      linkedDocumentResourceIds: [...node.linkedDocumentResourceIds],
-      ...(node.provenance ? { provenance: structuredClone(node.provenance) } : {}),
-      meta: { ...node.meta }
-    }
-  }
-  if (node.kind !== 'image') return { ...node, meta: { ...node.meta } } as IFreeCanvasNode
-  return {
-    ...node,
-    position: { ...node.position },
-    crop: node.crop ? { ...node.crop } : null,
-    annotations: node.annotations.map(annotation => cloneAnnotation(annotation, annotation.id)),
-    meta: { ...node.meta }
-  }
+  const cloned = structuredClone(node)
+  return cloned.kind === 'document'
+    ? { ...cloned, document: clonePlanningDocumentV1(cloned.document) }
+    : cloned
 }
 
-const cloneCommand = (command: CanvasLocalCommand): CanvasLocalCommand => (
-  command.kind === 'update-document'
-    ? { ...command, document: clonePlanningDocumentV1(command.document) }
-    : command
-)
+const cloneEdge = (edge: IFreeCanvasEdge): IFreeCanvasEdge => structuredClone(edge)
+
+const cloneCommand = (command: CanvasLocalCommand): CanvasLocalCommand => {
+  if (command.kind === 'update-document') {
+    return { ...command, document: clonePlanningDocumentV1(command.document) }
+  }
+  if (command.kind === 'insert-node') {
+    return { ...command, node: cloneNode(command.node) }
+  }
+  if (command.kind === 'restore-nodes') {
+    return {
+      ...command,
+      nodes: command.nodes.map(item => ({ index: item.index, node: cloneNode(item.node) })),
+      edges: command.edges.map(item => ({ index: item.index, edge: cloneEdge(item.edge) }))
+    }
+  }
+  if (command.kind === 'delete-nodes') {
+    return { ...command, nodeIds: [...command.nodeIds] }
+  }
+  return { ...command }
+}
 
 const cloneAnnotation = (
   annotation: IFreeCanvasImageAnnotation,

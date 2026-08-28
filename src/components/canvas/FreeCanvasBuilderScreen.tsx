@@ -87,7 +87,6 @@ import {
 } from '@/domain/free-canvas/free-canvas-project'
 import {
   applyCanvasLocalCommand,
-  canvasHistoryEntryDocumentNodeIds,
   createCanvasCommandHistory,
   discardCanvasCommandHistoryEntry,
   duplicateCanvasImageNode,
@@ -2236,20 +2235,14 @@ const FreeCanvasBuilderInner = ({
 
   const applyPersistedCanvasHistoryStep = useCallback((direction: 'undo' | 'redo') => {
     const projectId = activeProjectIdRef.current
-    const requestedHistory = canvasCommandHistoryRef.current
-    const entry = direction === 'redo'
-      ? requestedHistory.future[0]
-      : requestedHistory.past[requestedHistory.past.length - 1]
-    if (!entry) return Promise.resolve(true)
-
     const run = async (): Promise<boolean> => {
       if (activeProjectIdRef.current !== projectId) return true
       const beforeCanvas = freeCanvasRef.current
       const beforeHistory = canvasCommandHistoryRef.current
-      const currentEntry = direction === 'redo'
+      const entry = direction === 'redo'
         ? beforeHistory.future[0]
         : beforeHistory.past[beforeHistory.past.length - 1]
-      if (currentEntry !== entry) return true
+      if (!entry) return true
       const applied = direction === 'redo'
         ? redoCanvasLocalCommand(beforeHistory, beforeCanvas)
         : undoCanvasLocalCommand(beforeHistory, beforeCanvas)
@@ -2299,11 +2292,7 @@ const FreeCanvasBuilderInner = ({
       return false
     }
 
-    const affectedDocumentNodeIds = canvasHistoryEntryDocumentNodeIds(entry)
-    if (affectedDocumentNodeIds.length > 0) {
-      return enqueueDocumentMutation(projectId, run)
-    }
-    return run()
+    return enqueueDocumentMutation(projectId, run)
   }, [commitCanvasSelection, enqueueDocumentMutation, onPersistCanvas])
 
   useEffect(() => {

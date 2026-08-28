@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Suspense, startTransition, useState } from 'react'
 import { act, create } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
@@ -51,6 +51,7 @@ const deferred = <T,>() => {
 
 describe('DocumentNode', () => {
   beforeEach(() => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       callback(0)
       return 1
@@ -71,6 +72,58 @@ describe('DocumentNode', () => {
     act(() => renderer.root.findByProps({ 'aria-label': '折叠文档' }).props.onClick())
     expect(renderer.root.findAllByProps({ 'data-mock-document-editor': 'inline' })).toHaveLength(0)
     expect(renderer.root.findByProps({ 'data-document-collapsed-summary': true }).children.join('')).toContain('Single canonical draft body')
+  })
+
+  it('does not publish authoritative refs from a suspended render that never commits', async () => {
+    const pendingSave = deferred<boolean>()
+    const onDocumentChange = vi.fn(() => pendingSave.promise)
+    const never = new Promise<void>(() => undefined)
+    let suspend = false
+    const Suspender = () => {
+      if (suspend) throw never
+      return null
+    }
+    const authoritativeA = node()
+    const authoritativeZ: IFreeCanvasDocumentNode = {
+      ...node(),
+      document: createPlanningDocumentV1([{
+        id: 'paragraph-z', type: 'paragraph', content: [{ text: 'Suspended Z' }]
+      }], 9)
+    }
+    const view = (authority: IFreeCanvasDocumentNode) => (
+      <Suspense fallback={<span data-suspended-document-render />}>
+        <DocumentNode
+          node={authority}
+          selected
+          onDocumentChange={onDocumentChange}
+          onDelete={vi.fn()}
+        />
+        <Suspender />
+      </Suspense>
+    )
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(view(authoritativeA), {
+        unstable_isConcurrent: true
+      } as unknown as Parameters<typeof create>[1])
+      await Promise.resolve()
+    })
+
+    act(() => renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props.onClick())
+    act(() => {
+      suspend = true
+      startTransition(() => renderer.update(view(authoritativeZ)))
+    })
+
+    await act(async () => {
+      pendingSave.resolve(false)
+      await pendingSave.promise
+      await Promise.resolve()
+    })
+
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-text'])
+      .toBe('Single canonical draft body')
+    expect(renderer.root.findAllByProps({ 'aria-label': '重试保存文档' })).toHaveLength(1)
   })
 
   it('moves focus into the aria-modal editor, traps Tab both ways, and returns focus after Escape', () => {

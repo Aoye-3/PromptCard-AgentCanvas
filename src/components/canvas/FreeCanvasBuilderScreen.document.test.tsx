@@ -741,6 +741,54 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     })
   })
 
+  it.each(['true', 'false', 'throw'] as const)('executes an immediate redo intent after a queued undo whose persistence settles with $outcome', async outcome => {
+    const pendingA = deferred<boolean>()
+    const persistedTexts: string[] = []
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      persistedTexts.push(canvasDocumentTexts(canvas)['document-1'] || '<missing>')
+      if (persistedTexts.length === 1) return pendingA.promise
+      if (persistedTexts.length === 2) {
+        if (outcome === 'throw') return Promise.reject(new Error('storage unavailable'))
+        return Promise.resolve(outcome === 'true')
+      }
+      return Promise.resolve(true)
+    })
+    let latestCanvas = initialCanvas()
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      latestCanvas = canvas
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    let editA!: Promise<boolean>
+    act(() => {
+      editA = renderer.root.findByProps({ 'aria-label': '测试编辑文档 A' }).props.onClick()
+    })
+    await dispatchWindowKey('z')
+    await dispatchWindowKey('y')
+
+    await act(async () => {
+      pendingA.resolve(true)
+      await editA
+      for (let index = 0; index < 12; index += 1) await Promise.resolve()
+    })
+
+    expect(persistedTexts.slice(0, 3)).toEqual(['A', 'Before', 'A'])
+    expect(canvasDocumentTexts(latestCanvas)).toEqual({ 'document-1': 'A' })
+
+    await dispatchWindowKey('z')
+    expect(canvasDocumentTexts(latestCanvas)).toEqual({ 'document-1': 'Before' })
+    await dispatchWindowKey('y')
+    expect(canvasDocumentTexts(latestCanvas)).toEqual({ 'document-1': 'A' })
+  })
+
   it.each(['false', 'throw'] as const)('recovers saved B when its queued redo follows a pending undo that settles with $outcome', async outcome => {
     const pendingUndo = deferred<boolean>()
     const persistedTexts: string[] = []

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Expand, FileText, RotateCcw, Trash2, X } from 'lucide-react'
 import { DocumentEditor } from '@/components/canvas/document/DocumentEditor'
@@ -28,9 +28,6 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   const authoritativeDocumentRef = useRef(node.document)
   const authoritativeNodeIdRef = useRef(node.id)
   const renderedNodeIdRef = useRef(node.id)
-  authoritativeIdentityRef.current = authoritativeIdentity
-  authoritativeDocumentRef.current = node.document
-  authoritativeNodeIdRef.current = node.id
   const pendingRequestTokensRef = useRef(new Set<number>())
   const revisionClockRef = useRef(node.document.revision)
   const [draftDocument, setDraftDocument] = useState(node.document)
@@ -39,6 +36,12 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   const [saving, setSaving] = useState(false)
   const [retryRequest, setRetryRequest] = useState<DocumentRetryRequest | null>(null)
   const summary = planningDocumentEffectiveText(draftDocument).replace(/\s+/g, ' ').trim().slice(0, 180)
+
+  useLayoutEffect(() => {
+    authoritativeIdentityRef.current = authoritativeIdentity
+    authoritativeDocumentRef.current = node.document
+    authoritativeNodeIdRef.current = node.id
+  }, [authoritativeIdentity, node.document, node.id])
 
   useEffect(() => {
     setCollapsed(node.meta.collapsed === true)
@@ -66,7 +69,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
     setDraftDocument(current => planningDocumentIdentity(current) === planningDocumentIdentity(node.document)
       ? current
       : node.document)
-  }, [node.id, node.document.digest, node.document.revision])
+  }, [node.id, node.document])
 
   useEffect(() => {
     if (!expanded) return

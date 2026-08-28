@@ -135,6 +135,168 @@ describe('canvas command history', () => {
     expect(executed).toEqual({ project: canvas, history })
   })
 
+  it.each([
+    {
+      label: 'an existing edge id',
+      edges: [{ index: 0, edge: { id: 'edge-a-b', source: 'shared-id', target: 'text-b', createdAt: 2 } }]
+    },
+    {
+      label: 'duplicate edge ids inside the payload',
+      edges: [
+        { index: 0, edge: { id: 'edge-new', source: 'shared-id', target: 'text-b', createdAt: 2 } },
+        { index: 1, edge: { id: 'edge-new', source: 'image-a', target: 'shared-id', createdAt: 3 } }
+      ]
+    },
+    {
+      label: 'a dangling source',
+      edges: [{ index: 0, edge: { id: 'edge-new', source: 'missing-node', target: 'shared-id', createdAt: 2 } }]
+    },
+    {
+      label: 'a dangling target',
+      edges: [{ index: 0, edge: { id: 'edge-new', source: 'shared-id', target: 'missing-node', createdAt: 2 } }]
+    }
+  ])('rejects restore-nodes atomically when its edges contain $label', ({ edges }) => {
+    const canvas = project()
+    const command: CanvasLocalCommand = {
+      kind: 'restore-nodes',
+      nodes: [{ index: 1, node: documentNode('shared-id') }],
+      edges,
+      selectedNodeId: 'shared-id'
+    }
+
+    const result = applyCanvasLocalCommand(canvas, command)
+    const history = createCanvasCommandHistory()
+    const executed = executeCanvasLocalCommand(history, canvas, command)
+
+    expect(result.project).toBe(canvas)
+    expect(result.inverse).toEqual(command)
+    expect(executed).toEqual({ project: canvas, history })
+  })
+
+  it('records detached reorder, flip, and delete command snapshots', () => {
+    const reorder: Extract<CanvasLocalCommand, { kind: 'reorder-node' }> = {
+      kind: 'reorder-node', nodeId: 'image-a', toIndex: 2
+    }
+    const reordered = executeCanvasLocalCommand(createCanvasCommandHistory(), project(), reorder)
+    reorder.nodeId = 'mutated-node'
+    reorder.toIndex = 99
+    expect(reordered.history.past[0].redo).toEqual({
+      kind: 'reorder-node', nodeId: 'image-a', toIndex: 2
+    })
+
+    const flip: Extract<CanvasLocalCommand, { kind: 'flip-image' }> = {
+      kind: 'flip-image', nodeId: 'image-a', axis: 'horizontal'
+    }
+    const flipped = executeCanvasLocalCommand(createCanvasCommandHistory(), project(), flip)
+    flip.nodeId = 'mutated-node'
+    flip.axis = 'vertical'
+    expect(flipped.history.past[0]).toMatchObject({
+      undo: { kind: 'flip-image', nodeId: 'image-a', axis: 'horizontal' },
+      redo: { kind: 'flip-image', nodeId: 'image-a', axis: 'horizontal' }
+    })
+
+    const source = project()
+    source.nodes[0].meta = { nested: { label: 'before' } }
+    source.edges[0].label = 'before edge'
+    const deletion: Extract<CanvasLocalCommand, { kind: 'delete-nodes' }> = {
+      kind: 'delete-nodes', nodeIds: ['image-a']
+    }
+    const deleted = executeCanvasLocalCommand(createCanvasCommandHistory(), source, deletion)
+    deletion.nodeIds[0] = 'mutated-node'
+    ;(source.nodes[0].meta.nested as { label: string }).label = 'mutated'
+    source.edges[0].label = 'mutated edge'
+    expect(deleted.history.past[0].redo).toEqual({ kind: 'delete-nodes', nodeIds: ['image-a'] })
+    expect(deleted.history.past[0].undo).toMatchObject({
+      kind: 'restore-nodes',
+      nodes: [{ node: { id: 'image-a', meta: { nested: { label: 'before' } } } }],
+      edges: [{ edge: { id: 'edge-a-b', label: 'before edge' } }]
+    })
+  })
+
+  it('deeply snapshots inserted and updated Document commands after execution', () => {
+    const insertedNode = structuredClone(documentNode('document-new', 'Inserted'))
+    insertedNode.meta = { nested: { label: 'before' } }
+    const insert: Extract<CanvasLocalCommand, { kind: 'insert-node' }> = {
+      kind: 'insert-node', node: insertedNode, index: 1
+    }
+    const inserted = executeCanvasLocalCommand(createCanvasCommandHistory(), project(), insert)
+    const insertedDigest = insertedNode.document.digest
+    const insertedBlock = insertedNode.document.blocks[0]
+    if (insertedBlock.type !== 'paragraph') throw new Error('Expected paragraph fixture')
+    insertedBlock.content[0].text = 'Mutated inserted content'
+    insertedNode.document.digest = 'sha256:mutated'
+    ;(insertedNode.meta.nested as { label: string }).label = 'mutated'
+    insertedNode.position.x = 999
+
+    const recordedInsert = inserted.history.past[0].redo
+    expect(recordedInsert.kind).toBe('insert-node')
+    if (recordedInsert.kind !== 'insert-node' || recordedInsert.node.kind !== 'document') {
+      throw new Error('Expected recorded Document insert')
+    }
+    expect(planningDocumentEffectiveText(recordedInsert.node.document)).toBe('Inserted')
+    expect(recordedInsert.node.document.digest).toBe(insertedDigest)
+    expect(recordedInsert.node.meta).toEqual({ nested: { label: 'before' } })
+    expect(recordedInsert.node.position.x).toBe(0)
+
+    const updatedDocument = structuredClone(documentNode('document-update', 'After').document)
+    const update: Extract<CanvasLocalCommand, { kind: 'update-document' }> = {
+      kind: 'update-document', nodeId: 'document-update', document: updatedDocument
+    }
+    const updateCanvas = { ...project(), nodes: [documentNode('document-update', 'Before')] }
+    const updated = executeCanvasLocalCommand(createCanvasCommandHistory(), updateCanvas, update)
+    const updatedDigest = updatedDocument.digest
+    const updatedBlock = updatedDocument.blocks[0]
+    if (updatedBlock.type !== 'paragraph') throw new Error('Expected paragraph fixture')
+    updatedBlock.content[0].text = 'Mutated updated content'
+    updatedDocument.digest = 'sha256:mutated'
+    const recordedUpdate = updated.history.past[0].redo
+    expect(recordedUpdate.kind).toBe('update-document')
+    if (recordedUpdate.kind !== 'update-document') throw new Error('Expected recorded Document update')
+    expect(planningDocumentEffectiveText(recordedUpdate.document)).toBe('After')
+    expect(recordedUpdate.document.digest).toBe(updatedDigest)
+  })
+
+  it('applies restore from detached node and edge snapshots without retaining caller payload refs', () => {
+    const restoredNode = structuredClone(documentNode('document-restored', 'Restored'))
+    restoredNode.meta = { nested: { label: 'before' } }
+    const restoredEdge = {
+      id: 'edge-restored', source: 'document-restored', target: 'text-b', label: 'before edge', createdAt: 2
+    }
+    const restore: Extract<CanvasLocalCommand, { kind: 'restore-nodes' }> = {
+      kind: 'restore-nodes',
+      nodes: [{ index: 1, node: restoredNode }],
+      edges: [{ index: 1, edge: restoredEdge }],
+      selectedNodeId: 'document-restored'
+    }
+    const restored = executeCanvasLocalCommand(createCanvasCommandHistory(), project(), restore)
+    const restoredDigest = restoredNode.document.digest
+    const restoredBlock = restoredNode.document.blocks[0]
+    if (restoredBlock.type !== 'paragraph') throw new Error('Expected paragraph fixture')
+    restoredBlock.content[0].text = 'Mutated restored content'
+    restoredNode.document.digest = 'sha256:mutated'
+    ;(restoredNode.meta.nested as { label: string }).label = 'mutated'
+    restoredEdge.label = 'mutated edge'
+    restore.nodes[0].index = 99
+    restore.edges[0].index = 99
+
+    const appliedNode = restored.project.nodes.find(node => node.id === 'document-restored')
+    expect(appliedNode?.kind).toBe('document')
+    if (!appliedNode || appliedNode.kind !== 'document') throw new Error('Expected restored Document')
+    expect(planningDocumentEffectiveText(appliedNode.document)).toBe('Restored')
+    expect(appliedNode.document.digest).toBe(restoredDigest)
+    expect(appliedNode.meta).toEqual({ nested: { label: 'before' } })
+    expect(restored.project.edges.find(edge => edge.id === 'edge-restored')?.label).toBe('before edge')
+
+    const recordedRestore = restored.history.past[0].redo
+    expect(recordedRestore.kind).toBe('restore-nodes')
+    if (recordedRestore.kind !== 'restore-nodes') throw new Error('Expected recorded restore')
+    expect(recordedRestore.nodes[0].index).toBe(1)
+    expect(recordedRestore.edges[0]).toMatchObject({
+      index: 1,
+      edge: { id: 'edge-restored', label: 'before edge' }
+    })
+  })
+
   it('collects deterministic affected Document ids from update, insert, restore, and paired delete commands', () => {
     expect(canvasHistoryEntryDocumentNodeIds({
       undo: { kind: 'update-document', nodeId: 'document-b', document: documentNode('document-b').document },
