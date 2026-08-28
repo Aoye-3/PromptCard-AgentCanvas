@@ -354,17 +354,18 @@ describe('agent workspace context', () => {
     expect(textNode.userText).toBe('  User  spacing\nline  ')
   })
 
-  it('excludes unsupported nodes, selection, and connected edges from workspace context', () => {
+  it('includes only a bounded Document excerpt and excludes unsupported nodes, selection, and connected edges', () => {
+    const documentBody = `Document ambient excerpt ${'A'.repeat(260)}PRIVATE DOCUMENT TAIL`
     const freeCanvas: IFreeCanvasProject = {
       nodes: [
         {
           id: 'document-1', kind: 'document', title: 'Creative brief', position: { x: 0, y: 0 }, width: 560, height: 420,
           document: {
             version: 1,
-            blocks: [{ id: 'secret-block', type: 'paragraph', content: [{ text: 'PRIVATE DOCUMENT BODY' }] }],
+            blocks: [{ id: 'document-block', type: 'paragraph', content: [{ text: documentBody }] }],
             revision: 4,
             digest: 'document-digest',
-            suggestions: [{ id: 'private-suggestion', text: 'PRIVATE SUGGESTION' }]
+            suggestions: []
           },
           linkedDocumentResourceIds: ['private-resource-id'],
           meta: {}
@@ -408,15 +409,18 @@ describe('agent workspace context', () => {
     expect(context.snapshot.selectedNodeId).toBe(null)
     expect(context.snapshot.selectedNode).toBe(null)
     expect(nodes).toEqual([
-      { id: 'document-1', kind: 'document', title: 'Creative brief', revision: 4, digest: 'document-digest' },
+      {
+        id: 'document-1', kind: 'document', title: 'Creative brief', revision: 4,
+        digest: 'document-digest', excerpt: documentBody.slice(0, 240)
+      },
       { id: 'storyboard-1', kind: 'storyboard', title: 'Opening shots' }
     ])
     expect(context.snapshot.edges).toEqual([
       { id: 'edge-supported', source: 'document-1', target: 'storyboard-1', label: 'Supported path' }
     ])
     const serialized = JSON.stringify(context.snapshot)
-    expect(serialized).not.toContain('PRIVATE DOCUMENT BODY')
-    expect(serialized).not.toContain('PRIVATE SUGGESTION')
+    expect(serialized).toContain('Document ambient excerpt')
+    expect(serialized).not.toContain('PRIVATE DOCUMENT TAIL')
     expect(serialized).not.toContain('private-resource-id')
     expect(serialized).not.toContain('PRIVATE STORYBOARD BODY')
     expect(serialized).not.toContain('future-1')

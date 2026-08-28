@@ -59,7 +59,7 @@ export type PlanningDocumentBlockV1 =
   | { id: string; type: 'heading'; level: 1 | 2 | 3; content: PlanningInlineV1[] }
   | { id: string; type: 'bulletList' | 'orderedList'; items: Array<{ id: string; content: PlanningInlineV1[] }> }
   | { id: string; type: 'checkList'; items: Array<{ id: string; checked: boolean; content: PlanningInlineV1[] }> }
-  | { id: string; type: 'table'; rows: Array<{ id: string; cells: Array<{ id: string; content: PlanningInlineV1[] }> }> }
+  | { id: string; type: 'table'; rows: Array<{ id: string; cells: Array<{ id: string; header?: true; content: PlanningInlineV1[] }> }> }
 
 /** Task 15.6 freezes suggestion storage as editor-neutral data; Task 15.9 owns its operation schema. */
 export type DocumentSuggestion = Readonly<Record<string, unknown>>

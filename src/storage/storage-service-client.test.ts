@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import type { IPromptProject } from '@/models/PromptHistory.model'
 import { normalizeFreeCanvasProject } from '@/domain/free-canvas/free-canvas-project'
+import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
 import { storageServiceClient } from './storage-service-client'
 
 afterEach(() => {
@@ -345,6 +346,38 @@ describe('storageServiceClient', () => {
     expect(payload.freeCanvas.nodes).toEqual([originalNode])
     expect(payload.freeCanvas.nodes[0].kind).toBe('future-layout')
     expect(payload.freeCanvas.nodes[0].originalNode).toBeUndefined()
+  })
+
+  test('writes a Document node as editor-neutral AST without derived or Tiptap state', async () => {
+    const document = createPlanningDocumentV1([{
+      id: 'paragraph-1',
+      type: 'paragraph',
+      content: [{ text: 'Plan ', href: 'https://example.com/brief' }]
+    }], 3)
+    const project: IPromptProject = {
+      id: 'project-document', title: 'Document project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0,
+      freeCanvas: {
+        nodes: [{
+          id: 'document-1', kind: 'document', title: 'Plan', position: { x: 0, y: 0 },
+          width: 560, height: 420, document, linkedDocumentResourceIds: [], meta: {}
+        }],
+        edges: [], viewport: null, selectedNodeId: 'document-1', meta: {}
+      },
+      createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes[0].document).toEqual(document)
+    expect(payload.freeCanvas.nodes[0].document.effectiveText).toBeUndefined()
+    expect(payload.freeCanvas.nodes[0].tiptap).toBeUndefined()
   })
 
   test('manages project agent conversations and skills through scoped endpoints', async () => {

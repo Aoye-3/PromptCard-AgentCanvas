@@ -34,6 +34,7 @@ import { ImageCropEditor } from '@/components/canvas/ImageCropEditor'
 import {
   ImageGeneratorNode
 } from '@/components/canvas/nodes/ImageGeneratorNode'
+import { DocumentNode } from '@/components/canvas/nodes/DocumentNode'
 import { ImageGenerationConversationPanel } from '@/components/canvas/image-generation/ImageGenerationConversationPanel'
 import { AnnotationEditorDialog } from '@/components/canvas/image-generation/AnnotationEditorDialog'
 import { RegionEditorDialog } from '@/components/canvas/image-generation/RegionEditorDialog'
@@ -60,6 +61,7 @@ import {
   createFreeCanvasImageNodeFromMedia,
   createFreeCanvasImageGenerationPlaceholder,
   createFreeCanvasImageAnnotation,
+  createFreeCanvasDocumentNode,
   createFreeCanvasTextNode,
   createFreeCanvasAgentRewriteNode,
   createQuickTextNode,
@@ -170,7 +172,7 @@ import {
 } from '@/storage/storage-service-client'
 import type { AgentCanvasEdit, AgentWorkspaceProposal, CanvasAgentSelection } from '@/models/Agent.model'
 import type { IPreset } from '@/models/Card.model'
-import type { FreeCanvasImageAnnotationKind, IFreeCanvasImageAnnotation, IFreeCanvasImageGeneratorNode, IFreeCanvasImageNode, IFreeCanvasNode, IFreeCanvasProject, IFreeCanvasTextNode, IPromptProject } from '@/models/PromptHistory.model'
+import type { FreeCanvasImageAnnotationKind, IFreeCanvasImageAnnotation, IFreeCanvasImageGeneratorNode, IFreeCanvasImageNode, IFreeCanvasNode, IFreeCanvasProject, IFreeCanvasTextNode, IPromptProject, PlanningDocumentV1 } from '@/models/PromptHistory.model'
 
 interface FreeCanvasBuilderScreenProps {
   activeProject: IPromptProject
@@ -195,6 +197,8 @@ type FreeCanvasFlowNodeData = {
   onTextStyleChange: (nodeId: string, updates: Parameters<typeof updateFreeCanvasTextNodeStyle>[2]) => void
   onTextRename: (nodeId: string, title: string) => string | null
   onTextSelectionChange: (nodeId: string, selection?: Omit<CanvasAgentSelection, 'baseContentDigest'>) => void
+  onDocumentChange: (nodeId: string, document: PlanningDocumentV1) => Promise<boolean>
+  onDocumentDelete: (nodeId: string) => void
   onImageResize: (nodeId: string, frame: { position?: { x: number; y: number }; width: number; height: number }) => void
   resultThumbnailUrl?: string
   onOpenImageHistory: (nodeId: string) => void
@@ -1840,6 +1844,78 @@ const FreeCanvasBuilderInner = ({
     }
   }, [commitCanvasSelection])
 
+  const createDocument = useCallback(async () => {
+    const beforeCanvas = freeCanvasRef.current
+    const beforeHistory = canvasCommandHistoryRef.current
+    const node = createFreeCanvasDocumentNode(nextNodePosition(reactFlow, beforeCanvas.nodes.length))
+    const executed = executeCanvasLocalCommand(beforeHistory, beforeCanvas, {
+      kind: 'insert-node',
+      node,
+      index: beforeCanvas.nodes.length
+    })
+    canvasCommandHistoryRef.current = executed.history
+    commitCanvasSelection(executed.project, node.id)
+    if (!onPersistCanvas) return
+
+    let saved = false
+    try {
+      saved = Boolean(await onPersistCanvas?.(executed.project))
+    } catch {
+      saved = false
+    }
+    if (saved) return
+
+    const rolledBack = undoCanvasLocalCommand(executed.history, freeCanvasRef.current)
+    const recovery = { ...rolledBack.project, selectedNodeId: beforeCanvas.selectedNodeId }
+    canvasCommandHistoryRef.current = beforeHistory
+    commitCanvasSelection(recovery, recovery.selectedNodeId || null)
+    try {
+      await onPersistCanvas?.(recovery)
+    } catch {
+      // The recovery snapshot remains the newest retained request for an explicit retry.
+    }
+    setUploadError('文档创建保存失败，请重试。')
+  }, [commitCanvasSelection, onPersistCanvas, reactFlow])
+
+  const updateDocumentNode = useCallback(async (
+    nodeId: string,
+    document: PlanningDocumentV1
+  ): Promise<boolean> => {
+    const beforeCanvas = freeCanvasRef.current
+    const beforeHistory = canvasCommandHistoryRef.current
+    const current = beforeCanvas.nodes.find(node => node.id === nodeId)
+    if (!current || current.kind !== 'document') return false
+    if (current.document.digest === document.digest && current.document.revision === document.revision) return true
+
+    const executed = executeCanvasLocalCommand(beforeHistory, beforeCanvas, {
+      kind: 'update-document',
+      nodeId,
+      document
+    })
+    if (executed.project === beforeCanvas) return false
+    canvasCommandHistoryRef.current = executed.history
+    emitGenerationCanvas(executed.project)
+    if (!onPersistCanvas) return true
+
+    let saved = false
+    try {
+      saved = Boolean(await onPersistCanvas?.(executed.project))
+    } catch {
+      saved = false
+    }
+    if (saved) return true
+
+    const rolledBack = undoCanvasLocalCommand(executed.history, freeCanvasRef.current)
+    canvasCommandHistoryRef.current = beforeHistory
+    emitGenerationCanvas(rolledBack.project)
+    try {
+      await onPersistCanvas?.(rolledBack.project)
+    } catch {
+      // Replacing the retained request with recovery is best-effort while Storage is unavailable.
+    }
+    return false
+  }, [emitGenerationCanvas, onPersistCanvas])
+
   const closeNodeContextMenu = useCallback(() => {
     setNodeContextMenu(current => {
       current?.returnFocus?.focus()
@@ -2010,8 +2086,6 @@ const FreeCanvasBuilderInner = ({
         deleteCanvasNodes(selectedNodeId)
         return
       }
-      const node = selectedImageNodeRef.current
-      if (!node) return
       const modifier = event.ctrlKey || event.metaKey
       const key = event.key.toLowerCase()
       if (modifier && key === 'z') {
@@ -2030,6 +2104,8 @@ const FreeCanvasBuilderInner = ({
         commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
         return
       }
+      const node = selectedImageNodeRef.current
+      if (!node) return
       if (modifier && key === 'd') {
         event.preventDefault()
         executeImageCommand(node.id, 'duplicate')
@@ -2278,7 +2354,7 @@ const FreeCanvasBuilderInner = ({
     position: node.position,
     selected: selectedNodeIds.includes(node.id),
     draggable: !isIsolatedReadOnlyCanvasNode(node),
-    connectable: !isIsolatedReadOnlyCanvasNode(node),
+    connectable: !isNonConnectableCanvasNode(node),
     deletable: !isIsolatedReadOnlyCanvasNode(node) && !isRunningFreeCanvasImageGeneration(node),
     initialWidth: node.kind === 'image' ? node.width : undefined,
     initialHeight: node.kind === 'image' ? node.height : undefined,
@@ -2292,6 +2368,8 @@ const FreeCanvasBuilderInner = ({
       onTextStyleChange: updateTextStyle,
       onTextRename: renameTextNode,
       onTextSelectionChange: rememberTextSelection,
+      onDocumentChange: updateDocumentNode,
+      onDocumentDelete: deleteCanvasNodes,
       onImageResize: resizeImageNode,
       resultThumbnailUrl: node.kind === 'image-generator' && node.primaryAssetId
         ? canvasImageAssetUrl(node.primaryAssetId)
@@ -2311,7 +2389,7 @@ const FreeCanvasBuilderInner = ({
         referenceCount: freeCanvas.edges.filter(edge => edge.target === node.id && edge.targetHandle === 'reference-image').length
       } : undefined
     }
-  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, resizeImageNode, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateTextStyle])
+  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, deleteCanvasNodes, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, resizeImageNode, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateDocumentNode, updateTextStyle])
 
   const [flowNodes, setFlowNodes] = useState<FreeCanvasFlowNode[]>(nodes)
   useEffect(() => {
@@ -2433,7 +2511,7 @@ const FreeCanvasBuilderInner = ({
     const sourceNode = freeCanvas.nodes.find(node => node.id === connection.source)
     const targetNode = freeCanvas.nodes.find(node => node.id === connection.target)
     if (!sourceNode || !targetNode) return
-    if (isIsolatedReadOnlyCanvasNode(sourceNode) || isIsolatedReadOnlyCanvasNode(targetNode)) return
+    if (isNonConnectableCanvasNode(sourceNode) || isNonConnectableCanvasNode(targetNode)) return
     if (targetNode?.kind === 'image-generator') {
       setUploadError('旧图片生成节点为只读预览，不能新增连线。请打开“图片生成”页签继续创作。')
       return
@@ -2459,7 +2537,7 @@ const FreeCanvasBuilderInner = ({
     const sourceNode = freeCanvas.nodes.find(node => node.id === connection.source)
     const targetNode = freeCanvas.nodes.find(node => node.id === connection.target)
     if (!sourceNode || !targetNode) return false
-    if (isIsolatedReadOnlyCanvasNode(sourceNode) || isIsolatedReadOnlyCanvasNode(targetNode)) return false
+    if (isNonConnectableCanvasNode(sourceNode) || isNonConnectableCanvasNode(targetNode)) return false
     return targetNode.kind !== 'image-generator'
   }, [freeCanvas])
 
@@ -2789,6 +2867,7 @@ const FreeCanvasBuilderInner = ({
                 />
               )
             }
+            if (contextNode.kind === 'document') return null
             if (contextNode.kind !== 'image') {
               return (
                 <CanvasUnsupportedNodeContextMenu
@@ -2831,6 +2910,7 @@ const FreeCanvasBuilderInner = ({
           quickDrawerOpen={quickDrawerOpen}
           quickPresets={quickPresets}
           onCreateText={createText}
+          onCreateDocument={createDocument}
           onCreateImage={createImage}
           onCreateImageGenerator={openImageGeneration}
           onToggleQuickDrawer={() => setQuickDrawerOpen(value => !value)}
@@ -3325,7 +3405,14 @@ const FreeCanvasNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
     return <FreeCanvasArrowNodeView node={node} selected={selected} />
   }
   if (node.kind === 'document') {
-    return <FreeCanvasReadOnlyNodeView node={node} selected={selected} label="规划文档" detail="文档编辑器将在专用工作区中启用。" />
+    return (
+      <DocumentNode
+        node={node}
+        selected={selected}
+        onDocumentChange={document => data.onDocumentChange(node.id, document)}
+        onDelete={() => data.onDocumentDelete(node.id)}
+      />
+    )
   }
   if (node.kind === 'storyboard') {
     return <FreeCanvasReadOnlyNodeView node={node} selected={selected} label="分镜表" detail="分镜节点将在专用工作区中启用。" />
@@ -3342,7 +3429,7 @@ const FreeCanvasReadOnlyNodeView = ({
   label,
   detail
 }: {
-  node: Extract<IFreeCanvasNode, { kind: 'document' | 'storyboard' | 'unsupported' }>
+  node: Extract<IFreeCanvasNode, { kind: 'storyboard' | 'unsupported' }>
   selected: boolean
   label: string
   detail: string
@@ -3363,6 +3450,10 @@ const FreeCanvasReadOnlyNodeView = ({
 )
 
 const isIsolatedReadOnlyCanvasNode = (node: IFreeCanvasNode): boolean => (
+  node.kind === 'storyboard' || node.kind === 'unsupported'
+)
+
+const isNonConnectableCanvasNode = (node: IFreeCanvasNode): boolean => (
   node.kind === 'document' || node.kind === 'storyboard' || node.kind === 'unsupported'
 )
 
@@ -5194,6 +5285,7 @@ export const CanvasBottomToolbar = ({
   quickDrawerOpen,
   quickPresets,
   onCreateText,
+  onCreateDocument,
   onCreateImage,
   onCreateImageGenerator,
   onToggleQuickDrawer,
@@ -5205,6 +5297,7 @@ export const CanvasBottomToolbar = ({
   quickDrawerOpen: boolean
   quickPresets: IPreset[]
   onCreateText: () => void
+  onCreateDocument?: () => void
   onCreateImage: () => void
   onCreateImageGenerator?: () => void
   imageGeneratorCreating?: boolean
@@ -5261,6 +5354,9 @@ export const CanvasBottomToolbar = ({
       )}
       <div className="flex items-center gap-1 rounded-full border border-gray-200 bg-white/95 px-3 py-2 shadow-[0_18px_60px_rgba(15,23,42,0.18)] backdrop-blur" data-free-canvas-toolbar>
         <ToolbarButton title="Text" onClick={onCreateText}><Type className="h-4 w-4" /></ToolbarButton>
+        {onCreateDocument && (
+          <ToolbarButton title="Document" ariaLabel="创建规划文档" onClick={onCreateDocument}><BookOpen className="h-4 w-4" /></ToolbarButton>
+        )}
         <ToolbarButton title="Quick messages" onClick={onToggleQuickDrawer}><MessageSquare className="h-4 w-4" /></ToolbarButton>
         <ToolbarButton title="Image" onClick={onCreateImage}><ImageIcon className="h-4 w-4" /></ToolbarButton>
         {onCreateImageGenerator && (

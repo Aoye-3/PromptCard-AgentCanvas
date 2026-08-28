@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type {
+  IFreeCanvasDocumentNode,
   IFreeCanvasImageNode,
   IFreeCanvasProject,
   IFreeCanvasTextNode
@@ -12,6 +13,7 @@ import {
   redoCanvasLocalCommand,
   undoCanvasLocalCommand
 } from './canvas-command-history'
+import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
 
 const imageNode = (id: string): IFreeCanvasImageNode => ({
   id,
@@ -34,6 +36,18 @@ const textNode = (id: string): IFreeCanvasTextNode => ({
   height: 180,
   fontSize: 'large',
   segments: [],
+  meta: {}
+})
+
+const documentNode = (id: string, text = 'Before'): IFreeCanvasDocumentNode => ({
+  id,
+  kind: 'document',
+  title: id,
+  position: { x: 0, y: 0 },
+  width: 560,
+  height: 420,
+  document: createPlanningDocumentV1([{ id: `${id}-paragraph`, type: 'paragraph', content: [{ text }] }]),
+  linkedDocumentResourceIds: [],
   meta: {}
 })
 
@@ -139,5 +153,69 @@ describe('canvas command history', () => {
       toIndex: 2
     })
     expect(replaced.history.future).toEqual([])
+  })
+
+  it('applies a deeply cloned Document update and returns a deeply cloned inverse', () => {
+    const source = documentNode('document-a')
+    const nextDocument = createPlanningDocumentV1([
+      { id: 'document-a-paragraph', type: 'paragraph', content: [{ text: 'After', bold: true }] }
+    ], 1)
+    const canvas: IFreeCanvasProject = { ...project(), nodes: [source, ...project().nodes] }
+
+    const applied = applyCanvasLocalCommand(canvas, {
+      kind: 'update-document',
+      nodeId: source.id,
+      document: nextDocument
+    })
+    nextDocument.blocks[0].id = 'mutated-caller-id'
+
+    const updatedNode = applied.project.nodes[0] as IFreeCanvasDocumentNode
+    expect(planningDocumentEffectiveText(updatedNode.document)).toBe('After')
+    expect(updatedNode.document.blocks[0].id).toBe('document-a-paragraph')
+    expect(applied.inverse).toMatchObject({
+      kind: 'update-document',
+      nodeId: source.id,
+      document: source.document
+    })
+    expect((applied.inverse as { document: unknown }).document).not.toBe(source.document)
+  })
+
+  it('undoes and redoes a Document update without replacing unrelated asynchronous node changes', () => {
+    const source = documentNode('document-a')
+    const canvas: IFreeCanvasProject = { ...project(), nodes: [source, ...project().nodes] }
+    const nextDocument = createPlanningDocumentV1([
+      { id: 'document-a-paragraph', type: 'paragraph', content: [{ text: 'After' }] }
+    ], 1)
+    const executed = executeCanvasLocalCommand(createCanvasCommandHistory(), canvas, {
+      kind: 'update-document',
+      nodeId: source.id,
+      document: nextDocument
+    })
+    nextDocument.blocks[0].id = 'mutated-after-execute'
+    const withAsyncResult: IFreeCanvasProject = {
+      ...executed.project,
+      nodes: executed.project.nodes.map(node => node.id === 'image-c'
+        ? { ...node, assetId: 'asset-runtime-result', meta: { ...node.meta, generationState: 'succeeded' } }
+        : node)
+    }
+
+    const undone = undoCanvasLocalCommand(executed.history, withAsyncResult)
+    const redone = redoCanvasLocalCommand(undone.history, undone.project)
+
+    const undoneDocument = undone.project.nodes.find(node => node.id === source.id) as IFreeCanvasDocumentNode
+    const redoneDocument = redone.project.nodes.find(node => node.id === source.id) as IFreeCanvasDocumentNode
+    expect(planningDocumentEffectiveText(undoneDocument.document)).toBe('Before')
+    expect(planningDocumentEffectiveText(redoneDocument.document)).toBe('After')
+    expect(redoneDocument.document.blocks[0].id).toBe('document-a-paragraph')
+    expect((redone.project.nodes.find(node => node.id === 'image-c') as IFreeCanvasImageNode).assetId)
+      .toBe('asset-runtime-result')
+  })
+
+  it('does not update a missing or non-Document target', () => {
+    const canvas = project()
+    const document = createPlanningDocumentV1([])
+
+    expect(applyCanvasLocalCommand(canvas, { kind: 'update-document', nodeId: 'missing', document }).project).toBe(canvas)
+    expect(applyCanvasLocalCommand(canvas, { kind: 'update-document', nodeId: 'text-b', document }).project).toBe(canvas)
   })
 })

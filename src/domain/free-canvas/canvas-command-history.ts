@@ -3,9 +3,11 @@ import type {
   IFreeCanvasImageAnnotation,
   IFreeCanvasImageNode,
   IFreeCanvasNode,
-  IFreeCanvasProject
+  IFreeCanvasProject,
+  PlanningDocumentV1
 } from '@/models/PromptHistory.model'
 import { markCanvasNodeReferencePending } from '@/domain/reference-codes/canvas-node-reference-lifecycle'
+import { clonePlanningDocumentV1 } from '@/domain/documents/planning-document'
 
 export type CanvasFlipAxis = 'horizontal' | 'vertical'
 
@@ -23,6 +25,11 @@ export type CanvasLocalCommand =
       selectedNodeId: string | null
     }
   | { kind: 'insert-node'; node: IFreeCanvasNode; index: number }
+  | {
+      kind: 'update-document'
+      nodeId: string
+      document: PlanningDocumentV1
+    }
 
 export interface CanvasCommandApplication {
   project: IFreeCanvasProject
@@ -127,6 +134,23 @@ export const applyCanvasLocalCommand = (
     }
   }
 
+  if (command.kind === 'update-document') {
+    const current = project.nodes.find(node => node.id === command.nodeId)
+    if (!current || current.kind !== 'document') return { project, inverse: command }
+    const document = clonePlanningDocumentV1(command.document)
+    return {
+      project: {
+        ...project,
+        nodes: project.nodes.map(node => node.id === command.nodeId ? { ...node, document } : node)
+      },
+      inverse: {
+        kind: 'update-document',
+        nodeId: command.nodeId,
+        document: clonePlanningDocumentV1(current.document)
+      }
+    }
+  }
+
   const index = clampInsertionIndex(command.index, project.nodes.length)
   const nodes = [...project.nodes]
   nodes.splice(index, 0, cloneNode(command.node))
@@ -150,7 +174,7 @@ export const executeCanvasLocalCommand = (
   return {
     project: applied.project,
     history: {
-      past: [...history.past, { undo: applied.inverse, redo: command }],
+      past: [...history.past, { undo: applied.inverse, redo: cloneCommand(command) }],
       future: []
     }
   }
@@ -218,6 +242,16 @@ const imagePresentation = (node: IFreeCanvasImageNode): { flipX: boolean; flipY:
 }
 
 const cloneNode = (node: IFreeCanvasNode): IFreeCanvasNode => {
+  if (node.kind === 'document') {
+    return {
+      ...node,
+      position: { ...node.position },
+      document: clonePlanningDocumentV1(node.document),
+      linkedDocumentResourceIds: [...node.linkedDocumentResourceIds],
+      ...(node.provenance ? { provenance: structuredClone(node.provenance) } : {}),
+      meta: { ...node.meta }
+    }
+  }
   if (node.kind !== 'image') return { ...node, meta: { ...node.meta } } as IFreeCanvasNode
   return {
     ...node,
@@ -227,6 +261,12 @@ const cloneNode = (node: IFreeCanvasNode): IFreeCanvasNode => {
     meta: { ...node.meta }
   }
 }
+
+const cloneCommand = (command: CanvasLocalCommand): CanvasLocalCommand => (
+  command.kind === 'update-document'
+    ? { ...command, document: clonePlanningDocumentV1(command.document) }
+    : command
+)
 
 const cloneAnnotation = (
   annotation: IFreeCanvasImageAnnotation,

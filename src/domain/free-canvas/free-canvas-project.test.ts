@@ -34,6 +34,7 @@ import {
   previewFreeCanvasTextInsertions
 } from './free-canvas-project'
 import type { IPromptProject } from '@/models/PromptHistory.model'
+import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
 
 describe('free canvas project domain', () => {
   test('previews interleaved insertions without changing the anchored segments', () => {
@@ -622,6 +623,9 @@ describe('free canvas project domain', () => {
   })
 
   test('keeps planning documents and storyboards isolated from Prompt text normalization', () => {
+    const planningDocument = createPlanningDocumentV1([
+      { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Private planning prose', bold: true }] }
+    ], 3)
     const document = {
       id: 'document-1',
       kind: 'document',
@@ -629,13 +633,7 @@ describe('free canvas project domain', () => {
       position: { x: 10, y: 20 },
       width: 560,
       height: 420,
-      document: {
-        version: 1,
-        blocks: [{ id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Private planning prose', bold: true }] }],
-        revision: 3,
-        digest: 'document-digest',
-        suggestions: []
-      },
+      document: planningDocument,
       linkedDocumentResourceIds: ['resource-1'],
       meta: { collapsed: false }
     }
@@ -660,7 +658,7 @@ describe('free canvas project domain', () => {
       source: {
         documentNodeId: 'document-1',
         documentRevision: 3,
-        documentDigest: 'document-digest',
+        documentDigest: planningDocument.digest,
         documentResourceDigests: ['resource-digest'],
         model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1' },
         skills: [{ skillId: 'skill-1', revision: 2, digest: 'skill-digest' }]
@@ -679,6 +677,70 @@ describe('free canvas project domain', () => {
     expect(project.nodes[0]).toMatchObject(document)
     expect(project.nodes[1]).toMatchObject(storyboard)
     expect(project.nodes.every(node => node.kind !== 'text')).toBe(true)
+  })
+
+  test.each([
+    {
+      label: 'unknown version',
+      document: { version: 2, blocks: [], revision: 0, digest: 'sha256:invalid', suggestions: [] }
+    },
+    {
+      label: 'digest mismatch',
+      document: { version: 1, blocks: [], revision: 0, digest: 'sha256:invalid', suggestions: [] }
+    },
+    {
+      label: 'unknown AST block',
+      document: {
+        version: 1,
+        blocks: [{ id: 'code-1', type: 'codeBlock', content: [{ text: 'secret' }] }],
+        revision: 0,
+        digest: 'sha256:invalid',
+        suggestions: []
+      }
+    },
+    {
+      label: 'Task 7 suggestion data',
+      document: {
+        version: 1,
+        blocks: [],
+        revision: 0,
+        digest: 'sha256:invalid',
+        suggestions: [{ id: 'future-suggestion', operation: { arbitrary: true } }]
+      }
+    }
+  ])('projects an invalid Document ($label) as a lossless read-only unsupported node', ({ document }) => {
+    const originalNode = {
+      id: 'document-invalid',
+      kind: 'document',
+      title: 'Do not lose this node',
+      position: { x: 10, y: 20 },
+      width: 560,
+      height: 420,
+      document,
+      linkedDocumentResourceIds: ['resource-1'],
+      futureNodeAttribute: { preserve: ['byte-for-structure'] },
+      meta: { collapsed: true }
+    }
+    const project = normalizeFreeCanvasProject({
+      nodes: [
+        originalNode,
+        { ...createFreeCanvasTextNode('Prompt', { x: 0, y: 0 }, 100), id: 'text-1' }
+      ] as never,
+      edges: [{ id: 'invalid-document-edge', source: 'document-invalid', target: 'text-1', createdAt: 1 }],
+      meta: {}
+    }, 100)
+
+    expect(project.nodes[0]).toMatchObject({
+      id: 'document-invalid',
+      kind: 'unsupported',
+      originalKind: 'document',
+      originalNode
+    })
+    if (project.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(project.nodes[0].originalNode).not.toBe(originalNode)
+    expect(Object.isFrozen(project.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(project.nodes[0].originalNode.document)).toBe(true)
+    expect(project.edges).toEqual([])
   })
 
   test('projects unknown node kinds as detached read-only data and drops their connections', () => {

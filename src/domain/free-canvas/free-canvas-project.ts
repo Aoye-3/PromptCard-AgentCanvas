@@ -27,6 +27,7 @@ import type {
 } from '@/models/PromptHistory.model'
 import type { ImageRegion } from '@/domain/image-generation/image-generation'
 import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
+import { createPlanningDocumentV1, parsePlanningDocumentV1 } from '@/domain/documents/planning-document'
 
 const DEFAULT_USER_COLOR = '#111827'
 const DEFAULT_PRESET_COLOR = '#ef4423'
@@ -110,6 +111,26 @@ export const createQuickTextNode = (
   position: IFreeCanvasPosition,
   timestamp = Date.now()
 ): IFreeCanvasTextNode => createFreeCanvasTextNode(text, position, timestamp, 'preset')
+
+export const createFreeCanvasDocumentNode = (
+  position: IFreeCanvasPosition,
+  timestamp = Date.now()
+): IFreeCanvasDocumentNode => {
+  const id = `free-document-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
+  return {
+    id,
+    kind: 'document',
+    title: '未命名文档',
+    position: normalizePosition(position),
+    width: 560,
+    height: 420,
+    document: createPlanningDocumentV1([
+      { id: `${id}-paragraph-1`, type: 'paragraph', content: [] }
+    ]),
+    linkedDocumentResourceIds: [],
+    meta: {}
+  }
+}
 
 export const createFreeCanvasImageGeneratorNode = (
   position: IFreeCanvasPosition,
@@ -1040,26 +1061,36 @@ const normalizeNode = (node: Partial<IFreeCanvasNode>, timestamp: number): IFree
 const normalizeDocumentNode = (
   node: Partial<IFreeCanvasDocumentNode>,
   timestamp: number
-): IFreeCanvasDocumentNode => ({
-  id: node.id || `free-document-${timestamp}`,
-  kind: 'document',
-  title: node.title || 'Document',
-  position: normalizePosition(node.position),
-  width: Number(node.width || 560),
-  height: Number(node.height || 420),
-  document: cloneStructuredValue(node.document || {
-    version: 1,
-    blocks: [],
-    revision: 0,
-    digest: '',
-    suggestions: []
-  }),
-  linkedDocumentResourceIds: Array.isArray(node.linkedDocumentResourceIds)
-    ? node.linkedDocumentResourceIds.filter((resourceId): resourceId is string => typeof resourceId === 'string')
-    : [],
-  ...(node.provenance ? { provenance: cloneStructuredValue(node.provenance) } : {}),
-  meta: node.meta || {}
-})
+): IFreeCanvasDocumentNode | IFreeCanvasUnsupportedNode => {
+  const parsed = parsePlanningDocumentV1(node.document)
+  if (!parsed.ok) {
+    return normalizeUnsupportedNode({
+      id: node.id,
+      kind: 'unsupported',
+      title: node.title,
+      position: node.position,
+      width: node.width,
+      height: node.height,
+      originalKind: 'document',
+      originalNode: cloneFrozenRecord({ ...(node as unknown as Record<string, unknown>) }),
+      meta: node.meta
+    }, timestamp)
+  }
+  return {
+    id: node.id || `free-document-${timestamp}`,
+    kind: 'document',
+    title: (node.title || 'Document').normalize('NFC'),
+    position: normalizePosition(node.position),
+    width: Number(node.width || 560),
+    height: Number(node.height || 420),
+    document: parsed.document,
+    linkedDocumentResourceIds: Array.isArray(node.linkedDocumentResourceIds)
+      ? node.linkedDocumentResourceIds.filter((resourceId): resourceId is string => typeof resourceId === 'string')
+      : [],
+    ...(node.provenance ? { provenance: cloneStructuredValue(node.provenance) } : {}),
+    meta: node.meta || {}
+  }
+}
 
 const normalizeStoryboardNode = (
   node: Partial<IFreeCanvasStoryboardNode>,

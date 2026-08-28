@@ -8,10 +8,12 @@ import {
   syncThreeStageLegacyFields
 } from '@/domain/three-stage/three-stage-pages'
 import { freeCanvasPresetText, freeCanvasTextDisplay, freeCanvasUserText } from '@/domain/free-canvas/free-canvas-project'
+import { planningDocumentEffectiveText } from '@/domain/documents/planning-document'
 
 const MAX_TEXT_LENGTH = 1200
 const MAX_CARDS = 60
 const MAX_ROWS = 40
+const MAX_DOCUMENT_EXCERPT_LENGTH = 240
 
 const compactText = (value: string | undefined) => {
   const text = String(value || '').replace(/\s+/g, ' ').trim()
@@ -316,7 +318,12 @@ function compactFreeCanvasNode(node: IWorkspaceFreeCanvasNode) {
     return { ...identity, text: compactText(node.text) }
   }
   if (node.kind === 'document') {
-    return { ...identity, revision: node.document.revision, digest: node.document.digest }
+    return {
+      ...identity,
+      revision: node.document.revision,
+      digest: node.document.digest,
+      excerpt: planningDocumentEffectiveText(node.document).slice(0, MAX_DOCUMENT_EXCERPT_LENGTH)
+    }
   }
   if (node.kind === 'storyboard') return identity
   if (node.kind === 'image-generator') return identity

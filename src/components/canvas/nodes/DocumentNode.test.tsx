@@ -1,0 +1,103 @@
+import { useState } from 'react'
+import { act, create } from 'react-test-renderer'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
+import type { IFreeCanvasDocumentNode, PlanningDocumentV1 } from '@/models/PromptHistory.model'
+
+vi.mock('@/components/canvas/document/DocumentEditor', () => ({
+  DocumentEditor: ({ document, mode, onChange }: {
+    document: PlanningDocumentV1
+    mode: string
+    onChange: (document: PlanningDocumentV1) => void
+  }) => (
+    <button
+      type="button"
+      data-mock-document-editor={mode}
+      data-document-digest={document.digest}
+      onClick={() => onChange(createPlanningDocumentV1([
+        { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Edited canonical draft' }] }
+      ], document.revision + 1))}
+    >Edit</button>
+  )
+}))
+
+import { DocumentNode } from './DocumentNode'
+
+const node = (): IFreeCanvasDocumentNode => ({
+  id: 'document-1',
+  kind: 'document',
+  title: 'Creative brief',
+  position: { x: 20, y: 30 },
+  width: 560,
+  height: 420,
+  document: createPlanningDocumentV1([
+    { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Single canonical draft body' }] }
+  ]),
+  linkedDocumentResourceIds: [],
+  meta: {}
+})
+
+describe('DocumentNode', () => {
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(0)
+      return 1
+    })
+  })
+
+  it('switches inline, expanded, and collapsed views without mounting two editors', () => {
+    const renderer = create(
+      <DocumentNode node={node()} selected onDocumentChange={vi.fn().mockResolvedValue(true)} onDelete={vi.fn()} />
+    )
+
+    expect(renderer.root.findAllByProps({ 'data-mock-document-editor': 'inline' })).toHaveLength(1)
+    act(() => renderer.root.findByProps({ 'aria-label': '展开编辑器' }).props.onClick())
+    expect(renderer.root.findAllByProps({ 'data-mock-document-editor': 'inline' })).toHaveLength(0)
+    expect(renderer.root.findAllByProps({ 'data-mock-document-editor': 'expanded' })).toHaveLength(1)
+    act(() => renderer.root.findByProps({ 'aria-label': '关闭展开编辑器' }).props.onClick())
+    expect(renderer.root.findAllByProps({ 'data-mock-document-editor': 'inline' })).toHaveLength(1)
+    act(() => renderer.root.findByProps({ 'aria-label': '折叠文档' }).props.onClick())
+    expect(renderer.root.findAllByProps({ 'data-mock-document-editor': 'inline' })).toHaveLength(0)
+    expect(renderer.root.findByProps({ 'data-document-collapsed-summary': true }).children.join('')).toContain('Single canonical draft body')
+  })
+
+  it('keeps one canonical state across inline and expanded editors', async () => {
+    const Wrapper = () => {
+      const [current, setCurrent] = useState(node())
+      return (
+        <DocumentNode
+          node={current}
+          selected
+          onDocumentChange={async document => {
+            setCurrent(value => ({ ...value, document }))
+            return true
+          }}
+          onDelete={vi.fn()}
+        />
+      )
+    }
+    const renderer = create(<Wrapper />)
+
+    await act(async () => renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props.onClick())
+    act(() => renderer.root.findByProps({ 'aria-label': '展开编辑器' }).props.onClick())
+
+    const expanded = renderer.root.findByProps({ 'data-mock-document-editor': 'expanded' })
+    expect(expanded.props['data-document-digest']).not.toBe(node().document.digest)
+  })
+
+  it('shows Retry after persistence failure and retries the same canonical document', async () => {
+    const onDocumentChange = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    const renderer = create(
+      <DocumentNode node={node()} selected onDocumentChange={onDocumentChange} onDelete={vi.fn()} />
+    )
+
+    await act(async () => renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props.onClick())
+    expect(renderer.root.findByProps({ role: 'alert' }).findByType('span').children.join('')).toContain('保存失败')
+    await act(async () => renderer.root.findByProps({ 'aria-label': '重试保存文档' }).props.onClick())
+
+    expect(onDocumentChange).toHaveBeenCalledTimes(2)
+    expect(onDocumentChange.mock.calls[1][0]).toEqual(onDocumentChange.mock.calls[0][0])
+  })
+})
