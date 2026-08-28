@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { getSchema, type JSONContent } from '@tiptap/core'
-import { setBlockType, wrapIn } from '@tiptap/pm/commands'
-import { wrapInList } from '@tiptap/pm/schema-list'
+import { joinBackward, joinUp, lift, setBlockType, splitBlock, wrapIn } from '@tiptap/pm/commands'
+import { liftListItem, wrapInList } from '@tiptap/pm/schema-list'
 import { EditorState, TextSelection, type Command } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
 import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
@@ -12,8 +12,7 @@ import {
   createPlanningDocumentEditorProps,
   planningDocumentFromTiptapJson,
   planningDocumentPlainTextPasteJson,
-  planningDocumentToTiptapJson,
-  repairPlanningDocumentTiptapIds
+  planningDocumentToTiptapJson
 } from './planning-document-tiptap'
 
 const blocks = (): PlanningDocumentBlockV1[] => [
@@ -104,6 +103,77 @@ describe('planning document Tiptap adapter', () => {
     const roundTripped = planningDocumentFromTiptapJson(canonical, 1)
     expect(allNeutralIds(roundTripped.blocks)).toContain('source-leaf')
     expect(new Set(allNeutralIds(roundTripped.blocks)).size).toBe(allNeutralIds(roundTripped.blocks).length)
+  })
+
+  test.each([
+    ['blockquote', (schema: ReturnType<typeof getSchema>) => [wrapIn(schema.nodes.blockquote), lift]],
+    ['bullet list', (schema: ReturnType<typeof getSchema>) => [wrapInList(schema.nodes.bulletList), liftListItem(schema.nodes.listItem)]],
+    ['ordered list', (schema: ReturnType<typeof getSchema>) => [wrapInList(schema.nodes.orderedList), liftListItem(schema.nodes.listItem)]],
+    ['task list', (schema: ReturnType<typeof getSchema>) => [wrapInList(schema.nodes.taskList), liftListItem(schema.nodes.taskItem)]],
+    ['normalized heading blockquote', (schema: ReturnType<typeof getSchema>) => [
+      setBlockType(schema.nodes.paragraph), wrapIn(schema.nodes.blockquote), lift
+    ]]
+  ] as Array<[string, (schema: ReturnType<typeof getSchema>) => Command[]]>)('preserves the original leaf ID through real %s wrap and unwrap transactions', (label, commands) => {
+    const source = createPlanningDocumentV1([label.startsWith('normalized heading')
+      ? { id: 'p1', type: 'heading', level: 2, content: [{ text: 'Draft' }] }
+      : { id: 'p1', type: 'paragraph', content: [{ text: 'Draft' }] }
+    ])
+    const schema = getSchema(createPlanningDocumentTiptapExtensions())
+    let state = EditorState.create({
+      schema,
+      doc: schema.nodeFromJSON(planningDocumentToTiptapJson(source)),
+      plugins: [createPlanningDocumentBlockIdPlugin(sequenceIds('container', 'fallback-1', 'fallback-2'))]
+    })
+    state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, 2)))
+
+    commands(schema).forEach(command => {
+      expect(command(state, transaction => { state = state.apply(transaction) })).toBe(true)
+    })
+
+    expect(planningDocumentFromTiptapJson(state.doc.toJSON(), 1).blocks[0]).toMatchObject({
+      id: 'p1',
+      type: 'paragraph',
+      content: [{ text: 'Draft' }]
+    })
+  })
+
+  test('keeps multi-item list IDs unique and stable when one item is unwrapped', () => {
+    const source = createPlanningDocumentV1([
+      { id: 'p1', type: 'paragraph', content: [{ text: 'First' }] },
+      { id: 'p2', type: 'paragraph', content: [{ text: 'Second' }] }
+    ])
+    const schema = getSchema(createPlanningDocumentTiptapExtensions())
+    let state = EditorState.create({
+      schema,
+      doc: schema.nodeFromJSON(planningDocumentToTiptapJson(source)),
+      plugins: [createPlanningDocumentBlockIdPlugin(sequenceIds('list-outer', 'fallback-1', 'fallback-2'))]
+    })
+    for (const text of ['First', 'Second']) {
+      let textPosition = 0
+      state.doc.descendants((node, position) => {
+        if (textPosition === 0 && node.isText && node.text === text) textPosition = position + 1
+      })
+      state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, textPosition)))
+      expect(wrapInList(schema.nodes.bulletList)(state, transaction => { state = state.apply(transaction) })).toBe(true)
+    }
+    expect(joinUp(state, transaction => { state = state.apply(transaction) })).toBe(true)
+    const wrapped = planningDocumentFromTiptapJson(state.doc.toJSON(), 1)
+    expect(wrapped.blocks[0]).toMatchObject({ id: 'list-outer', items: [{ id: 'p1' }, { id: 'p2' }] })
+    expect(new Set(allNeutralIds(wrapped.blocks)).size).toBe(allNeutralIds(wrapped.blocks).length)
+
+    let firstTextPosition = 0
+    state.doc.descendants((node, position) => {
+      if (firstTextPosition === 0 && node.isText) firstTextPosition = position + 1
+    })
+    state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, firstTextPosition)))
+    expect(liftListItem(schema.nodes.listItem)(state, transaction => { state = state.apply(transaction) })).toBe(true)
+    const unwrapped = planningDocumentFromTiptapJson(state.doc.toJSON(), 2)
+
+    expect(unwrapped.blocks).toMatchObject([
+      { id: 'p1', type: 'paragraph', content: [{ text: 'First' }] },
+      { id: 'list-outer', type: 'bulletList', items: [{ id: 'p2', content: [{ text: 'Second' }] }] }
+    ])
+    expect(new Set(allNeutralIds(unwrapped.blocks)).size).toBe(allNeutralIds(unwrapped.blocks).length)
   })
 
   test.each([
@@ -215,36 +285,44 @@ describe('planning document Tiptap adapter', () => {
     expect(() => planningDocumentFromTiptapJson(json, 0)).toThrow()
   })
 
-  test('keeps the survivor ID on merge and gives a split duplicate a fresh ID', () => {
-    const nextIds = ['new-split-id']
-    const splitJson: JSONContent = {
-      type: 'doc',
-      content: [
-        { type: 'paragraph', attrs: { blockId: 'paragraph-1' }, content: [{ type: 'text', text: 'Left' }] },
-        { type: 'paragraph', attrs: { blockId: 'paragraph-1' }, content: [{ type: 'text', text: 'Right' }] }
-      ]
-    }
+  test('keeps the survivor ID on a real merge and gives a real split a fresh ID', () => {
+    const schema = getSchema(createPlanningDocumentTiptapExtensions())
+    let state = EditorState.create({
+      schema,
+      doc: schema.nodeFromJSON(planningDocumentToTiptapJson(createPlanningDocumentV1([
+        { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'LeftRight' }] }
+      ]))),
+      plugins: [createPlanningDocumentBlockIdPlugin(sequenceIds('new-split-id'))]
+    })
+    state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, 5)))
+    expect(splitBlock(state, transaction => { state = state.apply(transaction) })).toBe(true)
+    expect(state.doc.toJSON().content?.map((node: JSONContent) => node.attrs?.blockId)).toEqual(['paragraph-1', 'new-split-id'])
 
-    const repaired = repairPlanningDocumentTiptapIds(splitJson, () => nextIds.shift() || 'unexpected')
-    const survivor = repaired.content?.[0]
-    if (!survivor) throw new Error('Expected repaired paragraph')
-    const merged: JSONContent = { type: 'doc', content: [survivor] }
-
-    expect(repaired.content?.map(node => node.attrs?.blockId)).toEqual(['paragraph-1', 'new-split-id'])
-    expect(repairPlanningDocumentTiptapIds(merged, () => 'unused').content?.[0].attrs?.blockId).toBe('paragraph-1')
+    let secondTextPosition = 0
+    let textCount = 0
+    state.doc.descendants((node, position) => {
+      if (node.isText && ++textCount === 2) secondTextPosition = position
+    })
+    state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, secondTextPosition)))
+    expect(joinBackward(state, transaction => { state = state.apply(transaction) })).toBe(true)
+    expect(state.doc.toJSON().content?.map((node: JSONContent) => node.attrs?.blockId)).toEqual(['paragraph-1'])
   })
 
-  test('regenerates pasted duplicate IDs while preserving every existing ID', () => {
-    const json = planningDocumentToTiptapJson(createPlanningDocumentV1(blocks()))
-    const source = json.content?.[0]
-    if (!source) throw new Error('Expected source heading')
-    const duplicate = structuredClone(source)
-    json.content?.push(duplicate)
+  test('regenerates a real inserted duplicate ID while preserving the existing ID', () => {
+    const schema = getSchema(createPlanningDocumentTiptapExtensions())
+    let state = EditorState.create({
+      schema,
+      doc: schema.nodeFromJSON(planningDocumentToTiptapJson(createPlanningDocumentV1([
+        { id: 'heading-1', type: 'heading', level: 1, content: [{ text: 'Draft' }] }
+      ]))),
+      plugins: [createPlanningDocumentBlockIdPlugin(() => 'pasted-heading-1')]
+    })
+    const duplicate = state.doc.firstChild
+    if (!duplicate) throw new Error('Expected source heading')
 
-    const repaired = repairPlanningDocumentTiptapIds(json, () => 'pasted-heading-1')
+    state = state.apply(state.tr.insert(state.doc.content.size, duplicate))
 
-    expect(repaired.content?.[0].attrs?.blockId).toBe('heading-1')
-    expect(repaired.content?.[repaired.content.length - 1]?.attrs?.blockId).toBe('pasted-heading-1')
+    expect(state.doc.toJSON().content?.map((node: JSONContent) => node.attrs?.blockId)).toEqual(['heading-1', 'pasted-heading-1'])
   })
 
   test('turns text/plain paste into NFC paragraphs with fresh IDs and no marks', () => {
@@ -275,3 +353,5 @@ const allNeutralIds = (blocks: PlanningDocumentBlockV1[]): string[] => blocks.fl
   }
   return [block.id]
 })
+
+const sequenceIds = (...ids: string[]) => () => ids.shift() || 'unexpected'

@@ -51,6 +51,44 @@ export const createCanvasCommandHistory = (): CanvasCommandHistory => ({
   future: []
 })
 
+export const discardCanvasCommandHistoryEntry = (
+  history: CanvasCommandHistory,
+  entry: CanvasCommandHistoryEntry
+): CanvasCommandHistory => ({
+  past: history.past.filter(candidate => candidate !== entry),
+  future: history.future.filter(candidate => candidate !== entry)
+})
+
+export const recoverFailedCanvasHistoryStep = (
+  current: CanvasCommandHistory,
+  before: CanvasCommandHistory,
+  entry: CanvasCommandHistoryEntry,
+  direction: 'undo' | 'redo'
+): CanvasCommandHistory => {
+  const stripped = discardCanvasCommandHistoryEntry(current, entry)
+  if (direction === 'undo') {
+    const originalIndex = before.past.indexOf(entry)
+    const insertionIndex = originalIndex < 0
+      ? stripped.past.length
+      : Math.min(originalIndex, stripped.past.length)
+    return {
+      past: [
+        ...stripped.past.slice(0, insertionIndex),
+        entry,
+        ...stripped.past.slice(insertionIndex)
+      ],
+      future: stripped.future
+    }
+  }
+
+  const currentIndex = current.past.indexOf(entry)
+  const hasLaterPastEntry = currentIndex >= 0 && currentIndex < current.past.length - 1
+  return {
+    past: stripped.past,
+    future: hasLaterPastEntry ? stripped.future : [entry, ...stripped.future]
+  }
+}
+
 export const applyCanvasLocalCommand = (
   project: IFreeCanvasProject,
   command: CanvasLocalCommand

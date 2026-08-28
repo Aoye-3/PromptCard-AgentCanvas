@@ -86,9 +86,12 @@ import {
   updateFreeCanvasTextNodeUserText
 } from '@/domain/free-canvas/free-canvas-project'
 import {
+  applyCanvasLocalCommand,
   createCanvasCommandHistory,
+  discardCanvasCommandHistoryEntry,
   duplicateCanvasImageNode,
   executeCanvasLocalCommand,
+  recoverFailedCanvasHistoryStep,
   redoCanvasLocalCommand,
   undoCanvasLocalCommand,
   type CanvasLocalCommand
@@ -1885,9 +1888,19 @@ const FreeCanvasBuilderInner = ({
     }
     if (saved) return
 
-    const rolledBack = undoCanvasLocalCommand(executed.history, freeCanvasRef.current)
-    const recovery = { ...rolledBack.project, selectedNodeId: beforeCanvas.selectedNodeId }
-    canvasCommandHistoryRef.current = beforeHistory
+    const failedEntry = executed.history.past[executed.history.past.length - 1]
+    const currentCanvas = freeCanvasRef.current
+    const rolledBack = applyCanvasLocalCommand(currentCanvas, failedEntry.undo)
+    const recovery = {
+      ...rolledBack.project,
+      selectedNodeId: currentCanvas.selectedNodeId === node.id
+        ? beforeCanvas.selectedNodeId
+        : rolledBack.project.selectedNodeId
+    }
+    canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
+      canvasCommandHistoryRef.current,
+      failedEntry
+    )
     commitCanvasSelection(recovery, recovery.selectedNodeId || null)
     try {
       await onPersistCanvas?.(recovery)
@@ -1925,11 +1938,15 @@ const FreeCanvasBuilderInner = ({
     }
     if (saved) return true
 
-    const rolledBack = undoCanvasLocalCommand(executed.history, freeCanvasRef.current)
-    canvasCommandHistoryRef.current = beforeHistory
-    emitGenerationCanvas(rolledBack.project)
+    const failedEntry = executed.history.past[executed.history.past.length - 1]
+    const recovery = applyCanvasLocalCommand(freeCanvasRef.current, failedEntry.undo).project
+    canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
+      canvasCommandHistoryRef.current,
+      failedEntry
+    )
+    emitGenerationCanvas(recovery)
     try {
-      await onPersistCanvas?.(rolledBack.project)
+      await onPersistCanvas?.(recovery)
     } catch {
       // Replacing the retained request with recovery is best-effort while Storage is unavailable.
     }
@@ -2150,6 +2167,9 @@ const FreeCanvasBuilderInner = ({
         ? redoCanvasLocalCommand(beforeHistory, beforeCanvas)
         : undoCanvasLocalCommand(beforeHistory, beforeCanvas)
       if (applied.project === beforeCanvas) return true
+      const entry = direction === 'redo'
+        ? beforeHistory.future[0]
+        : beforeHistory.past[beforeHistory.past.length - 1]
 
       canvasCommandHistoryRef.current = applied.history
       commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
@@ -2163,13 +2183,17 @@ const FreeCanvasBuilderInner = ({
       }
       if (saved) return true
 
-      const recovered = direction === 'redo'
-        ? undoCanvasLocalCommand(applied.history, freeCanvasRef.current)
-        : redoCanvasLocalCommand(applied.history, freeCanvasRef.current)
-      canvasCommandHistoryRef.current = beforeHistory
-      commitCanvasSelection(recovered.project, recovered.project.selectedNodeId || null)
+      const recoveryCommand = direction === 'redo' ? entry.undo : entry.redo
+      const recovered = applyCanvasLocalCommand(freeCanvasRef.current, recoveryCommand).project
+      canvasCommandHistoryRef.current = recoverFailedCanvasHistoryStep(
+        canvasCommandHistoryRef.current,
+        beforeHistory,
+        entry,
+        direction
+      )
+      commitCanvasSelection(recovered, recovered.selectedNodeId || null)
       try {
-        await onPersistCanvas(recovered.project)
+        await onPersistCanvas(recovered)
       } catch {
         // The recovery snapshot remains the newest retained request for an explicit retry.
       }

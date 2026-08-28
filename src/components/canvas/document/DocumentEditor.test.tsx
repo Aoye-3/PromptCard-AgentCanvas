@@ -78,6 +78,18 @@ describe('DocumentEditor', () => {
     ]))
   })
 
+  it('keeps lists and links visibly semantic under Tailwind preflight', () => {
+    const renderer = create(
+      <DocumentEditor document={createPlanningDocumentV1([])} mode="expanded" onChange={vi.fn()} />
+    )
+    const editorContent = renderer.root.findByProps({ role: 'textbox' })
+
+    expect(editorContent.props.className).toContain('[&_ul]:list-disc')
+    expect(editorContent.props.className).toContain('[&_ol]:list-decimal')
+    expect(editorContent.props.className).toContain('[&_ul[data-type=taskList]]:list-none')
+    expect(editorContent.props.className).toContain('[&_a]:underline')
+  })
+
   it('routes toolbar actions through the restricted Tiptap command chain', () => {
     const renderer = create(
       <DocumentEditor document={createPlanningDocumentV1([])} mode="expanded" onChange={vi.fn()} />

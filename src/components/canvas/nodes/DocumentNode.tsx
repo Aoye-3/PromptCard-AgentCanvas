@@ -15,6 +15,7 @@ interface DocumentNodeProps {
 
 export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChange, onDelete }: DocumentNodeProps) => {
   const expandButtonRef = useRef<HTMLButtonElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
   const requestTokenRef = useRef(0)
   const [collapsed, setCollapsed] = useState(node.meta.collapsed === true)
   const [expanded, setExpanded] = useState(false)
@@ -25,6 +26,18 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   useEffect(() => {
     setCollapsed(node.meta.collapsed === true)
   }, [node.id, node.meta.collapsed])
+
+  useEffect(() => {
+    if (!expanded) return
+    const frame = requestAnimationFrame(() => {
+      dialogRef.current
+        ?.querySelector<HTMLElement>('[role="textbox"], [contenteditable="true"]')
+        ?.focus()
+    })
+    return () => {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
+    }
+  }, [expanded])
 
   const commit = async (document: PlanningDocumentV1) => {
     const token = ++requestTokenRef.current
@@ -41,9 +54,26 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   }
 
   const handleExpandedKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.nativeEvent.isComposing || event.key !== 'Escape') return
-    event.preventDefault()
-    closeExpanded()
+    if (event.nativeEvent.isComposing) return
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeExpanded()
+      return
+    }
+    if (event.key !== 'Tab') return
+    const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [contenteditable="true"], [tabindex]:not([tabindex="-1"])'
+    ))
+    if (focusable.length === 0) return
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    const active = typeof document === 'undefined' ? null : document.activeElement
+    const activeInside = Boolean(active && event.currentTarget.contains(active))
+    if (event.shiftKey ? active === first || !activeInside : active === last || !activeInside) {
+      event.preventDefault()
+      const target = event.shiftKey ? last : first
+      target.focus()
+    }
   }
 
   const toggleCollapsed = async () => {
@@ -68,6 +98,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
 
   const expandedEditor = expanded ? (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-labelledby={`document-editor-title-${node.id}`}

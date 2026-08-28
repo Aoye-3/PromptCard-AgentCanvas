@@ -19,7 +19,7 @@ import {
   TableHeader,
   TableRow
 } from '@tiptap/extension-table'
-import { Fragment, Slice } from '@tiptap/pm/model'
+import { Fragment, Slice, type Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
 import type {
@@ -127,35 +127,6 @@ export const planningDocumentPlainTextPasteJson = (
   attrs: { blockId: uniqueGeneratedId(new Set(), idFactory) },
   ...(line.length > 0 ? { content: [{ type: 'text', text: line.normalize('NFC') }] } : {})
 }))
-
-export const repairPlanningDocumentTiptapIds = (
-  json: JSONContent,
-  idFactory: IdFactory = generatePlanningDocumentBlockId
-): JSONContent => {
-  const seen = new Set<string>()
-  const visit = (node: JSONContent, parentType: string | null): JSONContent => {
-    const cloned: JSONContent = {
-      ...node,
-      ...(node.attrs ? { attrs: { ...node.attrs } } : {}),
-      ...(node.marks ? { marks: node.marks.map(mark => ({ ...mark, ...(mark.attrs ? { attrs: { ...mark.attrs } } : {}) })) } : {})
-    }
-    if (node.type === 'paragraph' && parentType !== 'doc') {
-      cloned.attrs = { ...(cloned.attrs || {}), blockId: null }
-    } else if (nodeNeedsCanonicalId(node.type, parentType)) {
-      const current = typeof cloned.attrs?.blockId === 'string' && cloned.attrs.blockId.length > 0
-        ? cloned.attrs.blockId
-        : null
-      const inherited = inheritedNestedParagraphId(node)
-      const preferred = current || inherited
-      const blockId = preferred && !seen.has(preferred) ? preferred : uniqueGeneratedId(seen, idFactory)
-      seen.add(blockId)
-      cloned.attrs = { ...(cloned.attrs || {}), blockId }
-    }
-    if (node.content) cloned.content = node.content.map(child => visit(child, node.type || null))
-    return cloned
-  }
-  return visit(json, null)
-}
 
 const planningDocumentBlockIdExtension = (idFactory: IdFactory): Extension => Extension.create({
   name: 'planningDocumentBlockId',
@@ -455,13 +426,29 @@ const inheritedNestedParagraphId = (node: JSONContent): string | null => {
 }
 
 const previousTextBlockId = (
-  previous: { isTextblock: boolean; textContent: string; attrs: Record<string, unknown> } | null,
-  current: { isTextblock: boolean; textContent: string }
+  previous: ProseMirrorNode | null,
+  current: ProseMirrorNode
 ): string | null => {
-  if (!previous?.isTextblock || !current.isTextblock || previous.textContent !== current.textContent) return null
-  const id = previous.attrs.blockId
-  return typeof id === 'string' && id.length > 0 ? id : null
+  if (!previous || !current.isTextblock) return null
+  if (previous.isTextblock && previous.textContent === current.textContent) {
+    const id = previous.attrs.blockId
+    return typeof id === 'string' && id.length > 0 ? id : null
+  }
+  let matched: string | null = null
+  const matchLeafContainer = (node: ProseMirrorNode) => {
+    if (matched || !previousLeafContainerNodes.has(node.type.name) || node.textContent !== current.textContent) return
+    const id = node.attrs.blockId
+    if (typeof id === 'string' && id.length > 0) matched = id
+  }
+  matchLeafContainer(previous)
+  previous.descendants(node => {
+    matchLeafContainer(node)
+    return matched === null
+  })
+  return matched
 }
+
+const previousLeafContainerNodes = new Set(['blockquote', 'listItem', 'taskItem'])
 
 const uniqueGeneratedId = (seen: Set<string>, idFactory: IdFactory): string => {
   for (let attempt = 0; attempt < 100; attempt += 1) {

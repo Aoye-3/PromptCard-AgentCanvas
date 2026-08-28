@@ -8,8 +8,10 @@ import type {
 import {
   applyCanvasLocalCommand,
   createCanvasCommandHistory,
+  discardCanvasCommandHistoryEntry,
   duplicateCanvasImageNode,
   executeCanvasLocalCommand,
+  recoverFailedCanvasHistoryStep,
   redoCanvasLocalCommand,
   undoCanvasLocalCommand
 } from './canvas-command-history'
@@ -217,5 +219,73 @@ describe('canvas command history', () => {
 
     expect(applyCanvasLocalCommand(canvas, { kind: 'update-document', nodeId: 'missing', document }).project).toBe(canvas)
     expect(applyCanvasLocalCommand(canvas, { kind: 'update-document', nodeId: 'text-b', document }).project).toBe(canvas)
+  })
+
+  it('discards only a failed Document entry while preserving a later image command', () => {
+    const source = documentNode('document-a')
+    const canvas: IFreeCanvasProject = { ...project(), nodes: [source, ...project().nodes] }
+    const documentCommand = executeCanvasLocalCommand(createCanvasCommandHistory(), canvas, {
+      kind: 'update-document',
+      nodeId: source.id,
+      document: createPlanningDocumentV1([{ id: 'document-a-paragraph', type: 'paragraph', content: [{ text: 'After' }] }])
+    })
+    const imageCommand = executeCanvasLocalCommand(documentCommand.history, documentCommand.project, {
+      kind: 'flip-image', nodeId: 'image-a', axis: 'horizontal'
+    })
+    const failedEntry = documentCommand.history.past[0]
+
+    const recovered = discardCanvasCommandHistoryEntry(imageCommand.history, failedEntry)
+    const undone = undoCanvasLocalCommand(recovered, imageCommand.project)
+    const redone = redoCanvasLocalCommand(undone.history, undone.project)
+
+    expect(recovered.past).toEqual([imageCommand.history.past[1]])
+    expect(undone.project.nodes.find(node => node.id === 'image-a')?.meta.presentation)
+      .toEqual({ flipX: false, flipY: false })
+    expect(redone.project.nodes.find(node => node.id === 'image-a')?.meta.presentation)
+      .toEqual({ flipX: true, flipY: false })
+  })
+
+  it('restores a failed undo before a later image command so the later command remains undoable and redoable', () => {
+    const first = executeCanvasLocalCommand(createCanvasCommandHistory(), project(), {
+      kind: 'reorder-node', nodeId: 'image-a', toIndex: 2
+    })
+    const targetEntry = first.history.past[0]
+    const appliedUndo = undoCanvasLocalCommand(first.history, first.project)
+    const later = executeCanvasLocalCommand(appliedUndo.history, appliedUndo.project, {
+      kind: 'flip-image', nodeId: 'image-c', axis: 'vertical'
+    })
+
+    const recovered = recoverFailedCanvasHistoryStep(later.history, first.history, targetEntry, 'undo')
+    const undoneLater = undoCanvasLocalCommand(recovered, later.project)
+    const redoneLater = redoCanvasLocalCommand(undoneLater.history, undoneLater.project)
+
+    expect(recovered.past).toEqual([targetEntry, later.history.past[0]])
+    expect((undoneLater.project.nodes.find(node => node.id === 'image-c') as IFreeCanvasImageNode).meta.presentation)
+      .toEqual({ flipX: false, flipY: false })
+    expect((redoneLater.project.nodes.find(node => node.id === 'image-c') as IFreeCanvasImageNode).meta.presentation)
+      .toEqual({ flipX: false, flipY: true })
+  })
+
+  it('removes a failed redo without dropping a later image command or inventing a stale future', () => {
+    const first = executeCanvasLocalCommand(createCanvasCommandHistory(), project(), {
+      kind: 'reorder-node', nodeId: 'image-a', toIndex: 2
+    })
+    const undone = undoCanvasLocalCommand(first.history, first.project)
+    const targetEntry = undone.history.future[0]
+    const appliedRedo = redoCanvasLocalCommand(undone.history, undone.project)
+    const later = executeCanvasLocalCommand(appliedRedo.history, appliedRedo.project, {
+      kind: 'flip-image', nodeId: 'image-c', axis: 'vertical'
+    })
+
+    const recovered = recoverFailedCanvasHistoryStep(later.history, undone.history, targetEntry, 'redo')
+    const undoneLater = undoCanvasLocalCommand(recovered, later.project)
+    const redoneLater = redoCanvasLocalCommand(undoneLater.history, undoneLater.project)
+
+    expect(recovered.past).toEqual([later.history.past[1]])
+    expect(recovered.future).toEqual([])
+    expect((undoneLater.project.nodes.find(node => node.id === 'image-c') as IFreeCanvasImageNode).meta.presentation)
+      .toEqual({ flipX: false, flipY: false })
+    expect((redoneLater.project.nodes.find(node => node.id === 'image-c') as IFreeCanvasImageNode).meta.presentation)
+      .toEqual({ flipX: false, flipY: true })
   })
 })

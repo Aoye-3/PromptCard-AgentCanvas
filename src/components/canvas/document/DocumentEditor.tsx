@@ -62,7 +62,7 @@ export const DocumentEditor = ({
       <DocumentEditorToolbar editor={editor} />
       <EditorContent
         editor={editor}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm leading-6 text-gray-900 outline-none [&_.ProseMirror]:min-h-full [&_.ProseMirror]:outline-none [&_blockquote]:border-l-2 [&_blockquote]:border-gray-300 [&_blockquote]:pl-3 [&_h1]:text-xl [&_h1]:font-black [&_h2]:text-lg [&_h2]:font-black [&_h3]:text-base [&_h3]:font-bold [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-gray-200 [&_td]:p-2 [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:p-2"
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm leading-6 text-gray-900 outline-none [&_.ProseMirror]:min-h-full [&_.ProseMirror]:outline-none [&_a]:text-sky-700 [&_a]:underline [&_a]:decoration-sky-400 [&_a]:underline-offset-2 [&_blockquote]:border-l-2 [&_blockquote]:border-gray-300 [&_blockquote]:pl-3 [&_h1]:text-xl [&_h1]:font-black [&_h2]:text-lg [&_h2]:font-black [&_h3]:text-base [&_h3]:font-bold [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6 [&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-gray-200 [&_td]:p-2 [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:p-2"
       />
     </section>
   )

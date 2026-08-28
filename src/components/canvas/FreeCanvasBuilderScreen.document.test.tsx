@@ -134,15 +134,15 @@ vi.mock('@/storage/storage-service-client', async importOriginal => {
 
 import { FreeCanvasBuilderScreen } from './FreeCanvasBuilderScreen'
 
-const documentNode = (): IFreeCanvasDocumentNode => ({
-  id: 'document-1',
+const documentNode = (id = 'document-1', text = 'Before'): IFreeCanvasDocumentNode => ({
+  id,
   kind: 'document',
-  title: 'Creative brief',
+  title: `Creative brief ${id}`,
   position: { x: 40, y: 50 },
   width: 560,
   height: 420,
   document: createPlanningDocumentV1([
-    { id: 'document-1-paragraph', type: 'paragraph', content: [{ text: 'Before' }] }
+    { id: `${id}-paragraph`, type: 'paragraph', content: [{ text }] }
   ]),
   linkedDocumentResourceIds: [],
   meta: {}
@@ -169,6 +169,20 @@ const initialCanvas = (): IFreeCanvasProject => ({
   selectedNodeId: 'document-1',
   meta: {}
 })
+
+const twoDocumentCanvas = (): IFreeCanvasProject => ({
+  ...initialCanvas(),
+  nodes: [documentNode('document-1', 'Before A'), documentNode('document-2', 'Before B')]
+})
+
+const renderedDocument = (renderer: ReturnType<typeof create>, id: string) =>
+  renderer.root.findByProps({ 'data-screen-document-node': id })
+
+const canvasDocumentTexts = (canvas: IFreeCanvasProject): Record<string, string> => Object.fromEntries(
+  canvas.nodes.flatMap(node => node.kind === 'document'
+    ? [[node.id, planningDocumentEffectiveText(node.document)] as const]
+    : [])
+)
 
 const unrelatedTextNode = (): IFreeCanvasTextNode => ({
   id: 'async-text-1',
@@ -423,6 +437,132 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     expect(persistedTexts).toEqual(['After', 'Before', 'After', 'Before'])
     expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-text']).toBe('Before')
     expect(renderer.root.findByProps({ 'data-flow-node': 'async-text-1' })).toBeDefined()
+  })
+
+  it('removes only delayed failed Document A history while successful Document B remains undoable and redoable', async () => {
+    const delayedA = deferred<boolean>()
+    const snapshots: Array<Record<string, string>> = []
+    let call = 0
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      snapshots.push(canvasDocumentTexts(canvas))
+      call += 1
+      return call === 1 ? delayedA.promise : Promise.resolve(true)
+    })
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(twoDocumentCanvas())
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    let editA!: Promise<boolean>
+    act(() => { editA = renderedDocument(renderer, 'document-1').findByProps({ 'aria-label': '测试编辑文档' }).props.onClick() })
+    await act(async () => renderedDocument(renderer, 'document-2').findByProps({ 'aria-label': '测试编辑文档' }).props.onClick())
+    await act(async () => { delayedA.resolve(false); await editA })
+
+    expect(snapshots.slice(0, 3)).toEqual([
+      { 'document-1': 'After', 'document-2': 'Before B' },
+      { 'document-1': 'After', 'document-2': 'After' },
+      { 'document-1': 'Before A', 'document-2': 'After' }
+    ])
+    expect(renderedDocument(renderer, 'document-1').props['data-document-text']).toBe('Before A')
+    expect(renderedDocument(renderer, 'document-2').props['data-document-text']).toBe('After')
+
+    await dispatchWindowKey('z')
+    expect(snapshots[3]).toEqual({ 'document-1': 'Before A', 'document-2': 'Before B' })
+    await dispatchWindowKey('y')
+    expect(snapshots[4]).toEqual({ 'document-1': 'Before A', 'document-2': 'After' })
+  })
+
+  it('removes only a failed Document creation while a concurrent existing-node edit remains undoable', async () => {
+    const delayedCreate = deferred<boolean>()
+    const snapshots: Array<Record<string, string>> = []
+    let call = 0
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      snapshots.push(canvasDocumentTexts(canvas))
+      call += 1
+      return call === 1 ? delayedCreate.promise : Promise.resolve(true)
+    })
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    act(() => { renderer.root.findByProps({ title: 'Document' }).props.onClick() })
+    await act(async () => renderedDocument(renderer, 'document-1').findByProps({ 'aria-label': '测试编辑文档' }).props.onClick())
+    await act(async () => {
+      delayedCreate.resolve(false)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(Object.keys(snapshots[0])).toHaveLength(2)
+    expect(snapshots[1]['document-1']).toBe('After')
+    expect(snapshots[2]).toEqual({ 'document-1': 'After' })
+    expect(renderer.root.findAll(node => node.props['data-screen-document-node'])).toHaveLength(1)
+
+    await dispatchWindowKey('z')
+    expect(snapshots[3]).toEqual({ 'document-1': 'Before' })
+  })
+
+  it.each(['undo', 'redo'] as const)('recovers a failed persisted %s without dropping a concurrent Document command', async direction => {
+    const delayedHistory = deferred<boolean>()
+    const snapshots: Array<Record<string, string>> = []
+    const failureCall = direction === 'undo' ? 2 : 3
+    let call = 0
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      snapshots.push(canvasDocumentTexts(canvas))
+      call += 1
+      return call === failureCall ? delayedHistory.promise : Promise.resolve(true)
+    })
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(twoDocumentCanvas())
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => renderedDocument(renderer, 'document-1').findByProps({ 'aria-label': '测试编辑文档' }).props.onClick())
+    if (direction === 'redo') await dispatchWindowKey('z')
+    await dispatchWindowKey(direction === 'undo' ? 'z' : 'y')
+    await act(async () => renderedDocument(renderer, 'document-2').findByProps({ 'aria-label': '测试编辑文档' }).props.onClick())
+    await act(async () => {
+      delayedHistory.resolve(false)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const recoveredA = direction === 'undo' ? 'After' : 'Before A'
+    expect(renderedDocument(renderer, 'document-1').props['data-document-text']).toBe(recoveredA)
+    expect(renderedDocument(renderer, 'document-2').props['data-document-text']).toBe('After')
+    expect(snapshots[snapshots.length - 1]).toEqual({
+      'document-1': recoveredA,
+      'document-2': 'After'
+    })
+
+    await dispatchWindowKey('z')
+    expect(renderedDocument(renderer, 'document-2').props['data-document-text']).toBe('Before B')
+    await dispatchWindowKey('y')
+    expect(renderedDocument(renderer, 'document-2').props['data-document-text']).toBe('After')
   })
 
   it('persists collapsed Document metadata through the canvas snapshot', async () => {

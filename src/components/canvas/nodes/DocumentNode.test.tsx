@@ -62,6 +62,54 @@ describe('DocumentNode', () => {
     expect(renderer.root.findByProps({ 'data-document-collapsed-summary': true }).children.join('')).toContain('Single canonical draft body')
   })
 
+  it('moves focus into the aria-modal editor, traps Tab both ways, and returns focus after Escape', () => {
+    let activeElement: unknown = null
+    const editorElement = { focus: vi.fn(() => { activeElement = editorElement }) }
+    const closeElement = { focus: vi.fn(() => { activeElement = closeElement }) }
+    const expandElement = { focus: vi.fn(() => { activeElement = expandElement }) }
+    const dialogElement = {
+      querySelector: vi.fn(() => editorElement),
+      querySelectorAll: vi.fn(() => [closeElement, editorElement]),
+      contains: vi.fn((candidate: unknown) => candidate === editorElement || candidate === closeElement)
+    }
+    vi.stubGlobal('document', {
+      get activeElement() { return activeElement }
+    })
+    const renderer = create(
+      <DocumentNode node={node()} selected onDocumentChange={vi.fn().mockResolvedValue(true)} onDelete={vi.fn()} />,
+      {
+        createNodeMock: element => {
+          if (element.props.role === 'dialog') return dialogElement
+          if (element.props['aria-label'] === '展开编辑器') return expandElement
+          return null
+        }
+      }
+    )
+
+    act(() => renderer.root.findByProps({ 'aria-label': '展开编辑器' }).props.onClick())
+    const dialog = renderer.root.findByProps({ role: 'dialog' })
+    expect(dialog.props['aria-modal']).toBe('true')
+    expect(editorElement.focus).toHaveBeenCalled()
+
+    activeElement = editorElement
+    const forward = { key: 'Tab', shiftKey: false, currentTarget: dialogElement, nativeEvent: { isComposing: false }, preventDefault: vi.fn() }
+    act(() => dialog.props.onKeyDown(forward))
+    expect(forward.preventDefault).toHaveBeenCalled()
+    expect(closeElement.focus).toHaveBeenCalled()
+
+    activeElement = closeElement
+    const backward = { key: 'Tab', shiftKey: true, currentTarget: dialogElement, nativeEvent: { isComposing: false }, preventDefault: vi.fn() }
+    act(() => dialog.props.onKeyDown(backward))
+    expect(backward.preventDefault).toHaveBeenCalled()
+    expect(editorElement.focus).toHaveBeenCalledTimes(2)
+
+    const escape = { key: 'Escape', shiftKey: false, currentTarget: dialogElement, nativeEvent: { isComposing: false }, preventDefault: vi.fn() }
+    act(() => dialog.props.onKeyDown(escape))
+    expect(escape.preventDefault).toHaveBeenCalled()
+    expect(renderer.root.findAllByProps({ role: 'dialog' })).toHaveLength(0)
+    expect(expandElement.focus).toHaveBeenCalled()
+  })
+
   it('keeps one canonical state across inline and expanded editors', async () => {
     const Wrapper = () => {
       const [current, setCurrent] = useState(node())
