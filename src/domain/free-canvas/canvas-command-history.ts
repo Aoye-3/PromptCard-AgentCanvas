@@ -174,6 +174,12 @@ export const applyCanvasLocalCommand = (
   }
 
   if (command.kind === 'restore-nodes') {
+    const existingNodeIds = new Set(project.nodes.map(node => node.id))
+    const restoredNodeIds = command.nodes.map(item => item.node.id)
+    if (
+      new Set(restoredNodeIds).size !== restoredNodeIds.length
+      || restoredNodeIds.some(nodeId => existingNodeIds.has(nodeId))
+    ) return { project, inverse: command }
     const nodes = insertIndexed(project.nodes, command.nodes)
     const edges = insertIndexed(project.edges, command.edges)
     return {
@@ -207,6 +213,9 @@ export const applyCanvasLocalCommand = (
     }
   }
 
+  if (project.nodes.some(node => node.id === command.node.id)) {
+    return { project, inverse: command }
+  }
   const index = clampInsertionIndex(command.index, project.nodes.length)
   const nodes = [...project.nodes]
   nodes.splice(index, 0, cloneNode(command.node))

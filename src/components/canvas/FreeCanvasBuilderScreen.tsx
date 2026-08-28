@@ -248,18 +248,7 @@ const isCanvasImageDrag = (dataTransfer: DataTransfer): boolean =>
 
 type DocumentAuthorityNode = Extract<IFreeCanvasNode, { kind: 'document' }>
 
-type DocumentAuthoritySnapshot =
-  | { id: string; state: 'absent' }
-  | { id: string; state: 'document'; identity: string }
-  | { id: string; state: 'conflict' }
-
-interface DocumentMutationQueueScope {
-  hasNewerMutation: () => boolean
-}
-
-const currentDocumentMutationScope: DocumentMutationQueueScope = { hasNewerMutation: () => false }
-
-const documentMutationQueueKey = (projectId: string, nodeId: string): string => `${projectId}:${nodeId}`
+const documentMutationQueueKey = (projectId: string): string => projectId
 
 const stableSemanticJson = (value: unknown): string => {
   if (value === undefined) return 'undefined'
@@ -274,40 +263,21 @@ const stableSemanticJson = (value: unknown): string => {
     .join(',')}}`
 }
 
-const captureDocumentAuthorities = (
-  canvas: IFreeCanvasProject,
-  nodeIds: readonly string[]
-): DocumentAuthoritySnapshot[] => nodeIds.map(id => {
-  const matching = canvas.nodes.filter(node => node.id === id)
-  if (matching.length === 0) return { id, state: 'absent' }
-  if (matching.length === 1 && matching[0].kind === 'document') {
-    return { id, state: 'document', identity: stableSemanticJson(matching[0]) }
-  }
-  return { id, state: 'conflict' }
-})
-
-const hasExactDocumentAuthorities = (
-  canvas: IFreeCanvasProject,
-  attempted: readonly DocumentAuthoritySnapshot[]
-): boolean => attempted.every(expected => {
-  const current = captureDocumentAuthorities(canvas, [expected.id])[0]
-  if (expected.state === 'conflict' || current.state !== expected.state) return false
-  return expected.state === 'absent' || (
-    current.state === 'document' && current.identity === expected.identity
-  )
-})
-
 const hasExactDocumentAuthority = (
   canvas: IFreeCanvasProject,
   nodeId: string,
   attempted: DocumentAuthorityNode
 ): boolean => {
-  return hasExactDocumentAuthorities(canvas, [{
-    id: nodeId,
-    state: 'document',
-    identity: stableSemanticJson(attempted)
-  }])
+  const matching = canvas.nodes.filter(node => node.id === nodeId)
+  return matching.length === 1
+    && matching[0].kind === 'document'
+    && stableSemanticJson(matching[0]) === stableSemanticJson(attempted)
 }
+
+const canvasHistoryAuthorityIdentity = (canvas: IFreeCanvasProject): string => stableSemanticJson({
+  nodes: canvas.nodes,
+  edges: canvas.edges
+})
 
 const isTypingTarget = (target: EventTarget | null): boolean => {
   const element = target instanceof HTMLElement ? target : null
@@ -1915,96 +1885,84 @@ const FreeCanvasBuilderInner = ({
 
   const enqueueDocumentMutation = useCallback(<T,>(
     projectId: string,
-    nodeIds: string | readonly string[],
-    operation: (scope: DocumentMutationQueueScope) => Promise<T>
+    operation: () => Promise<T>
   ): Promise<T> => {
-    const queueKeys = [...new Set(typeof nodeIds === 'string' ? [nodeIds] : nodeIds)]
-      .sort()
-      .map(nodeId => documentMutationQueueKey(projectId, nodeId))
-    const previousTails = [...new Set(queueKeys.flatMap(queueKey => {
-      const tail = documentMutationQueuesRef.current.get(queueKey)
-      return tail ? [tail] : []
-    }))]
-    let tail!: Promise<void>
-    const scope: DocumentMutationQueueScope = {
-      hasNewerMutation: () => queueKeys.some(
-        queueKey => documentMutationQueuesRef.current.get(queueKey) !== tail
-      )
-    }
-    const result = previousTails.length > 0
-      ? Promise.all(previousTails).then(() => operation(scope))
-      : operation(scope)
-    tail = result.then(() => undefined, () => undefined)
-    queueKeys.forEach(queueKey => documentMutationQueuesRef.current.set(queueKey, tail))
+    const queueKey = documentMutationQueueKey(projectId)
+    const previous = documentMutationQueuesRef.current.get(queueKey)
+    const result = previous ? previous.then(operation) : operation()
+    const tail = result.then(() => undefined, () => undefined)
+    documentMutationQueuesRef.current.set(queueKey, tail)
     void tail.finally(() => {
-      queueKeys.forEach(queueKey => {
-        if (documentMutationQueuesRef.current.get(queueKey) === tail) {
-          documentMutationQueuesRef.current.delete(queueKey)
-        }
-      })
+      if (documentMutationQueuesRef.current.get(queueKey) === tail) {
+        documentMutationQueuesRef.current.delete(queueKey)
+      }
     })
     return result
   }, [])
 
-  const createDocument = useCallback(async () => {
+  const createDocument = useCallback(() => {
     const projectId = activeProjectIdRef.current
-    const beforeCanvas = freeCanvasRef.current
-    const beforeHistory = canvasCommandHistoryRef.current
-    const node = createFreeCanvasDocumentNode(nextNodePosition(reactFlow, beforeCanvas.nodes.length))
-    const executed = executeCanvasLocalCommand(beforeHistory, beforeCanvas, {
-      kind: 'insert-node',
-      node,
-      index: beforeCanvas.nodes.length
-    })
-    const attemptedNode = executed.project.nodes.find(
-      (candidate): candidate is DocumentAuthorityNode => candidate.id === node.id && candidate.kind === 'document'
-    )
-    if (!attemptedNode) return
-    canvasCommandHistoryRef.current = executed.history
-    commitCanvasSelection(executed.project, node.id)
-    if (!onPersistCanvas) return
-
-    let saved = false
-    try {
-      saved = Boolean(await onPersistCanvas?.(executed.project))
-    } catch {
-      saved = false
-    }
-    if (saved) return
-
-    const failedEntry = executed.history.past[executed.history.past.length - 1]
-    const currentCanvas = freeCanvasRef.current
-    const projectIsCurrent = activeProjectIdRef.current === projectId
-    if (projectIsCurrent) {
-      canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
-        canvasCommandHistoryRef.current,
-        failedEntry
+    return enqueueDocumentMutation(projectId, async () => {
+      if (activeProjectIdRef.current !== projectId) return
+      const beforeCanvas = freeCanvasRef.current
+      const beforeHistory = canvasCommandHistoryRef.current
+      const node = createFreeCanvasDocumentNode(nextNodePosition(reactFlow, beforeCanvas.nodes.length))
+      const executed = executeCanvasLocalCommand(beforeHistory, beforeCanvas, {
+        kind: 'insert-node',
+        node,
+        index: beforeCanvas.nodes.length
+      })
+      if (executed.project === beforeCanvas) return
+      const attemptedNode = executed.project.nodes.find(
+        (candidate): candidate is DocumentAuthorityNode => candidate.id === node.id && candidate.kind === 'document'
       )
-    }
-    if (!projectIsCurrent || !hasExactDocumentAuthority(currentCanvas, node.id, attemptedNode)) return
+      if (!attemptedNode) return
+      canvasCommandHistoryRef.current = executed.history
+      commitCanvasSelection(executed.project, node.id)
+      if (!onPersistCanvas) return
 
-    const rolledBack = applyCanvasLocalCommand(currentCanvas, failedEntry.undo)
-    const recovery = {
-      ...rolledBack.project,
-      selectedNodeId: currentCanvas.selectedNodeId === node.id
-        ? beforeCanvas.selectedNodeId
-        : rolledBack.project.selectedNodeId
-    }
-    commitCanvasSelection(recovery, recovery.selectedNodeId || null)
-    try {
-      await onPersistCanvas?.(recovery)
-    } catch {
-      // The recovery snapshot remains the newest retained request for an explicit retry.
-    }
-    setUploadError('文档创建保存失败，请重试。')
-  }, [commitCanvasSelection, onPersistCanvas, reactFlow])
+      let saved = false
+      try {
+        saved = Boolean(await onPersistCanvas(executed.project))
+      } catch {
+        saved = false
+      }
+      if (saved) return
+
+      const failedEntry = executed.history.past[executed.history.past.length - 1]
+      const currentCanvas = freeCanvasRef.current
+      const projectIsCurrent = activeProjectIdRef.current === projectId
+      if (projectIsCurrent) {
+        canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
+          canvasCommandHistoryRef.current,
+          failedEntry
+        )
+      }
+      if (!projectIsCurrent || !hasExactDocumentAuthority(currentCanvas, node.id, attemptedNode)) return
+
+      const rolledBack = applyCanvasLocalCommand(currentCanvas, failedEntry.undo)
+      const recovery = {
+        ...rolledBack.project,
+        selectedNodeId: currentCanvas.selectedNodeId === node.id
+          ? beforeCanvas.selectedNodeId
+          : rolledBack.project.selectedNodeId
+      }
+      commitCanvasSelection(recovery, recovery.selectedNodeId || null)
+      try {
+        await onPersistCanvas(recovery)
+      } catch {
+        // The recovery snapshot remains the newest retained request for an explicit retry.
+      }
+      setUploadError('文档创建保存失败，请重试。')
+    })
+  }, [commitCanvasSelection, enqueueDocumentMutation, onPersistCanvas, reactFlow])
 
   const updateDocumentNode = useCallback((
     nodeId: string,
     document: PlanningDocumentV1
   ): Promise<boolean> => {
     const projectId = activeProjectIdRef.current
-    return enqueueDocumentMutation(projectId, nodeId, async () => {
+    return enqueueDocumentMutation(projectId, async () => {
       if (activeProjectIdRef.current !== projectId) return true
       const beforeCanvas = freeCanvasRef.current
       const beforeHistory = canvasCommandHistoryRef.current
@@ -2061,7 +2019,7 @@ const FreeCanvasBuilderInner = ({
     collapsed: boolean
   ): Promise<boolean> => {
     const projectId = activeProjectIdRef.current
-    return enqueueDocumentMutation(projectId, nodeId, async () => {
+    return enqueueDocumentMutation(projectId, async () => {
       if (activeProjectIdRef.current !== projectId) return true
       const beforeCanvas = freeCanvasRef.current
       const current = beforeCanvas.nodes.find(node => node.id === nodeId)
@@ -2278,24 +2236,25 @@ const FreeCanvasBuilderInner = ({
 
   const applyPersistedCanvasHistoryStep = useCallback((direction: 'undo' | 'redo') => {
     const projectId = activeProjectIdRef.current
-    const run = async (
-      queueScope: DocumentMutationQueueScope = currentDocumentMutationScope
-    ): Promise<boolean> => {
+    const requestedHistory = canvasCommandHistoryRef.current
+    const entry = direction === 'redo'
+      ? requestedHistory.future[0]
+      : requestedHistory.past[requestedHistory.past.length - 1]
+    if (!entry) return Promise.resolve(true)
+
+    const run = async (): Promise<boolean> => {
       if (activeProjectIdRef.current !== projectId) return true
       const beforeCanvas = freeCanvasRef.current
       const beforeHistory = canvasCommandHistoryRef.current
+      const currentEntry = direction === 'redo'
+        ? beforeHistory.future[0]
+        : beforeHistory.past[beforeHistory.past.length - 1]
+      if (currentEntry !== entry) return true
       const applied = direction === 'redo'
         ? redoCanvasLocalCommand(beforeHistory, beforeCanvas)
         : undoCanvasLocalCommand(beforeHistory, beforeCanvas)
       if (applied.project === beforeCanvas) return true
-      const entry = direction === 'redo'
-        ? beforeHistory.future[0]
-        : beforeHistory.past[beforeHistory.past.length - 1]
-      const affectedDocumentNodeIds = canvasHistoryEntryDocumentNodeIds(entry)
-      const attemptedDocumentAuthorities = captureDocumentAuthorities(
-        applied.project,
-        affectedDocumentNodeIds
-      )
+      const attemptedCanvasAuthority = canvasHistoryAuthorityIdentity(applied.project)
 
       canvasCommandHistoryRef.current = applied.history
       commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
@@ -2310,11 +2269,9 @@ const FreeCanvasBuilderInner = ({
       if (saved) return true
 
       const projectIsCurrent = activeProjectIdRef.current === projectId
-      const attemptedAuthorityIsCurrent = hasExactDocumentAuthorities(
-        freeCanvasRef.current,
-        attemptedDocumentAuthorities
-      )
-      if (!projectIsCurrent || queueScope.hasNewerMutation() || !attemptedAuthorityIsCurrent) {
+      const attemptedAuthorityIsCurrent = canvasHistoryAuthorityIdentity(freeCanvasRef.current)
+        === attemptedCanvasAuthority
+      if (!projectIsCurrent || !attemptedAuthorityIsCurrent) {
         if (projectIsCurrent) {
           canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
             canvasCommandHistoryRef.current,
@@ -2342,14 +2299,10 @@ const FreeCanvasBuilderInner = ({
       return false
     }
 
-    const history = canvasCommandHistoryRef.current
-    const entry = direction === 'redo' ? history.future[0] : history.past[history.past.length - 1]
-    const affectedDocumentNodeIds = entry ? canvasHistoryEntryDocumentNodeIds(entry) : []
+    const affectedDocumentNodeIds = canvasHistoryEntryDocumentNodeIds(entry)
     if (affectedDocumentNodeIds.length > 0) {
-      return enqueueDocumentMutation(projectId, affectedDocumentNodeIds, run)
+      return enqueueDocumentMutation(projectId, run)
     }
-    const selected = freeCanvasRef.current.nodes.find(node => node.id === freeCanvasRef.current.selectedNodeId)
-    if (selected?.kind === 'document') return enqueueDocumentMutation(projectId, selected.id, run)
     return run()
   }, [commitCanvasSelection, enqueueDocumentMutation, onPersistCanvas])
 

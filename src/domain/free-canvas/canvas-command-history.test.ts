@@ -16,6 +16,7 @@ import {
   redoCanvasLocalCommand,
   undoCanvasLocalCommand
 } from './canvas-command-history'
+import type { CanvasLocalCommand } from './canvas-command-history'
 import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
 
 const imageNode = (id: string): IFreeCanvasImageNode => ({
@@ -68,6 +69,72 @@ const project = (): IFreeCanvasProject => ({
 })
 
 describe('canvas command history', () => {
+  it.each([
+    {
+      label: 'Document',
+      projectNodes: [documentNode('shared-id')],
+      insertedNode: documentNode('shared-id', 'Replacement')
+    },
+    {
+      label: 'other-kind',
+      projectNodes: [textNode('shared-id')],
+      insertedNode: documentNode('shared-id', 'Replacement')
+    },
+    {
+      label: 'malformed existing duplicates',
+      projectNodes: [documentNode('shared-id'), textNode('shared-id')],
+      insertedNode: documentNode('shared-id', 'Replacement')
+    }
+  ])('rejects insert-node before mutation when the id collides with $label authority', ({ projectNodes, insertedNode }) => {
+    const canvas = { ...project(), nodes: projectNodes }
+    const command: CanvasLocalCommand = { kind: 'insert-node', node: insertedNode, index: 0 }
+
+    const result = applyCanvasLocalCommand(canvas, command)
+    const history = createCanvasCommandHistory()
+    const executed = executeCanvasLocalCommand(history, canvas, command)
+
+    expect(result.project).toBe(canvas)
+    expect(result.inverse).toEqual(command)
+    expect(executed).toEqual({ project: canvas, history })
+  })
+
+  it.each([
+    {
+      label: 'an existing Document',
+      projectNodes: [documentNode('shared-id')],
+      restoredNodes: [{ index: 0, node: textNode('shared-id') }]
+    },
+    {
+      label: 'an existing other-kind node',
+      projectNodes: [textNode('shared-id')],
+      restoredNodes: [{ index: 0, node: documentNode('shared-id') }]
+    },
+    {
+      label: 'duplicate ids inside the restore payload',
+      projectNodes: [],
+      restoredNodes: [
+        { index: 0, node: documentNode('shared-id') },
+        { index: 1, node: textNode('shared-id') }
+      ]
+    }
+  ])('rejects restore-nodes before mutation when it would introduce $label', ({ projectNodes, restoredNodes }) => {
+    const canvas = { ...project(), nodes: projectNodes }
+    const command: CanvasLocalCommand = {
+      kind: 'restore-nodes',
+      nodes: restoredNodes,
+      edges: [],
+      selectedNodeId: null
+    }
+
+    const result = applyCanvasLocalCommand(canvas, command)
+    const history = createCanvasCommandHistory()
+    const executed = executeCanvasLocalCommand(history, canvas, command)
+
+    expect(result.project).toBe(canvas)
+    expect(result.inverse).toEqual(command)
+    expect(executed).toEqual({ project: canvas, history })
+  })
+
   it('collects deterministic affected Document ids from update, insert, restore, and paired delete commands', () => {
     expect(canvasHistoryEntryDocumentNodeIds({
       undo: { kind: 'update-document', nodeId: 'document-b', document: documentNode('document-b').document },
