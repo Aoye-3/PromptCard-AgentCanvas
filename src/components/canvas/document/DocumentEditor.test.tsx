@@ -1,13 +1,16 @@
+import { useState } from 'react'
 import { act, create } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
+import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
+import type { PlanningDocumentV1 } from '@/models/PromptHistory.model'
 
 const mocks = vi.hoisted(() => ({
   options: null as Record<string, unknown> | null,
   run: vi.fn(),
   setContent: vi.fn(),
   setLink: vi.fn(),
-  unsetLink: vi.fn()
+  unsetLink: vi.fn(),
+  currentJson: null as unknown
 }))
 
 vi.mock('@tiptap/react', () => {
@@ -32,8 +35,13 @@ vi.mock('@tiptap/react', () => {
   })
   const editor = {
     chain: () => chain,
-    commands: { setContent: mocks.setContent },
-    getJSON: vi.fn(),
+    commands: {
+      setContent: (content: unknown, options: unknown) => {
+        mocks.currentJson = content
+        mocks.setContent(content, options)
+      }
+    },
+    getJSON: vi.fn(() => mocks.currentJson),
     getAttributes: vi.fn(() => ({ href: 'https://example.test/original' })),
     isActive: vi.fn(() => false),
     isEditable: true,
@@ -42,6 +50,7 @@ vi.mock('@tiptap/react', () => {
   return {
     useEditor: (options: Record<string, unknown>) => {
       mocks.options = options
+      if (mocks.currentJson === null) mocks.currentJson = options.content
       return editor
     },
     EditorContent: ({ className }: { className?: string }) => (
@@ -56,10 +65,27 @@ const blankDocument = () => createPlanningDocumentV1([
   { id: 'paragraph-empty', type: 'paragraph', content: [] }
 ])
 
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(complete => { resolve = complete })
+  return { promise, resolve }
+}
+
+const editorJson = (text: string) => ({
+  type: 'doc',
+  content: [{ type: 'paragraph', attrs: { blockId: 'p1' }, content: [{ type: 'text', text }] }]
+})
+
+const editorText = (): string => {
+  const json = mocks.currentJson as { content?: Array<{ content?: Array<{ text?: string }> }> }
+  return json.content?.[0]?.content?.[0]?.text || ''
+}
+
 describe('DocumentEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.options = null
+    mocks.currentJson = null
   })
 
   it('renders a nodrag/nowheel accessible editor with the complete restricted toolbar', () => {
@@ -135,5 +161,84 @@ describe('DocumentEditor', () => {
 
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ revision: 5 }))
     expect(onChange.mock.calls[0][0].blocks[0]).toMatchObject({ id: 'p1', content: [{ text: 'After' }] })
+  })
+
+  it('preserves B/C/D typed while queued parent acknowledgements advance from authoritative A', async () => {
+    const parentA = createPlanningDocumentV1([
+      { id: 'p1', type: 'paragraph', content: [{ text: 'A' }] }
+    ], 0)
+    const gates = [deferred<void>(), deferred<void>(), deferred<void>()]
+    const emitted: PlanningDocumentV1[] = []
+    const persisted: PlanningDocumentV1[] = []
+    let persistenceTail = Promise.resolve()
+    let setAuthoritative!: (document: PlanningDocumentV1) => void
+    const queuePersistence = (document: PlanningDocumentV1) => {
+      const gate = gates[emitted.length]
+      emitted.push(document)
+      persistenceTail = persistenceTail
+        .then(() => gate.promise)
+        .then(() => {
+          persisted.push(document)
+          setAuthoritative(document)
+        })
+    }
+    const Harness = () => {
+      const [authoritative, setDocument] = useState(parentA)
+      setAuthoritative = setDocument
+      return <DocumentEditor document={authoritative} mode="inline" onChange={queuePersistence} />
+    }
+    create(<Harness />)
+    const type = (suffix: string) => {
+      mocks.currentJson = editorJson(`${editorText()}${suffix}`)
+      const onUpdate = mocks.options?.onUpdate as ((input: { editor: { getJSON: () => unknown } }) => void) | undefined
+      if (!onUpdate) throw new Error('Expected Tiptap update callback')
+      act(() => onUpdate({ editor: { getJSON: () => mocks.currentJson } }))
+    }
+
+    type('B')
+    type('C')
+    expect(emitted.map(document => document.revision)).toEqual([1, 2])
+
+    await act(async () => {
+      gates[0].resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(persisted.map(planningDocumentEffectiveText)).toEqual(['AB'])
+    expect(mocks.setContent).not.toHaveBeenCalled()
+
+    type('D')
+    expect(emitted.map(document => document.revision)).toEqual([1, 2, 3])
+    expect(planningDocumentEffectiveText(emitted[2])).toBe('ABCD')
+
+    await act(async () => {
+      gates[1].resolve()
+      await Promise.resolve()
+      gates[2].resolve()
+      await persistenceTail
+    })
+
+    expect(persisted.map(planningDocumentEffectiveText)).toEqual(['AB', 'ABC', 'ABCD'])
+    expect(mocks.setContent).not.toHaveBeenCalled()
+  })
+
+  it('applies a legitimate external authoritative document when no local draft is pending', () => {
+    const onChange = vi.fn()
+    const parentA = createPlanningDocumentV1([{ id: 'p1', type: 'paragraph', content: [{ text: 'A' }] }], 4)
+    const external = createPlanningDocumentV1([{ id: 'p1', type: 'paragraph', content: [{ text: 'External' }] }], 2)
+    let renderer!: ReturnType<typeof create>
+    act(() => { renderer = create(<DocumentEditor document={parentA} mode="inline" onChange={onChange} />) })
+    mocks.setContent.mockClear()
+
+    act(() => renderer.update(<DocumentEditor document={external} mode="inline" onChange={onChange} />))
+
+    expect(mocks.setContent).toHaveBeenCalledTimes(1)
+    expect(editorText()).toBe('External')
+
+    mocks.currentJson = editorJson('External edit')
+    const onUpdate = mocks.options?.onUpdate as ((input: { editor: { getJSON: () => unknown } }) => void) | undefined
+    if (!onUpdate) throw new Error('Expected Tiptap update callback')
+    act(() => onUpdate({ editor: { getJSON: () => mocks.currentJson } }))
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ revision: 5 }))
   })
 })

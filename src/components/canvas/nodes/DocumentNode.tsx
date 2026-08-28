@@ -16,12 +16,16 @@ interface DocumentNodeProps {
 interface DocumentRetryRequest {
   document: PlanningDocumentV1
   token: number
+  authoritativeIdentity: string
 }
 
 export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChange, onDelete }: DocumentNodeProps) => {
   const expandButtonRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
   const requestTokenRef = useRef(0)
+  const authoritativeIdentity = planningDocumentNodeIdentity(node)
+  const authoritativeIdentityRef = useRef(authoritativeIdentity)
+  authoritativeIdentityRef.current = authoritativeIdentity
   const [collapsed, setCollapsed] = useState(node.meta.collapsed === true)
   const [expanded, setExpanded] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -31,6 +35,12 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   useEffect(() => {
     setCollapsed(node.meta.collapsed === true)
   }, [node.id, node.meta.collapsed])
+
+  useEffect(() => {
+    setRetryRequest(current => (
+      current && current.authoritativeIdentity !== authoritativeIdentity ? null : current
+    ))
+  }, [authoritativeIdentity])
 
   useEffect(() => {
     if (!expanded) return
@@ -46,16 +56,20 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
 
   const commit = async (document: PlanningDocumentV1) => {
     const token = ++requestTokenRef.current
+    const submittedFromIdentity = authoritativeIdentityRef.current
     setRetryRequest(null)
     setSaving(true)
     const saved = await onDocumentChange(document)
     if (token !== requestTokenRef.current) return
     setSaving(false)
-    setRetryRequest(saved ? null : { document, token })
+    setRetryRequest(saved ? null : { document, token, authoritativeIdentity: submittedFromIdentity })
   }
 
   const retry = (request: DocumentRetryRequest) => {
-    if (request.token !== requestTokenRef.current) return
+    if (
+      request.token !== requestTokenRef.current ||
+      request.authoritativeIdentity !== authoritativeIdentityRef.current
+    ) return
     void commit(request.document)
   }
 
@@ -95,7 +109,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
     if (!saved) setCollapsed(!next)
   }
 
-  const retryAlert = retryRequest ? (
+  const retryAlert = retryRequest?.authoritativeIdentity === authoritativeIdentity ? (
     <div role="alert" className="nodrag flex items-center gap-2 border-b border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
       <span className="flex-1">保存失败，文档已恢复到上次保存状态。</span>
       <button
@@ -185,3 +199,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
     </article>
   )
 }
+
+const planningDocumentNodeIdentity = (node: IFreeCanvasDocumentNode): string => (
+  `${node.id}:${node.document.revision}:${node.document.digest}`
+)

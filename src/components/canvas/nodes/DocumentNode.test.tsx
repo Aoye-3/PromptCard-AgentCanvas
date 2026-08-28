@@ -340,6 +340,49 @@ describe('DocumentNode', () => {
       .toBe(documentB.digest)
   })
 
+  it.each([
+    { label: 'prior-history undo', text: 'Prior history', revision: 1 },
+    { label: 'external authoritative reload', text: 'External reload', revision: 9 }
+  ])('invalidates visible and captured failed-A Retry after a $label prop change', async ({ text, revision }) => {
+    const onDocumentChange = vi.fn().mockResolvedValue(false)
+    const currentNode: IFreeCanvasDocumentNode = {
+      ...node(),
+      document: createPlanningDocumentV1([
+        { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Current history' }] }
+      ], 4)
+    }
+    const renderer = create(
+      <DocumentNode node={currentNode} selected onDocumentChange={onDocumentChange} onDelete={vi.fn()} />
+    )
+    const failedA = createPlanningDocumentV1([
+      { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Failed A' }] }
+    ], 5)
+
+    await act(async () => {
+      renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-on-test-change'](failedA)
+      await Promise.resolve()
+    })
+    const capturedRetry = renderer.root.findByProps({ 'aria-label': '重试保存文档' }).props.onClick
+    const authoritative = createPlanningDocumentV1([
+      { id: 'paragraph-1', type: 'paragraph', content: [{ text }] }
+    ], revision)
+
+    act(() => renderer.update(
+      <DocumentNode
+        node={{ ...currentNode, document: authoritative }}
+        selected
+        onDocumentChange={onDocumentChange}
+        onDelete={vi.fn()}
+      />
+    ))
+
+    expect(renderer.root.findAllByProps({ 'aria-label': '重试保存文档' })).toHaveLength(0)
+    act(() => capturedRetry())
+    expect(onDocumentChange).toHaveBeenCalledTimes(1)
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-digest'])
+      .toBe(authoritative.digest)
+  })
+
   it('persists collapsed state through node metadata and restores it on reload', async () => {
     const onCollapsedChange = vi.fn().mockResolvedValue(true)
     const Wrapper = () => {

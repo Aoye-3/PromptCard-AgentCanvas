@@ -25,8 +25,12 @@ export const DocumentEditor = ({
   const documentRef = useRef(document)
   const onChangeRef = useRef(onChange)
   const lastEditorDigestRef = useRef(document.digest)
+  const revisionClockRef = useRef(document.revision)
+  const authoritativeIdentityRef = useRef(planningDocumentIdentity(document))
+  const pendingLocalIdentitiesRef = useRef<string[]>([])
   documentRef.current = document
   onChangeRef.current = onChange
+  revisionClockRef.current = Math.max(revisionClockRef.current, document.revision)
 
   const initialContent = useMemo(() => planningDocumentToTiptapJson(document), [document])
   const editor = useEditor({
@@ -36,17 +40,31 @@ export const DocumentEditor = ({
     autofocus: autoFocus ? 'start' : false,
     immediatelyRender: false,
     onUpdate: ({ editor: currentEditor }) => {
+      const nextRevision = Math.max(revisionClockRef.current, documentRef.current.revision) + 1
       const next = planningDocumentFromTiptapJson(
         currentEditor.getJSON(),
-        documentRef.current.revision + 1
+        nextRevision
       )
+      revisionClockRef.current = nextRevision
+      pendingLocalIdentitiesRef.current.push(planningDocumentIdentity(next))
       lastEditorDigestRef.current = next.digest
       onChangeRef.current(next)
     }
   })
 
   useEffect(() => {
-    if (!editor || document.digest === lastEditorDigestRef.current) return
+    if (!editor) return
+    const identity = planningDocumentIdentity(document)
+    const pendingIndex = pendingLocalIdentitiesRef.current.indexOf(identity)
+    if (pendingIndex >= 0) {
+      pendingLocalIdentitiesRef.current.splice(0, pendingIndex + 1)
+      authoritativeIdentityRef.current = identity
+      return
+    }
+    if (identity === authoritativeIdentityRef.current) return
+    pendingLocalIdentitiesRef.current = []
+    authoritativeIdentityRef.current = identity
+    if (document.digest === lastEditorDigestRef.current) return
     editor.commands.setContent(planningDocumentToTiptapJson(document), { emitUpdate: false })
     lastEditorDigestRef.current = document.digest
   }, [document, editor])
@@ -67,6 +85,10 @@ export const DocumentEditor = ({
     </section>
   )
 }
+
+const planningDocumentIdentity = (document: PlanningDocumentV1): string => (
+  `${document.revision}:${document.digest}`
+)
 
 const DocumentEditorToolbar = ({ editor }: { editor: Editor | null }) => {
   const run = (action: (editor: Editor) => void) => () => {
