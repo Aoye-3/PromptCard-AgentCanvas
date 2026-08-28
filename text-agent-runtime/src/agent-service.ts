@@ -4,9 +4,31 @@ import { Type } from '@earendil-works/pi-ai'
 import { createTextProviderRuntime, type TextModelDescriptor } from './provider-runtime.ts'
 import {
   buildInvocation,
+  type DocumentWriteContext,
   type InvocationInput,
+  type PlanningDocumentBlockV1,
   type PromptLibraryItem
 } from './proposal-policy.ts'
+
+const MAX_DOCUMENT_BLOCKS = 128
+const MAX_DOCUMENT_OPERATIONS = 64
+const MAX_DOCUMENT_TEXT_BYTES = 100_000
+
+type DocumentChangeOperation =
+  | { kind: 'insert'; blockId: string; utf8Offset: number; text: string; expectedTextDigest: string }
+  | { kind: 'delete'; blockId: string; utf8Start: number; utf8End: number; expectedTextDigest: string }
+  | {
+    kind: 'replace'
+    blockId: string
+    utf8Start: number
+    utf8End: number
+    text: string
+    expectedTextDigest: string
+  }
+
+interface WriteOnceGuard {
+  used: boolean
+}
 
 export interface AgentRequest extends InvocationInput {
   threadId?: string
@@ -35,10 +57,7 @@ export async function invokeAgent(request: AgentRequest) {
       messages: invocation.history as unknown as AgentMessage[]
     },
     streamFn: providerRuntime.stream,
-    toolExecution: 'sequential',
-    afterToolCall: async ({ toolCall }) => (
-      toolCall.name.startsWith('emit_') ? { terminate: true } : undefined
-    )
+    toolExecution: 'sequential'
   })
 
   const images = invocation.attachments.map(item => ({
@@ -76,6 +95,7 @@ export function buildAgentTools(
   canvasEdits: Record<string, unknown>[] = []
 ): AgentTool[] {
   const tools: AgentTool[] = []
+  const writeGuard: WriteOnceGuard = { used: false }
 
   if (policy.canSearchPromptLibrary) {
     tools.push({
@@ -129,6 +149,7 @@ export function buildAgentTools(
         rationale: params.rationale
       }),
       canvasEdits,
+      writeGuard,
       params => canvasAnchorError(params.insertions, policy.canvasSegments)
     ))
   }
@@ -147,7 +168,8 @@ export function buildAgentTools(
         userText: params.userText,
         rationale: params.rationale
       }),
-      canvasEdits
+      canvasEdits,
+      writeGuard
     ))
   }
 
@@ -174,7 +196,8 @@ export function buildAgentTools(
         },
         rationale: params.rationale
       }),
-      proposals
+      proposals,
+      writeGuard
     ))
   }
   if (policy.allowedProposalKinds.includes('media_prompt_preview')) {
@@ -198,10 +221,173 @@ export function buildAgentTools(
         },
         rationale: params.rationale
       }),
-      proposals
+      proposals,
+      writeGuard
     ))
   }
+
+  if (policy.allowedCanvasEditKinds.includes('document_create')
+    && policy.documentWriteContext?.operationKind === 'document_create') {
+    tools.push(documentCreateTool(policy.documentWriteContext, canvasEdits, writeGuard))
+  }
+  if (policy.allowedCanvasEditKinds.includes('document_changes')
+    && policy.documentWriteContext?.operationKind === 'document_changes') {
+    tools.push(documentChangesTool(policy.documentWriteContext, canvasEdits, writeGuard))
+  }
   return tools
+}
+
+function documentCreateTool(
+  context: Extract<DocumentWriteContext, { operationKind: 'document_create' }>,
+  canvasEdits: Record<string, unknown>[],
+  writeGuard: WriteOnceGuard
+): AgentTool {
+  return {
+    name: 'emit_document_create',
+    label: 'Create planning Document',
+    description: 'Create one editor-neutral planning Document using the resources bound by Gateway policy.',
+    parameters: Type.Object({
+      title: Type.String({ minLength: 1, maxLength: 200 }),
+      blocks: Type.Array(planningDocumentBlockSchema(), { minItems: 1, maxItems: MAX_DOCUMENT_BLOCKS }),
+      rationale: Type.String({ minLength: 1, maxLength: 4000 })
+    }, { additionalProperties: false }),
+    executionMode: 'sequential',
+    execute: async (_toolCallId, rawParams) => {
+      const parsed = parseDocumentCreateParams(rawParams)
+      if (!parsed.ok) return rejectedToolResult(parsed.error)
+      if (writeGuard.used) return rejectedToolResult('write_tool_already_used')
+      const edit = {
+        kind: 'document_create',
+        payload: {
+          title: parsed.title,
+          blocks: parsed.blocks,
+          linkedDocumentResourceIds: [...context.linkedDocumentResourceIds]
+        },
+        rationale: parsed.rationale
+      }
+      canvasEdits.push(edit)
+      writeGuard.used = true
+      return acceptedToolResult(edit)
+    }
+  }
+}
+
+function documentChangesTool(
+  context: Extract<DocumentWriteContext, { operationKind: 'document_changes' }>,
+  canvasEdits: Record<string, unknown>[],
+  writeGuard: WriteOnceGuard
+): AgentTool {
+  return {
+    name: 'emit_document_changes',
+    label: 'Suggest planning Document changes',
+    description: 'Emit bounded UTF-8 byte-anchored changes against the single Document bound by Gateway policy.',
+    parameters: Type.Object({
+      operations: Type.Array(Type.Union([
+        Type.Object({
+          kind: Type.Literal('insert'),
+          blockId: Type.String({ minLength: 1, maxLength: 192 }),
+          utf8Offset: Type.Integer({ minimum: 0 }),
+          text: Type.String({ minLength: 1, maxLength: MAX_DOCUMENT_TEXT_BYTES })
+        }, { additionalProperties: false }),
+        Type.Object({
+          kind: Type.Literal('delete'),
+          blockId: Type.String({ minLength: 1, maxLength: 192 }),
+          utf8Start: Type.Integer({ minimum: 0 }),
+          utf8End: Type.Integer({ minimum: 1 })
+        }, { additionalProperties: false }),
+        Type.Object({
+          kind: Type.Literal('replace'),
+          blockId: Type.String({ minLength: 1, maxLength: 192 }),
+          utf8Start: Type.Integer({ minimum: 0 }),
+          utf8End: Type.Integer({ minimum: 1 }),
+          text: Type.String({ minLength: 1, maxLength: MAX_DOCUMENT_TEXT_BYTES })
+        }, { additionalProperties: false })
+      ]), { minItems: 1, maxItems: MAX_DOCUMENT_OPERATIONS }),
+      rationale: Type.String({ minLength: 1, maxLength: 4000 })
+    }, { additionalProperties: false }),
+    executionMode: 'sequential',
+    execute: async (_toolCallId, rawParams) => {
+      const parsed = parseDocumentChangesParams(rawParams, context)
+      if (!parsed.ok) return rejectedToolResult(parsed.error)
+      if (writeGuard.used) return rejectedToolResult('write_tool_already_used')
+      const edit = {
+        kind: 'document_changes',
+        payload: {
+          nodeId: context.nodeId,
+          baseRevision: context.baseRevision,
+          baseDigest: context.baseDigest,
+          operations: parsed.operations
+        },
+        rationale: parsed.rationale
+      }
+      canvasEdits.push(edit)
+      writeGuard.used = true
+      return acceptedToolResult(edit)
+    }
+  }
+}
+
+function planningDocumentBlockSchema() {
+  const inline = Type.Object({
+    text: Type.String({ minLength: 1 }),
+    bold: Type.Optional(Type.Literal(true)),
+    italic: Type.Optional(Type.Literal(true)),
+    href: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 }))
+  }, { additionalProperties: false })
+  const content = Type.Array(inline)
+  const item = Type.Object({
+    id: Type.String({ minLength: 1, maxLength: 192 }),
+    content
+  }, { additionalProperties: false })
+  return Type.Union([
+    Type.Object({
+      id: Type.String({ minLength: 1, maxLength: 192 }),
+      type: Type.Literal('paragraph'),
+      content
+    }, { additionalProperties: false }),
+    Type.Object({
+      id: Type.String({ minLength: 1, maxLength: 192 }),
+      type: Type.Literal('blockquote'),
+      content
+    }, { additionalProperties: false }),
+    Type.Object({
+      id: Type.String({ minLength: 1, maxLength: 192 }),
+      type: Type.Literal('heading'),
+      level: Type.Union([Type.Literal(1), Type.Literal(2), Type.Literal(3)]),
+      content
+    }, { additionalProperties: false }),
+    Type.Object({
+      id: Type.String({ minLength: 1, maxLength: 192 }),
+      type: Type.Literal('bulletList'),
+      items: Type.Array(item, { minItems: 1, maxItems: MAX_DOCUMENT_BLOCKS })
+    }, { additionalProperties: false }),
+    Type.Object({
+      id: Type.String({ minLength: 1, maxLength: 192 }),
+      type: Type.Literal('orderedList'),
+      items: Type.Array(item, { minItems: 1, maxItems: MAX_DOCUMENT_BLOCKS })
+    }, { additionalProperties: false }),
+    Type.Object({
+      id: Type.String({ minLength: 1, maxLength: 192 }),
+      type: Type.Literal('checkList'),
+      items: Type.Array(Type.Object({
+        id: Type.String({ minLength: 1, maxLength: 192 }),
+        checked: Type.Boolean(),
+        content
+      }, { additionalProperties: false }), { minItems: 1, maxItems: MAX_DOCUMENT_BLOCKS })
+    }, { additionalProperties: false }),
+    Type.Object({
+      id: Type.String({ minLength: 1, maxLength: 192 }),
+      type: Type.Literal('table'),
+      rows: Type.Array(Type.Object({
+        id: Type.String({ minLength: 1, maxLength: 192 }),
+        cells: Type.Array(Type.Object({
+          id: Type.String({ minLength: 1, maxLength: 192 }),
+          header: Type.Optional(Type.Literal(true)),
+          content
+        }, { additionalProperties: false }), { minItems: 1, maxItems: 32 })
+      }, { additionalProperties: false }), { minItems: 1, maxItems: 64 })
+    }, { additionalProperties: false })
+  ])
 }
 
 function canvasEditTool(
@@ -210,6 +396,7 @@ function canvasEditTool(
   parameters: AgentTool['parameters'],
   build: (params: Record<string, unknown>) => Record<string, unknown>,
   canvasEdits: Record<string, unknown>[],
+  writeGuard: WriteOnceGuard,
   validate?: (params: Record<string, unknown>) => string | null
 ): AgentTool {
   return {
@@ -227,6 +414,7 @@ function canvasEditTool(
           terminate: false
         }
       }
+      if (writeGuard.used) return rejectedToolResult('write_tool_already_used')
       const edit = {
         id: `canvas-edit-${randomUUID()}`,
         agentName: 'PromptCard Agent',
@@ -234,6 +422,7 @@ function canvasEditTool(
         ...build(params as Record<string, unknown>)
       }
       canvasEdits.push(edit)
+      writeGuard.used = true
       return {
         content: [{ type: 'text', text: 'Canvas edit recorded for direct application.' }],
         details: edit,
@@ -249,6 +438,7 @@ function proposalTool(
   parameters: AgentTool['parameters'],
   build: (params: Record<string, unknown>) => Record<string, unknown>,
   proposals: Record<string, unknown>[],
+  writeGuard: WriteOnceGuard,
   validate?: (params: Record<string, unknown>) => string | null
 ): AgentTool {
   return {
@@ -266,6 +456,7 @@ function proposalTool(
           terminate: false
         }
       }
+      if (writeGuard.used) return rejectedToolResult('write_tool_already_used')
       const proposal = {
         id: `proposal-${randomUUID()}`,
         agentName: 'PromptCard Agent',
@@ -274,12 +465,385 @@ function proposalTool(
         ...build(params as Record<string, unknown>)
       }
       proposals.push(proposal)
+      writeGuard.used = true
       return {
         content: [{ type: 'text', text: 'Proposal recorded for explicit user approval.' }],
         details: proposal,
         terminate: true
       }
     }
+  }
+}
+
+type ParsedDocumentCreate =
+  | { ok: true; title: string; blocks: PlanningDocumentBlockV1[]; rationale: string }
+  | { ok: false; error: string }
+
+function parseDocumentCreateParams(value: unknown): ParsedDocumentCreate {
+  if (!isRecord(value) || !hasExactKeys(value, ['title', 'blocks', 'rationale'])) {
+    return { ok: false, error: 'document_create_arguments_invalid' }
+  }
+  const title = normalizedBoundedText(value.title, 200, true)
+  const rationale = normalizedBoundedText(value.rationale, 4000, true)
+  if (title === null || rationale === null) return { ok: false, error: 'document_create_arguments_invalid' }
+  if (!Array.isArray(value.blocks)) return { ok: false, error: 'document_blocks_invalid' }
+  if (value.blocks.length === 0) return { ok: false, error: 'document_blocks_invalid' }
+  if (value.blocks.length > MAX_DOCUMENT_BLOCKS) {
+    return { ok: false, error: 'document_block_budget_exceeded' }
+  }
+  try {
+    const ids = new Set<string>()
+    let textBytes = 0
+    const blocks = value.blocks.map(block => normalizePlanningBlock(block, ids, bytes => { textBytes += bytes }))
+    if (textBytes > MAX_DOCUMENT_TEXT_BYTES) {
+      return { ok: false, error: 'document_text_budget_exceeded' }
+    }
+    return { ok: true, title, blocks, rationale }
+  } catch (error) {
+    return { ok: false, error: errorCode(error) }
+  }
+}
+
+type ParsedDocumentChanges =
+  | { ok: true; operations: DocumentChangeOperation[]; rationale: string }
+  | { ok: false; error: string }
+
+function parseDocumentChangesParams(
+  value: unknown,
+  context: Extract<DocumentWriteContext, { operationKind: 'document_changes' }>
+): ParsedDocumentChanges {
+  if (!isRecord(value) || !hasExactKeys(value, ['operations', 'rationale'])) {
+    return { ok: false, error: 'document_changes_arguments_invalid' }
+  }
+  const rationale = normalizedBoundedText(value.rationale, 4000, true)
+  if (rationale === null || !Array.isArray(value.operations) || value.operations.length === 0) {
+    return { ok: false, error: 'document_changes_arguments_invalid' }
+  }
+  if (value.operations.length > MAX_DOCUMENT_OPERATIONS) {
+    return { ok: false, error: 'document_operation_budget_exceeded' }
+  }
+  const blocks = new Map(context.blocks.map(block => [block.blockId, block]))
+  let insertedTextBytes = 0
+  const operations: DocumentChangeOperation[] = []
+  for (const candidate of value.operations) {
+    if (!isRecord(candidate) || typeof candidate.kind !== 'string') {
+      return { ok: false, error: 'document_operation_invalid' }
+    }
+    const block = typeof candidate.blockId === 'string' ? blocks.get(candidate.blockId) : undefined
+    if (!block) return { ok: false, error: 'document_operation_block_invalid' }
+    const boundaries = utf8Boundaries(block.text)
+    if (candidate.kind === 'insert') {
+      if (!hasExactKeys(candidate, ['kind', 'blockId', 'utf8Offset', 'text'])
+        || !isSafeOffset(candidate.utf8Offset, boundaries)) {
+        return { ok: false, error: 'document_operation_anchor_invalid' }
+      }
+      if (isOversizedDocumentText(candidate.text)) {
+        return { ok: false, error: 'document_text_budget_exceeded' }
+      }
+      const text = normalizedBoundedText(candidate.text, MAX_DOCUMENT_TEXT_BYTES, false)
+      if (text === null) return { ok: false, error: 'document_operation_text_invalid' }
+      insertedTextBytes += utf8Length(text)
+      operations.push({
+        kind: 'insert',
+        blockId: block.blockId,
+        utf8Offset: Number(candidate.utf8Offset),
+        text,
+        expectedTextDigest: block.expectedTextDigest
+      })
+      continue
+    }
+    if (candidate.kind === 'delete') {
+      if (!hasExactKeys(candidate, ['kind', 'blockId', 'utf8Start', 'utf8End'])
+        || !isValidRange(candidate.utf8Start, candidate.utf8End, boundaries)) {
+        return { ok: false, error: 'document_operation_anchor_invalid' }
+      }
+      operations.push({
+        kind: 'delete',
+        blockId: block.blockId,
+        utf8Start: Number(candidate.utf8Start),
+        utf8End: Number(candidate.utf8End),
+        expectedTextDigest: block.expectedTextDigest
+      })
+      continue
+    }
+    if (candidate.kind === 'replace') {
+      if (!hasExactKeys(candidate, ['kind', 'blockId', 'utf8Start', 'utf8End', 'text'])
+        || !isValidRange(candidate.utf8Start, candidate.utf8End, boundaries)) {
+        return { ok: false, error: 'document_operation_anchor_invalid' }
+      }
+      if (isOversizedDocumentText(candidate.text)) {
+        return { ok: false, error: 'document_text_budget_exceeded' }
+      }
+      const text = normalizedBoundedText(candidate.text, MAX_DOCUMENT_TEXT_BYTES, false)
+      if (text === null) return { ok: false, error: 'document_operation_text_invalid' }
+      insertedTextBytes += utf8Length(text)
+      operations.push({
+        kind: 'replace',
+        blockId: block.blockId,
+        utf8Start: Number(candidate.utf8Start),
+        utf8End: Number(candidate.utf8End),
+        text,
+        expectedTextDigest: block.expectedTextDigest
+      })
+      continue
+    }
+    return { ok: false, error: 'document_operation_invalid' }
+  }
+  if (insertedTextBytes > MAX_DOCUMENT_TEXT_BYTES) {
+    return { ok: false, error: 'document_text_budget_exceeded' }
+  }
+  return { ok: true, operations, rationale }
+}
+
+function normalizePlanningBlock(
+  value: unknown,
+  ids: Set<string>,
+  addTextBytes: (bytes: number) => void
+): PlanningDocumentBlockV1 {
+  if (!isRecord(value) || typeof value.type !== 'string') fail('document_block_invalid')
+  const id = normalizeUniqueId(value.id, ids)
+  if (value.type === 'paragraph' || value.type === 'blockquote') {
+    assertExactKeys(value, ['id', 'type', 'content'])
+    return { id, type: value.type, content: normalizeInlineContent(value.content, addTextBytes) }
+  }
+  if (value.type === 'heading') {
+    assertExactKeys(value, ['id', 'type', 'level', 'content'])
+    if (value.level !== 1 && value.level !== 2 && value.level !== 3) fail('document_heading_level_invalid')
+    return { id, type: 'heading', level: value.level, content: normalizeInlineContent(value.content, addTextBytes) }
+  }
+  if (value.type === 'bulletList' || value.type === 'orderedList') {
+    assertExactKeys(value, ['id', 'type', 'items'])
+    if (!Array.isArray(value.items) || value.items.length === 0 || value.items.length > MAX_DOCUMENT_BLOCKS) {
+      fail('document_items_invalid')
+    }
+    return {
+      id,
+      type: value.type,
+      items: value.items.map(item => normalizeListItem(item, ids, addTextBytes, false))
+    }
+  }
+  if (value.type === 'checkList') {
+    assertExactKeys(value, ['id', 'type', 'items'])
+    if (!Array.isArray(value.items) || value.items.length === 0 || value.items.length > MAX_DOCUMENT_BLOCKS) {
+      fail('document_items_invalid')
+    }
+    return {
+      id,
+      type: 'checkList',
+      items: value.items.map(item => normalizeListItem(item, ids, addTextBytes, true))
+    }
+  }
+  if (value.type === 'table') {
+    assertExactKeys(value, ['id', 'type', 'rows'])
+    if (!Array.isArray(value.rows) || value.rows.length === 0 || value.rows.length > 64) {
+      fail('document_table_invalid')
+    }
+    const rows = value.rows.map(row => normalizeTableRow(row, ids, addTextBytes))
+    const columns = rows[0].cells.length
+    if (rows.some(row => row.cells.length !== columns)) fail('document_table_invalid')
+    return { id, type: 'table', rows }
+  }
+  return fail('document_block_type_invalid')
+}
+
+function normalizeListItem(
+  value: unknown,
+  ids: Set<string>,
+  addTextBytes: (bytes: number) => void,
+  checkList: false
+): { id: string; content: ReturnType<typeof normalizeInlineContent> }
+function normalizeListItem(
+  value: unknown,
+  ids: Set<string>,
+  addTextBytes: (bytes: number) => void,
+  checkList: true
+): { id: string; checked: boolean; content: ReturnType<typeof normalizeInlineContent> }
+function normalizeListItem(
+  value: unknown,
+  ids: Set<string>,
+  addTextBytes: (bytes: number) => void,
+  checkList: boolean
+): { id: string; checked: boolean; content: ReturnType<typeof normalizeInlineContent> }
+  | { id: string; content: ReturnType<typeof normalizeInlineContent> } {
+  if (!isRecord(value)) fail('document_item_invalid')
+  assertExactKeys(value, checkList ? ['id', 'checked', 'content'] : ['id', 'content'])
+  const item = {
+    id: normalizeUniqueId(value.id, ids),
+    content: normalizeInlineContent(value.content, addTextBytes)
+  }
+  if (!checkList) return item
+  if (typeof value.checked !== 'boolean') fail('document_check_state_invalid')
+  return { ...item, checked: value.checked }
+}
+
+function normalizeTableRow(
+  value: unknown,
+  ids: Set<string>,
+  addTextBytes: (bytes: number) => void
+): Extract<PlanningDocumentBlockV1, { type: 'table' }>['rows'][number] {
+  if (!isRecord(value)) fail('document_table_invalid')
+  assertExactKeys(value, ['id', 'cells'])
+  if (!Array.isArray(value.cells) || value.cells.length === 0 || value.cells.length > 32) {
+    fail('document_table_invalid')
+  }
+  return {
+    id: normalizeUniqueId(value.id, ids),
+    cells: value.cells.map(cell => {
+      if (!isRecord(cell)) fail('document_table_invalid')
+      assertExactKeys(cell, ['id', 'content'], ['header'])
+      if (cell.header !== undefined && cell.header !== true) fail('document_table_header_invalid')
+      return {
+        id: normalizeUniqueId(cell.id, ids),
+        ...(cell.header === true ? { header: true as const } : {}),
+        content: normalizeInlineContent(cell.content, addTextBytes)
+      }
+    })
+  }
+}
+
+function normalizeInlineContent(
+  value: unknown,
+  addTextBytes: (bytes: number) => void
+): Array<{ text: string; bold?: true; italic?: true; href?: string }> {
+  if (!Array.isArray(value)) fail('document_inline_content_invalid')
+  let previousSignature: string | null = null
+  return value.map(candidate => {
+    if (!isRecord(candidate)) fail('document_inline_invalid')
+    assertExactKeys(candidate, ['text'], ['bold', 'italic', 'href'])
+    if (candidate.bold !== undefined && candidate.bold !== true) fail('document_mark_invalid')
+    if (candidate.italic !== undefined && candidate.italic !== true) fail('document_mark_invalid')
+    if (isOversizedDocumentText(candidate.text)) fail('document_text_budget_exceeded')
+    const text = normalizedBoundedText(candidate.text, MAX_DOCUMENT_TEXT_BYTES, false)
+    if (text === null) fail('document_inline_invalid')
+    let href: string | undefined
+    if (candidate.href !== undefined) {
+      href = normalizedBoundedText(candidate.href, 2048, true) || undefined
+      if (!href || !isSafeLink(href)) fail('document_link_invalid')
+    }
+    const signature = `${candidate.bold === true ? 'b' : ''}|${candidate.italic === true ? 'i' : ''}|${href || ''}`
+    if (signature === previousSignature) fail('document_inline_noncanonical')
+    previousSignature = signature
+    addTextBytes(utf8Length(text))
+    return {
+      text,
+      ...(candidate.bold === true ? { bold: true as const } : {}),
+      ...(candidate.italic === true ? { italic: true as const } : {}),
+      ...(href ? { href } : {})
+    }
+  })
+}
+
+function normalizeUniqueId(value: unknown, ids: Set<string>): string {
+  const id = normalizedBoundedText(value, 192, true)
+  if (!id || ids.has(id)) fail('document_id_invalid')
+  ids.add(id)
+  return id
+}
+
+function normalizedBoundedText(value: unknown, maxBytes: number, trim: boolean): string | null {
+  if (typeof value !== 'string' || !isWellFormed(value)) return null
+  const normalized = (trim ? value.trim() : value).normalize('NFC')
+  if (normalized.length === 0 || utf8Length(normalized) > maxBytes) return null
+  return normalized
+}
+
+function isOversizedDocumentText(value: unknown): boolean {
+  return typeof value === 'string'
+    && isWellFormed(value)
+    && utf8Length(value.normalize('NFC')) > MAX_DOCUMENT_TEXT_BYTES
+}
+
+function utf8Boundaries(value: string): Set<number> {
+  const boundaries = new Set<number>([0])
+  let offset = 0
+  for (const point of value) {
+    offset += utf8Length(point)
+    boundaries.add(offset)
+  }
+  return boundaries
+}
+
+function isSafeOffset(value: unknown, boundaries: Set<number>): boolean {
+  return Number.isSafeInteger(value) && Number(value) >= 0 && boundaries.has(Number(value))
+}
+
+function isValidRange(start: unknown, end: unknown, boundaries: Set<number>): boolean {
+  return isSafeOffset(start, boundaries)
+    && isSafeOffset(end, boundaries)
+    && Number(start) < Number(end)
+}
+
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).length
+}
+
+function isSafeLink(value: string): boolean {
+  try {
+    const url = new URL(value)
+    if (url.protocol === 'mailto:') return url.pathname.length > 0
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname.length > 0
+  } catch {
+    return false
+  }
+}
+
+function isWellFormed(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false
+      index += 1
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false
+    }
+  }
+  return true
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = []
+): boolean {
+  const allowed = new Set([...required, ...optional])
+  return required.every(key => Object.prototype.hasOwnProperty.call(value, key))
+    && Object.keys(value).every(key => allowed.has(key))
+}
+
+function assertExactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = []
+): void {
+  if (!hasExactKeys(value, required, optional)) fail('document_unknown_attribute')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function fail(code: string): never {
+  throw new Error(code)
+}
+
+function errorCode(error: unknown): string {
+  return error instanceof Error ? error.message : 'document_invalid'
+}
+
+function rejectedToolResult(error: string) {
+  return {
+    content: [{ type: 'text' as const, text: error }],
+    details: { error },
+    terminate: false
+  }
+}
+
+function acceptedToolResult(edit: Record<string, unknown>) {
+  return {
+    content: [{ type: 'text' as const, text: 'Document edit recorded for Gateway validation.' }],
+    details: edit,
+    terminate: true
   }
 }
 
@@ -307,6 +871,15 @@ export function buildAgentSystemPrompt(invocation: ReturnType<typeof buildInvoca
     : invocation.policy.canvasEditMode === 'derived_node'
       ? 'Canvas rewrite must emit a complete derived text node. The original target and reference nodes are read-only and must remain unchanged. Any supplied legacy text selection does not limit or alter the derived-node request.'
       : ''
+  const documentContext = invocation.documentWriteContext
+  const documentInstruction = documentContext?.operationKind === 'document_create'
+    ? 'Create at most one planning Document. Use emit_document_create exactly once after analysis. Resource identity and all request/project identity are bound by Gateway policy and must not be supplied in tool arguments.'
+    : documentContext?.operationKind === 'document_changes'
+      ? [
+          'Revise only the bound planning Document. Use emit_document_changes exactly once after analysis. Use NFC text and UTF-8 byte offsets within one listed leaf block; never target a list/table wrapper or Prompt node.',
+          `Current effective Document blocks: ${JSON.stringify(documentContext.blocks.map(block => ({ blockId: block.blockId, text: block.text })))}.`
+        ].join('\n')
+      : ''
   const skills = invocation.skillSnapshots.map(skill => ({
     skillId: skill.skillId,
     revision: skill.revision,
@@ -332,6 +905,7 @@ export function buildAgentSystemPrompt(invocation: ReturnType<typeof buildInvoca
     selectionInstruction,
     promptLanguageInstruction,
     canvasInstruction,
+    documentInstruction,
     `Allowed proposal kinds: ${JSON.stringify(invocation.policy.allowedProposalKinds)}.`,
     `Selected text node id: ${invocation.policy.selectedTextNodeId || 'none'}.`,
     `Canvas edit mode: ${invocation.policy.canvasEditMode || 'none'}.`,

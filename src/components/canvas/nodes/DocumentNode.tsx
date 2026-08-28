@@ -2,7 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 import { createPortal } from 'react-dom'
 import { ChevronDown, Expand, FileText, RotateCcw, Trash2, X } from 'lucide-react'
 import { DocumentEditor } from '@/components/canvas/document/DocumentEditor'
+import type { PlanningDocumentDisplayView } from '@/components/canvas/document/planning-document-tiptap'
 import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
+import {
+  acceptAllDocumentSuggestions,
+  acceptDocumentSuggestion,
+  rejectAllDocumentSuggestions,
+  rejectDocumentSuggestion
+} from '@/domain/documents/document-suggestions'
 import type { IFreeCanvasDocumentNode, PlanningDocumentV1 } from '@/models/PromptHistory.model'
 
 interface DocumentNodeProps {
@@ -35,7 +42,11 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   const [expanded, setExpanded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [retryRequest, setRetryRequest] = useState<DocumentRetryRequest | null>(null)
+  const [documentView, setDocumentView] = useState<PlanningDocumentDisplayView>(
+    node.document.suggestions.length ? 'revision' : 'effective'
+  )
   const summary = planningDocumentEffectiveText(draftDocument).replace(/\s+/g, ' ').trim().slice(0, 180)
+  const suggestionGroups = uniqueSuggestionGroups(draftDocument)
 
   useLayoutEffect(() => {
     authoritativeIdentityRef.current = authoritativeIdentity
@@ -62,6 +73,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
       setDraftDocument(node.document)
       setRetryRequest(null)
       setSaving(false)
+      setDocumentView(node.document.suggestions.length ? 'revision' : 'effective')
       return
     }
     revisionClockRef.current = Math.max(revisionClockRef.current, node.document.revision)
@@ -70,6 +82,12 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
       ? current
       : node.document)
   }, [node.id, node.document])
+
+  useEffect(() => {
+    if (node.document.suggestions.length > 0) {
+      setDocumentView(current => current === 'effective' ? 'revision' : current)
+    }
+  }, [node.document.suggestions.length])
 
   useEffect(() => {
     if (!expanded) return
@@ -117,12 +135,27 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   }
 
   const commitEditorChange = (document: PlanningDocumentV1) => {
+    if (draftDocument.suggestions.length > 0 || document.suggestions.length > 0) return
     const revision = Math.max(document.revision, revisionClockRef.current + 1)
     const nextDocument = revision === document.revision
       ? document
       : createPlanningDocumentV1(document.blocks, revision)
     revisionClockRef.current = revision
     void commit(nextDocument)
+  }
+
+  const resolveSuggestion = (suggestionId: string, decision: 'accept' | 'reject') => {
+    const next = decision === 'accept'
+      ? acceptDocumentSuggestion(draftDocument, suggestionId)
+      : rejectDocumentSuggestion(draftDocument, suggestionId)
+    void commit(next)
+  }
+
+  const resolveAllSuggestions = (decision: 'accept' | 'reject') => {
+    const next = decision === 'accept'
+      ? acceptAllDocumentSuggestions(draftDocument)
+      : rejectAllDocumentSuggestions(draftDocument)
+    void commit(next)
   }
 
   const retry = (request: DocumentRetryRequest) => {
@@ -181,6 +214,74 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
     </div>
   ) : null
 
+  const viewTabs = (
+    <div role="tablist" aria-label="文档视图" className="nodrag flex items-center gap-1 border-b border-gray-100 bg-gray-50 px-3 py-1.5">
+      {([
+        ['source', '源文', '查看源文'],
+        ['effective', '有效稿', '查看有效稿'],
+        ['revision', '修订', '查看修订']
+      ] as const).map(([view, label, ariaLabel]) => (
+        <button
+          key={view}
+          type="button"
+          role="tab"
+          aria-label={ariaLabel}
+          aria-selected={documentView === view}
+          className={`rounded-md px-2.5 py-1 text-xs font-bold ${
+            documentView === view ? 'bg-white text-gray-950 shadow-sm' : 'text-gray-500 hover:text-gray-900'
+          }`}
+          onClick={() => setDocumentView(view)}
+        >{label}</button>
+      ))}
+      {draftDocument.suggestions.length > 0 && (
+        <span className="ml-auto text-[11px] font-semibold text-amber-700">待处理 {suggestionGroups.length} 组</span>
+      )}
+    </div>
+  )
+
+  const suggestionReview = draftDocument.suggestions.length > 0 ? (
+    <section aria-label="文档修订操作" className="nodrag border-b border-amber-100 bg-amber-50/70 px-3 py-2">
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-amber-800">
+        <span className="flex-1">存在未解决修订，本地正文编辑已锁定。</span>
+        <button
+          type="button"
+          aria-label="全部接受修订"
+          disabled={saving}
+          className="rounded-md bg-white px-2 py-1 text-emerald-700 shadow-sm disabled:opacity-50"
+          onClick={() => resolveAllSuggestions('accept')}
+        >全部接受</button>
+        <button
+          type="button"
+          aria-label="全部拒绝修订"
+          disabled={saving}
+          className="rounded-md bg-white px-2 py-1 text-red-700 shadow-sm disabled:opacity-50"
+          onClick={() => resolveAllSuggestions('reject')}
+        >全部拒绝</button>
+      </div>
+      <ol className="space-y-1">
+        {suggestionGroups.map((suggestion, index) => (
+          <li key={suggestion.groupId} className="flex items-center gap-2 rounded-md bg-white px-2 py-1.5 text-[11px] text-gray-600">
+            <span className="min-w-0 flex-1 truncate">修订 {index + 1} · {suggestion.editId}</span>
+            <button
+              type="button"
+              aria-label={`接受修订 ${index + 1}`}
+              disabled={saving}
+              className="font-bold text-emerald-700 disabled:opacity-50"
+              onClick={() => resolveSuggestion(suggestion.id, 'accept')}
+            >接受</button>
+            <button
+              type="button"
+              aria-label={`拒绝修订 ${index + 1}`}
+              disabled={saving}
+              className="font-bold text-red-700 disabled:opacity-50"
+              onClick={() => resolveSuggestion(suggestion.id, 'reject')}
+            >拒绝</button>
+          </li>
+        ))}
+      </ol>
+    </section>
+  ) : null
+
   const expandedEditor = expanded ? (
     <div
       ref={dialogRef}
@@ -203,7 +304,15 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
           ><X className="h-4 w-4" /></button>
         </header>
         {retryAlert}
-        <DocumentEditor document={draftDocument} mode="expanded" autoFocus onChange={commitEditorChange} />
+        {viewTabs}
+        {suggestionReview}
+        <DocumentEditor
+          document={draftDocument}
+          mode="expanded"
+          view={documentView}
+          autoFocus
+          onChange={commitEditorChange}
+        />
       </section>
     </div>
   ) : null
@@ -242,13 +351,15 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
       </header>
 
       {!expanded && retryAlert}
+      {!expanded && viewTabs}
+      {!expanded && suggestionReview}
 
       {collapsed ? (
         <p data-document-collapsed-summary className="px-4 py-3 text-xs leading-5 text-gray-500">
           {summary || '空白规划文档'}
         </p>
       ) : !expanded ? (
-        <DocumentEditor document={draftDocument} mode="inline" onChange={commitEditorChange} />
+        <DocumentEditor document={draftDocument} mode="inline" view={documentView} onChange={commitEditorChange} />
       ) : (
         <div className="flex h-[300px] items-center justify-center px-4 text-xs font-semibold text-gray-400">文档正在展开编辑器中打开</div>
       )}
@@ -267,3 +378,12 @@ const planningDocumentNodeIdentity = (node: IFreeCanvasDocumentNode): string => 
 const planningDocumentIdentity = (document: PlanningDocumentV1): string => (
   `${document.revision}:${document.digest}`
 )
+
+const uniqueSuggestionGroups = (document: PlanningDocumentV1) => {
+  const seen = new Set<string>()
+  return document.suggestions.filter(suggestion => {
+    if (seen.has(suggestion.groupId)) return false
+    seen.add(suggestion.groupId)
+    return true
+  })
+}

@@ -217,7 +217,13 @@ export const applyCanvasLocalCommand = (
     return {
       project: {
         ...project,
-        nodes: project.nodes.map(node => node.id === command.nodeId ? { ...node, document } : node)
+        nodes: project.nodes.map(node => node.id === command.nodeId && node.kind === 'document'
+          ? {
+              ...node,
+              document,
+              ...(node.agentAppliedEdit ? { agentAppliedEdit: { ...node.agentAppliedEdit } } : {})
+            }
+          : node)
       },
       inverse: {
         kind: 'update-document',

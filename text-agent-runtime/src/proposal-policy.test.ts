@@ -229,4 +229,95 @@ describe('pi text-agent invocation boundary', () => {
     expect(invocation.policy.selectedTextNodeId).toBeNull()
     expect(invocation.policy.canSearchPromptLibrary).toBe(false)
   })
+
+  it('exposes only the Gateway-bound document create capability in experimental chat', () => {
+    const invocation = buildInvocation({
+      content: 'Create a planning document',
+      permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental',
+      workspaceContext: null,
+      promptLibrary: [{ label: 'Prompt', content: 'must remain unavailable' }],
+      documentWriteContext: {
+        operationKind: 'document_create',
+        linkedDocumentResourceIds: ['resource-a', 'resource-b']
+      }
+    })
+
+    expect(invocation.promptLibrary).toEqual([])
+    expect(invocation.policy.allowedCanvasEditKinds).toEqual(['document_create'])
+    expect(invocation.policy.documentWriteContext).toEqual({
+      operationKind: 'document_create',
+      linkedDocumentResourceIds: ['resource-a', 'resource-b']
+    })
+  })
+
+  it('exposes one current Document target and effective block text for changes', () => {
+    const invocation = buildInvocation({
+      content: 'Tighten the opening',
+      permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental',
+      workspaceContext: null,
+      promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'document_changes',
+        nodeId: 'document-a',
+        baseRevision: 7,
+        baseDigest: 'sha256:document-a',
+        blocks: [
+          { blockId: 'paragraph-a', text: 'Caf\u00e9', expectedTextDigest: 'sha256:paragraph-a' }
+        ]
+      }
+    })
+
+    expect(invocation.policy.allowedCanvasEditKinds).toEqual(['document_changes'])
+    expect(invocation.policy.documentWriteContext).toMatchObject({
+      operationKind: 'document_changes',
+      nodeId: 'document-a',
+      baseRevision: 7,
+      baseDigest: 'sha256:document-a'
+    })
+  })
+
+  it.each([
+    ['prompt mode', { interactionMode: 'prompt-edit' as const, permissionScope: 'workspace-chatbot-agent' as const }],
+    ['wrong permission', { interactionMode: 'chat-experimental' as const, permissionScope: 'prompt-library-agent' as const }]
+  ])('keeps document tools unavailable in %s', (_label, boundary) => {
+    const invocation = buildInvocation({
+      content: 'Create a document',
+      ...boundary,
+      workspaceContext: null,
+      promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'document_create',
+        linkedDocumentResourceIds: []
+      }
+    })
+
+    expect(invocation.policy.allowedCanvasEditKinds).not.toContain('document_create')
+    expect(invocation.policy.documentWriteContext).toBeNull()
+  })
+
+  it('rejects an over-budget effective Document context before exposing a write tool', () => {
+    const invocation = buildInvocation({
+      content: 'Revise it',
+      permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental',
+      workspaceContext: null,
+      promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'document_changes',
+        nodeId: 'document-a',
+        baseRevision: 1,
+        baseDigest: 'sha256:document-a',
+        blocks: [{
+          blockId: 'paragraph-a',
+          text: 'x'.repeat(100_001),
+          expectedTextDigest: 'sha256:paragraph-a'
+        }]
+      }
+    })
+
+    expect(invocation.policy.documentWriteContext).toBeNull()
+    expect(invocation.policy.allowedCanvasEditKinds).toEqual([])
+  })
 })

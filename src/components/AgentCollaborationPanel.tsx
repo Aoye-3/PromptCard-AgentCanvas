@@ -129,7 +129,10 @@ export function AgentCollaborationPanel({
   const [modelSaving, setModelSaving] = useState(false)
   const [modelSwitchError, setModelSwitchError] = useState<string>()
   const [postSendApplyError, setPostSendApplyError] = useState<string>()
+  const [documentEditReconciling, setDocumentEditReconciling] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const onApplyCanvasEditRef = useRef(onApplyCanvasEdit)
+  onApplyCanvasEditRef.current = onApplyCanvasEdit
   const canvasIdentityRef = useRef(`${sessionKey}:${workspaceContext.projectId}`)
   const postSendApplyIdentity = `${sessionKey}:${workspaceContext.projectId}:${conversationId || 'new'}`
   const postSendApplyIdentityRef = useRef(postSendApplyIdentity)
@@ -207,6 +210,40 @@ export function AgentCollaborationPanel({
     setComposerResetKey(key => key + 1)
   }, [sessionKey, workspaceContext.projectId])
 
+  useEffect(() => {
+    if (!conversationId || !onApplyCanvasEditRef.current) {
+      setDocumentEditReconciling(false)
+      return
+    }
+    let cancelled = false
+    const identity = `${sessionKey}:${workspaceContext.projectId}:${conversationId}`
+    void (async () => {
+      try {
+        const reconciliation = await agentRuntimeService.reconcileDocumentEdits(
+          workspaceContext.projectId,
+          conversationId
+        )
+        if (cancelled || postSendApplyIdentityRef.current !== identity) return
+        if (reconciliation.status === 'pending_apply' && reconciliation.canvasEdits.length === 1) {
+          setDocumentEditReconciling(true)
+          const applied = await onApplyCanvasEditRef.current?.(reconciliation.canvasEdits[0])
+          if (applied === false && !cancelled && postSendApplyIdentityRef.current === identity) {
+            setPostSendApplyError(POST_SEND_APPLY_ERROR)
+          }
+        }
+      } catch {
+        if (!cancelled && postSendApplyIdentityRef.current === identity) {
+          setPostSendApplyError(POST_SEND_APPLY_ERROR)
+        }
+      } finally {
+        if (!cancelled && postSendApplyIdentityRef.current === identity) {
+          setDocumentEditReconciling(false)
+        }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [conversationId, sessionKey, workspaceContext.projectId])
+
   const conversationMessages = useMemo(
     () => [...messages, ...appliedMessages].sort((a, b) => a.createdAt - b.createdAt),
     [appliedMessages, messages]
@@ -226,7 +263,7 @@ export function AgentCollaborationPanel({
       documentAttachments: AgentDocumentAttachment[]
     }
   ) => {
-    if (!content.trim() || running || documentUploadingCount > 0) return
+    if (!content.trim() || running || documentUploadingCount > 0 || documentEditReconciling) return
     const applyAttempt = postSendApplyAttemptRef.current + 1
     postSendApplyAttemptRef.current = applyAttempt
     let applyIdentity = postSendApplyIdentityRef.current
@@ -672,7 +709,7 @@ export function AgentCollaborationPanel({
             editMode={canvasEditMode}
             selection={canvasSelection ? withoutNodeId(canvasSelection) : undefined}
             running={running}
-            disabled={runtimeStatus !== 'connected' || running || documentUploadingCount > 0 || modelSaving || !effectiveModel || effectiveModel.available === false || (interactionMode === 'chat-experimental' && !conversationId)}
+            disabled={runtimeStatus !== 'connected' || running || documentEditReconciling || documentUploadingCount > 0 || modelSaving || !effectiveModel || effectiveModel.available === false || (interactionMode === 'chat-experimental' && !conversationId)}
             externalDraft={composerDraft}
             resetKey={composerResetKey}
             modelOptions={modelOptions}
@@ -718,7 +755,7 @@ export function AgentCollaborationPanel({
           type="button"
           className={`${compact ? 'mt-2 py-2 text-[13px]' : 'mt-3 py-2.5 text-sm'} inline-flex w-full items-center justify-center gap-2 rounded-full bg-black px-4 font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300`}
           onClick={() => handleSend()}
-          disabled={runtimeStatus !== 'connected' || running || !draft.trim()}
+          disabled={runtimeStatus !== 'connected' || running || documentEditReconciling || !draft.trim()}
         >
           {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           发送给 Agent

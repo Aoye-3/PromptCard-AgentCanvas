@@ -5,6 +5,7 @@ import {
   addFreeCanvasImageAnnotation,
   appendFreeCanvasUserText,
   createFreeCanvasImageGeneratorNode,
+  createFreeCanvasDocumentNode,
   createFreeCanvasImageGenerationPlaceholder,
   createFreeCanvasImageNodeFromMedia,
   createFreeCanvasProject,
@@ -788,6 +789,40 @@ describe('free canvas project domain', () => {
     expect(Object.isFrozen(project.nodes[0].originalNode)).toBe(true)
     expect(Object.isFrozen(project.nodes[0].originalNode.document)).toBe(true)
     expect(project.edges).toEqual([])
+  })
+
+  test('preserves a strict top-level Agent edit marker while normalizing and cloning a Document node', () => {
+    const node = createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100)
+    const agentAppliedEdit = {
+      conversationId: 'conversation-1',
+      requestId: 'request-1',
+      editId: 'edit-1',
+      resultDigest: node.document.digest
+    }
+    const normalized = normalizeFreeCanvasProject({
+      nodes: [{ ...node, agentAppliedEdit }], edges: [], meta: {}
+    }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({ kind: 'document', agentAppliedEdit })
+    if (normalized.nodes[0].kind !== 'document') throw new Error('Expected Document node')
+    expect(normalized.nodes[0].agentAppliedEdit).toEqual(agentAppliedEdit)
+    expect(normalized.nodes[0].agentAppliedEdit).not.toBe(agentAppliedEdit)
+    expect(normalized.nodes[0].document.digest).toBe(node.document.digest)
+  })
+
+  test.each([
+    { conversationId: '', requestId: 'request-1', editId: 'edit-1', resultDigest: 'sha256:x' },
+    { conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1' },
+    { conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1', resultDigest: 'sha256:x', extra: true }
+  ])('freezes a correct-document-digest node with malformed Agent marker as lossless unsupported data', marker => {
+    const node = createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100)
+    const originalNode = { ...node, agentAppliedEdit: marker }
+    const normalized = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({ kind: 'unsupported', originalKind: 'document', originalNode })
+    if (normalized.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(Object.isFrozen(normalized.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(normalized.nodes[0].originalNode.agentAppliedEdit)).toBe(true)
   })
 
   test('projects unknown node kinds as detached read-only data and drops their connections', () => {

@@ -121,14 +121,14 @@ export const parsePlanningDocumentV1 = (value: unknown): PlanningDocumentParseRe
     if (value.version !== 1) fail('planning_document_unsupported_version')
     if (!Number.isSafeInteger(value.revision) || Number(value.revision) < 0) fail('planning_document_invalid_revision')
     if (typeof value.digest !== 'string') fail('planning_document_invalid_digest')
-    if (!Array.isArray(value.suggestions) || value.suggestions.length !== 0) fail('planning_document_suggestions_unsupported')
     const blocks = normalizeBlocks(value.blocks)
+    const suggestions = normalizeSuggestions(value.suggestions, blocks)
     const document: PlanningDocumentV1 = {
       version: 1,
       blocks,
       revision: Number(value.revision),
       digest: value.digest,
-      suggestions: []
+      suggestions
     }
     if (document.digest !== planningDocumentDigest(document)) fail('planning_document_digest_mismatch')
     return { ok: true, document }
@@ -142,8 +142,64 @@ export const clonePlanningDocumentV1 = (document: PlanningDocumentV1): PlanningD
   blocks: document.blocks.map(cloneBlock),
   revision: document.revision,
   digest: document.digest,
-  suggestions: document.suggestions.map(suggestion => deepCloneJson(suggestion))
+  suggestions: document.suggestions.map(cloneSuggestion)
 })
+
+const normalizeSuggestions = (
+  value: unknown,
+  blocks: PlanningDocumentBlockV1[]
+): DocumentSuggestion[] => {
+  if (!Array.isArray(value)) fail('planning_document_invalid_suggestions')
+  const ids = new Set<string>()
+  const groups = new Map<string, Set<DocumentSuggestion['kind']>>()
+  const suggestions = value.map(item => {
+    if (!isRecord(item)) fail('planning_document_invalid_suggestion')
+    assertExactKeys(item, ['id', 'groupId', 'editId', 'kind', 'blockId', 'utf8Start', 'utf8End', 'content'])
+    const id = normalizeRequiredString(item.id, 'planning_document_invalid_suggestion')
+    const groupId = normalizeRequiredString(item.groupId, 'planning_document_invalid_suggestion')
+    const editId = normalizeRequiredString(item.editId, 'planning_document_invalid_suggestion')
+    const blockId = normalizeRequiredString(item.blockId, 'planning_document_invalid_suggestion')
+    if (ids.has(id)) fail('planning_document_duplicate_suggestion')
+    ids.add(id)
+    if (item.kind !== 'insert' && item.kind !== 'delete') fail('planning_document_invalid_suggestion')
+    if (!Number.isSafeInteger(item.utf8Start) || !Number.isSafeInteger(item.utf8End)) {
+      fail('planning_document_invalid_suggestion')
+    }
+    const utf8Start = Number(item.utf8Start)
+    const utf8End = Number(item.utf8End)
+    if (utf8Start < 0 || utf8End < utf8Start) fail('planning_document_invalid_suggestion')
+    const content = normalizeInlineContent(item.content)
+    if (content.length === 0) fail('planning_document_invalid_suggestion')
+    const contentBytes = utf8Length(content.map(inline => inline.text).join(''))
+    const leafText = findTextLeafContent(blocks, blockId)?.map(inline => inline.text).join('')
+    if (leafText === undefined || !isUtf8Boundary(leafText, utf8Start) || !isUtf8Boundary(leafText, utf8End)) {
+      fail('planning_document_invalid_suggestion')
+    }
+    if (item.kind === 'insert') {
+      if (utf8End - utf8Start !== contentBytes) fail('planning_document_invalid_suggestion')
+      if (utf8Slice(leafText, utf8Start, utf8End) !== content.map(inline => inline.text).join('')) {
+        fail('planning_document_invalid_suggestion')
+      }
+    } else if (utf8Start !== utf8End) {
+      fail('planning_document_invalid_suggestion')
+    }
+    const kinds = groups.get(groupId) || new Set<DocumentSuggestion['kind']>()
+    if (kinds.has(item.kind)) fail('planning_document_invalid_suggestion_group')
+    kinds.add(item.kind)
+    groups.set(groupId, kinds)
+    return { id, groupId, editId, kind: item.kind as DocumentSuggestion['kind'], blockId, utf8Start, utf8End, content }
+  })
+  for (const suggestion of suggestions) {
+    const group = suggestions.filter(item => item.groupId === suggestion.groupId)
+    if (group.length > 2 || group.some(item => item.editId !== suggestion.editId || item.blockId !== suggestion.blockId)) {
+      fail('planning_document_invalid_suggestion_group')
+    }
+    if (group.length === 2 && (group[0].utf8Start !== group[1].utf8Start || group[0].utf8End !== group[1].utf8Start)) {
+      fail('planning_document_invalid_suggestion_group')
+    }
+  }
+  return suggestions
+}
 
 const normalizeBlocks = (value: unknown): PlanningDocumentBlockV1[] => {
   if (!Array.isArray(value) || value.length === 0) fail('planning_document_invalid_blocks')
@@ -283,6 +339,79 @@ const blockText = (block: PlanningDocumentBlockV1): string => {
   return fail('planning_document_unreachable_block')
 }
 
+const findTextLeafContent = (
+  blocks: PlanningDocumentBlockV1[],
+  leafId: string
+): PlanningInlineV1[] | undefined => {
+  for (const block of blocks) {
+    if ((block.type === 'paragraph' || block.type === 'blockquote' || block.type === 'heading') && block.id === leafId) {
+      return block.content
+    }
+    if (block.type === 'bulletList' || block.type === 'orderedList' || block.type === 'checkList') {
+      const item = block.items.find(candidate => candidate.id === leafId)
+      if (item) return item.content
+    }
+    if (block.type === 'table') {
+      for (const row of block.rows) {
+        const cell = row.cells.find(candidate => candidate.id === leafId)
+        if (cell) return cell.content
+      }
+    }
+  }
+  return undefined
+}
+
+const cloneSuggestion = (suggestion: DocumentSuggestion): DocumentSuggestion => ({
+  id: suggestion.id,
+  groupId: suggestion.groupId,
+  editId: suggestion.editId,
+  kind: suggestion.kind,
+  blockId: suggestion.blockId,
+  utf8Start: suggestion.utf8Start,
+  utf8End: suggestion.utf8End,
+  content: suggestion.content.map(cloneInline)
+})
+
+const normalizeRequiredString = (value: unknown, code: string): string => {
+  if (typeof value !== 'string') fail(code)
+  const normalized = value.normalize('NFC')
+  if (normalized.length === 0) fail(code)
+  return normalized
+}
+
+const utf8Length = (value: string): number => new TextEncoder().encode(value).length
+
+const utf8Boundaries = (value: string): Set<number> => {
+  const boundaries = new Set<number>([0])
+  let bytes = 0
+  for (const codePoint of value) {
+    bytes += utf8Length(codePoint)
+    boundaries.add(bytes)
+  }
+  return boundaries
+}
+
+const isUtf8Boundary = (value: string, offset: number): boolean => utf8Boundaries(value).has(offset)
+
+const utf8Slice = (value: string, start: number, end: number): string => {
+  let bytes = 0
+  let startIndex = -1
+  let endIndex = -1
+  for (let index = 0; index <= value.length;) {
+    if (bytes === start) startIndex = index
+    if (bytes === end) {
+      endIndex = index
+      break
+    }
+    if (index === value.length) break
+    const codePoint = String.fromCodePoint(value.codePointAt(index)!)
+    bytes += utf8Length(codePoint)
+    index += codePoint.length
+  }
+  if (startIndex < 0 || endIndex < 0) fail('planning_document_invalid_suggestion')
+  return value.slice(startIndex, endIndex)
+}
+
 const inlineText = (content: PlanningInlineV1[]): string => content.map(inline => inline.text).join('')
 
 const cloneBlock = (block: PlanningDocumentBlockV1): PlanningDocumentBlockV1 => {
@@ -363,14 +492,6 @@ const canonicalJson = (value: unknown): string => {
     return `{${keys.map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
   }
   fail('planning_document_non_json_value')
-}
-
-const deepCloneJson = <T>(value: T): T => {
-  if (Array.isArray(value)) return value.map(item => deepCloneJson(item)) as T
-  if (isRecord(value)) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, deepCloneJson(item)])) as T
-  }
-  return value
 }
 
 const rotateRight = (value: number, amount: number): number => (

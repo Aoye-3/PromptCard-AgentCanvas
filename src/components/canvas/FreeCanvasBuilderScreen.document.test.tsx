@@ -1,7 +1,9 @@
 import { Fragment, useState, type ReactNode } from 'react'
 import { act, create } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
+import { applyDocumentChangeOperations } from '@/domain/documents/document-suggestions'
+import { createPlanningDocumentV1, planningDocumentEffectiveText, sha256Utf8 } from '@/domain/documents/planning-document'
+import type { AgentCanvasEdit } from '@/models/Agent.model'
 import type { IFreeCanvasDocumentNode, IFreeCanvasImageNode, IFreeCanvasProject, IFreeCanvasTextNode, IPromptProject, PlanningDocumentV1 } from '@/models/PromptHistory.model'
 
 const windowListeners = new Map<string, Set<(event: KeyboardEvent) => void>>()
@@ -15,7 +17,9 @@ const mocks = vi.hoisted(() => ({
   getImageGenerationStatus: vi.fn(),
   getConversations: vi.fn(),
   getConversationRuns: vi.fn(),
-  getPendingPlacements: vi.fn()
+  getPendingPlacements: vi.fn(),
+  acknowledgeDocumentEdit: vi.fn(),
+  agentCanvasEdit: null as AgentCanvasEdit | null
 }))
 
 vi.mock('@/components/canvas/document/DocumentEditor', () => ({
@@ -146,7 +150,21 @@ vi.mock('@/components/canvas/nodes/DocumentNode', async importOriginal => {
   }
 })
 
-vi.mock('@/components/AgentCollaborationPanel', () => ({ AIChatbotBox: () => <div /> }))
+vi.mock('@/components/AgentCollaborationPanel', () => ({
+  AIChatbotBox: ({ onApplyCanvasEdit }: {
+    onApplyCanvasEdit?: (edit: AgentCanvasEdit) => Promise<boolean | void> | boolean | void
+  }) => (
+    <div>
+      {mocks.agentCanvasEdit && (
+        <button
+          type="button"
+          aria-label="测试应用 Agent Document 编辑"
+          onClick={() => onApplyCanvasEdit?.(mocks.agentCanvasEdit as AgentCanvasEdit)}
+        >Apply agent Document edit</button>
+      )}
+    </div>
+  )
+}))
 vi.mock('@/components/PromptLibraryPreviewMode', () => ({ PromptLibraryPreviewPanel: () => <div /> }))
 vi.mock('@/components/prompt-media/PromptPresetPreviewDialog', () => ({ PromptPresetPreviewDialog: () => null }))
 vi.mock('@/components/canvas/ImageCropEditor', () => ({ ImageCropEditor: () => null }))
@@ -162,7 +180,12 @@ vi.mock('@/services/model-management-client', () => ({
     getImageGenerationStatus: mocks.getImageGenerationStatus
   }
 }))
-vi.mock('@/services/agent-runtime-service', () => ({ agentRuntimeService: { bootstrap: mocks.bootstrapRuntime } }))
+vi.mock('@/services/agent-runtime-service', () => ({
+  agentRuntimeService: {
+    bootstrap: mocks.bootstrapRuntime,
+    acknowledgeDocumentEdit: mocks.acknowledgeDocumentEdit
+  }
+}))
 vi.mock('@/storage/storage-service-client', async importOriginal => {
   const original = await importOriginal<typeof import('@/storage/storage-service-client')>()
   return {
@@ -301,6 +324,7 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.useRealDocumentNode = false
+    mocks.agentCanvasEdit = null
     windowListeners.clear()
     vi.stubGlobal('window', {
       addEventListener: vi.fn((type: string, listener: (event: KeyboardEvent) => void) => {
@@ -324,6 +348,124 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     mocks.getConversations.mockResolvedValue({ conversations: [], nextCursor: null })
     mocks.getConversationRuns.mockResolvedValue({ runs: [], nextCursor: null })
     mocks.getPendingPlacements.mockResolvedValue([])
+    mocks.acknowledgeDocumentEdit.mockResolvedValue({ status: 'applied', editId: 'edit-1' })
+  })
+
+  it('atomically persists a tracked Document change and its applied marker before ACK', async () => {
+    const canvas = initialCanvas()
+    const source = canvas.nodes[0] as IFreeCanvasDocumentNode
+    const operation = {
+      kind: 'insert' as const,
+      blockId: 'document-1-paragraph',
+      utf8Offset: new TextEncoder().encode('Before').length,
+      text: '!',
+      expectedTextDigest: `sha256:${sha256Utf8('Before')}`
+    }
+    const expectedDocument = applyDocumentChangeOperations(source.document, 'edit-1', [operation])
+    mocks.agentCanvasEdit = {
+      kind: 'document_changes',
+      id: 'edit-1',
+      editId: 'edit-1',
+      conversationId: 'conversation-1',
+      requestId: 'request-1',
+      nodeId: 'document-1',
+      expectedResultDigest: expectedDocument.digest,
+      base: { projectRevision: 1, nodeRevision: source.document.revision, nodeDigest: source.document.digest },
+      payload: { operations: [operation] },
+      rationale: 'Tighten the opening.'
+    }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState(canvas)
+      return <FreeCanvasBuilderScreen
+        activeProject={project(current)} freeCanvas={current}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+      />
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+    })
+
+    const saved = onPersistCanvas.mock.calls[0][0] as IFreeCanvasProject
+    const savedNode = saved.nodes[0] as IFreeCanvasDocumentNode
+    expect(planningDocumentEffectiveText(savedNode.document)).toBe('Before!')
+    expect(savedNode.agentAppliedEdit).toEqual({
+      conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1', resultDigest: expectedDocument.digest
+    })
+    expect(mocks.acknowledgeDocumentEdit.mock.invocationCallOrder[0])
+      .toBeGreaterThan(onPersistCanvas.mock.invocationCallOrder[0])
+  })
+
+  it('keeps the saved marker when the advisory ACK response is lost and does not apply a duplicate twice', async () => {
+    const createdDocument = createPlanningDocumentV1([
+      { id: 'created-paragraph', type: 'paragraph', content: [{ text: 'Created' }] }
+    ])
+    mocks.agentCanvasEdit = {
+      kind: 'document_create', id: 'edit-create', editId: 'edit-create',
+      conversationId: 'conversation-1', requestId: 'request-create', nodeId: 'document-created',
+      expectedResultDigest: createdDocument.digest, base: { projectRevision: 1 },
+      payload: { title: 'Created document', blocks: createdDocument.blocks, linkedDocumentResourceIds: [] },
+      rationale: 'Create the draft.'
+    }
+    mocks.acknowledgeDocumentEdit.mockRejectedValue(new Error('response lost'))
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>({ ...initialCanvas(), nodes: [] })
+      return <FreeCanvasBuilderScreen
+        activeProject={project(current)} freeCanvas={current}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+      />
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+    const apply = () => renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+
+    await act(async () => { await apply() })
+    await act(async () => { await apply() })
+
+    expect(onPersistCanvas).toHaveBeenCalledTimes(1)
+    const created = renderedDocument(renderer, 'document-created')
+    expect(created.props['data-document-text']).toBe('Created')
+  })
+
+  it('rejects a stale Document base without persisting and reports a bounded conflict', async () => {
+    const canvas = initialCanvas()
+    const source = canvas.nodes[0] as IFreeCanvasDocumentNode
+    mocks.agentCanvasEdit = {
+      kind: 'document_changes', id: 'edit-stale', editId: 'edit-stale',
+      conversationId: 'conversation-1', requestId: 'request-stale', nodeId: 'document-1',
+      expectedResultDigest: `sha256:${'b'.repeat(64)}`,
+      base: { projectRevision: 1, nodeRevision: source.document.revision, nodeDigest: `sha256:${'c'.repeat(64)}` },
+      payload: { operations: [{
+        kind: 'insert', blockId: 'document-1-paragraph', utf8Offset: 0, text: 'No',
+        expectedTextDigest: `sha256:${sha256Utf8('Before')}`
+      }] },
+      rationale: 'Stale update.'
+    }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(<FreeCanvasBuilderScreen
+        activeProject={project(canvas)} freeCanvas={canvas}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={vi.fn()} onPersistCanvas={onPersistCanvas}
+      />)
+    })
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+    })
+
+    expect(onPersistCanvas).not.toHaveBeenCalled()
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledWith(
+      'project-1', 'conversation-1', 'edit-stale',
+      { requestId: 'request-stale', status: 'failed', errorCode: 'failed_conflict' }
+    )
   })
 
   it('exposes a discoverable Document action and creates one canonical Document node', async () => {

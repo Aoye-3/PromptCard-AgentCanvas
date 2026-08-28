@@ -1,5 +1,6 @@
 import {
   Extension,
+  Mark,
   type EditorOptions,
   type Extensions,
   type JSONContent
@@ -23,7 +24,9 @@ import { Fragment, Slice, type Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Mapping } from '@tiptap/pm/transform'
 import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
+import { rejectAllDocumentSuggestions } from '@/domain/documents/document-suggestions'
 import type {
+  DocumentSuggestion,
   PlanningDocumentBlockV1,
   PlanningDocumentV1,
   PlanningInlineV1
@@ -40,6 +43,9 @@ const PlanningListItem = ListItem.extend({ content: 'paragraph' })
 const PlanningTaskItem = TaskItem.extend({ content: 'paragraph' })
 const PlanningTableCell = TableCell.extend({ content: 'paragraph' })
 const PlanningTableHeader = TableHeader.extend({ content: 'paragraph' })
+
+const DocumentSuggestionInsert = documentSuggestionMark('insert')
+const DocumentSuggestionDelete = documentSuggestionMark('delete')
 
 let generatedIdCounter = 0
 
@@ -75,6 +81,8 @@ export const createPlanningDocumentTiptapExtensions = (
   TableRow,
   PlanningTableHeader,
   PlanningTableCell,
+  DocumentSuggestionInsert,
+  DocumentSuggestionDelete,
   planningDocumentBlockIdExtension(idFactory)
 ]
 
@@ -108,8 +116,27 @@ export const planningDocumentToTiptapJson = (
   document: Pick<PlanningDocumentV1, 'blocks'>
 ): JSONContent => ({
   type: 'doc',
-  content: document.blocks.map(blockToJson)
+  content: document.blocks.map(block => blockToJson(block))
 })
+
+export type PlanningDocumentDisplayView = 'source' | 'effective' | 'revision'
+
+export const planningDocumentToDisplayTiptapJson = (
+  document: PlanningDocumentV1,
+  view: PlanningDocumentDisplayView
+): JSONContent => {
+  assertSupportedSuggestions(document.suggestions)
+  if (view === 'effective') return planningDocumentToTiptapJson(document)
+  if (view === 'source') return planningDocumentToTiptapJson(rejectAllDocumentSuggestions(document))
+  if (view !== 'revision') throw new Error('planning_document_display_view_invalid')
+  return {
+    type: 'doc',
+    content: document.blocks.map(block => blockToJson(
+      block,
+      (content, leafId) => revisionJsonInlineContent(content, document.suggestions, leafId)
+    ))
+  }
+}
 
 export const planningDocumentFromTiptapJson = (
   json: JSONContent,
@@ -197,7 +224,15 @@ export const createPlanningDocumentBlockIdPlugin = (
   }
 })
 
-const blockToJson = (block: PlanningDocumentBlockV1): JSONContent => {
+type InlineJsonProjector = (
+  content: PlanningInlineV1[],
+  leafId: string
+) => Pick<JSONContent, 'content'>
+
+const blockToJson = (
+  block: PlanningDocumentBlockV1,
+  projectInline: InlineJsonProjector = (content => jsonInlineContent(content))
+): JSONContent => {
   if (block.type === 'paragraph' || block.type === 'heading') {
     return {
       type: block.type,
@@ -205,14 +240,14 @@ const blockToJson = (block: PlanningDocumentBlockV1): JSONContent => {
         blockId: block.id,
         ...(block.type === 'heading' ? { level: block.level } : {})
       },
-      ...jsonInlineContent(block.content)
+      ...projectInline(block.content, block.id)
     }
   }
   if (block.type === 'blockquote') {
     return {
       type: 'blockquote',
       attrs: { blockId: block.id },
-      content: [{ type: 'paragraph', ...jsonInlineContent(block.content) }]
+      content: [{ type: 'paragraph', ...projectInline(block.content, block.id) }]
     }
   }
   if (block.type === 'bulletList' || block.type === 'orderedList') {
@@ -225,7 +260,7 @@ const blockToJson = (block: PlanningDocumentBlockV1): JSONContent => {
       content: block.items.map(item => ({
         type: 'listItem',
         attrs: { blockId: item.id },
-        content: [{ type: 'paragraph', ...jsonInlineContent(item.content) }]
+        content: [{ type: 'paragraph', ...projectInline(item.content, item.id) }]
       }))
     }
   }
@@ -236,7 +271,7 @@ const blockToJson = (block: PlanningDocumentBlockV1): JSONContent => {
       content: block.items.map(item => ({
         type: 'taskItem',
         attrs: { blockId: item.id, checked: item.checked },
-        content: [{ type: 'paragraph', ...jsonInlineContent(item.content) }]
+        content: [{ type: 'paragraph', ...projectInline(item.content, item.id) }]
       }))
     }
   }
@@ -250,7 +285,7 @@ const blockToJson = (block: PlanningDocumentBlockV1): JSONContent => {
         content: row.cells.map(cell => ({
           type: cell.header === true ? 'tableHeader' : 'tableCell',
           attrs: { blockId: cell.id, colspan: 1, rowspan: 1, colwidth: null },
-          content: [{ type: 'paragraph', ...jsonInlineContent(cell.content) }]
+          content: [{ type: 'paragraph', ...projectInline(cell.content, cell.id) }]
         }))
       }))
     }
@@ -345,6 +380,170 @@ const inlineToJson = (inline: PlanningInlineV1): JSONContent => {
   if (inline.italic === true) marks.push({ type: 'italic' })
   if (inline.href) marks.push({ type: 'link', attrs: { href: inline.href, target: null, rel: null, class: null } })
   return { type: 'text', text: inline.text, ...(marks.length > 0 ? { marks } : {}) }
+}
+
+const revisionJsonInlineContent = (
+  content: PlanningInlineV1[],
+  suggestions: DocumentSuggestion[],
+  leafId: string
+): Pick<JSONContent, 'content'> => {
+  const leafSuggestions = suggestions.filter(suggestion => suggestion.blockId === leafId)
+  if (leafSuggestions.length === 0) return jsonInlineContent(content)
+  const totalBytes = richTextByteLength(content)
+  const boundaries = new Set<number>([0, totalBytes])
+  for (const suggestion of leafSuggestions) {
+    if (!isRichTextBoundary(content, suggestion.utf8Start)
+      || !isRichTextBoundary(content, suggestion.utf8End)
+      || suggestion.utf8Start > suggestion.utf8End) {
+      throw new Error('planning_document_suggestion_anchor_invalid')
+    }
+    if (suggestion.kind === 'insert') {
+      if (suggestion.utf8Start === suggestion.utf8End
+        || richTextByteLength(suggestion.content) !== suggestion.utf8End - suggestion.utf8Start) {
+        throw new Error('planning_document_suggestion_anchor_invalid')
+      }
+    } else if (suggestion.utf8Start !== suggestion.utf8End) {
+      throw new Error('planning_document_suggestion_anchor_invalid')
+    }
+    boundaries.add(suggestion.utf8Start)
+    boundaries.add(suggestion.utf8End)
+  }
+  const ordered = [...boundaries].sort((left, right) => left - right)
+  const projected: JSONContent[] = []
+  for (let index = 0; index < ordered.length; index += 1) {
+    const start = ordered[index]
+    leafSuggestions
+      .filter(suggestion => suggestion.kind === 'delete' && suggestion.utf8Start === start)
+      .forEach(suggestion => {
+        projected.push(...suggestion.content.map(inline => inlineToSuggestionJson(inline, suggestion)))
+      })
+    const end = ordered[index + 1]
+    if (end === undefined || end === start) continue
+    const insertion = leafSuggestions.find(suggestion => (
+      suggestion.kind === 'insert'
+      && suggestion.utf8Start <= start
+      && suggestion.utf8End >= end
+    ))
+    projected.push(...sliceRichContent(content, start, end).map(inline => (
+      insertion ? inlineToSuggestionJson(inline, insertion) : inlineToJson(inline)
+    )))
+  }
+  return projected.length ? { content: projected } : {}
+}
+
+const inlineToSuggestionJson = (
+  inline: PlanningInlineV1,
+  suggestion: DocumentSuggestion
+): JSONContent => {
+  const json = inlineToJson(inline)
+  return {
+    ...json,
+    marks: [
+      ...(json.marks || []),
+      {
+        type: suggestion.kind === 'insert' ? 'documentSuggestionInsert' : 'documentSuggestionDelete',
+        attrs: { suggestionId: suggestion.id, groupId: suggestion.groupId }
+      }
+    ]
+  }
+}
+
+const sliceRichContent = (
+  content: PlanningInlineV1[],
+  start: number,
+  end: number
+): PlanningInlineV1[] => {
+  const result: PlanningInlineV1[] = []
+  let cursor = 0
+  for (const inline of content) {
+    const inlineBytes = utf8Length(inline.text)
+    const localStart = Math.max(0, start - cursor)
+    const localEnd = Math.min(inlineBytes, end - cursor)
+    if (localStart < localEnd) {
+      const startIndex = utf8OffsetToStringIndex(inline.text, localStart)
+      const endIndex = utf8OffsetToStringIndex(inline.text, localEnd)
+      result.push({ ...inline, text: inline.text.slice(startIndex, endIndex) })
+    }
+    cursor += inlineBytes
+    if (cursor >= end) break
+  }
+  return result
+}
+
+const richTextByteLength = (content: PlanningInlineV1[]): number => (
+  utf8Length(content.map(inline => inline.text).join('').normalize('NFC'))
+)
+
+const isRichTextBoundary = (content: PlanningInlineV1[], offset: number): boolean => {
+  if (!Number.isSafeInteger(offset) || offset < 0) return false
+  const text = content.map(inline => inline.text).join('').normalize('NFC')
+  let bytes = 0
+  if (offset === 0) return true
+  for (const codePoint of text) {
+    bytes += utf8Length(codePoint)
+    if (bytes === offset) return true
+    if (bytes > offset) return false
+  }
+  return false
+}
+
+const utf8OffsetToStringIndex = (value: string, offset: number): number => {
+  let bytes = 0
+  let index = 0
+  if (offset === 0) return 0
+  for (const codePoint of value) {
+    bytes += utf8Length(codePoint)
+    index += codePoint.length
+    if (bytes === offset) return index
+    if (bytes > offset) throw new Error('planning_document_suggestion_anchor_invalid')
+  }
+  if (bytes === offset) return index
+  throw new Error('planning_document_suggestion_anchor_invalid')
+}
+
+const utf8Length = (value: string): number => new TextEncoder().encode(value).length
+
+const assertSupportedSuggestions = (suggestions: DocumentSuggestion[]): void => {
+  for (const suggestion of suggestions) {
+    if (suggestion.kind !== 'insert' && suggestion.kind !== 'delete') {
+      throw new Error('planning_document_suggestion_unsupported')
+    }
+    if (!suggestion.id || !suggestion.groupId || !suggestion.editId || !suggestion.blockId
+      || !Array.isArray(suggestion.content)) {
+      throw new Error('planning_document_suggestion_unsupported')
+    }
+  }
+}
+
+function documentSuggestionMark(kind: 'insert' | 'delete'): Mark {
+  const name = kind === 'insert' ? 'documentSuggestionInsert' : 'documentSuggestionDelete'
+  return Mark.create({
+    name,
+    inclusive: false,
+    excludes: '',
+    addAttributes() {
+      return {
+        suggestionId: { default: null },
+        groupId: { default: null }
+      }
+    },
+    parseHTML() {
+      return []
+    },
+    renderHTML({ HTMLAttributes }) {
+      return [
+        'span',
+        {
+          ...HTMLAttributes,
+          'data-document-suggestion-kind': kind,
+          class: kind === 'insert'
+            ? 'text-emerald-700 bg-emerald-50'
+            : 'text-red-700 bg-red-50 line-through decoration-red-600'
+        },
+        0
+      ]
+    }
+  })
 }
 
 const inlineContentFromJson = (content: JSONContent[] | undefined): PlanningInlineV1[] => (

@@ -26,7 +26,9 @@ const mocks = vi.hoisted(() => ({
   proposals: [] as AgentWorkspaceProposal[],
   storedMessages: [] as Array<Record<string, unknown>>,
   hydrateSession: vi.fn(),
-  updateInteraction: vi.fn()
+  updateInteraction: vi.fn(),
+  reconcileDocumentEdits: vi.fn(),
+  updateConversationModel: vi.fn()
 }))
 
 vi.mock('@/stores/agent.store', () => ({
@@ -102,6 +104,13 @@ vi.mock('@/storage/storage-service-client', () => ({
   }
 }))
 
+vi.mock('@/services/agent-runtime-service', () => ({
+  agentRuntimeService: {
+    reconcileDocumentEdits: mocks.reconcileDocumentEdits,
+    updateConversationModel: mocks.updateConversationModel
+  }
+}))
+
 vi.mock('@/stores/preset.store', () => ({
   usePresetStore: () => ({
     presets: [],
@@ -146,6 +155,8 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     mocks.messages = []
     mocks.proposals = []
     mocks.storedMessages = []
+    mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'idle', canvasEdits: [] })
+    mocks.updateConversationModel.mockResolvedValue({})
     mocks.hydrateSession.mockImplementation((_sessionKey, session) => {
       if (session.messages) mocks.messages = session.messages
     })
@@ -204,6 +215,42 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         interactionMode: 'chat-experimental', boundSkillIds: ['SKL-tone'], revision: 4
       })
     )
+  })
+
+  it('reconciles one pending Document edit on conversation hydration and locks send until apply settles', async () => {
+    const pendingApply = deferred<boolean>()
+    const edit = {
+      kind: 'document_create' as const,
+      id: 'edit-reconcile', editId: 'edit-reconcile', conversationId: 'conversation-experimental',
+      requestId: 'request-reconcile', nodeId: 'document-reconcile',
+      expectedResultDigest: `sha256:${'a'.repeat(64)}`,
+      base: { projectRevision: 1 },
+      payload: { title: 'Recovered', blocks: [], linkedDocumentResourceIds: [] },
+      rationale: 'Recover the saved turn.'
+    }
+    mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'pending_apply', canvasEdits: [edit] })
+    const onApplyCanvasEdit = vi.fn(() => pendingApply.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={onApplyCanvasEdit} embedded
+        />
+      )
+    })
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(mocks.reconcileDocumentEdits).toHaveBeenCalledWith('project-a', 'conversation-experimental')
+    expect(onApplyCanvasEdit).toHaveBeenCalledWith(edit)
+    expect(renderer.root.findByType(CanvasAgentComposer).props.disabled).toBe(true)
+
+    await act(async () => { pendingApply.resolve(true); await pendingApply.promise })
+    expect(renderer.root.findByType(CanvasAgentComposer).props.disabled).toBe(false)
   })
 
   it('does not expose a failed conversation retry after switching conversations', () => {

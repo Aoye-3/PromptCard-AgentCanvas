@@ -400,6 +400,70 @@ describe('storageServiceClient', () => {
     expect(payload.freeCanvas.nodes).toEqual([originalNode])
   })
 
+  test('writes a correct-digest malformed Document suggestion back byte-for-structure from frozen unsupported data', async () => {
+    const blocks: PlanningDocumentBlockV1[] = [{ id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Draft' }] }]
+    const malformedSuggestions = [{
+      id: 'suggestion-1', groupId: 'group-1', editId: 'edit-1', kind: 'insert', blockId: 'paragraph-1',
+      utf8Start: 0, utf8End: 2, content: [{ text: 'not-the-effective-prefix' }]
+    }]
+    const digestInput = { version: 1 as const, blocks, suggestions: malformedSuggestions }
+    const originalNode = {
+      id: 'document-malformed-suggestion', kind: 'document', title: 'Preserve malformed suggestion',
+      position: { x: 10, y: 20 }, width: 560, height: 420,
+      document: { ...digestInput, revision: 2, digest: planningDocumentDigest(digestInput as never) },
+      linkedDocumentResourceIds: ['resource-1'], futureNodeAttribute: { preserve: ['exactly'] }, meta: {}
+    }
+    const freeCanvas = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 1)
+    expect(freeCanvas.nodes[0]).toMatchObject({ kind: 'unsupported', originalNode })
+    if (freeCanvas.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(Object.isFrozen(freeCanvas.nodes[0].originalNode.document)).toBe(true)
+    expect(Object.isFrozen((freeCanvas.nodes[0].originalNode.document as { suggestions: unknown[] }).suggestions)).toBe(true)
+    const project: IPromptProject = {
+      id: 'project-malformed-suggestion', title: 'Malformed suggestion project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0, freeCanvas, createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200, headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes).toEqual([originalNode])
+  })
+
+  test('writes a malformed top-level Agent edit marker back byte-for-structure from frozen unsupported data', async () => {
+    const document = createPlanningDocumentV1([{ id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Draft' }] }], 2)
+    const originalNode = {
+      id: 'document-malformed-marker', kind: 'document', title: 'Preserve malformed marker',
+      position: { x: 10, y: 20 }, width: 560, height: 420, document,
+      linkedDocumentResourceIds: [],
+      agentAppliedEdit: {
+        conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1',
+        resultDigest: document.digest, futureAuthority: 'must-not-be-dropped'
+      },
+      futureNodeAttribute: { preserve: ['exactly'] }, meta: {}
+    }
+    const freeCanvas = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 1)
+    expect(freeCanvas.nodes[0]).toMatchObject({ kind: 'unsupported', originalNode })
+    if (freeCanvas.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(Object.isFrozen(freeCanvas.nodes[0].originalNode.agentAppliedEdit)).toBe(true)
+    const project: IPromptProject = {
+      id: 'project-malformed-marker', title: 'Malformed marker project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0, freeCanvas, createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200, headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes).toEqual([originalNode])
+  })
+
   test('writes a Document node as editor-neutral AST without derived or Tiptap state', async () => {
     const document = createPlanningDocumentV1([{
       id: 'paragraph-1',

@@ -1,5 +1,5 @@
 import type { CardType, IPreset } from './Card.model'
-import type { IStoryboardRow, IStoryboardSequence } from './PromptHistory.model'
+import type { IStoryboardRow, IStoryboardSequence, PlanningDocumentBlockV1 } from './PromptHistory.model'
 import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 
 export type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
@@ -321,9 +321,47 @@ export interface AgentFreeCanvasTextCreateEdit {
   createdAt: number
 }
 
+export type AgentDocumentChangeOperation =
+  | { kind: 'insert'; blockId: string; utf8Offset: number; text: string; expectedTextDigest: string }
+  | { kind: 'delete'; blockId: string; utf8Start: number; utf8End: number; expectedTextDigest: string }
+  | { kind: 'replace'; blockId: string; utf8Start: number; utf8End: number; text: string; expectedTextDigest: string }
+
+interface AgentDocumentEditIdentity {
+  id: string
+  editId: string
+  conversationId: string
+  requestId: string
+  nodeId: string
+  expectedResultDigest: string
+  rationale: string
+  provenance?: AgentRunProvenance
+}
+
+export interface AgentDocumentCreateEdit extends AgentDocumentEditIdentity {
+  kind: 'document_create'
+  base: { projectRevision: number }
+  payload: {
+    title: string
+    blocks: PlanningDocumentBlockV1[]
+    linkedDocumentResourceIds: string[]
+  }
+}
+
+export interface AgentDocumentChangesEdit extends AgentDocumentEditIdentity {
+  kind: 'document_changes'
+  base: {
+    projectRevision: number
+    nodeRevision: number
+    nodeDigest: string
+  }
+  payload: { operations: AgentDocumentChangeOperation[] }
+}
+
 export type AgentCanvasEdit =
   | AgentFreeCanvasTextInsertionsEdit
   | AgentFreeCanvasTextCreateEdit
+  | AgentDocumentCreateEdit
+  | AgentDocumentChangesEdit
 
 export interface AgentFreeCanvasTextInsertionsProposal extends AgentFreeCanvasTextInsertionsEdit {
   status: 'pending' | 'approved' | 'rejected'

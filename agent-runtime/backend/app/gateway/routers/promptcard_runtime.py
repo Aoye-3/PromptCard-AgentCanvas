@@ -15,6 +15,7 @@ from app.gateway.internal_auth import (
 from app.gateway.model_management.connection_store import ModelManagementError
 from app.gateway.model_management.credential_store import CredentialStoreError
 from app.gateway.promptcard_runtime import (
+    PromptCardAgentEditAckRequest,
     PromptCardConversationModelRequest,
     PromptCardInternalChatRequest,
     PromptCardMediaAnalysisRequest,
@@ -103,6 +104,36 @@ async def update_conversation_model(
         )
     except (ModelManagementError, CredentialStoreError, OSError) as exc:
         raise _model_http_error(exc) from None
+
+
+@router.post(
+    "/projects/{project_id}/conversations/{conversation_id}/edits/{edit_id}/ack"
+)
+async def acknowledge_document_edit(
+    project_id: str,
+    conversation_id: str,
+    edit_id: str,
+    body: PromptCardAgentEditAckRequest,
+) -> dict[str, Any]:
+    return await runtime_service.ack_document_edit(
+        project_id,
+        conversation_id,
+        edit_id,
+        body,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/conversations/{conversation_id}/edits/reconcile"
+)
+async def reconcile_document_edits(
+    project_id: str,
+    conversation_id: str,
+) -> dict[str, Any]:
+    return await runtime_service.reconcile_document_edits(
+        project_id,
+        conversation_id,
+    )
 
 
 @router.post("/media-analysis", response_model=PromptCardRuntimeMessageResponse)

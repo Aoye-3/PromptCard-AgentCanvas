@@ -256,6 +256,38 @@ describe('canvas command history', () => {
     expect(recordedUpdate.document.digest).toBe(updatedDigest)
   })
 
+  it('deeply preserves the top-level Agent edit marker in Document command snapshots', () => {
+    const source = documentNode('document-marker', 'Before')
+    source.agentAppliedEdit = {
+      conversationId: 'conversation-1',
+      requestId: 'request-1',
+      editId: 'edit-1',
+      resultDigest: source.document.digest
+    }
+    const canvas = { ...project(), nodes: [source] }
+
+    const inserted = executeCanvasLocalCommand(createCanvasCommandHistory(), project(), {
+      kind: 'insert-node', node: source, index: 0
+    })
+    const recordedInsert = inserted.history.past[0].redo
+    if (recordedInsert.kind !== 'insert-node' || recordedInsert.node.kind !== 'document') {
+      throw new Error('Expected recorded Document insert')
+    }
+    expect(recordedInsert.node.agentAppliedEdit).toEqual(source.agentAppliedEdit)
+    expect(recordedInsert.node.agentAppliedEdit).not.toBe(source.agentAppliedEdit)
+
+    const updated = applyCanvasLocalCommand(canvas, {
+      kind: 'update-document',
+      nodeId: source.id,
+      document: createPlanningDocumentV1([{
+        id: 'document-marker-paragraph', type: 'paragraph', content: [{ text: 'After' }]
+      }], 1)
+    }).project.nodes[0]
+    if (updated.kind !== 'document') throw new Error('Expected updated Document')
+    expect(updated.agentAppliedEdit).toEqual(source.agentAppliedEdit)
+    expect(updated.agentAppliedEdit).not.toBe(source.agentAppliedEdit)
+  })
+
   it('applies restore from detached node and edge snapshots without retaining caller payload refs', () => {
     const restoredNode = structuredClone(documentNode('document-restored', 'Restored'))
     restoredNode.meta = { nested: { label: 'before' } }

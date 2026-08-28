@@ -5,8 +5,9 @@ import type { PlanningDocumentV1 } from '@/models/PromptHistory.model'
 import {
   createPlanningDocumentEditorProps,
   createPlanningDocumentTiptapExtensions,
+  type PlanningDocumentDisplayView,
   planningDocumentFromTiptapJson,
-  planningDocumentToTiptapJson
+  planningDocumentToDisplayTiptapJson
 } from './planning-document-tiptap'
 
 export interface DocumentEditorProps {
@@ -14,50 +15,63 @@ export interface DocumentEditorProps {
   mode: 'inline' | 'expanded'
   onChange: (document: PlanningDocumentV1) => void
   autoFocus?: boolean
+  view?: PlanningDocumentDisplayView
 }
 
 export const DocumentEditor = ({
   document,
   mode,
   onChange,
-  autoFocus = false
+  autoFocus = false,
+  view = 'effective'
 }: DocumentEditorProps) => {
+  const readOnly = view !== 'effective' || document.suggestions.length > 0
   const documentRef = useRef(document)
   const onChangeRef = useRef(onChange)
-  const lastEditorDigestRef = useRef(document.digest)
+  const readOnlyRef = useRef(readOnly)
+  const viewRef = useRef(view)
+  const lastEditorProjectionRef = useRef(`${document.digest}:${view}`)
   const revisionClockRef = useRef(document.revision)
-  const authoritativeIdentityRef = useRef(planningDocumentIdentity(document))
+  const authoritativeIdentityRef = useRef(planningDocumentIdentity(document, view))
   const pendingLocalIdentitiesRef = useRef<string[]>([])
 
   useLayoutEffect(() => {
     documentRef.current = document
     onChangeRef.current = onChange
+    readOnlyRef.current = readOnly
+    viewRef.current = view
     revisionClockRef.current = Math.max(revisionClockRef.current, document.revision)
-  }, [document, onChange])
+  }, [document, onChange, readOnly, view])
 
-  const initialContent = useMemo(() => planningDocumentToTiptapJson(document), [document])
+  const initialContent = useMemo(
+    () => planningDocumentToDisplayTiptapJson(document, view),
+    [document, view]
+  )
   const editor = useEditor({
     extensions: createPlanningDocumentTiptapExtensions(),
     content: initialContent,
     editorProps: createPlanningDocumentEditorProps(),
     autofocus: autoFocus ? 'start' : false,
+    editable: !readOnly,
     immediatelyRender: false,
     onUpdate: ({ editor: currentEditor }) => {
+      if (readOnlyRef.current) return
       const nextRevision = Math.max(revisionClockRef.current, documentRef.current.revision) + 1
       const next = planningDocumentFromTiptapJson(
         currentEditor.getJSON(),
         nextRevision
       )
       revisionClockRef.current = nextRevision
-      pendingLocalIdentitiesRef.current.push(planningDocumentIdentity(next))
-      lastEditorDigestRef.current = next.digest
+      pendingLocalIdentitiesRef.current.push(planningDocumentIdentity(next, viewRef.current))
+      lastEditorProjectionRef.current = `${next.digest}:${viewRef.current}`
       onChangeRef.current(next)
     }
   })
 
   useEffect(() => {
     if (!editor) return
-    const identity = planningDocumentIdentity(document)
+    editor.setEditable(!readOnly)
+    const identity = planningDocumentIdentity(document, view)
     const pendingIndex = pendingLocalIdentitiesRef.current.indexOf(identity)
     if (pendingIndex >= 0) {
       pendingLocalIdentitiesRef.current.splice(0, pendingIndex + 1)
@@ -67,35 +81,43 @@ export const DocumentEditor = ({
     if (identity === authoritativeIdentityRef.current) return
     pendingLocalIdentitiesRef.current = []
     authoritativeIdentityRef.current = identity
-    if (document.digest === lastEditorDigestRef.current) return
-    editor.commands.setContent(planningDocumentToTiptapJson(document), { emitUpdate: false })
-    lastEditorDigestRef.current = document.digest
-  }, [document, editor])
+    const projection = `${document.digest}:${view}`
+    if (projection === lastEditorProjectionRef.current) return
+    editor.commands.setContent(planningDocumentToDisplayTiptapJson(document, view), { emitUpdate: false })
+    lastEditorProjectionRef.current = projection
+  }, [document, editor, readOnly, view])
 
   return (
     <section
       data-document-editor-mode={mode}
+      data-document-editor-view={view}
+      data-document-editor-readonly={readOnly}
       className={`nodrag nowheel flex min-h-0 flex-col bg-white ${mode === 'expanded' ? 'h-full' : 'h-[300px]'}`}
       onPointerDown={event => event.stopPropagation()}
       onWheel={event => event.stopPropagation()}
       onKeyDown={event => event.stopPropagation()}
     >
-      <DocumentEditorToolbar editor={editor} />
+      <DocumentEditorToolbar editor={editor} disabled={readOnly} />
       <EditorContent
         editor={editor}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm leading-6 text-gray-900 outline-none [&_.ProseMirror]:min-h-full [&_.ProseMirror]:outline-none [&_a]:text-sky-700 [&_a]:underline [&_a]:decoration-sky-400 [&_a]:underline-offset-2 [&_blockquote]:border-l-2 [&_blockquote]:border-gray-300 [&_blockquote]:pl-3 [&_h1]:text-xl [&_h1]:font-black [&_h2]:text-lg [&_h2]:font-black [&_h3]:text-base [&_h3]:font-bold [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6 [&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-gray-200 [&_td]:p-2 [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:p-2"
+        aria-readonly={readOnly}
+        data-document-editor-readonly={readOnly}
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm leading-6 text-gray-900 outline-none [&_.ProseMirror]:min-h-full [&_.ProseMirror]:outline-none [&_a]:text-sky-700 [&_a]:underline [&_a]:decoration-sky-400 [&_a]:underline-offset-2 [&_blockquote]:border-l-2 [&_blockquote]:border-gray-300 [&_blockquote]:pl-3 [&_h1]:text-xl [&_h1]:font-black [&_h2]:text-lg [&_h2]:font-black [&_h3]:text-base [&_h3]:font-bold [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6 [&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-gray-200 [&_td]:p-2 [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:p-2 [&_[data-document-suggestion-kind=insert]]:bg-emerald-50 [&_[data-document-suggestion-kind=insert]]:text-emerald-700 [&_[data-document-suggestion-kind=delete]]:bg-red-50 [&_[data-document-suggestion-kind=delete]]:text-red-700 [&_[data-document-suggestion-kind=delete]]:line-through [&_[data-document-suggestion-kind=delete]]:decoration-red-600"
       />
     </section>
   )
 }
 
-const planningDocumentIdentity = (document: PlanningDocumentV1): string => (
-  `${document.revision}:${document.digest}`
+const planningDocumentIdentity = (
+  document: PlanningDocumentV1,
+  view: PlanningDocumentDisplayView
+): string => (
+  `${document.revision}:${document.digest}:${view}`
 )
 
-const DocumentEditorToolbar = ({ editor }: { editor: Editor | null }) => {
+const DocumentEditorToolbar = ({ editor, disabled }: { editor: Editor | null; disabled: boolean }) => {
   const run = (action: (editor: Editor) => void) => () => {
-    if (editor) action(editor)
+    if (editor && !disabled) action(editor)
   }
   const setLink = () => {
     if (!editor || typeof window === 'undefined') return
@@ -121,6 +143,7 @@ const DocumentEditorToolbar = ({ editor }: { editor: Editor | null }) => {
       type="button"
       aria-label={label}
       aria-pressed={active}
+      disabled={disabled}
       className={`h-8 rounded-md px-2 text-xs font-bold transition-colors ${
         active ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-950'
       }`}
@@ -148,6 +171,7 @@ const DocumentEditorToolbar = ({ editor }: { editor: Editor | null }) => {
         type="button"
         aria-label="插入链接"
         aria-pressed={editor?.isActive('link')}
+        disabled={disabled}
         className="h-8 rounded-md px-2 text-xs font-bold text-gray-600 hover:bg-gray-100 hover:text-gray-950"
         onClick={setLink}
       >链接</button>

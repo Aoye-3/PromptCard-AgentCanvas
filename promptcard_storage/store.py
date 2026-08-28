@@ -73,12 +73,25 @@ JSON_SOURCES = (
     "prompt-library-presets.json",
     "prompt-library-trash.json",
 )
+_AGENT_APPLY_EDIT_TERMINAL_STATUSES = {
+    "applied",
+    "failed_conflict",
+    "failed_integrity",
+    "failed_target_missing",
+}
 
 
 class RevisionConflict(Exception):
     def __init__(self, current: dict[str, Any]) -> None:
         super().__init__("revision conflict")
         self.current = current
+
+
+class AgentApplyEditConflict(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(code)
 
 
 class MissingItem(Exception):
@@ -997,6 +1010,25 @@ class SqliteStore:
             ).fetchone()
             if existing is not None:
                 return json.loads(existing[0])
+            apply_edit = _normalize_agent_apply_edit(
+                turn.get("applyEdit"),
+                conversation_id=conversation_id,
+                request_id=request_id,
+            )
+            if apply_edit is not None:
+                pending = connection.execute(
+                    "SELECT result_json FROM agent_conversation_turns WHERE conversation_id=?",
+                    (conversation_id,),
+                ).fetchall()
+                if any(
+                    isinstance((saved := json.loads(row[0])).get("applyEdit"), dict)
+                    and saved["applyEdit"].get("status") == "pending_apply"
+                    for row in pending
+                ):
+                    raise AgentApplyEditConflict(
+                        "agent_apply_edit_pending",
+                        "The conversation already has an unresolved Agent edit",
+                    )
             timestamp = now_ms()
             current_ordinal = connection.execute(
                 "SELECT COALESCE(MAX(ordinal), 0) FROM agent_conversation_messages WHERE conversation_id=?",
@@ -1048,6 +1080,7 @@ class SqliteStore:
                 "skillSnapshots": list(turn.get("skillSnapshots") or []),
                 "modelSnapshot": turn.get("modelSnapshot"),
                 "createdAt": timestamp,
+                **({"applyEdit": apply_edit} if apply_edit is not None else {}),
             }
             connection.execute(
                 "INSERT INTO agent_conversation_turns(conversation_id, request_id, created_at, result_json) VALUES (?, ?, ?, ?)",
@@ -1058,6 +1091,81 @@ class SqliteStore:
                 (timestamp, conversation_id),
             )
         return result
+
+    def update_agent_apply_edit(
+        self,
+        conversation_id: str,
+        *,
+        request_id: str,
+        edit_id: str,
+        status: str,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized_request_id = str(request_id or "").strip()
+        normalized_edit_id = str(edit_id or "").strip()
+        if status not in _AGENT_APPLY_EDIT_TERMINAL_STATUSES:
+            raise ValueError("Agent apply edit status is invalid")
+        with self._transaction() as connection:
+            row = connection.execute(
+                """SELECT result_json FROM agent_conversation_turns
+                   WHERE conversation_id=? AND request_id=?""",
+                (conversation_id, normalized_request_id),
+            ).fetchone()
+            if row is None:
+                raise AgentApplyEditConflict(
+                    "agent_apply_edit_identity_mismatch",
+                    "The Agent edit identity does not match a saved turn",
+                )
+            result = json.loads(row[0])
+            apply_edit = result.get("applyEdit")
+            if (
+                not isinstance(apply_edit, dict)
+                or apply_edit.get("conversationId") != conversation_id
+                or apply_edit.get("requestId") != normalized_request_id
+                or apply_edit.get("editId") != normalized_edit_id
+            ):
+                raise AgentApplyEditConflict(
+                    "agent_apply_edit_identity_mismatch",
+                    "The Agent edit identity does not match a saved turn",
+                )
+            current_status = apply_edit.get("status")
+            if current_status != "pending_apply":
+                if current_status != status:
+                    raise AgentApplyEditConflict(
+                        "agent_apply_edit_terminal",
+                        "The Agent edit already has an immutable terminal result",
+                    )
+            normalized_evidence = _normalize_agent_apply_edit_evidence(evidence)
+            if status == "applied":
+                if set(normalized_evidence) != {
+                    "projectRevision",
+                    "nodeId",
+                    "kind",
+                    "resultDigest",
+                } or normalized_evidence.get("kind") != "document":
+                    raise ValueError("Applied Agent edit evidence is incomplete")
+            elif "code" not in normalized_evidence:
+                raise ValueError("Failed Agent edit evidence code is required")
+            if current_status != "pending_apply":
+                if apply_edit.get("evidence", {}) == normalized_evidence:
+                    return apply_edit
+                raise AgentApplyEditConflict(
+                    "agent_apply_edit_terminal",
+                    "The Agent edit already has an immutable terminal result",
+                )
+            updated = {
+                **apply_edit,
+                "status": status,
+                "evidence": normalized_evidence,
+                "resolvedAt": now_ms(),
+            }
+            result["applyEdit"] = updated
+            connection.execute(
+                """UPDATE agent_conversation_turns SET result_json=?
+                   WHERE conversation_id=? AND request_id=?""",
+                (_json(result), conversation_id, normalized_request_id),
+            )
+            return updated
 
     def update_agent_proposal_status(
         self,
@@ -5710,6 +5818,87 @@ def normalize_model_binding(value: Any) -> dict[str, str] | None:
             raise ValueError(f"Agent conversation modelBinding {key} is required")
         binding[key] = item.strip()
     return binding
+
+
+def _normalize_agent_apply_edit(
+    value: Any,
+    *,
+    conversation_id: str,
+    request_id: str,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("Agent apply edit must be an object")
+    allowed = {
+        "status",
+        "conversationId",
+        "requestId",
+        "editId",
+        "kind",
+        "nodeId",
+        "expectedResultDigest",
+    }
+    if set(value) != allowed:
+        raise ValueError("Agent apply edit fields are invalid")
+    normalized = {
+        "status": value.get("status"),
+        "conversationId": str(value.get("conversationId") or "").strip(),
+        "requestId": str(value.get("requestId") or "").strip(),
+        "editId": str(value.get("editId") or "").strip(),
+        "kind": value.get("kind"),
+        "nodeId": str(value.get("nodeId") or "").strip(),
+        "expectedResultDigest": value.get("expectedResultDigest"),
+    }
+    if normalized["status"] != "pending_apply":
+        raise ValueError("New Agent apply edit must be pending_apply")
+    if (
+        normalized["conversationId"] != conversation_id
+        or normalized["requestId"] != request_id
+    ):
+        raise ValueError("Agent apply edit conversation/request identity is invalid")
+    if normalized["kind"] not in {"document_create", "document_changes"}:
+        raise ValueError("Agent apply edit kind is invalid")
+    if not normalized["editId"] or not normalized["nodeId"]:
+        raise ValueError("Agent apply edit identity is required")
+    result_digest = normalized["expectedResultDigest"]
+    if (
+        not isinstance(result_digest, str)
+        or not result_digest.startswith("sha256:")
+        or len(result_digest) != 71
+        or any(character not in "0123456789abcdef" for character in result_digest[7:])
+    ):
+        raise ValueError("Agent apply edit result digest is invalid")
+    return normalized
+
+
+def _normalize_agent_apply_edit_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("Agent apply edit evidence must be an object")
+    allowed = {"projectRevision", "nodeId", "kind", "resultDigest", "code"}
+    if not set(value).issubset(allowed):
+        raise ValueError("Agent apply edit evidence fields are invalid")
+    normalized: dict[str, Any] = {}
+    if "projectRevision" in value:
+        revision = value["projectRevision"]
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            raise ValueError("Agent apply edit evidence projectRevision is invalid")
+        normalized["projectRevision"] = revision
+    for key in ("nodeId", "kind", "resultDigest", "code"):
+        if key not in value:
+            continue
+        item = value[key]
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"Agent apply edit evidence {key} is invalid")
+        normalized[key] = item.strip()
+    result_digest = normalized.get("resultDigest")
+    if result_digest is not None and (
+        len(result_digest) != 71
+        or not result_digest.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in result_digest[7:])
+    ):
+        raise ValueError("Agent apply edit evidence resultDigest is invalid")
+    return normalized
 
 
 def _legacy_image_conversation_id(project_id: str, node_id: str) -> str:

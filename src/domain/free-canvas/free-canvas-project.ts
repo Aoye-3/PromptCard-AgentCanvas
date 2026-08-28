@@ -21,6 +21,7 @@ import type {
   IFreeCanvasTextNode,
   IFreeCanvasTextSegment,
   IFreeCanvasViewport,
+  AgentAppliedEditMarker,
   PromptDocument,
   PromptSegment,
   IPromptProject
@@ -1063,7 +1064,8 @@ const normalizeDocumentNode = (
   timestamp: number
 ): IFreeCanvasDocumentNode | IFreeCanvasUnsupportedNode => {
   const parsed = parsePlanningDocumentV1(node.document)
-  if (!parsed.ok) {
+  const agentAppliedEdit = normalizeAgentAppliedEditMarker(node.agentAppliedEdit)
+  if (!parsed.ok || (node.agentAppliedEdit !== undefined && !agentAppliedEdit)) {
     return normalizeUnsupportedNode({
       id: node.id,
       kind: 'unsupported',
@@ -1088,7 +1090,26 @@ const normalizeDocumentNode = (
       ? node.linkedDocumentResourceIds.filter((resourceId): resourceId is string => typeof resourceId === 'string')
       : [],
     ...(node.provenance ? { provenance: cloneStructuredValue(node.provenance) } : {}),
+    ...(agentAppliedEdit ? { agentAppliedEdit } : {}),
     meta: node.meta || {}
+  }
+}
+
+const normalizeAgentAppliedEditMarker = (value: unknown): AgentAppliedEditMarker | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const keys = ['conversationId', 'requestId', 'editId', 'resultDigest']
+  if (Object.keys(record).length !== keys.length || keys.some(key => !Object.prototype.hasOwnProperty.call(record, key))) {
+    return null
+  }
+  if (keys.some(key => typeof record[key] !== 'string' || !(record[key] as string).normalize('NFC'))) return null
+  const resultDigest = (record.resultDigest as string).normalize('NFC')
+  if (!/^sha256:[0-9a-f]{64}$/u.test(resultDigest)) return null
+  return {
+    conversationId: (record.conversationId as string).normalize('NFC'),
+    requestId: (record.requestId as string).normalize('NFC'),
+    editId: (record.editId as string).normalize('NFC'),
+    resultDigest
   }
 }
 

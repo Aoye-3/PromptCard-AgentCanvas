@@ -4,7 +4,12 @@ import { joinBackward, joinUp, lift, setBlockType, splitBlock, wrapIn } from '@t
 import { liftListItem, wrapInList } from '@tiptap/pm/schema-list'
 import { EditorState, TextSelection, type Command } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
-import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
+import {
+  createPlanningDocumentV1,
+  planningDocumentEffectiveText,
+  sha256Utf8
+} from '@/domain/documents/planning-document'
+import { applyDocumentChangeOperations } from '@/domain/documents/document-suggestions'
 import type { PlanningDocumentBlockV1 } from '@/models/PromptHistory.model'
 import {
   createPlanningDocumentTiptapExtensions,
@@ -12,6 +17,7 @@ import {
   createPlanningDocumentEditorProps,
   planningDocumentFromTiptapJson,
   planningDocumentPlainTextPasteJson,
+  planningDocumentToDisplayTiptapJson,
   planningDocumentToTiptapJson
 } from './planning-document-tiptap'
 
@@ -41,6 +47,73 @@ describe('planning document Tiptap adapter', () => {
 
     expect(roundTripped).toEqual(original)
     expect(JSON.stringify(json)).not.toContain('suggestion')
+  })
+
+  test('projects linked replacement suggestions as source, effective, and red/green revision views', () => {
+    const source = createPlanningDocumentV1([
+      { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Old world', bold: true }] }
+    ], 4)
+    const proposed = applyDocumentChangeOperations(source, 'edit-replace', [{
+      kind: 'replace',
+      blockId: 'paragraph-1',
+      utf8Start: 0,
+      utf8End: 3,
+      text: 'New',
+      expectedTextDigest: `sha256:${sha256Utf8('Old world')}`
+    }])
+
+    const sourceJson = planningDocumentToDisplayTiptapJson(proposed, 'source')
+    const effectiveJson = planningDocumentToDisplayTiptapJson(proposed, 'effective')
+    const revisionJson = planningDocumentToDisplayTiptapJson(proposed, 'revision')
+    const schema = getSchema(createPlanningDocumentTiptapExtensions())
+
+    expect(jsonText(sourceJson)).toBe('Old world')
+    expect(jsonText(effectiveJson)).toBe('New world')
+    expect(jsonText(revisionJson)).toBe('OldNew world')
+    expect(JSON.stringify(sourceJson)).not.toContain('documentSuggestion')
+    expect(JSON.stringify(effectiveJson)).not.toContain('documentSuggestion')
+    expect(revisionJson.content?.[0]?.content).toEqual([
+      expect.objectContaining({
+        text: 'Old',
+        marks: expect.arrayContaining([expect.objectContaining({
+          type: 'documentSuggestionDelete',
+          attrs: expect.objectContaining({ groupId: proposed.suggestions[0].groupId })
+        })])
+      }),
+      expect.objectContaining({
+        text: 'New',
+        marks: expect.arrayContaining([expect.objectContaining({
+          type: 'documentSuggestionInsert',
+          attrs: expect.objectContaining({ groupId: proposed.suggestions[0].groupId })
+        })])
+      }),
+      expect.objectContaining({ text: ' world' })
+    ])
+    const revisionNode = schema.nodeFromJSON(revisionJson)
+    expect(() => revisionNode.check()).not.toThrow()
+    const renderedMarks = createPlanningDocumentTiptapExtensions()
+      .filter(extension => extension.name.startsWith('documentSuggestion'))
+    expect(renderedMarks.map(extension => extension.name).sort()).toEqual([
+      'documentSuggestionDelete', 'documentSuggestionInsert'
+    ])
+  })
+
+  test('rejects an unsupported suggestion projection without mutating its lossless input', () => {
+    const document = createPlanningDocumentV1([
+      { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Draft' }] }
+    ])
+    const invalid = {
+      ...document,
+      suggestions: [{
+        id: 'unknown-1', groupId: 'group-1', editId: 'edit-1', kind: 'unsupported',
+        blockId: 'paragraph-1', utf8Start: 0, utf8End: 0, content: [{ text: 'opaque' }]
+      }]
+    }
+    const before = structuredClone(invalid)
+
+    expect(() => planningDocumentToDisplayTiptapJson(invalid as never, 'revision'))
+      .toThrow('planning_document_suggestion_unsupported')
+    expect(invalid).toEqual(before)
   })
 
   test.each([
@@ -485,6 +558,10 @@ const walkJson = (
   visit(node, parent)
   node.content?.forEach(child => walkJson(child, visit, node))
 }
+
+const jsonText = (node: JSONContent): string => (
+  `${node.text || ''}${(node.content || []).map(jsonText).join('')}`
+)
 
 const allNeutralIds = (blocks: PlanningDocumentBlockV1[]): string[] => blocks.flatMap(block => {
   if (block.type === 'bulletList' || block.type === 'orderedList' || block.type === 'checkList') {

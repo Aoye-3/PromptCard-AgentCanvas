@@ -122,6 +122,130 @@ describe('agent runtime message contract', () => {
       'document:section_1.2'
     ])
   })
+
+  it('accepts one closed enriched Document create edit from Gateway', async () => {
+    const edit = {
+      kind: 'document_create',
+      id: '2c16cf56-20c8-5eb7-b1b0-a9d32e986025',
+      editId: '2c16cf56-20c8-5eb7-b1b0-a9d32e986025',
+      conversationId: 'conversation-1',
+      requestId: 'request-1',
+      nodeId: 'document-1',
+      expectedResultDigest: `sha256:${'a'.repeat(64)}`,
+      base: { projectRevision: 7 },
+      payload: {
+        title: 'Plan',
+        blocks: [{ id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Hello' }] }],
+        linkedDocumentResourceIds: []
+      },
+      rationale: 'Create a tracked planning document.',
+      provenance: { model: null, skills: [] }
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-1', conversationId: 'conversation-1', requestId: 'request-1',
+      text: 'ok', proposals: [], canvasEdits: [edit]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await agentRuntimeService.sendMessage({ content: 'Create it', projectId: 'project-1' })
+
+    expect(result.canvasEdits).toEqual([edit])
+  })
+
+  it('rejects a malformed enriched Document edit before it can be applied', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-1', conversationId: 'conversation-1', requestId: 'request-1', text: 'ok', proposals: [],
+      canvasEdits: [{
+        kind: 'document_changes', id: 'edit-1', conversationId: 'conversation-1', requestId: 'request-1',
+        nodeId: 'document-1', expectedResultDigest: `sha256:${'a'.repeat(64)}`,
+        base: { projectRevision: 7, nodeRevision: 2, nodeDigest: `sha256:${'b'.repeat(64)}` },
+        payload: { operations: [] }, rationale: 'missing editId'
+      }]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(agentRuntimeService.sendMessage({ content: 'Change it', projectId: 'project-1' }))
+      .rejects.toThrow('Invalid agent canvas edits.')
+  })
+})
+
+describe('agent document apply acknowledgement contract', () => {
+  it('sends an exact applied acknowledgement through the existing runtime prefix', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      status: 'applied',
+      editId: 'edit-1'
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await agentRuntimeService.acknowledgeDocumentEdit(
+      'project/one',
+      'conversation one',
+      'edit:one',
+      { requestId: 'request-1', status: 'applied' }
+    )
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/agent-api/promptcard/runtime/projects/project%2Fone/conversations/conversation%20one/edits/edit%3Aone/ack',
+      expect.objectContaining({
+        credentials: 'include',
+        method: 'POST',
+        body: JSON.stringify({ requestId: 'request-1', status: 'applied' })
+      })
+    )
+  })
+
+  it('sends a bounded failed acknowledgement without leaking provider evidence', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      status: 'pending_apply',
+      editId: 'edit-1'
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await agentRuntimeService.acknowledgeDocumentEdit('project-1', 'conversation-1', 'edit-1', {
+      requestId: 'request-1',
+      status: 'failed',
+      errorCode: 'failed_conflict'
+    })
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body).toEqual({
+      requestId: 'request-1',
+      status: 'failed',
+      errorCode: 'failed_conflict'
+    })
+    expect(JSON.stringify(body)).not.toContain('providerFileId')
+    expect(JSON.stringify(body)).not.toContain('F:\\')
+  })
+
+  it('reconciles pending edits with an empty closed body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'idle', canvasEdits: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await agentRuntimeService.reconcileDocumentEdits('project-1', 'conversation-1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/agent-api/promptcard/runtime/projects/project-1/conversations/conversation-1/edits/reconcile',
+      expect.objectContaining({
+        credentials: 'include',
+        method: 'POST',
+        body: JSON.stringify({})
+      })
+    )
+  })
+
+  it('rejects a malformed replayed Document edit during restart reconciliation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      status: 'pending_apply',
+      canvasEdits: [{ kind: 'document_create', id: 'edit-only' }]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(agentRuntimeService.reconcileDocumentEdits('project-1', 'conversation-1'))
+      .rejects.toThrow('Invalid agent canvas edits.')
+  })
 })
 
 describe('agent runtime proposal parsing', () => {

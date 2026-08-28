@@ -9,6 +9,7 @@ import {
   planningDocumentEffectiveText,
   sha256Utf8
 } from './planning-document'
+import { applyDocumentChangeOperations } from './document-suggestions'
 
 const richBlocks = (): PlanningDocumentBlockV1[] => [
   {
@@ -302,10 +303,30 @@ describe('planning document domain', () => {
 
   test.each([
     { version: 2, blocks: [], revision: 0, digest: 'sha256:x', suggestions: [] },
-    { version: 1, blocks: [], revision: 0, digest: 'sha256:x', suggestions: [{ id: 'task-7' }] },
+    { version: 1, blocks: [], revision: 0, digest: 'sha256:x', suggestions: [{ id: 'malformed-task-7' }] },
     { version: 1, blocks: [{ id: 'x', type: 'codeBlock', content: [] }], revision: 0, digest: 'sha256:x', suggestions: [] }
-  ])('rejects unsupported versions, current suggestions, and unknown blocks', value => {
+  ])('rejects unsupported versions, malformed suggestions, and unknown blocks', value => {
     expect(parsePlanningDocumentV1(value)).toMatchObject({ ok: false })
+  })
+
+  test('strictly parses and deep-clones a valid persisted suggestion payload', () => {
+    const original = createPlanningDocumentV1([{
+      id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Café' }]
+    }], 2)
+    const suggested = applyDocumentChangeOperations(original, 'edit-1', [{
+      kind: 'insert',
+      blockId: 'paragraph-1',
+      utf8Offset: 5,
+      text: '!',
+      expectedTextDigest: `sha256:${sha256Utf8('Café')}`
+    }])
+
+    const parsed = parsePlanningDocumentV1(suggested)
+    expect(parsed).toEqual({ ok: true, document: suggested })
+    if (!parsed.ok) throw new Error('Expected valid suggested document')
+    expect(parsed.document.suggestions).not.toBe(suggested.suggestions)
+    expect(parsed.document.suggestions[0]).not.toBe(suggested.suggestions[0])
+    expect(parsed.document.suggestions[0].content).not.toBe(suggested.suggestions[0].content)
   })
 
   test('rejects unknown attributes instead of silently dropping them', () => {

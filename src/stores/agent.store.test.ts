@@ -216,6 +216,29 @@ describe('agent store', () => {
     expect(useAgentStore.getState().getAgentSession('workspace:free-canvas:project-1').proposals).toEqual([])
   })
 
+  it('preserves the closed Gateway identity of Document edits without legacy Canvas fields', async () => {
+    const edit = {
+      kind: 'document_create' as const,
+      id: 'edit-document-1', editId: 'edit-document-1', conversationId: 'conversation-1',
+      requestId: 'request-1', nodeId: 'document-1', expectedResultDigest: `sha256:${'a'.repeat(64)}`,
+      base: { projectRevision: 1 },
+      payload: { title: 'Draft', blocks: [], linkedDocumentResourceIds: [] },
+      rationale: 'Create a draft.'
+    }
+    serviceMock.sendMessage.mockResolvedValueOnce({
+      threadId: 'thread-1', conversationId: 'conversation-1', requestId: 'request-1',
+      text: 'Document edit generated.', proposals: [], canvasEdits: [edit]
+    })
+
+    const returned = await useAgentStore.getState().sendMessage('Create it', [], {
+      sessionKey: 'workspace:free-canvas:project-1', mode: 'free-canvas-workspace'
+    })
+
+    expect(returned.canvasEdits).toEqual([edit])
+    expect(returned.canvasEdits[0]).not.toHaveProperty('threadId')
+    expect(returned.canvasEdits[0]).not.toHaveProperty('contextId')
+  })
+
   it('does not attach the Prompt Library to ordinary Canvas completion requests', async () => {
     await useAgentStore.getState().sendMessage('补全目标', promptLibraryPresets(254), {
       sessionKey: 'workspace:free-canvas:project-1',

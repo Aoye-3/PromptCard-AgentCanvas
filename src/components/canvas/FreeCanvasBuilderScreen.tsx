@@ -98,6 +98,8 @@ import {
   type CanvasLocalCommand
 } from '@/domain/free-canvas/canvas-command-history'
 import { markCanvasNodeReferencePending } from '@/domain/reference-codes/canvas-node-reference-lifecycle'
+import { applyDocumentChangeOperations } from '@/domain/documents/document-suggestions'
+import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
 import {
   resolveImageNodeCommands,
   type ImageNodeCommandId,
@@ -2900,6 +2902,156 @@ const FreeCanvasBuilderInner = ({
   }
 
   const handleApplyAgentProposal = async (proposal: AgentWorkspaceProposal | AgentCanvasEdit) => {
+    if (proposal.kind === 'document_create' || proposal.kind === 'document_changes') {
+      const scope = activeProjectScopeRef.current
+      return enqueueDocumentMutation(scope, async () => {
+        const acknowledgeFailure = async (
+          errorCode: 'failed_conflict' | 'failed_integrity' | 'failed_target_missing' | 'save_failed'
+        ) => {
+          try {
+            await agentRuntimeService.acknowledgeDocumentEdit(
+              activeProject.id,
+              proposal.conversationId,
+              proposal.editId,
+              { requestId: proposal.requestId, status: 'failed', errorCode }
+            )
+          } catch {
+            // Failure acknowledgement is advisory; Gateway owns the terminal state.
+          }
+          return false
+        }
+        if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
+
+        const beforeCanvas = freeCanvasRef.current
+        const existing = beforeCanvas.nodes.find(node => node.id === proposal.nodeId)
+        if (
+          existing?.kind === 'document' &&
+          existing.agentAppliedEdit?.conversationId === proposal.conversationId &&
+          existing.agentAppliedEdit.requestId === proposal.requestId &&
+          existing.agentAppliedEdit.editId === proposal.editId &&
+          existing.agentAppliedEdit.resultDigest === proposal.expectedResultDigest &&
+          existing.document.digest === proposal.expectedResultDigest
+        ) {
+          try {
+            await agentRuntimeService.acknowledgeDocumentEdit(
+              activeProject.id,
+              proposal.conversationId,
+              proposal.editId,
+              { requestId: proposal.requestId, status: 'applied' }
+            )
+          } catch {
+            // A later reconcile can prove the already-persisted marker.
+          }
+          return true
+        }
+        if (proposal.base.projectRevision !== activeProject.revision) {
+          return acknowledgeFailure('failed_conflict')
+        }
+
+        const marker = {
+          conversationId: proposal.conversationId,
+          requestId: proposal.requestId,
+          editId: proposal.editId,
+          resultDigest: proposal.expectedResultDigest
+        }
+        let executed: ReturnType<typeof executeCanvasLocalCommand>
+        try {
+          if (proposal.kind === 'document_create') {
+            if (existing) return acknowledgeFailure('failed_conflict')
+            const document = createPlanningDocumentV1(proposal.payload.blocks)
+            if (document.digest !== proposal.expectedResultDigest) {
+              return acknowledgeFailure('failed_integrity')
+            }
+            executed = executeCanvasLocalCommand(canvasCommandHistoryRef.current, beforeCanvas, {
+              kind: 'insert-node',
+              index: beforeCanvas.nodes.length,
+              node: {
+                id: proposal.nodeId,
+                kind: 'document',
+                title: proposal.payload.title,
+                position: nextNodePosition(reactFlow, beforeCanvas.nodes.length),
+                width: 560,
+                height: 420,
+                document,
+                linkedDocumentResourceIds: [...proposal.payload.linkedDocumentResourceIds],
+                ...(proposal.provenance ? { provenance: proposal.provenance } : {}),
+                agentAppliedEdit: marker,
+                meta: {}
+              }
+            })
+          } else {
+            if (!existing || existing.kind !== 'document') {
+              return acknowledgeFailure('failed_target_missing')
+            }
+            if (
+              existing.document.revision !== proposal.base.nodeRevision ||
+              existing.document.digest !== proposal.base.nodeDigest
+            ) {
+              return acknowledgeFailure('failed_conflict')
+            }
+            const document = applyDocumentChangeOperations(
+              existing.document,
+              proposal.editId,
+              proposal.payload.operations
+            )
+            if (document.digest !== proposal.expectedResultDigest) {
+              return acknowledgeFailure('failed_integrity')
+            }
+            executed = executeCanvasLocalCommand(canvasCommandHistoryRef.current, beforeCanvas, {
+              kind: 'update-document',
+              nodeId: proposal.nodeId,
+              document
+            })
+          }
+        } catch {
+          return acknowledgeFailure('failed_integrity')
+        }
+
+        const persistedCanvas = {
+          ...executed.project,
+          nodes: executed.project.nodes.map(node => (
+            node.id === proposal.nodeId && node.kind === 'document'
+              ? { ...node, agentAppliedEdit: marker }
+              : node
+          ))
+        }
+        emitGenerationCanvas(persistedCanvas)
+        if (!onPersistCanvas) {
+          emitGenerationCanvas(beforeCanvas)
+          return acknowledgeFailure('save_failed')
+        }
+        let saved = false
+        try {
+          saved = Boolean(await onPersistCanvas(persistedCanvas))
+        } catch {
+          saved = false
+        }
+        if (!saved) {
+          if (sameProjectMutationScope(activeProjectScopeRef.current, scope)) {
+            emitGenerationCanvas(beforeCanvas)
+          }
+          return acknowledgeFailure('save_failed')
+        }
+
+        try {
+          const acknowledgement = await agentRuntimeService.acknowledgeDocumentEdit(
+            activeProject.id,
+            proposal.conversationId,
+            proposal.editId,
+            { requestId: proposal.requestId, status: 'applied' }
+          )
+          if (
+            acknowledgement.status === 'applied' &&
+            sameProjectMutationScope(activeProjectScopeRef.current, scope)
+          ) {
+            canvasCommandHistoryRef.current = executed.history
+          }
+        } catch {
+          // Storage already contains the content and marker; reconcile will prove it after restart.
+        }
+        return true
+      })
+    }
     if (proposal.kind === 'free_canvas_text_insertions') {
       const currentCanvas = freeCanvasRef.current
       const target = currentCanvas.nodes.find((node): node is IFreeCanvasTextNode => (

@@ -290,11 +290,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         threadId: proposal.threadId || result.threadId,
         contextId: proposal.contextId || options?.workspaceContext?.contextId
       }))
-      const canvasEdits = (result.canvasEdits || []).map(edit => ({
-        ...edit,
-        threadId: edit.threadId || result.threadId,
-        contextId: edit.contextId || options?.workspaceContext?.contextId
-      }))
+      const canvasEdits = (result.canvasEdits || []).map(edit => (
+        edit.kind === 'document_create' || edit.kind === 'document_changes'
+          ? edit
+          : {
+              ...edit,
+              threadId: edit.threadId || result.threadId,
+              contextId: edit.contextId || options?.workspaceContext?.contextId
+            }
+      ))
 
       set(state => ({
         sessionsByKey: updateSessions(state.sessionsByKey, sessionKey, session => ({

@@ -5,6 +5,32 @@ export type PermissionScope =
 
 export type PromptLanguageMode = 'zh' | 'en' | 'mixed'
 export type AgentInteractionMode = 'prompt-edit' | 'chat-experimental'
+const MAX_DOCUMENT_CONTEXT_BYTES = 100_000
+
+export type PlanningInlineV1 = { text: string; bold?: true; italic?: true; href?: string }
+export type PlanningDocumentBlockV1 =
+  | { id: string; type: 'paragraph' | 'blockquote'; content: PlanningInlineV1[] }
+  | { id: string; type: 'heading'; level: 1 | 2 | 3; content: PlanningInlineV1[] }
+  | { id: string; type: 'bulletList' | 'orderedList'; items: Array<{ id: string; content: PlanningInlineV1[] }> }
+  | { id: string; type: 'checkList'; items: Array<{ id: string; checked: boolean; content: PlanningInlineV1[] }> }
+  | { id: string; type: 'table'; rows: Array<{
+    id: string
+    cells: Array<{ id: string; header?: true; content: PlanningInlineV1[] }>
+  }> }
+
+export type DocumentWriteContext =
+  | {
+    operationKind: 'document_create'
+    linkedDocumentResourceIds: string[]
+  }
+  | {
+    operationKind: 'document_changes'
+    nodeId: string
+    baseRevision: number
+    baseDigest: string
+    blocks: Array<{ blockId: string; text: string; expectedTextDigest: string }>
+    wrapperBlockIds?: string[]
+  }
 
 export interface PromptLibraryItem {
   id?: string
@@ -54,6 +80,7 @@ export interface InvocationInput {
     targetNode?: Record<string, unknown> | null
     referenceNodes?: Array<Record<string, unknown>>
   } | null
+  documentWriteContext?: DocumentWriteContext | null
   mediaAction?: 'chat' | 'preview' | 'selection-rewrite'
   promptLanguageMode?: PromptLanguageMode
   mediaPreview?: Record<string, unknown> | null
@@ -82,6 +109,7 @@ export interface InvocationPolicy {
   canvasSelection: { start: number; end: number; selectedText: string } | null
   canSearchPromptLibrary: boolean
   canvasSegments: Array<{ id: string; text: string }>
+  documentWriteContext: DocumentWriteContext | null
 }
 
 export function buildInvocation(input: InvocationInput) {
@@ -96,6 +124,10 @@ export function buildInvocation(input: InvocationInput) {
     input.permissionScope === 'prompt-library-agent'
     || input.canvasNodeContext?.mode === 'prompt-library'
   )
+  const documentWriteContext = isExperimentalChat
+    && input.permissionScope === 'workspace-chatbot-agent'
+    ? normalizeDocumentWriteContext(input.documentWriteContext)
+    : null
   const selectedTextNodeId = isExperimentalChat
     ? null
     : hasExplicitCanvasContext
@@ -127,7 +159,7 @@ export function buildInvocation(input: InvocationInput) {
   let allowedCanvasEditKinds: string[] = []
   if (isExperimentalChat) {
     allowedProposalKinds = []
-    allowedCanvasEditKinds = []
+    allowedCanvasEditKinds = documentWriteContext ? [documentWriteContext.operationKind] : []
   } else if (input.permissionScope === 'prompt-library-agent') {
     allowedProposalKinds = ['prompt_library_write_proposal']
   } else if (input.permissionScope === 'workspace-chatbot-agent') {
@@ -155,6 +187,7 @@ export function buildInvocation(input: InvocationInput) {
     history: (input.history || []).slice(-40),
     skillSnapshots: (input.skillSnapshots || []).slice(0, 8),
     canvasNodeContext: isExperimentalChat ? null : input.canvasNodeContext || null,
+    documentWriteContext,
     mediaAction: input.mediaAction || 'chat',
     promptLanguageMode: input.permissionScope === 'media-analysis-agent'
       ? input.promptLanguageMode || 'mixed'
@@ -176,7 +209,108 @@ export function buildInvocation(input: InvocationInput) {
       canvasEditMode,
       canvasSelection,
       canSearchPromptLibrary,
-      canvasSegments
+      canvasSegments,
+      documentWriteContext
     } satisfies InvocationPolicy
   }
+}
+
+function normalizeDocumentWriteContext(value: unknown): DocumentWriteContext | null {
+  if (!isRecord(value)) return null
+  if (value.operationKind === 'document_create') {
+    if (!hasExactKeys(value, ['operationKind', 'linkedDocumentResourceIds'])) return null
+    if (!Array.isArray(value.linkedDocumentResourceIds) || value.linkedDocumentResourceIds.length > 5) return null
+    const resourceIds = value.linkedDocumentResourceIds
+    if (!resourceIds.every(isBoundIdentity) || new Set(resourceIds).size !== resourceIds.length) return null
+    return { operationKind: 'document_create', linkedDocumentResourceIds: [...resourceIds] }
+  }
+  if (value.operationKind !== 'document_changes') return null
+  if (!hasExactKeys(value, [
+    'operationKind', 'nodeId', 'baseRevision', 'baseDigest', 'blocks'
+  ], ['wrapperBlockIds'])) return null
+  if (!isBoundIdentity(value.nodeId)
+    || !Number.isSafeInteger(value.baseRevision)
+    || Number(value.baseRevision) < 0
+    || !isBoundDigest(value.baseDigest)
+    || !Array.isArray(value.blocks)
+    || value.blocks.length === 0
+    || value.blocks.length > 128) return null
+  const blocks: Array<{ blockId: string; text: string; expectedTextDigest: string }> = []
+  const identities = new Set<string>()
+  let textBytes = 0
+  for (const candidate of value.blocks) {
+    if (!isRecord(candidate)
+      || !hasExactKeys(candidate, ['blockId', 'text', 'expectedTextDigest'])
+      || !isBoundIdentity(candidate.blockId)
+      || typeof candidate.text !== 'string'
+      || !isWellFormed(candidate.text)
+      || candidate.text !== candidate.text.normalize('NFC')
+      || !isBoundDigest(candidate.expectedTextDigest)
+      || identities.has(candidate.blockId)) return null
+    textBytes += new TextEncoder().encode(candidate.text).length
+    if (textBytes > MAX_DOCUMENT_CONTEXT_BYTES) return null
+    identities.add(candidate.blockId)
+    blocks.push({
+      blockId: candidate.blockId,
+      text: candidate.text,
+      expectedTextDigest: candidate.expectedTextDigest
+    })
+  }
+  const wrapperBlockIds = value.wrapperBlockIds === undefined ? [] : value.wrapperBlockIds
+  if (!Array.isArray(wrapperBlockIds)
+    || wrapperBlockIds.length > 128
+    || !wrapperBlockIds.every(isBoundIdentity)
+    || new Set(wrapperBlockIds).size !== wrapperBlockIds.length
+    || wrapperBlockIds.some(identity => identities.has(identity))) return null
+  return {
+    operationKind: 'document_changes',
+    nodeId: value.nodeId,
+    baseRevision: Number(value.baseRevision),
+    baseDigest: value.baseDigest,
+    blocks,
+    ...(wrapperBlockIds.length ? { wrapperBlockIds: [...wrapperBlockIds] } : {})
+  }
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = []
+): boolean {
+  const allowed = new Set([...required, ...optional])
+  return required.every(key => Object.prototype.hasOwnProperty.call(value, key))
+    && Object.keys(value).every(key => allowed.has(key))
+}
+
+function isBoundIdentity(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= 192
+    && isWellFormed(value)
+    && value === value.normalize('NFC')
+}
+
+function isBoundDigest(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= 192
+    && isWellFormed(value)
+}
+
+function isWellFormed(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false
+      index += 1
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false
+    }
+  }
+  return true
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

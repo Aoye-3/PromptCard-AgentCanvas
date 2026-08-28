@@ -83,6 +83,25 @@ export interface AgentRuntimeMessageRequest {
   explicitDocumentNodeIds?: string[]
 }
 
+export interface AgentDocumentEditAcknowledgement {
+  requestId: string
+  status: 'applied' | 'failed'
+  errorCode?: 'failed_conflict' | 'failed_integrity' | 'failed_target_missing' | 'save_failed'
+}
+
+export interface AgentDocumentEditStatus {
+  conversationId: string
+  requestId: string
+  editId: string
+  status: 'pending_apply' | 'applied' | 'failed_conflict' | 'failed_integrity' | 'failed_target_missing'
+  evidence?: Record<string, unknown> | null
+}
+
+export interface AgentDocumentEditReconciliation extends Omit<Partial<AgentDocumentEditStatus>, 'status'> {
+  status: AgentDocumentEditStatus['status'] | 'idle'
+  canvasEdits: AgentCanvasEdit[]
+}
+
 const jsonHeaders = () => {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json'
@@ -145,6 +164,87 @@ const messageText = (content: unknown): string => {
   return ''
 }
 
+const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
+const hasOnlyKeys = (value: Record<string, unknown>, keys: readonly string[]) =>
+  Object.keys(value).every(key => keys.includes(key))
+
+const isDocumentEditIdentity = (value: Record<string, unknown>) =>
+  typeof value.id === 'string' &&
+  value.id.length > 0 &&
+  value.editId === value.id &&
+  typeof value.conversationId === 'string' &&
+  value.conversationId.length > 0 &&
+  typeof value.requestId === 'string' &&
+  value.requestId.length > 0 &&
+  typeof value.nodeId === 'string' &&
+  CANVAS_NODE_ID_PATTERN.test(value.nodeId) &&
+  typeof value.expectedResultDigest === 'string' &&
+  SHA256_PATTERN.test(value.expectedResultDigest) &&
+  typeof value.rationale === 'string' &&
+  (!('provenance' in value) || value.provenance === undefined || isRecord(value.provenance))
+
+const isDocumentChangeOperation = (value: unknown) => {
+  if (!isRecord(value) || typeof value.kind !== 'string' || typeof value.blockId !== 'string' ||
+      !SHA256_PATTERN.test(String(value.expectedTextDigest ?? ''))) return false
+  if (value.kind === 'insert') {
+    return hasOnlyKeys(value, ['kind', 'blockId', 'utf8Offset', 'text', 'expectedTextDigest']) &&
+      Number.isSafeInteger(value.utf8Offset) && Number(value.utf8Offset) >= 0 && typeof value.text === 'string'
+  }
+  if (value.kind === 'delete') {
+    return hasOnlyKeys(value, ['kind', 'blockId', 'utf8Start', 'utf8End', 'expectedTextDigest']) &&
+      Number.isSafeInteger(value.utf8Start) && Number.isSafeInteger(value.utf8End) &&
+      Number(value.utf8Start) >= 0 && Number(value.utf8End) >= Number(value.utf8Start)
+  }
+  if (value.kind === 'replace') {
+    return hasOnlyKeys(value, ['kind', 'blockId', 'utf8Start', 'utf8End', 'text', 'expectedTextDigest']) &&
+      Number.isSafeInteger(value.utf8Start) && Number.isSafeInteger(value.utf8End) &&
+      Number(value.utf8Start) >= 0 && Number(value.utf8End) >= Number(value.utf8Start) && typeof value.text === 'string'
+  }
+  return false
+}
+
+const isEnrichedDocumentEdit = (value: unknown): value is AgentCanvasEdit => {
+  if (!isRecord(value) || !isDocumentEditIdentity(value) || !isRecord(value.base) || !isRecord(value.payload)) {
+    return false
+  }
+  const identityKeys = [
+    'kind', 'id', 'editId', 'conversationId', 'requestId', 'nodeId',
+    'expectedResultDigest', 'base', 'payload', 'rationale', 'provenance'
+  ]
+  if (!hasOnlyKeys(value, identityKeys)) return false
+  if (value.kind === 'document_create') {
+    return hasOnlyKeys(value.base, ['projectRevision']) && Number.isSafeInteger(value.base.projectRevision) &&
+      Number(value.base.projectRevision) >= 0 &&
+      hasOnlyKeys(value.payload, ['title', 'blocks', 'linkedDocumentResourceIds']) &&
+      typeof value.payload.title === 'string' && Array.isArray(value.payload.blocks) &&
+      value.payload.blocks.every(isRecord) && Array.isArray(value.payload.linkedDocumentResourceIds) &&
+      value.payload.linkedDocumentResourceIds.every(item => typeof item === 'string')
+  }
+  if (value.kind === 'document_changes') {
+    return hasOnlyKeys(value.base, ['projectRevision', 'nodeRevision', 'nodeDigest']) &&
+      Number.isSafeInteger(value.base.projectRevision) && Number(value.base.projectRevision) >= 0 &&
+      Number.isSafeInteger(value.base.nodeRevision) && Number(value.base.nodeRevision) >= 0 &&
+      typeof value.base.nodeDigest === 'string' && SHA256_PATTERN.test(value.base.nodeDigest) &&
+      hasOnlyKeys(value.payload, ['operations']) && Array.isArray(value.payload.operations) &&
+      value.payload.operations.length > 0 && value.payload.operations.every(isDocumentChangeOperation)
+  }
+  return false
+}
+
+const validateAgentCanvasEdits = (value: unknown): AgentCanvasEdit[] => {
+  if (!Array.isArray(value)) throw new Error('Invalid agent canvas edits.')
+  const documentEdits = value.filter(edit => isRecord(edit) &&
+    (edit.kind === 'document_create' || edit.kind === 'document_changes'))
+  if (documentEdits.length > 1 || documentEdits.some(edit => !isEnrichedDocumentEdit(edit))) {
+    throw new Error('Invalid agent canvas edits.')
+  }
+  return value as AgentCanvasEdit[]
+}
+
 export const agentRuntimeService = {
   health: () => requestJson<Record<string, unknown>>(`${PROMPTCARD_RUNTIME_BASE}/status`),
 
@@ -200,7 +300,8 @@ export const agentRuntimeService = {
     })
     return {
       ...response,
-      proposals: filterProposalsForPermissionScope(response.proposals, body.permissionScope)
+      proposals: filterProposalsForPermissionScope(response.proposals, body.permissionScope),
+      canvasEdits: validateAgentCanvasEdits(response.canvasEdits)
     }
   },
 
@@ -216,6 +317,37 @@ export const agentRuntimeService = {
       body: JSON.stringify({ modelBinding })
     }
   ),
+
+  acknowledgeDocumentEdit: (
+    projectId: string,
+    conversationId: string,
+    editId: string,
+    body: AgentDocumentEditAcknowledgement
+  ) => requestJson<AgentDocumentEditStatus>(
+    `${PROMPTCARD_RUNTIME_BASE}/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/edits/${encodeURIComponent(editId)}/ack`,
+    {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify(body)
+    }
+  ),
+
+  reconcileDocumentEdits: async (
+    projectId: string,
+    conversationId: string
+  ) => {
+    const response = await requestJson<Omit<AgentDocumentEditReconciliation, 'canvasEdits'> & { canvasEdits?: unknown }>(
+      `${PROMPTCARD_RUNTIME_BASE}/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/edits/reconcile`, {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({})
+      }
+    )
+    return {
+      ...response,
+      canvasEdits: validateAgentCanvasEdits(response.canvasEdits ?? [])
+    }
+  },
 
   analyzeMedia: (body: {
     threadId?: string

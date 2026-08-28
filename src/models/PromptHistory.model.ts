@@ -61,8 +61,26 @@ export type PlanningDocumentBlockV1 =
   | { id: string; type: 'checkList'; items: Array<{ id: string; checked: boolean; content: PlanningInlineV1[] }> }
   | { id: string; type: 'table'; rows: Array<{ id: string; cells: Array<{ id: string; header?: true; content: PlanningInlineV1[] }> }> }
 
-/** Task 15.6 freezes suggestion storage as editor-neutral data; Task 15.9 owns its operation schema. */
-export type DocumentSuggestion = Readonly<Record<string, unknown>>
+export interface DocumentSuggestion {
+  id: string
+  groupId: string
+  editId: string
+  kind: 'insert' | 'delete'
+  /** ID of one text-bearing leaf: block, list item, or table cell. */
+  blockId: string
+  /** Coordinates in the current NFC-normalized effective leaf text. */
+  utf8Start: number
+  utf8End: number
+  /** Inserted or visually retained deleted rich text. */
+  content: PlanningInlineV1[]
+}
+
+export interface AgentAppliedEditMarker {
+  conversationId: string
+  requestId: string
+  editId: string
+  resultDigest: string
+}
 
 export interface PlanningDocumentV1 {
   version: 1
@@ -188,6 +206,7 @@ export interface IFreeCanvasDocumentNode extends IFreeCanvasBaseNode {
   document: PlanningDocumentV1
   linkedDocumentResourceIds: string[]
   provenance?: AgentRunProvenance
+  agentAppliedEdit?: AgentAppliedEditMarker
 }
 
 export interface IFreeCanvasStoryboardNode extends IFreeCanvasBaseNode {

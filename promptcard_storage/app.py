@@ -22,6 +22,7 @@ from .remote_images import RemoteImage, RemoteImageError, fetch_remote_image
 from .skill_importer import SkillPackageImportError, SkillPackageImportService
 from .skill_hosts import CodexProjectionAdapter, SkillHostConflict, SkillHostService
 from .store import (
+    AgentApplyEditConflict,
     AssetInUse,
     AssetValidationError,
     DeletedAsset,
@@ -106,6 +107,18 @@ class AgentConversationTurnPayload(AgentConversationProjectPayload):
     proposals: list[dict[str, Any]] = Field(default_factory=list)
     skillSnapshots: list[dict[str, Any]] = Field(default_factory=list)
     modelSnapshot: dict[str, Any] | None = None
+    applyEdit: dict[str, Any] | None = None
+
+
+class AgentApplyEditPayload(BaseModel):
+    editId: str
+    status: Literal[
+        "applied",
+        "failed_conflict",
+        "failed_integrity",
+        "failed_target_missing",
+    ]
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentConversationModelBindingPayload(BaseModel):
@@ -418,6 +431,24 @@ def create_app(
         return _handle(lambda: storage.append_agent_conversation_turn(
             conversation_id, payload.projectId, payload.model_dump(exclude={"projectId"})
         ))
+
+    @application.patch(
+        "/api/agent-conversations/{conversation_id}/turns/{request_id}/apply-edit"
+    )
+    def update_agent_apply_edit(
+        conversation_id: str,
+        request_id: str,
+        payload: AgentApplyEditPayload,
+    ) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.update_agent_apply_edit(
+                conversation_id,
+                request_id=request_id,
+                edit_id=payload.editId,
+                status=payload.status,
+                evidence=payload.evidence,
+            )
+        )
 
     @application.patch("/api/agent-conversations/{conversation_id}/proposals/{proposal_id}")
     def update_agent_proposal_status(
@@ -955,6 +986,8 @@ def _handle(callback: Callable[[], Any]) -> Any:
         raise _http_error(409, "duplicate_item", "Storage item already exists", {"id": str(exc)}) from exc
     except RevisionConflict as exc:
         raise _http_error(409, "revision_conflict", "Storage revision conflict", current=exc.current) from exc
+    except AgentApplyEditConflict as exc:
+        raise _http_error(409, exc.code, exc.message) from exc
     except FolderCycle as exc:
         raise _http_error(409, "folder_cycle", "A folder cannot be moved inside itself") from exc
     except FolderNotEmpty as exc:

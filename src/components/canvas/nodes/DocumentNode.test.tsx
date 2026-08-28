@@ -1,13 +1,19 @@
 import { Suspense, startTransition, useState } from 'react'
 import { act, create } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
+import {
+  createPlanningDocumentV1,
+  planningDocumentEffectiveText,
+  sha256Utf8
+} from '@/domain/documents/planning-document'
+import { applyDocumentChangeOperations } from '@/domain/documents/document-suggestions'
 import type { IFreeCanvasDocumentNode, PlanningDocumentV1 } from '@/models/PromptHistory.model'
 
 vi.mock('@/components/canvas/document/DocumentEditor', () => ({
-  DocumentEditor: ({ document, mode, onChange }: {
+  DocumentEditor: ({ document, mode, view, onChange }: {
     document: PlanningDocumentV1
     mode: string
+    view?: string
     onChange: (document: PlanningDocumentV1) => void
   }) => (
     <section data-mock-document-editor-shell={mode} onKeyDown={event => event.stopPropagation()}>
@@ -16,6 +22,8 @@ vi.mock('@/components/canvas/document/DocumentEditor', () => ({
         data-mock-document-editor={mode}
         data-document-digest={document.digest}
         data-document-text={planningDocumentEffectiveText(document)}
+        data-document-view={view}
+        data-document-suggestion-count={document.suggestions.length}
         data-on-test-change={onChange}
         onClick={() => onChange(createPlanningDocumentV1([
           { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Edited canonical draft' }] }
@@ -42,6 +50,19 @@ const node = (): IFreeCanvasDocumentNode => ({
   linkedDocumentResourceIds: [],
   meta: {}
 })
+
+const proposedNode = (): IFreeCanvasDocumentNode => {
+  const source = createPlanningDocumentV1([
+    { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Old draft' }] }
+  ], 4)
+  return {
+    ...node(),
+    document: applyDocumentChangeOperations(source, 'edit-replace', [{
+      kind: 'replace', blockId: 'paragraph-1', utf8Start: 0, utf8End: 3, text: 'New',
+      expectedTextDigest: `sha256:${sha256Utf8('Old draft')}`
+    }])
+  }
+}
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void
@@ -72,6 +93,69 @@ describe('DocumentNode', () => {
     act(() => renderer.root.findByProps({ 'aria-label': '折叠文档' }).props.onClick())
     expect(renderer.root.findAllByProps({ 'data-mock-document-editor': 'inline' })).toHaveLength(0)
     expect(renderer.root.findByProps({ 'data-document-collapsed-summary': true }).children.join('')).toContain('Single canonical draft body')
+  })
+
+  it('offers source, effective, and revision views while pending suggestions remain view-only', () => {
+    const renderer = create(
+      <DocumentNode node={proposedNode()} selected onDocumentChange={vi.fn()} onDelete={vi.fn()} />
+    )
+    const tabs = renderer.root.findAllByProps({ role: 'tab' })
+
+    expect(tabs.map(tab => tab.children.join(''))).toEqual(['源文', '有效稿', '修订'])
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-view'])
+      .toBe('revision')
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-suggestion-count'])
+      .toBe(2)
+
+    act(() => renderer.root.findByProps({ 'aria-label': '查看源文' }).props.onClick())
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-view'])
+      .toBe('source')
+    act(() => renderer.root.findByProps({ 'aria-label': '查看有效稿' }).props.onClick())
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-view'])
+      .toBe('effective')
+    act(() => renderer.root.findByProps({ 'aria-label': '查看修订' }).props.onClick())
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-view'])
+      .toBe('revision')
+  })
+
+  it.each([
+    ['accepts', '接受修订 1', 'New draft'],
+    ['rejects', '拒绝修订 1', 'Old draft']
+  ])('%s one linked replacement group atomically', async (_label, actionLabel, expectedText) => {
+    const onDocumentChange = vi.fn().mockResolvedValue(true)
+    const renderer = create(
+      <DocumentNode node={proposedNode()} selected onDocumentChange={onDocumentChange} onDelete={vi.fn()} />
+    )
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': actionLabel }).props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(onDocumentChange).toHaveBeenCalledTimes(1)
+    const submitted = onDocumentChange.mock.calls[0][0] as PlanningDocumentV1
+    expect(submitted.suggestions).toEqual([])
+    expect(planningDocumentEffectiveText(submitted)).toBe(expectedText)
+  })
+
+  it.each([
+    ['accepts', '全部接受修订', 'New draft'],
+    ['rejects', '全部拒绝修订', 'Old draft']
+  ])('%s all pending suggestion groups in one save', async (_label, actionLabel, expectedText) => {
+    const onDocumentChange = vi.fn().mockResolvedValue(true)
+    const renderer = create(
+      <DocumentNode node={proposedNode()} selected onDocumentChange={onDocumentChange} onDelete={vi.fn()} />
+    )
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': actionLabel }).props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(onDocumentChange).toHaveBeenCalledTimes(1)
+    const submitted = onDocumentChange.mock.calls[0][0] as PlanningDocumentV1
+    expect(submitted.suggestions).toEqual([])
+    expect(planningDocumentEffectiveText(submitted)).toBe(expectedText)
   })
 
   it('does not publish authoritative refs from a suspended render that never commits', async () => {

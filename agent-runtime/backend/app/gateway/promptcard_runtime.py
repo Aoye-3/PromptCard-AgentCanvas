@@ -10,10 +10,11 @@ import threading
 import time
 import unicodedata
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 
 import httpx
 from fastapi import HTTPException, Request, Response
@@ -49,6 +50,9 @@ MAX_DOCUMENT_TURN_BYTES = 100 * 1024 * 1024
 MAX_DOCUMENT_MODEL_TEXT_CHARS = 500_000
 _DOCUMENT_INVOCATION_TTL_SECONDS = 300
 _MAX_DOCUMENT_INVOCATIONS = 32
+_DOCUMENT_EDIT_KINDS = {"document_create", "document_changes"}
+_DOCUMENT_EDIT_MAX_OPERATIONS = 16
+_DOCUMENT_EDIT_MAX_TEXT_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,10 @@ class PromptCardRuntimeMessageRequest(BaseModel):
         alias="explicitDocumentNodeIds",
         max_length=MAX_DOCUMENT_ATTACHMENTS,
     )
+    document_write_context: dict[str, Any] | None = Field(
+        default=None,
+        alias="documentWriteContext",
+    )
 
 
 class PromptCardMediaAnalysisRequest(BaseModel):
@@ -208,6 +216,14 @@ class PromptCardConversationModelRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     model_binding: dict[str, Any] | None = Field(alias="modelBinding")
+
+
+class PromptCardAgentEditAckRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    request_id: str = Field(alias="requestId", min_length=1)
+    status: Literal["applied", "failed"]
+    error_code: str | None = Field(default=None, alias="errorCode")
 
 
 class PromptCardRuntimeService:
@@ -289,12 +305,14 @@ class PromptCardRuntimeService:
         payload = body.model_dump(by_alias=True)
         payload.pop("documentResourceIds", None)
         payload.pop("explicitDocumentNodeIds", None)
+        payload.pop("documentWriteContext", None)
         resolved_canvas_context: dict[str, Any] | None = None
         conversation_id = body.conversation_id
         model_binding: dict[str, Any] | None = None
         request_id = body.request_id or str(uuid.uuid4())
         skill_snapshots: list[dict[str, Any]] = []
         interaction_mode: Literal["prompt-edit", "chat-experimental"] = "prompt-edit"
+        authoritative_document_project: dict[str, Any] | None = None
         if body.permission_scope == "workspace-chatbot-agent" and body.project_id:
             if not conversation_id:
                 created = await _storage_request("POST", "/api/agent-conversations", json={
@@ -324,6 +342,13 @@ class PromptCardRuntimeService:
             )
             if existing_turn is not None:
                 return _saved_turn_response(conversation_id, request_id, existing_turn)
+            if any(
+                isinstance(turn, dict)
+                and isinstance(turn.get("applyEdit"), dict)
+                and turn["applyEdit"].get("status") == "pending_apply"
+                for turn in conversation.get("turns", [])
+            ):
+                raise HTTPException(status_code=409, detail="agent_apply_edit_pending")
             stored_interaction_mode = conversation.get("interactionMode", "prompt-edit")
             if stored_interaction_mode not in {"prompt-edit", "chat-experimental"}:
                 raise HTTPException(
@@ -379,6 +404,19 @@ class PromptCardRuntimeService:
             body.content,
             document_assets,
         )
+        document_write_context = None
+        if body.document_write_context is not None:
+            if interaction_mode != "chat-experimental" or not body.project_id:
+                raise HTTPException(status_code=422, detail="document_write_context_scope_invalid")
+            authoritative_document_project = await _storage_request(
+                "GET",
+                f"/api/projects/{quote(body.project_id, safe='')}",
+            )
+            document_write_context = _resolve_document_write_context(
+                body,
+                authoritative_document_project,
+            )
+        payload["documentWriteContext"] = document_write_context
         if interaction_mode == "prompt-edit":
             resolved_canvas_context = _resolve_canvas_node_context(body)
         payload["canvasNodeContext"] = resolved_canvas_context
@@ -434,12 +472,27 @@ class PromptCardRuntimeService:
             if interaction_mode == "chat-experimental"
             else body.permission_scope
         )
-        response["canvasEdits"] = validate_agent_canvas_edits(
-            raw_canvas_edits,
-            workspace_context=body.workspace_context,
-            permission_scope=validation_permission_scope,
-            canvas_node_context=resolved_canvas_context,
-        )
+        if interaction_mode == "chat-experimental" and any(
+            isinstance(edit, dict) and edit.get("kind") in _DOCUMENT_EDIT_KINDS
+            for edit in raw_canvas_edits
+        ):
+            authoritative_project = authoritative_document_project or await _storage_request(
+                "GET", f"/api/projects/{quote(str(body.project_id), safe='')}"
+            )
+            response["canvasEdits"] = validate_agent_document_edits(
+                raw_canvas_edits,
+                conversation_id=str(conversation_id),
+                request_id=request_id,
+                project=authoritative_project,
+                expected_write_context=document_write_context,
+            )
+        else:
+            response["canvasEdits"] = validate_agent_canvas_edits(
+                raw_canvas_edits,
+                workspace_context=body.workspace_context,
+                permission_scope=validation_permission_scope,
+                canvas_node_context=resolved_canvas_context,
+            )
         if raw_canvas_edits:
             response["diagnostics"] = {
                 **(response.get("diagnostics") or {}),
@@ -477,6 +530,22 @@ class PromptCardRuntimeService:
             }
             for edit in response["canvasEdits"]
         ]
+        apply_edit = None
+        if len(response["canvasEdits"]) == 1:
+            candidate = response["canvasEdits"][0]
+            if candidate.get("kind") in _DOCUMENT_EDIT_KINDS:
+                apply_edit = {
+                    key: candidate[key]
+                    for key in (
+                        "conversationId",
+                        "requestId",
+                        "editId",
+                        "kind",
+                        "nodeId",
+                        "expectedResultDigest",
+                    )
+                }
+                apply_edit["status"] = "pending_apply"
         if conversation_id and body.project_id:
             saved = await _storage_request(
                 "POST",
@@ -516,6 +585,7 @@ class PromptCardRuntimeService:
                     "proposals": response["proposals"],
                     "modelSnapshot": model_snapshot,
                     "skillSnapshots": skill_audit,
+                    **({"applyEdit": apply_edit} if apply_edit is not None else {}),
                 },
             )
             response["conversationId"] = conversation_id
@@ -636,6 +706,207 @@ class PromptCardRuntimeService:
             "PATCH",
             _conversation_model_path(project_id, conversation_id),
             json={"modelBinding": normalized},
+        )
+
+    async def ack_document_edit(
+        self,
+        project_id: str,
+        conversation_id: str,
+        edit_id: str,
+        body: PromptCardAgentEditAckRequest,
+    ) -> dict[str, Any]:
+        return await self._reconcile_document_edit(
+            project_id,
+            conversation_id,
+            request_id=body.request_id,
+            edit_id=edit_id,
+        )
+
+    async def reconcile_document_edits(
+        self,
+        project_id: str,
+        conversation_id: str,
+    ) -> dict[str, Any]:
+        conversation = await _storage_request(
+            "GET",
+            f"/api/agent-conversations/{quote(conversation_id, safe='')}",
+            params={"projectId": project_id},
+        )
+        pending = [
+            turn for turn in conversation.get("turns", [])
+            if isinstance(turn, dict)
+            and isinstance(turn.get("applyEdit"), dict)
+            and turn["applyEdit"].get("status") == "pending_apply"
+        ]
+        if not pending:
+            return {"status": "idle", "canvasEdits": []}
+        if len(pending) != 1:
+            raise HTTPException(status_code=502, detail="agent_apply_edit_ledger_invalid")
+        ledger = pending[0]["applyEdit"]
+        return await self._reconcile_document_edit(
+            project_id,
+            conversation_id,
+            request_id=str(ledger.get("requestId") or ""),
+            edit_id=str(ledger.get("editId") or ""),
+            conversation=conversation,
+            include_canvas_edits=True,
+        )
+
+    async def _reconcile_document_edit(
+        self,
+        project_id: str,
+        conversation_id: str,
+        *,
+        request_id: str,
+        edit_id: str,
+        conversation: dict[str, Any] | None = None,
+        include_canvas_edits: bool = False,
+    ) -> dict[str, Any]:
+        if conversation is None:
+            conversation = await _storage_request(
+                "GET",
+                f"/api/agent-conversations/{quote(conversation_id, safe='')}",
+                params={"projectId": project_id},
+            )
+        if conversation.get("projectId") != project_id:
+            raise HTTPException(status_code=409, detail="agent_conversation_project_mismatch")
+        turn = next(
+            (
+                item for item in conversation.get("turns", [])
+                if isinstance(item, dict) and item.get("requestId") == request_id
+            ),
+            None,
+        )
+        ledger = turn.get("applyEdit") if isinstance(turn, dict) else None
+        if (
+            not isinstance(ledger, dict)
+            or ledger.get("conversationId") != conversation_id
+            or ledger.get("requestId") != request_id
+            or ledger.get("editId") != edit_id
+        ):
+            raise HTTPException(status_code=409, detail="agent_apply_edit_identity_mismatch")
+        if ledger.get("status") != "pending_apply":
+            return {
+                **ledger,
+                **({"canvasEdits": []} if include_canvas_edits else {}),
+            }
+        edit = _turn_document_edit(turn, edit_id)
+        if edit is None:
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_integrity",
+                {"code": "saved_edit_missing"},
+                include_canvas_edits=include_canvas_edits,
+            )
+        try:
+            project = await _storage_request(
+                "GET",
+                f"/api/projects/{quote(project_id, safe='')}",
+            )
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_target_missing",
+                {"code": "project_missing"},
+                include_canvas_edits=include_canvas_edits,
+            )
+        node_id = str(ledger.get("nodeId") or "")
+        node = _project_canvas_node(project, node_id)
+        if node is None:
+            if ledger.get("kind") == "document_create":
+                return {
+                    "status": "pending_apply",
+                    "conversationId": conversation_id,
+                    "requestId": request_id,
+                    "editId": edit_id,
+                    "canvasEdits": [edit],
+                }
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_target_missing",
+                {"code": "document_target_missing"},
+                include_canvas_edits=include_canvas_edits,
+            )
+        if node.get("kind") != "document":
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_integrity",
+                {"nodeId": node_id, "kind": str(node.get("kind") or "unknown"), "code": "node_kind_mismatch"},
+                include_canvas_edits=include_canvas_edits,
+            )
+        expected_digest = str(ledger.get("expectedResultDigest") or "")
+        document = node.get("document")
+        marker = node.get("agentAppliedEdit")
+        if isinstance(marker, dict):
+            marker_matches = marker == {
+                "conversationId": conversation_id,
+                "requestId": request_id,
+                "editId": edit_id,
+                "resultDigest": expected_digest,
+            }
+            digest_matches = _persisted_document_digest(document) == expected_digest
+            if marker_matches and digest_matches:
+                return await _terminal_agent_edit(
+                    conversation_id,
+                    request_id,
+                    edit_id,
+                    "applied",
+                    {
+                        "projectRevision": int(project.get("revision") or 1),
+                        "nodeId": node_id,
+                        "kind": "document",
+                        "resultDigest": expected_digest,
+                    },
+                    include_canvas_edits=include_canvas_edits,
+                )
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_integrity",
+                {"nodeId": node_id, "kind": "document", "code": "marker_or_digest_mismatch"},
+                include_canvas_edits=include_canvas_edits,
+            )
+        if ledger.get("kind") == "document_create":
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_integrity",
+                {"nodeId": node_id, "kind": "document", "code": "create_identity_occupied"},
+                include_canvas_edits=include_canvas_edits,
+            )
+        base = edit.get("base")
+        if (
+            isinstance(base, dict)
+            and isinstance(document, dict)
+            and document.get("revision") == base.get("nodeRevision")
+            and document.get("digest") == base.get("nodeDigest")
+        ):
+            return {
+                "status": "pending_apply",
+                "conversationId": conversation_id,
+                "requestId": request_id,
+                "editId": edit_id,
+                "canvasEdits": [edit],
+            }
+        return await _terminal_agent_edit(
+            conversation_id,
+            request_id,
+            edit_id,
+            "failed_conflict",
+            {"nodeId": node_id, "kind": "document", "code": "document_base_changed"},
+            include_canvas_edits=include_canvas_edits,
         )
 
     async def get_model_config(self, request: Request) -> dict[str, Any]:
@@ -888,6 +1159,775 @@ def validate_agent_canvas_edits(
                 "basis": _canvas_protection(selected_node),
             })
     return validated
+
+
+def _canonical_nfc_json(value: Any) -> str:
+    def normalize(item: Any) -> Any:
+        if isinstance(item, str):
+            return unicodedata.normalize("NFC", item)
+        if isinstance(item, list):
+            return [normalize(child) for child in item]
+        if isinstance(item, dict):
+            return {
+                unicodedata.normalize("NFC", str(key)): normalize(child)
+                for key, child in item.items()
+            }
+        if item is None or isinstance(item, (bool, int, float)):
+            return item
+        raise ValueError("canonical_json_invalid")
+
+    return json.dumps(
+        normalize(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _deterministic_document_edit_ids(
+    conversation_id: str,
+    request_id: str,
+    kind: str,
+    target_node_id: str | None,
+) -> tuple[str, str]:
+    normalized_target = unicodedata.normalize("NFC", target_node_id or "")
+    edit_name = _canonical_nfc_json([
+        "promptcard",
+        "agent-document-edit-v1",
+        conversation_id,
+        request_id,
+        kind,
+        normalized_target,
+    ])
+    edit_id = str(uuid.uuid5(uuid.NAMESPACE_URL, edit_name))
+    if kind == "document_create":
+        node_name = _canonical_nfc_json([
+            "promptcard",
+            "agent-document-node-v1",
+            conversation_id,
+            request_id,
+        ])
+        node_id = str(uuid.uuid5(uuid.NAMESPACE_URL, node_name))
+    else:
+        node_id = normalized_target
+    return edit_id, node_id
+
+
+def validate_agent_document_edits(
+    edits: list[dict[str, Any]],
+    *,
+    conversation_id: str,
+    request_id: str,
+    project: dict[str, Any],
+    expected_write_context: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if len(edits) != 1 or not conversation_id or not request_id:
+        return []
+    edit = edits[0]
+    if not isinstance(edit, dict) or edit.get("kind") not in _DOCUMENT_EDIT_KINDS:
+        return []
+    kind = str(edit["kind"])
+    if (
+        not isinstance(expected_write_context, dict)
+        or expected_write_context.get("operationKind") != kind
+    ):
+        return []
+    project_revision = project.get("revision")
+    if not isinstance(project_revision, int) or isinstance(project_revision, bool):
+        return []
+    target_node_id = None
+    payload: dict[str, Any]
+    expected_result_digest: str
+    if kind == "document_create":
+        payload_source = edit.get("payload") if isinstance(edit.get("payload"), dict) else edit
+        title = payload_source.get("title")
+        blocks = payload_source.get("blocks")
+        resource_ids = payload_source.get("linkedDocumentResourceIds", [])
+        if (
+            not isinstance(title, str)
+            or not title.strip()
+            or len(title) > 200
+            or not _valid_planning_document_blocks(blocks)
+            or not isinstance(resource_ids, list)
+            or len(resource_ids) > MAX_DOCUMENT_ATTACHMENTS
+            or len(resource_ids) != len(set(resource_ids))
+            or not all(isinstance(item, str) and item.strip() for item in resource_ids)
+        ):
+            return []
+        payload = {
+            "title": unicodedata.normalize("NFC", title.strip()),
+            "blocks": _normalize_nfc_json_value(blocks),
+            "linkedDocumentResourceIds": [item.strip() for item in resource_ids],
+        }
+        expected_result_digest = _planning_document_digest(payload["blocks"], [])
+        supplied_digest = edit.get("expectedResultDigest")
+        if supplied_digest is not None and supplied_digest != expected_result_digest:
+            return []
+        base = {"projectRevision": project_revision}
+    else:
+        payload_source = edit.get("payload") if isinstance(edit.get("payload"), dict) else edit
+        target_node_id = str(payload_source.get("nodeId") or "").strip()
+        if target_node_id != expected_write_context.get("nodeId"):
+            return []
+        target = _project_canvas_node(project, target_node_id)
+        if not target_node_id or not isinstance(target, dict) or target.get("kind") != "document":
+            return []
+        document = target.get("document")
+        operations = payload_source.get("operations")
+        if not isinstance(document, dict) or not _valid_document_change_operations(operations):
+            return []
+        base_revision = payload_source.get("baseRevision")
+        base_digest = payload_source.get("baseDigest")
+        if (
+            not isinstance(base_revision, int)
+            or isinstance(base_revision, bool)
+            or base_revision != document.get("revision")
+            or base_digest != document.get("digest")
+            or _persisted_document_digest(document) != base_digest
+        ):
+            return []
+        candidate_edit_id, _ = _deterministic_document_edit_ids(
+            conversation_id,
+            request_id,
+            kind,
+            target_node_id,
+        )
+        applied_document = _apply_document_change_operations(
+            document,
+            candidate_edit_id,
+            operations,
+        )
+        if applied_document is None:
+            return []
+        expected_result_digest = applied_document["digest"]
+        payload = {"operations": _normalize_nfc_json_value(operations)}
+        base = {
+            "projectRevision": project_revision,
+            "nodeRevision": base_revision,
+            "nodeDigest": base_digest,
+        }
+    edit_id, node_id = _deterministic_document_edit_ids(
+        conversation_id,
+        request_id,
+        kind,
+        target_node_id,
+    )
+    rationale = edit.get("rationale")
+    return [{
+        "kind": kind,
+        "id": edit_id,
+        "editId": edit_id,
+        "conversationId": conversation_id,
+        "requestId": request_id,
+        "nodeId": node_id,
+        "expectedResultDigest": expected_result_digest,
+        "base": base,
+        "payload": payload,
+        "rationale": unicodedata.normalize("NFC", rationale.strip())
+        if isinstance(rationale, str) and rationale.strip()
+        else "Document update",
+    }]
+
+
+def _resolve_document_write_context(
+    body: PromptCardRuntimeMessageRequest,
+    project: dict[str, Any],
+) -> dict[str, Any]:
+    value = body.document_write_context
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=422, detail="document_write_context_invalid")
+    operation_kind = value.get("operationKind")
+    if operation_kind == "document_create":
+        if set(value) != {"operationKind"}:
+            raise HTTPException(status_code=422, detail="document_write_context_invalid")
+        return {
+            "operationKind": "document_create",
+            "linkedDocumentResourceIds": list(body.document_resource_ids),
+        }
+    if operation_kind != "document_changes" or set(value) != {"operationKind", "nodeId"}:
+        raise HTTPException(status_code=422, detail="document_write_context_invalid")
+    node_id = value.get("nodeId")
+    if not isinstance(node_id, str) or not node_id.strip():
+        raise HTTPException(status_code=422, detail="document_write_context_invalid")
+    node = _project_canvas_node(project, node_id.strip())
+    if not isinstance(node, dict) or node.get("kind") != "document":
+        raise HTTPException(status_code=422, detail="document_write_target_invalid")
+    document = node.get("document")
+    if not isinstance(document, dict) or _persisted_document_digest(document) is None:
+        raise HTTPException(status_code=409, detail="document_write_target_invalid")
+    pending_leaves = {
+        suggestion.get("blockId")
+        for suggestion in document.get("suggestions", [])
+        if isinstance(suggestion, dict)
+    }
+    blocks = []
+    total_bytes = 0
+    for block_id, text in _planning_document_leaf_texts(document["blocks"]):
+        if block_id in pending_leaves:
+            continue
+        total_bytes += len(text.encode("utf-8"))
+        if total_bytes > MAX_DOCUMENT_MODEL_TEXT_CHARS:
+            raise HTTPException(status_code=413, detail="document_context_too_large")
+        blocks.append({
+            "blockId": block_id,
+            "text": text,
+            "expectedTextDigest": _text_digest(text),
+        })
+    if not blocks:
+        raise HTTPException(status_code=409, detail="document_write_target_unavailable")
+    return {
+        "operationKind": "document_changes",
+        "nodeId": node_id.strip(),
+        "baseRevision": document["revision"],
+        "baseDigest": document["digest"],
+        "blocks": blocks,
+    }
+
+
+def _planning_document_leaf_texts(
+    blocks: list[dict[str, Any]],
+) -> list[tuple[str, str]]:
+    leaves: list[tuple[str, str]] = []
+    for block in blocks:
+        if block.get("type") in {"paragraph", "blockquote", "heading"}:
+            leaves.append((block["id"], _rich_content_text(block["content"])))
+        elif block.get("type") in {"bulletList", "orderedList", "checkList"}:
+            leaves.extend(
+                (item["id"], _rich_content_text(item["content"]))
+                for item in block["items"]
+            )
+        elif block.get("type") == "table":
+            for row in block["rows"]:
+                leaves.extend(
+                    (cell["id"], _rich_content_text(cell["content"]))
+                    for cell in row["cells"]
+                )
+    return leaves
+
+
+def _valid_planning_document_blocks(value: Any) -> bool:
+    if not isinstance(value, list) or not 0 < len(value) <= 200:
+        return False
+    try:
+        if len(_canonical_nfc_json(value).encode("utf-8")) > 1_000_000:
+            return False
+    except (TypeError, ValueError):
+        return False
+    ids: set[str] = set()
+
+    def valid_id(item: Any) -> bool:
+        if not isinstance(item, str):
+            return False
+        normalized = unicodedata.normalize("NFC", item)
+        if not normalized or len(normalized) > 192 or normalized in ids:
+            return False
+        ids.add(normalized)
+        return True
+
+    def valid_inline(content: Any) -> bool:
+        if not isinstance(content, list):
+            return False
+        previous: tuple[bool, bool, str] | None = None
+        for inline in content:
+            if not isinstance(inline, dict):
+                return False
+            if not set(inline).issubset({"text", "bold", "italic", "href"}):
+                return False
+            text = inline.get("text")
+            if not isinstance(text, str) or not unicodedata.normalize("NFC", text):
+                return False
+            if inline.get("bold") not in {None, True} or inline.get("italic") not in {None, True}:
+                return False
+            href = inline.get("href", "")
+            if not isinstance(href, str) or (href and not _safe_document_link(href)):
+                return False
+            signature = (
+                inline.get("bold") is True,
+                inline.get("italic") is True,
+                unicodedata.normalize("NFC", href),
+            )
+            if signature == previous:
+                return False
+            previous = signature
+        return True
+
+    for block in value:
+        if not isinstance(block, dict) or not valid_id(block.get("id")):
+            return False
+        block_type = block.get("type")
+        if block_type in {"paragraph", "blockquote"}:
+            if set(block) != {"id", "type", "content"} or not valid_inline(block.get("content")):
+                return False
+        elif block_type == "heading":
+            if set(block) != {"id", "type", "level", "content"} or block.get("level") not in {1, 2, 3} or not valid_inline(block.get("content")):
+                return False
+        elif block_type in {"bulletList", "orderedList", "checkList"}:
+            items = block.get("items")
+            if not isinstance(items, list) or not items:
+                return False
+            for item in items:
+                required = {"id", "content", "checked"} if block_type == "checkList" else {"id", "content"}
+                if not isinstance(item, dict) or set(item) != required or not valid_id(item.get("id")) or not valid_inline(item.get("content")):
+                    return False
+                if block_type == "checkList" and not isinstance(item.get("checked"), bool):
+                    return False
+        elif block_type == "table":
+            rows = block.get("rows")
+            if not isinstance(rows, list) or not rows:
+                return False
+            columns = None
+            for row in rows:
+                if not isinstance(row, dict):
+                    return False
+                cells = row.get("cells")
+                if set(row) != {"id", "cells"} or not valid_id(row.get("id")) or not isinstance(cells, list) or not cells:
+                    return False
+                if columns is None:
+                    columns = len(cells)
+                if len(cells) != columns:
+                    return False
+                for cell in cells:
+                    if not isinstance(cell, dict) or not set(cell).issubset({"id", "header", "content"}) or set(cell) - {"header"} != {"id", "content"}:
+                        return False
+                    if cell.get("header") not in {None, True} or not valid_id(cell.get("id")) or not valid_inline(cell.get("content")):
+                        return False
+        else:
+            return False
+    return True
+
+
+def _valid_document_change_operations(value: Any) -> bool:
+    if not isinstance(value, list) or not 0 < len(value) <= _DOCUMENT_EDIT_MAX_OPERATIONS:
+        return False
+    inserted_bytes = 0
+    for operation in value:
+        if not isinstance(operation, dict) or operation.get("kind") not in {"insert", "delete", "replace"}:
+            return False
+        kind = operation["kind"]
+        required = {"kind", "blockId", "expectedTextDigest"}
+        required |= {"utf8Offset", "text"} if kind == "insert" else {"utf8Start", "utf8End"}
+        if kind == "replace":
+            required.add("text")
+        if set(operation) != required:
+            return False
+        if not isinstance(operation.get("blockId"), str) or not operation["blockId"]:
+            return False
+        if not _valid_sha256_digest(operation.get("expectedTextDigest")):
+            return False
+        for key in ("utf8Offset", "utf8Start", "utf8End"):
+            if key in operation and (
+                not isinstance(operation[key], int)
+                or isinstance(operation[key], bool)
+                or operation[key] < 0
+                or operation[key] > 9_007_199_254_740_991
+            ):
+                return False
+        if "utf8Start" in operation and operation["utf8End"] < operation["utf8Start"]:
+            return False
+        if "text" in operation and (
+            not isinstance(operation["text"], str)
+            or not unicodedata.normalize("NFC", operation["text"])
+            or len(unicodedata.normalize("NFC", operation["text"]).encode("utf-8")) > _DOCUMENT_EDIT_MAX_TEXT_BYTES
+        ):
+            return False
+        if "text" in operation:
+            inserted_bytes += len(
+                unicodedata.normalize("NFC", operation["text"]).encode("utf-8")
+            )
+    if inserted_bytes > _DOCUMENT_EDIT_MAX_TEXT_BYTES:
+        return False
+    return True
+
+
+def _safe_document_link(value: str) -> bool:
+    parsed = urlparse(value)
+    if parsed.scheme == "mailto":
+        return bool(parsed.path)
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+
+
+def _apply_document_change_operations(
+    document: dict[str, Any],
+    edit_id: str,
+    operations: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    try:
+        blocks = deepcopy(document["blocks"])
+        existing_suggestions = deepcopy(document.get("suggestions", []))
+        pending_leaves = {
+            suggestion.get("blockId")
+            for suggestion in existing_suggestions
+            if isinstance(suggestion, dict)
+        }
+        prepared: list[dict[str, Any]] = []
+        for index, operation in enumerate(operations):
+            block_id = unicodedata.normalize("NFC", operation["blockId"])
+            if block_id in pending_leaves:
+                return None
+            content = _find_document_leaf_content(blocks, block_id)
+            if content is None:
+                return None
+            leaf_text = _rich_content_text(content)
+            if operation["expectedTextDigest"] != _text_digest(leaf_text):
+                return None
+            start = operation.get("utf8Offset", operation.get("utf8Start"))
+            end = start if operation["kind"] == "insert" else operation["utf8End"]
+            boundaries = _utf8_boundaries(leaf_text)
+            if start not in boundaries or end not in boundaries or end < start:
+                return None
+            if operation["kind"] != "insert" and end == start:
+                return None
+            inserted_text = "" if operation["kind"] == "delete" else unicodedata.normalize("NFC", operation["text"])
+            if inserted_text and ("\n" in inserted_text or "\r" in inserted_text):
+                return None
+            marks = _marks_strictly_inside(content, start) if operation["kind"] == "insert" else {}
+            inserted = [{"text": inserted_text, **marks}] if inserted_text else []
+            prepared.append({
+                "index": index,
+                "operation": operation,
+                "blockId": block_id,
+                "start": start,
+                "end": end,
+                "inserted": inserted,
+                "deleted": _slice_rich_range(content, start, end),
+            })
+        if _document_operations_overlap(prepared):
+            return None
+        for operation in sorted(
+            prepared,
+            key=lambda item: (item["blockId"], -item["start"]),
+        ):
+            if not _replace_document_leaf_content(
+                blocks,
+                operation["blockId"],
+                lambda content, item=operation: _replace_rich_range(
+                    content,
+                    item["start"],
+                    item["end"],
+                    item["inserted"],
+                ),
+            ):
+                return None
+        suggestions: list[dict[str, Any]] = []
+        for operation in prepared:
+            final_start = operation["start"] + sum(
+                _rich_byte_length(candidate["inserted"])
+                - (candidate["end"] - candidate["start"])
+                for candidate in prepared
+                if candidate["blockId"] == operation["blockId"]
+                and candidate["start"] < operation["start"]
+            )
+            group_id = "docsg-" + hashlib.sha256(
+                _canonical_nfc_json([
+                    "document-suggestion-group-v1",
+                    edit_id,
+                    operation["index"],
+                ]).encode("utf-8")
+            ).hexdigest()
+            base = {
+                "groupId": group_id,
+                "editId": edit_id,
+                "blockId": operation["blockId"],
+                "utf8Start": final_start,
+            }
+            if operation["operation"]["kind"] in {"delete", "replace"}:
+                suggestions.append({
+                    **base,
+                    "id": _document_suggestion_id(edit_id, operation["index"], "delete"),
+                    "kind": "delete",
+                    "utf8End": final_start,
+                    "content": deepcopy(operation["deleted"]),
+                })
+            if operation["operation"]["kind"] in {"insert", "replace"}:
+                suggestions.append({
+                    **base,
+                    "id": _document_suggestion_id(edit_id, operation["index"], "insert"),
+                    "kind": "insert",
+                    "utf8End": final_start + _rich_byte_length(operation["inserted"]),
+                    "content": deepcopy(operation["inserted"]),
+                })
+        result = {
+            "version": 1,
+            "blocks": blocks,
+            "revision": int(document["revision"]) + 1,
+            "suggestions": [*existing_suggestions, *suggestions],
+        }
+        result["digest"] = _planning_document_digest(
+            result["blocks"],
+            result["suggestions"],
+        )
+        return result
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _document_suggestion_id(edit_id: str, index: int, kind: str) -> str:
+    return "docs-" + hashlib.sha256(
+        _canonical_nfc_json([
+            "document-suggestion-v1",
+            edit_id,
+            index,
+            kind,
+        ]).encode("utf-8")
+    ).hexdigest()
+
+
+def _find_document_leaf_content(
+    blocks: list[dict[str, Any]],
+    leaf_id: str,
+) -> list[dict[str, Any]] | None:
+    for block in blocks:
+        if block.get("type") in {"paragraph", "blockquote", "heading"} and block.get("id") == leaf_id:
+            return block.get("content")
+        if block.get("type") in {"bulletList", "orderedList", "checkList"}:
+            found = next((item for item in block.get("items", []) if item.get("id") == leaf_id), None)
+            if found is not None:
+                return found.get("content")
+        if block.get("type") == "table":
+            for row in block.get("rows", []):
+                found = next((cell for cell in row.get("cells", []) if cell.get("id") == leaf_id), None)
+                if found is not None:
+                    return found.get("content")
+    return None
+
+
+def _replace_document_leaf_content(
+    blocks: list[dict[str, Any]],
+    leaf_id: str,
+    update: Any,
+) -> bool:
+    content = _find_document_leaf_content(blocks, leaf_id)
+    if content is None:
+        return False
+    replacement = update(content)
+    content[:] = replacement
+    return True
+
+
+def _split_rich_content(
+    content: list[dict[str, Any]],
+    offset: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    before: list[dict[str, Any]] = []
+    after: list[dict[str, Any]] = []
+    cursor = 0
+    for inline in content:
+        text = inline["text"]
+        length = len(text.encode("utf-8"))
+        if offset <= cursor:
+            after.append(deepcopy(inline))
+        elif offset >= cursor + length:
+            before.append(deepcopy(inline))
+        else:
+            local = offset - cursor
+            split_index = _utf8_offset_to_index(text, local)
+            before.append({**inline, "text": text[:split_index]})
+            after.append({**inline, "text": text[split_index:]})
+        cursor += length
+    if offset > cursor:
+        raise ValueError("document_change_utf8_boundary_invalid")
+    return _canonicalize_rich_content(before), _canonicalize_rich_content(after)
+
+
+def _replace_rich_range(
+    content: list[dict[str, Any]],
+    start: int,
+    end: int,
+    inserted: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    before_end, after = _split_rich_content(content, end)
+    before, _ = _split_rich_content(before_end, start)
+    return _canonicalize_rich_content([*before, *deepcopy(inserted), *after])
+
+
+def _slice_rich_range(
+    content: list[dict[str, Any]],
+    start: int,
+    end: int,
+) -> list[dict[str, Any]]:
+    if start == end:
+        return []
+    before_end, _ = _split_rich_content(content, end)
+    _, selected = _split_rich_content(before_end, start)
+    return _canonicalize_rich_content(selected)
+
+
+def _canonicalize_rich_content(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for candidate in content:
+        text = unicodedata.normalize("NFC", candidate.get("text", ""))
+        if not text:
+            continue
+        inline = {"text": text}
+        if candidate.get("bold") is True:
+            inline["bold"] = True
+        if candidate.get("italic") is True:
+            inline["italic"] = True
+        if candidate.get("href"):
+            inline["href"] = candidate["href"]
+        signature = (inline.get("bold"), inline.get("italic"), inline.get("href"))
+        previous = result[-1] if result else None
+        if previous is not None and (
+            previous.get("bold"),
+            previous.get("italic"),
+            previous.get("href"),
+        ) == signature:
+            previous["text"] += text
+        else:
+            result.append(inline)
+    return result
+
+
+def _marks_strictly_inside(content: list[dict[str, Any]], offset: int) -> dict[str, Any]:
+    cursor = 0
+    for inline in content:
+        end = cursor + len(inline["text"].encode("utf-8"))
+        if cursor < offset < end:
+            return {
+                key: inline[key]
+                for key in ("bold", "italic", "href")
+                if inline.get(key)
+            }
+        cursor = end
+    return {}
+
+
+def _rich_content_text(content: list[dict[str, Any]]) -> str:
+    return unicodedata.normalize("NFC", "".join(inline["text"] for inline in content))
+
+
+def _rich_byte_length(content: list[dict[str, Any]]) -> int:
+    return len(_rich_content_text(content).encode("utf-8"))
+
+
+def _utf8_boundaries(value: str) -> set[int]:
+    boundaries = {0}
+    total = 0
+    for character in value:
+        total += len(character.encode("utf-8"))
+        boundaries.add(total)
+    return boundaries
+
+
+def _utf8_offset_to_index(value: str, offset: int) -> int:
+    total = 0
+    for index, character in enumerate(value):
+        if total == offset:
+            return index
+        total += len(character.encode("utf-8"))
+    if total == offset:
+        return len(value)
+    raise ValueError("document_change_utf8_boundary_invalid")
+
+
+def _document_operations_overlap(operations: list[dict[str, Any]]) -> bool:
+    for index, left in enumerate(operations):
+        for right in operations[index + 1:]:
+            if left["blockId"] != right["blockId"]:
+                continue
+            overlap = left["start"] == right["start"] or max(left["start"], right["start"]) < min(left["end"], right["end"])
+            left_point_inside = left["start"] == left["end"] and right["start"] < left["start"] < right["end"]
+            right_point_inside = right["start"] == right["end"] and left["start"] < right["start"] < left["end"]
+            if overlap or left_point_inside or right_point_inside:
+                return True
+    return False
+
+
+def _normalize_nfc_json_value(value: Any) -> Any:
+    return json.loads(_canonical_nfc_json(value))
+
+
+def _valid_sha256_digest(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) != 71 or not value.startswith("sha256:"):
+        return False
+    return all(character in "0123456789abcdef" for character in value[7:])
+
+
+def _planning_document_digest(blocks: list[dict[str, Any]], suggestions: list[Any]) -> str:
+    canonical = _canonical_nfc_json({
+        "version": 1,
+        "blocks": blocks,
+        "suggestions": suggestions,
+    })
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _project_canvas_node(project: dict[str, Any], node_id: str) -> dict[str, Any] | None:
+    canvas = project.get("freeCanvas")
+    nodes = canvas.get("nodes") if isinstance(canvas, dict) else None
+    if not isinstance(nodes, list):
+        return None
+    return next(
+        (
+            node for node in nodes
+            if isinstance(node, dict) and node.get("id") == node_id
+        ),
+        None,
+    )
+
+
+def _turn_document_edit(turn: dict[str, Any], edit_id: str) -> dict[str, Any] | None:
+    messages = turn.get("messages")
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        edits = message.get("canvasEdits")
+        if not isinstance(edits, list):
+            continue
+        found = next(
+            (
+                edit for edit in edits
+                if isinstance(edit, dict)
+                and edit.get("editId") == edit_id
+                and edit.get("kind") in _DOCUMENT_EDIT_KINDS
+            ),
+            None,
+        )
+        if found is not None:
+            return found
+    return None
+
+
+def _persisted_document_digest(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    blocks = value.get("blocks")
+    suggestions = value.get("suggestions")
+    if (
+        value.get("version") != 1
+        or not _valid_planning_document_blocks(blocks)
+        or not isinstance(suggestions, list)
+        or not _valid_sha256_digest(value.get("digest"))
+    ):
+        return None
+    computed = _planning_document_digest(blocks, suggestions)
+    return computed if value.get("digest") == computed else None
+
+
+async def _terminal_agent_edit(
+    conversation_id: str,
+    request_id: str,
+    edit_id: str,
+    status: str,
+    evidence: dict[str, Any],
+    *,
+    include_canvas_edits: bool = False,
+) -> dict[str, Any]:
+    ledger = await _storage_request(
+        "PATCH",
+        (
+            f"/api/agent-conversations/{quote(conversation_id, safe='')}"
+            f"/turns/{quote(request_id, safe='')}/apply-edit"
+        ),
+        json={"editId": edit_id, "status": status, "evidence": evidence},
+    )
+    return {
+        **ledger,
+        **({"canvasEdits": []} if include_canvas_edits else {}),
+    }
 
 
 def _proposal_base(proposal: dict[str, Any], index: int) -> dict[str, Any]:
@@ -1507,6 +2547,18 @@ async def _storage_request(
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="agent_storage_item_not_found")
     if response.status_code >= 400:
+        if response.status_code == 409:
+            try:
+                detail = response.json().get("detail", {})
+                code = detail.get("code") if isinstance(detail, dict) else None
+            except ValueError:
+                code = None
+            if code in {
+                "agent_apply_edit_pending",
+                "agent_apply_edit_identity_mismatch",
+                "agent_apply_edit_terminal",
+            }:
+                raise HTTPException(status_code=409, detail=code)
         raise HTTPException(status_code=502, detail="agent_storage_failed")
     try:
         payload = response.json()
