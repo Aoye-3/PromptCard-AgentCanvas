@@ -11,6 +11,7 @@ import {
 } from './document-suggestions'
 import {
   createPlanningDocumentV1,
+  planningDocumentDigest,
   planningDocumentEffectiveText,
   sha256Utf8
 } from './planning-document'
@@ -165,5 +166,24 @@ describe('tracked planning document suggestions', () => {
     expect(() => applyDocumentChangeOperations(pending, 'edit-second', [{
       kind: 'insert', blockId: 'paragraph-1', utf8Offset: 0, text: 'y', expectedTextDigest: textDigest('xCafé bold end')
     }])).toThrow('document_change_pending_leaf')
+  })
+
+  test('rejects a noncanonical cross-span NFC base before interpreting its joined byte offset', () => {
+    const blocks = [{
+      id: 'paragraph-cross-span-nfc',
+      type: 'paragraph' as const,
+      content: [{ text: 'e', bold: true as const }, { text: '\u0301' }]
+    }]
+    const digestInput = { version: 1 as const, blocks, suggestions: [] }
+    const malformed = { ...digestInput, revision: 0, digest: planningDocumentDigest(digestInput) }
+
+    expect(new TextEncoder().encode(blocks[0].content.map(inline => inline.text).join('').normalize('NFC')).length).toBe(2)
+    expect(() => applyDocumentChangeOperations(malformed, 'edit-cross-span-nfc', [{
+      kind: 'insert',
+      blockId: 'paragraph-cross-span-nfc',
+      utf8Offset: 2,
+      text: '!',
+      expectedTextDigest: textDigest('é')
+    }])).toThrow('planning_document_cross_span_non_nfc')
   })
 })

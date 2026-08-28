@@ -818,6 +818,66 @@ class PromptCardRuntimeService:
             )
         node_id = str(ledger.get("nodeId") or "")
         node = _project_canvas_node(project, node_id)
+        base = edit.get("base")
+        marker = node.get("agentAppliedEdit") if isinstance(node, dict) else None
+        if isinstance(marker, dict):
+            if node.get("kind") != "document":
+                return await _terminal_agent_edit(
+                    conversation_id,
+                    request_id,
+                    edit_id,
+                    "failed_integrity",
+                    {"nodeId": node_id, "kind": str(node.get("kind") or "unknown"), "code": "node_kind_mismatch"},
+                    include_canvas_edits=include_canvas_edits,
+                )
+            expected_digest = str(ledger.get("expectedResultDigest") or "")
+            marker_matches = marker == {
+                "conversationId": conversation_id,
+                "requestId": request_id,
+                "editId": edit_id,
+                "resultDigest": expected_digest,
+            }
+            digest_matches = _persisted_document_digest(node.get("document")) == expected_digest
+            if marker_matches and digest_matches:
+                return await _terminal_agent_edit(
+                    conversation_id,
+                    request_id,
+                    edit_id,
+                    "applied",
+                    {
+                        "projectRevision": int(project.get("revision") or 1),
+                        "nodeId": node_id,
+                        "kind": "document",
+                        "resultDigest": expected_digest,
+                    },
+                    include_canvas_edits=include_canvas_edits,
+                )
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_integrity",
+                {"nodeId": node_id, "kind": "document", "code": "marker_or_digest_mismatch"},
+                include_canvas_edits=include_canvas_edits,
+            )
+        if not isinstance(base, dict) or not isinstance(base.get("projectRevision"), int) or isinstance(base.get("projectRevision"), bool):
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_integrity",
+                {"code": "saved_edit_base_invalid"},
+                include_canvas_edits=include_canvas_edits,
+            )
+        if project.get("revision") != base["projectRevision"]:
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_conflict",
+                {"code": "project_revision_changed"},
+                include_canvas_edits=include_canvas_edits,
+            )
         if node is None:
             if ledger.get("kind") == "document_create":
                 return {
@@ -844,39 +904,7 @@ class PromptCardRuntimeService:
                 {"nodeId": node_id, "kind": str(node.get("kind") or "unknown"), "code": "node_kind_mismatch"},
                 include_canvas_edits=include_canvas_edits,
             )
-        expected_digest = str(ledger.get("expectedResultDigest") or "")
         document = node.get("document")
-        marker = node.get("agentAppliedEdit")
-        if isinstance(marker, dict):
-            marker_matches = marker == {
-                "conversationId": conversation_id,
-                "requestId": request_id,
-                "editId": edit_id,
-                "resultDigest": expected_digest,
-            }
-            digest_matches = _persisted_document_digest(document) == expected_digest
-            if marker_matches and digest_matches:
-                return await _terminal_agent_edit(
-                    conversation_id,
-                    request_id,
-                    edit_id,
-                    "applied",
-                    {
-                        "projectRevision": int(project.get("revision") or 1),
-                        "nodeId": node_id,
-                        "kind": "document",
-                        "resultDigest": expected_digest,
-                    },
-                    include_canvas_edits=include_canvas_edits,
-                )
-            return await _terminal_agent_edit(
-                conversation_id,
-                request_id,
-                edit_id,
-                "failed_integrity",
-                {"nodeId": node_id, "kind": "document", "code": "marker_or_digest_mismatch"},
-                include_canvas_edits=include_canvas_edits,
-            )
         if ledger.get("kind") == "document_create":
             return await _terminal_agent_edit(
                 conversation_id,
@@ -886,12 +914,19 @@ class PromptCardRuntimeService:
                 {"nodeId": node_id, "kind": "document", "code": "create_identity_occupied"},
                 include_canvas_edits=include_canvas_edits,
             )
-        base = edit.get("base")
+        persisted_document = _normalize_persisted_document(document)
+        if persisted_document is None:
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_integrity",
+                {"nodeId": node_id, "kind": "document", "code": "document_shape_invalid"},
+                include_canvas_edits=include_canvas_edits,
+            )
         if (
-            isinstance(base, dict)
-            and isinstance(document, dict)
-            and document.get("revision") == base.get("nodeRevision")
-            and document.get("digest") == base.get("nodeDigest")
+            persisted_document["revision"] == base.get("nodeRevision")
+            and persisted_document["digest"] == base.get("nodeDigest")
         ):
             return {
                 "status": "pending_apply",
@@ -1273,9 +1308,9 @@ def validate_agent_document_edits(
         target = _project_canvas_node(project, target_node_id)
         if not target_node_id or not isinstance(target, dict) or target.get("kind") != "document":
             return []
-        document = target.get("document")
+        document = _normalize_persisted_document(target.get("document"))
         operations = payload_source.get("operations")
-        if not isinstance(document, dict) or not _valid_document_change_operations(operations):
+        if document is None or not _valid_document_change_operations(operations):
             return []
         base_revision = payload_source.get("baseRevision")
         base_digest = payload_source.get("baseDigest")
@@ -1353,8 +1388,8 @@ def _resolve_document_write_context(
     node = _project_canvas_node(project, node_id.strip())
     if not isinstance(node, dict) or node.get("kind") != "document":
         raise HTTPException(status_code=422, detail="document_write_target_invalid")
-    document = node.get("document")
-    if not isinstance(document, dict) or _persisted_document_digest(document) is None:
+    document = _normalize_persisted_document(node.get("document"))
+    if document is None:
         raise HTTPException(status_code=409, detail="document_write_target_invalid")
     pending_leaves = {
         suggestion.get("blockId")
@@ -1429,6 +1464,7 @@ def _valid_planning_document_blocks(value: Any) -> bool:
         if not isinstance(content, list):
             return False
         previous: tuple[bool, bool, str] | None = None
+        normalized_text_parts: list[str] = []
         for inline in content:
             if not isinstance(inline, dict):
                 return False
@@ -1437,6 +1473,7 @@ def _valid_planning_document_blocks(value: Any) -> bool:
             text = inline.get("text")
             if not isinstance(text, str) or not unicodedata.normalize("NFC", text):
                 return False
+            normalized_text_parts.append(unicodedata.normalize("NFC", text))
             if inline.get("bold") not in {None, True} or inline.get("italic") not in {None, True}:
                 return False
             href = inline.get("href", "")
@@ -1450,7 +1487,8 @@ def _valid_planning_document_blocks(value: Any) -> bool:
             if signature == previous:
                 return False
             previous = signature
-        return True
+        joined_text = "".join(normalized_text_parts)
+        return joined_text == unicodedata.normalize("NFC", joined_text)
 
     for block in value:
         if not isinstance(block, dict) or not valid_id(block.get("id")):
@@ -1892,19 +1930,165 @@ def _turn_document_edit(turn: dict[str, Any], edit_id: str) -> dict[str, Any] | 
 
 
 def _persisted_document_digest(value: Any) -> str | None:
+    document = _normalize_persisted_document(value)
+    return document["digest"] if document is not None else None
+
+
+def _normalize_persisted_document(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
-    blocks = value.get("blocks")
-    suggestions = value.get("suggestions")
     if (
-        value.get("version") != 1
-        or not _valid_planning_document_blocks(blocks)
-        or not isinstance(suggestions, list)
+        set(value) != {"version", "blocks", "revision", "digest", "suggestions"}
+        or value.get("version") != 1
+        or not isinstance(value.get("revision"), int)
+        or isinstance(value.get("revision"), bool)
+        or value["revision"] < 0
         or not _valid_sha256_digest(value.get("digest"))
     ):
         return None
+    try:
+        blocks = _normalize_nfc_json_value(value.get("blocks"))
+    except (TypeError, ValueError):
+        return None
+    if not _valid_planning_document_blocks(blocks):
+        return None
+    suggestions = _normalize_persisted_document_suggestions(
+        value.get("suggestions"),
+        blocks,
+    )
+    if suggestions is None:
+        return None
     computed = _planning_document_digest(blocks, suggestions)
-    return computed if value.get("digest") == computed else None
+    if value.get("digest") != computed:
+        return None
+    return {
+        "version": 1,
+        "blocks": blocks,
+        "revision": value["revision"],
+        "digest": computed,
+        "suggestions": suggestions,
+    }
+
+
+def _normalize_persisted_document_suggestions(
+    value: Any,
+    blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list):
+        return None
+    normalized: list[dict[str, Any]] = []
+    suggestion_ids: set[str] = set()
+    group_kinds: dict[str, set[str]] = {}
+    exact_keys = {
+        "id",
+        "groupId",
+        "editId",
+        "kind",
+        "blockId",
+        "utf8Start",
+        "utf8End",
+        "content",
+    }
+    for item in value:
+        if not isinstance(item, dict) or set(item) != exact_keys:
+            return None
+        strings: dict[str, str] = {}
+        for key in ("id", "groupId", "editId", "blockId"):
+            raw = item.get(key)
+            if not isinstance(raw, str):
+                return None
+            normalized_string = unicodedata.normalize("NFC", raw)
+            if not normalized_string:
+                return None
+            strings[key] = normalized_string
+        if strings["id"] in suggestion_ids:
+            return None
+        suggestion_ids.add(strings["id"])
+        kind = item.get("kind")
+        if kind not in {"insert", "delete"}:
+            return None
+        start = item.get("utf8Start")
+        end = item.get("utf8End")
+        if (
+            not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or start < 0
+            or end < start
+            or end > 9_007_199_254_740_991
+        ):
+            return None
+        try:
+            content = _normalize_nfc_json_value(item.get("content"))
+        except (TypeError, ValueError):
+            return None
+        if (
+            not isinstance(content, list)
+            or not content
+            or not _valid_planning_document_blocks([{
+                "id": "__suggestion_content__",
+                "type": "paragraph",
+                "content": content,
+            }])
+        ):
+            return None
+        leaf_content = _find_document_leaf_content(blocks, strings["blockId"])
+        if leaf_content is None:
+            return None
+        leaf_text = _rich_content_text(leaf_content)
+        boundaries = _utf8_boundaries(leaf_text)
+        if start not in boundaries or end not in boundaries:
+            return None
+        content_text = _rich_content_text(content)
+        content_bytes = len(content_text.encode("utf-8"))
+        if kind == "insert":
+            if end - start != content_bytes or _utf8_text_slice(leaf_text, start, end) != content_text:
+                return None
+        elif start != end:
+            return None
+        kinds = group_kinds.setdefault(strings["groupId"], set())
+        if kind in kinds:
+            return None
+        kinds.add(kind)
+        normalized.append({
+            "id": strings["id"],
+            "groupId": strings["groupId"],
+            "editId": strings["editId"],
+            "kind": kind,
+            "blockId": strings["blockId"],
+            "utf8Start": start,
+            "utf8End": end,
+            "content": content,
+        })
+    for suggestion in normalized:
+        group = [
+            item for item in normalized
+            if item["groupId"] == suggestion["groupId"]
+        ]
+        if (
+            len(group) > 2
+            or any(
+                item["editId"] != suggestion["editId"]
+                or item["blockId"] != suggestion["blockId"]
+                for item in group
+            )
+            or (
+                len(group) == 2
+                and (
+                    group[0]["utf8Start"] != group[1]["utf8Start"]
+                    or group[0]["utf8End"] != group[1]["utf8Start"]
+                )
+            )
+        ):
+            return None
+    return normalized
+
+
+def _utf8_text_slice(value: str, start: int, end: int) -> str:
+    start_index = _utf8_offset_to_index(value, start)
+    end_index = _utf8_offset_to_index(value, end)
+    return value[start_index:end_index]
 
 
 async def _terminal_agent_edit(

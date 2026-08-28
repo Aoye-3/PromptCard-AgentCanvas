@@ -2920,6 +2920,16 @@ const FreeCanvasBuilderInner = ({
           }
           return false
         }
+        const reconcileLostAcknowledgement = async () => {
+          try {
+            await agentRuntimeService.reconcileDocumentEdits(
+              activeProject.id,
+              proposal.conversationId
+            )
+          } catch {
+            // Storage remains authoritative and the next hydration retries reconciliation.
+          }
+        }
         if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
 
         const beforeCanvas = freeCanvasRef.current
@@ -2940,7 +2950,7 @@ const FreeCanvasBuilderInner = ({
               { requestId: proposal.requestId, status: 'applied' }
             )
           } catch {
-            // A later reconcile can prove the already-persisted marker.
+            await reconcileLostAcknowledgement()
           }
           return true
         }
@@ -3032,22 +3042,19 @@ const FreeCanvasBuilderInner = ({
           }
           return acknowledgeFailure('save_failed')
         }
+        if (sameProjectMutationScope(activeProjectScopeRef.current, scope)) {
+          canvasCommandHistoryRef.current = executed.history
+        }
 
         try {
-          const acknowledgement = await agentRuntimeService.acknowledgeDocumentEdit(
+          await agentRuntimeService.acknowledgeDocumentEdit(
             activeProject.id,
             proposal.conversationId,
             proposal.editId,
             { requestId: proposal.requestId, status: 'applied' }
           )
-          if (
-            acknowledgement.status === 'applied' &&
-            sameProjectMutationScope(activeProjectScopeRef.current, scope)
-          ) {
-            canvasCommandHistoryRef.current = executed.history
-          }
         } catch {
-          // Storage already contains the content and marker; reconcile will prove it after restart.
+          await reconcileLostAcknowledgement()
         }
         return true
       })

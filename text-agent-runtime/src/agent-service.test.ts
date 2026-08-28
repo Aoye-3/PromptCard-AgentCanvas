@@ -436,6 +436,49 @@ describe('pi text-agent system boundary', () => {
     expect(canvasEdits).toEqual([])
   })
 
+  it.each([
+    ['17 operations', Array.from({ length: 17 }, () => ({
+      kind: 'insert', blockId: 'paragraph-a', utf8Offset: 0, text: 'x'
+    })), 'document_operation_budget_exceeded'],
+    ['more than 64 KiB of aggregate inserted text', [
+      { kind: 'insert', blockId: 'paragraph-a', utf8Offset: 0, text: 'x'.repeat(32_769) },
+      { kind: 'insert', blockId: 'paragraph-b', utf8Offset: 0, text: 'x'.repeat(32_769) }
+    ], 'document_text_budget_exceeded'],
+    ['an LF insertion', [
+      { kind: 'insert', blockId: 'paragraph-a', utf8Offset: 0, text: 'line one\nline two' }
+    ], 'document_operation_text_invalid'],
+    ['a CR replacement', [
+      { kind: 'replace', blockId: 'paragraph-b', utf8Start: 0, utf8End: 3, text: 'old\rnew' }
+    ], 'document_operation_text_invalid'],
+    ['overlapping ranges in one leaf', [
+      { kind: 'replace', blockId: 'paragraph-b', utf8Start: 0, utf8End: 4, text: 'New' },
+      { kind: 'delete', blockId: 'paragraph-b', utf8Start: 3, utf8End: 5 }
+    ], 'document_change_ranges_overlap'],
+    ['two inserts at the same point in one leaf', [
+      { kind: 'insert', blockId: 'paragraph-a', utf8Offset: 5, text: ' first' },
+      { kind: 'insert', blockId: 'paragraph-a', utf8Offset: 5, text: ' second' }
+    ], 'document_change_ranges_overlap']
+  ])('rejects %s before consuming the write slot', async (_label, operations, errorCode) => {
+    const invocation = documentChangesInvocation()
+    const canvasEdits: Record<string, unknown>[] = []
+    const tool = buildAgentTools(invocation.policy, [], [], canvasEdits)
+      .find(candidate => candidate.name === 'emit_document_changes')
+
+    const rejected = await tool?.execute('call-invalid', { operations, rationale: 'Invalid' })
+
+    expect(rejected?.terminate).toBe(false)
+    expect(JSON.stringify(rejected)).toContain(errorCode)
+    expect(canvasEdits).toEqual([])
+
+    const accepted = await tool?.execute('call-valid', {
+      operations: [{ kind: 'insert', blockId: 'paragraph-a', utf8Offset: 5, text: '!' }],
+      rationale: 'Valid after rejection'
+    })
+
+    expect(accepted?.terminate).toBe(true)
+    expect(canvasEdits).toHaveLength(1)
+  })
+
   it('allows at most one successful write tool call per turn', async () => {
     const invocation = documentChangesInvocation()
     const canvasEdits: Record<string, unknown>[] = []

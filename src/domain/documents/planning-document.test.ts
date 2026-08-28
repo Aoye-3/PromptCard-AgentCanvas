@@ -201,6 +201,28 @@ describe('planning document domain', () => {
     })
   })
 
+  test('rejects canonical composition that crosses an inline marks boundary', () => {
+    const blocks: PlanningDocumentBlockV1[] = [{
+      id: 'paragraph-cross-span-nfc',
+      type: 'paragraph',
+      content: [
+        { text: 'e', bold: true },
+        { text: '\u0301' }
+      ]
+    }]
+    const digestInput = { version: 1 as const, blocks, suggestions: [] }
+    const persisted = { ...digestInput, revision: 0, digest: planningDocumentDigest(digestInput) }
+
+    expect(blocks[0].type === 'paragraph' && blocks[0].content.map(inline => inline.text).join('').normalize('NFC')).toBe('é')
+    expect(new TextEncoder().encode('é').length).toBe(2)
+    expect(() => createPlanningDocumentV1(blocks)).toThrow('planning_document_cross_span_non_nfc')
+    expect(parsePlanningDocumentV1(persisted)).toEqual({
+      ok: false,
+      reason: 'planning_document_cross_span_non_nfc'
+    })
+    expect(() => clonePlanningDocumentV1(persisted as never)).toThrow('planning_document_cross_span_non_nfc')
+  })
+
   test('rejects duplicate structural and leaf IDs across the entire document', () => {
     const duplicate = richBlocks()
     const table = duplicate[6]

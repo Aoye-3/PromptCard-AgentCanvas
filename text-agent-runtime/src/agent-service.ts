@@ -11,8 +11,9 @@ import {
 } from './proposal-policy.ts'
 
 const MAX_DOCUMENT_BLOCKS = 128
-const MAX_DOCUMENT_OPERATIONS = 64
+const MAX_DOCUMENT_OPERATIONS = 16
 const MAX_DOCUMENT_TEXT_BYTES = 100_000
+const MAX_DOCUMENT_CHANGE_TEXT_BYTES = 64 * 1024
 
 type DocumentChangeOperation =
   | { kind: 'insert'; blockId: string; utf8Offset: number; text: string; expectedTextDigest: string }
@@ -287,7 +288,7 @@ function documentChangesTool(
           kind: Type.Literal('insert'),
           blockId: Type.String({ minLength: 1, maxLength: 192 }),
           utf8Offset: Type.Integer({ minimum: 0 }),
-          text: Type.String({ minLength: 1, maxLength: MAX_DOCUMENT_TEXT_BYTES })
+          text: Type.String({ minLength: 1, maxLength: MAX_DOCUMENT_CHANGE_TEXT_BYTES })
         }, { additionalProperties: false }),
         Type.Object({
           kind: Type.Literal('delete'),
@@ -300,7 +301,7 @@ function documentChangesTool(
           blockId: Type.String({ minLength: 1, maxLength: 192 }),
           utf8Start: Type.Integer({ minimum: 0 }),
           utf8End: Type.Integer({ minimum: 1 }),
-          text: Type.String({ minLength: 1, maxLength: MAX_DOCUMENT_TEXT_BYTES })
+          text: Type.String({ minLength: 1, maxLength: MAX_DOCUMENT_CHANGE_TEXT_BYTES })
         }, { additionalProperties: false })
       ]), { minItems: 1, maxItems: MAX_DOCUMENT_OPERATIONS }),
       rationale: Type.String({ minLength: 1, maxLength: 4000 })
@@ -540,8 +541,10 @@ function parseDocumentChangesParams(
       if (isOversizedDocumentText(candidate.text)) {
         return { ok: false, error: 'document_text_budget_exceeded' }
       }
-      const text = normalizedBoundedText(candidate.text, MAX_DOCUMENT_TEXT_BYTES, false)
-      if (text === null) return { ok: false, error: 'document_operation_text_invalid' }
+      const text = normalizedBoundedText(candidate.text, MAX_DOCUMENT_CHANGE_TEXT_BYTES, false)
+      if (text === null || containsLineBreak(text)) {
+        return { ok: false, error: 'document_operation_text_invalid' }
+      }
       insertedTextBytes += utf8Length(text)
       operations.push({
         kind: 'insert',
@@ -574,8 +577,10 @@ function parseDocumentChangesParams(
       if (isOversizedDocumentText(candidate.text)) {
         return { ok: false, error: 'document_text_budget_exceeded' }
       }
-      const text = normalizedBoundedText(candidate.text, MAX_DOCUMENT_TEXT_BYTES, false)
-      if (text === null) return { ok: false, error: 'document_operation_text_invalid' }
+      const text = normalizedBoundedText(candidate.text, MAX_DOCUMENT_CHANGE_TEXT_BYTES, false)
+      if (text === null || containsLineBreak(text)) {
+        return { ok: false, error: 'document_operation_text_invalid' }
+      }
       insertedTextBytes += utf8Length(text)
       operations.push({
         kind: 'replace',
@@ -589,10 +594,38 @@ function parseDocumentChangesParams(
     }
     return { ok: false, error: 'document_operation_invalid' }
   }
-  if (insertedTextBytes > MAX_DOCUMENT_TEXT_BYTES) {
+  if (insertedTextBytes > MAX_DOCUMENT_CHANGE_TEXT_BYTES) {
     return { ok: false, error: 'document_text_budget_exceeded' }
   }
+  if (documentChangeOperationsOverlap(operations)) {
+    return { ok: false, error: 'document_change_ranges_overlap' }
+  }
   return { ok: true, operations, rationale }
+}
+
+function documentChangeOperationsOverlap(operations: DocumentChangeOperation[]): boolean {
+  const range = (operation: DocumentChangeOperation) => operation.kind === 'insert'
+    ? { start: operation.utf8Offset, end: operation.utf8Offset }
+    : { start: operation.utf8Start, end: operation.utf8End }
+  for (let leftIndex = 0; leftIndex < operations.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < operations.length; rightIndex += 1) {
+      const left = operations[leftIndex]
+      const right = operations[rightIndex]
+      if (left.blockId !== right.blockId) continue
+      const leftRange = range(left)
+      const rightRange = range(right)
+      const overlap = leftRange.start === rightRange.start
+        || Math.max(leftRange.start, rightRange.start) < Math.min(leftRange.end, rightRange.end)
+      const leftPointInsideRight = leftRange.start === leftRange.end
+        && leftRange.start > rightRange.start
+        && leftRange.start < rightRange.end
+      const rightPointInsideLeft = rightRange.start === rightRange.end
+        && rightRange.start > leftRange.start
+        && rightRange.start < leftRange.end
+      if (overlap || leftPointInsideRight || rightPointInsideLeft) return true
+    }
+  }
+  return false
 }
 
 function normalizePlanningBlock(
@@ -750,7 +783,11 @@ function normalizedBoundedText(value: unknown, maxBytes: number, trim: boolean):
 function isOversizedDocumentText(value: unknown): boolean {
   return typeof value === 'string'
     && isWellFormed(value)
-    && utf8Length(value.normalize('NFC')) > MAX_DOCUMENT_TEXT_BYTES
+    && utf8Length(value.normalize('NFC')) > MAX_DOCUMENT_CHANGE_TEXT_BYTES
+}
+
+function containsLineBreak(value: string): boolean {
+  return value.includes('\n') || value.includes('\r')
 }
 
 function utf8Boundaries(value: string): Set<number> {

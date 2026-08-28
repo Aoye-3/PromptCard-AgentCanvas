@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   getConversationRuns: vi.fn(),
   getPendingPlacements: vi.fn(),
   acknowledgeDocumentEdit: vi.fn(),
+  reconcileDocumentEdits: vi.fn(),
   agentCanvasEdit: null as AgentCanvasEdit | null
 }))
 
@@ -183,7 +184,8 @@ vi.mock('@/services/model-management-client', () => ({
 vi.mock('@/services/agent-runtime-service', () => ({
   agentRuntimeService: {
     bootstrap: mocks.bootstrapRuntime,
-    acknowledgeDocumentEdit: mocks.acknowledgeDocumentEdit
+    acknowledgeDocumentEdit: mocks.acknowledgeDocumentEdit,
+    reconcileDocumentEdits: mocks.reconcileDocumentEdits
   }
 }))
 vi.mock('@/storage/storage-service-client', async importOriginal => {
@@ -349,6 +351,7 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     mocks.getConversationRuns.mockResolvedValue({ runs: [], nextCursor: null })
     mocks.getPendingPlacements.mockResolvedValue([])
     mocks.acknowledgeDocumentEdit.mockResolvedValue({ status: 'applied', editId: 'edit-1' })
+    mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'idle', canvasEdits: [] })
   })
 
   it('atomically persists a tracked Document change and its applied marker before ACK', async () => {
@@ -429,8 +432,14 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     await act(async () => { await apply() })
 
     expect(onPersistCanvas).toHaveBeenCalledTimes(1)
+    expect(mocks.reconcileDocumentEdits).toHaveBeenCalledWith('project-1', 'conversation-1')
     const created = renderedDocument(renderer, 'document-created')
     expect(created.props['data-document-text']).toBe('Created')
+
+    await dispatchWindowKey('z')
+
+    expect(onPersistCanvas).toHaveBeenCalledTimes(2)
+    expect(renderer.root.findAllByProps({ 'data-screen-document-node': 'document-created' })).toHaveLength(0)
   })
 
   it('rejects a stale Document base without persisting and reports a bounded conflict', async () => {

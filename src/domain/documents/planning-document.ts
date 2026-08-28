@@ -137,13 +137,11 @@ export const parsePlanningDocumentV1 = (value: unknown): PlanningDocumentParseRe
   }
 }
 
-export const clonePlanningDocumentV1 = (document: PlanningDocumentV1): PlanningDocumentV1 => ({
-  version: 1,
-  blocks: document.blocks.map(cloneBlock),
-  revision: document.revision,
-  digest: document.digest,
-  suggestions: document.suggestions.map(cloneSuggestion)
-})
+export const clonePlanningDocumentV1 = (document: PlanningDocumentV1): PlanningDocumentV1 => {
+  const parsed = parsePlanningDocumentV1(document)
+  if (!parsed.ok) fail(parsed.reason)
+  return parsed.document
+}
 
 const normalizeSuggestions = (
   value: unknown,
@@ -300,7 +298,7 @@ const normalizeTableCell = (
 const normalizeInlineContent = (value: unknown): PlanningInlineV1[] => {
   if (!Array.isArray(value)) fail('planning_document_invalid_inline_content')
   let previousMarkSignature: string | null = null
-  return value.map(inline => {
+  const normalizedContent = value.map(inline => {
     if (!isRecord(inline)) fail('planning_document_invalid_inline')
     const allowed = ['text']
     if (inline.bold !== undefined) allowed.push('bold')
@@ -324,6 +322,9 @@ const normalizeInlineContent = (value: unknown): PlanningInlineV1[] => {
     previousMarkSignature = markSignature
     return normalized
   })
+  const joinedText = normalizedContent.map(inline => inline.text).join('')
+  if (joinedText !== joinedText.normalize('NFC')) fail('planning_document_cross_span_non_nfc')
+  return normalizedContent
 }
 
 const blockText = (block: PlanningDocumentBlockV1): string => {
@@ -360,17 +361,6 @@ const findTextLeafContent = (
   }
   return undefined
 }
-
-const cloneSuggestion = (suggestion: DocumentSuggestion): DocumentSuggestion => ({
-  id: suggestion.id,
-  groupId: suggestion.groupId,
-  editId: suggestion.editId,
-  kind: suggestion.kind,
-  blockId: suggestion.blockId,
-  utf8Start: suggestion.utf8Start,
-  utf8End: suggestion.utf8End,
-  content: suggestion.content.map(cloneInline)
-})
 
 const normalizeRequiredString = (value: unknown, code: string): string => {
   if (typeof value !== 'string') fail(code)
@@ -413,46 +403,6 @@ const utf8Slice = (value: string, start: number, end: number): string => {
 }
 
 const inlineText = (content: PlanningInlineV1[]): string => content.map(inline => inline.text).join('')
-
-const cloneBlock = (block: PlanningDocumentBlockV1): PlanningDocumentBlockV1 => {
-  if (block.type === 'paragraph' || block.type === 'blockquote') {
-    return { id: block.id, type: block.type, content: block.content.map(cloneInline) }
-  }
-  if (block.type === 'heading') {
-    return { id: block.id, type: 'heading', level: block.level, content: block.content.map(cloneInline) }
-  }
-  if (block.type === 'bulletList' || block.type === 'orderedList') {
-    return {
-      id: block.id,
-      type: block.type,
-      items: block.items.map(item => ({ id: item.id, content: item.content.map(cloneInline) }))
-    }
-  }
-  if (block.type === 'checkList') {
-    return {
-      id: block.id,
-      type: 'checkList',
-      items: block.items.map(item => ({ id: item.id, checked: item.checked, content: item.content.map(cloneInline) }))
-    }
-  }
-  if (block.type === 'table') {
-    return {
-      id: block.id,
-      type: 'table',
-      rows: block.rows.map(row => ({
-        id: row.id,
-        cells: row.cells.map(cell => ({
-          id: cell.id,
-          ...(cell.header === true ? { header: true as const } : {}),
-          content: cell.content.map(cloneInline)
-        }))
-      }))
-    }
-  }
-  return fail('planning_document_unreachable_clone')
-}
-
-const cloneInline = (inline: PlanningInlineV1): PlanningInlineV1 => ({ ...inline })
 
 const normalizeId = (value: unknown, ids: Set<string>): string => {
   if (typeof value !== 'string') fail('planning_document_invalid_id')

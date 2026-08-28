@@ -27,6 +27,26 @@ def document(blocks: list[dict], revision: int = 0) -> dict:
     return {**base, "revision": revision, "digest": digest(base)}
 
 
+def document_with_insert_suggestion() -> dict:
+    blocks = [{
+        "id": "block-1",
+        "type": "paragraph",
+        "content": [{"text": "New"}],
+    }]
+    suggestions = [{
+        "id": "suggestion-1",
+        "groupId": "group-1",
+        "editId": "edit-1",
+        "kind": "insert",
+        "blockId": "block-1",
+        "utf8Start": 0,
+        "utf8End": 3,
+        "content": [{"text": "New"}],
+    }]
+    base = {"version": 1, "blocks": blocks, "suggestions": suggestions}
+    return {**base, "revision": 1, "digest": digest(base)}
+
+
 def create_edit() -> dict:
     blocks = [{"id": "block-é", "type": "paragraph", "content": [{"text": "Café"}]}]
     result = document(blocks)
@@ -388,7 +408,7 @@ async def test_reconcile_create_absent_replays_but_mismatch_and_conflict_are_ter
         if method == "GET" and path.endswith("/conversation-1"):
             return conversation([saved_turn(edit)])
         if method == "GET" and path == "/api/projects/project-1":
-            return project_with_node(node, revision=1 if node is None else 2) if node else project_with_node({"id": "other", "kind": "text"}, revision=1)
+            return project_with_node(node, revision=1) if node else project_with_node({"id": "other", "kind": "text"}, revision=1)
         if method == "PATCH" and path.endswith("/apply-edit"):
             patches.append(kwargs["json"])
             return kwargs["json"]
@@ -483,3 +503,234 @@ async def test_reconcile_document_changes_replays_only_an_unchanged_base(monkeyp
     else:
         assert result["canvasEdits"] == []
         assert patches[0]["status"] == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["document_create", "document_changes"])
+async def test_reconcile_project_revision_drift_is_terminal_conflict_even_when_target_base_is_replayable(monkeypatch, kind):
+    source = document([{
+        "id": "block-1",
+        "type": "paragraph",
+        "content": [{"text": "Unchanged"}],
+    }], revision=2)
+    target_id = None if kind == "document_create" else "document-1"
+    edit_id, node_id = _deterministic_document_edit_ids(
+        "conversation-1", "request-1", kind, target_id
+    )
+    edit = {
+        "kind": kind,
+        "editId": edit_id,
+        "id": edit_id,
+        "nodeId": node_id,
+        "expectedResultDigest": "sha256:" + "b" * 64,
+        "base": {
+            "projectRevision": 4,
+            **(
+                {"nodeRevision": source["revision"], "nodeDigest": source["digest"]}
+                if kind == "document_changes"
+                else {}
+            ),
+        },
+        "payload": {"operations": []} if kind == "document_changes" else {"blocks": []},
+    }
+    nodes = (
+        [{"id": node_id, "kind": "document", "document": source}]
+        if kind == "document_changes"
+        else [{"id": "other", "kind": "text"}]
+    )
+    patches: list[dict] = []
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return conversation([saved_turn(edit)])
+        if method == "GET" and path == "/api/projects/project-1":
+            return {
+                "id": "project-1",
+                "revision": 5,
+                "freeCanvas": {"nodes": nodes, "edges": [], "meta": {}},
+            }
+        if method == "PATCH" and path.endswith("/apply-edit"):
+            patches.append(kwargs["json"])
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    result = await promptcard_runtime.runtime_service.reconcile_document_edits(
+        "project-1", "conversation-1"
+    )
+
+    assert result["status"] == "failed_conflict"
+    assert result["canvasEdits"] == []
+    assert patches[0]["evidence"]["code"] == "project_revision_changed"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value.update({"forwardField": True}),
+        lambda value: value.update({"version": 2}),
+        lambda value: value.pop("revision"),
+        lambda value: value.update({"revision": True}),
+        lambda value: value["suggestions"][0].update({"forwardField": True}),
+        lambda value: value["suggestions"][0].update({"kind": "replace"}),
+        lambda value: value["suggestions"][0].update({"utf8End": 2}),
+        lambda value: value["suggestions"][0].update({"content": []}),
+        lambda value: value["suggestions"][0].update({"blockId": "missing-block"}),
+    ],
+)
+def test_persisted_document_target_rejects_noncanonical_or_forward_suggestion_shapes(mutation):
+    value = document_with_insert_suggestion()
+    mutation(value)
+    base = {
+        "version": value.get("version"),
+        "blocks": value.get("blocks"),
+        "suggestions": value.get("suggestions"),
+    }
+    value["digest"] = digest(base)
+
+    assert promptcard_runtime._persisted_document_digest(value) is None
+
+
+def test_persisted_document_rejects_cross_mark_non_nfc_composition_before_utf8_authorization():
+    blocks = [{
+        "id": "block-1",
+        "type": "paragraph",
+        "content": [
+            {"text": "e", "bold": True},
+            {"text": "\u0301"},
+        ],
+    }]
+    value = document(blocks, revision=1)
+
+    assert promptcard_runtime._persisted_document_digest(value) is None
+
+
+def test_persisted_document_nfc_projects_structural_and_suggestion_identities():
+    raw_blocks = [{
+        "id": "cafe\u0301-block",
+        "type": "paragraph",
+        "content": [{"text": "Cafe\u0301"}],
+    }]
+    raw_suggestions = [{
+        "id": "sugge\u0301stion-1",
+        "groupId": "groupe\u0301-1",
+        "editId": "edite\u0301-1",
+        "kind": "insert",
+        "blockId": "cafe\u0301-block",
+        "utf8Start": 0,
+        "utf8End": 5,
+        "content": [{"text": "Cafe\u0301"}],
+    }]
+    expected_digest = promptcard_runtime._planning_document_digest(
+        raw_blocks,
+        raw_suggestions,
+    )
+    value = {
+        "version": 1,
+        "blocks": raw_blocks,
+        "revision": 2,
+        "digest": expected_digest,
+        "suggestions": raw_suggestions,
+    }
+
+    normalized = promptcard_runtime._normalize_persisted_document(value)
+
+    assert normalized is not None
+    assert normalized["digest"] == expected_digest
+    assert normalized["blocks"][0]["id"] == "café-block"
+    assert normalized["suggestions"][0] == {
+        "id": "suggéstion-1",
+        "groupId": "groupé-1",
+        "editId": "edité-1",
+        "kind": "insert",
+        "blockId": "café-block",
+        "utf8Start": 0,
+        "utf8End": 5,
+        "content": [{"text": "Café"}],
+    }
+
+
+def test_document_write_context_uses_the_strict_nfc_projected_document():
+    raw_blocks = [{
+        "id": "cafe\u0301-block",
+        "type": "paragraph",
+        "content": [{"text": "Cafe\u0301"}],
+    }]
+    persisted = {
+        "version": 1,
+        "blocks": raw_blocks,
+        "revision": 2,
+        "digest": promptcard_runtime._planning_document_digest(raw_blocks, []),
+        "suggestions": [],
+    }
+    request = body()
+    request.document_write_context = {
+        "operationKind": "document_changes",
+        "nodeId": "document-1",
+    }
+
+    result = promptcard_runtime._resolve_document_write_context(
+        request,
+        project_with_node({
+            "id": "document-1",
+            "kind": "document",
+            "document": persisted,
+        }),
+    )
+
+    assert result["blocks"] == [{
+        "blockId": "café-block",
+        "text": "Café",
+        "expectedTextDigest": "sha256:" + hashlib.sha256("Café".encode()).hexdigest(),
+    }]
+
+
+@pytest.mark.anyio
+async def test_reconcile_does_not_authorize_a_malformed_persisted_document(monkeypatch):
+    source = document([{
+        "id": "block-1",
+        "type": "paragraph",
+        "content": [{"text": "Before"}],
+    }], revision=2)
+    source["forwardField"] = True
+    edit_id, node_id = _deterministic_document_edit_ids(
+        "conversation-1", "request-1", "document_changes", "document-1"
+    )
+    edit = {
+        "kind": "document_changes",
+        "editId": edit_id,
+        "id": edit_id,
+        "nodeId": node_id,
+        "expectedResultDigest": "sha256:" + "b" * 64,
+        "base": {
+            "projectRevision": 4,
+            "nodeRevision": source["revision"],
+            "nodeDigest": source["digest"],
+        },
+        "payload": {"operations": []},
+    }
+    patches: list[dict] = []
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return conversation([saved_turn(edit)])
+        if method == "GET" and path == "/api/projects/project-1":
+            return project_with_node({
+                "id": node_id,
+                "kind": "document",
+                "document": source,
+            }, revision=4)
+        if method == "PATCH" and path.endswith("/apply-edit"):
+            patches.append(kwargs["json"])
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+
+    result = await promptcard_runtime.runtime_service.reconcile_document_edits(
+        "project-1", "conversation-1"
+    )
+
+    assert result["status"] == "failed_integrity"
+    assert result["canvasEdits"] == []
+    assert patches[0]["evidence"]["code"] == "document_shape_invalid"
