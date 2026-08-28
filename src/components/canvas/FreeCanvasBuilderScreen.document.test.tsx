@@ -363,7 +363,7 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-text']).toBe('Before')
   })
 
-  it.each(['false', 'throw'] as const)('preserves external Z when real Screen+DocumentNode B persistence settles with $outcome', async outcome => {
+  it.each(['false', 'throw'] as const)('preserves external Z when its commit and B $outcome settlement share one task before passive effects', async outcome => {
     mocks.useRealDocumentNode = true
     const pendingB = deferred<boolean>()
     const persistedTexts: string[] = []
@@ -402,21 +402,20 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
 
     act(() => renderer.root.findByProps({ 'aria-label': '真实节点编辑文档 B' }).props.onClick())
     expect(persistedTexts).toEqual(['B'])
-    act(() => publishExternal(authoritativeZ))
-    expect(renderer.root.findByProps({ 'data-real-document-editor': 'inline' }).props['data-document-text']).toBe('B')
 
-    await act(async () => {
-      if (outcome === 'throw') pendingB.reject(new Error('storage unavailable'))
-      else pendingB.resolve(false)
-      try {
-        await pendingB.promise
-      } catch {
-        // The production Screen converts persistence rejection into a failed boolean outcome.
-      }
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+    if (outcome === 'throw') pendingB.reject(new Error('storage unavailable'))
+    else pendingB.resolve(false)
+    ;(renderer as unknown as { unstable_flushSync: (callback: () => void) => void })
+      .unstable_flushSync(() => publishExternal(authoritativeZ))
+    expect(renderer.root.findByProps({ 'data-real-document-editor': 'inline' }).props['data-document-text']).toBe('B')
+    try {
+      await pendingB.promise
+    } catch {
+      // The production Screen converts persistence rejection into a failed boolean outcome.
+    }
+    await Promise.resolve()
+    await Promise.resolve()
+    await act(async () => { await Promise.resolve() })
 
     expect(canvasDocumentTexts(latestCanvas)).toEqual({ 'document-1': 'Z' })
     expect(renderer.root.findByProps({ 'data-real-document-editor': 'inline' }).props['data-document-text']).toBe('Z')

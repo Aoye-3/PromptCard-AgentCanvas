@@ -462,7 +462,7 @@ const FreeCanvasBuilderInner = ({
     return page
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     activeProjectIdRef.current = activeProject.id
     freeCanvasRef.current = freeCanvas
     onChangeRef.current = onChange
