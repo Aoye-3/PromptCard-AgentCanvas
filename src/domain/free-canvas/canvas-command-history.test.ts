@@ -7,6 +7,7 @@ import type {
 } from '@/models/PromptHistory.model'
 import {
   applyCanvasLocalCommand,
+  canvasHistoryEntryDocumentNodeIds,
   createCanvasCommandHistory,
   discardCanvasCommandHistoryEntry,
   duplicateCanvasImageNode,
@@ -67,6 +68,32 @@ const project = (): IFreeCanvasProject => ({
 })
 
 describe('canvas command history', () => {
+  it('collects deterministic affected Document ids from update, insert, restore, and paired delete commands', () => {
+    expect(canvasHistoryEntryDocumentNodeIds({
+      undo: { kind: 'update-document', nodeId: 'document-b', document: documentNode('document-b').document },
+      redo: { kind: 'update-document', nodeId: 'document-b', document: documentNode('document-b', 'After').document }
+    })).toEqual(['document-b'])
+
+    expect(canvasHistoryEntryDocumentNodeIds({
+      undo: { kind: 'delete-nodes', nodeIds: ['image-a', 'document-a'] },
+      redo: { kind: 'insert-node', node: documentNode('document-a'), index: 1 }
+    })).toEqual(['document-a'])
+
+    expect(canvasHistoryEntryDocumentNodeIds({
+      undo: {
+        kind: 'restore-nodes',
+        nodes: [
+          { index: 2, node: documentNode('document-c') },
+          { index: 1, node: imageNode('image-a') },
+          { index: 0, node: documentNode('document-a') }
+        ],
+        edges: [],
+        selectedNodeId: null
+      },
+      redo: { kind: 'delete-nodes', nodeIds: ['document-c', 'image-a', 'document-a'] }
+    })).toEqual(['document-a', 'document-c'])
+  })
+
   it('duplicates an image without inheriting its Storage-owned CVM projection', () => {
     const source = {
       ...imageNode('image-a'),

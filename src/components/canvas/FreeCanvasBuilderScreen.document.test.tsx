@@ -654,6 +654,185 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     expect(canvasDocumentTexts(latestByProject['project-2'])).toEqual({ 'document-1': 'B' })
   })
 
+  it.each(['false', 'throw'] as const)('keeps a same-id edit after pending redo-create persistence settles with $outcome', async outcome => {
+    const pendingRedoCreate = deferred<boolean>()
+    const persisted: IFreeCanvasProject[] = []
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      persisted.push(canvas)
+      return persisted.length === 3 ? pendingRedoCreate.promise : Promise.resolve(true)
+    })
+    let latestCanvas = initialCanvas()
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      latestCanvas = canvas
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => {
+      renderer.root.findByProps({ title: 'Document' }).props.onClick()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const created = latestCanvas.nodes.find(node => node.id !== 'document-1') as IFreeCanvasDocumentNode
+    await dispatchWindowKey('z')
+    await dispatchWindowKey('y')
+
+    let editCreated!: Promise<boolean>
+    act(() => {
+      editCreated = renderedDocument(renderer, created.id)
+        .findByProps({ 'aria-label': '测试编辑文档' }).props.onClick()
+    })
+    await act(async () => {
+      if (outcome === 'throw') pendingRedoCreate.reject(new Error('storage unavailable'))
+      else pendingRedoCreate.resolve(false)
+      await editCreated
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const sameIdNodes = latestCanvas.nodes.filter(node => node.id === created.id)
+    expect(sameIdNodes).toHaveLength(1)
+    expect(canvasDocumentTexts(latestCanvas)[created.id]).toBe('After')
+    expect(onPersistCanvas).toHaveBeenCalledTimes(4)
+
+    await dispatchWindowKey('z')
+    expect(canvasDocumentTexts(latestCanvas)[created.id]).toBe('')
+    await dispatchWindowKey('y')
+    expect(canvasDocumentTexts(latestCanvas)[created.id]).toBe('After')
+  })
+
+  it.each([
+    { outcome: 'false', authority: 'document' },
+    { outcome: 'throw', authority: 'kind' }
+  ] as const)('does not restore over external same-id $authority authority after undo-create $outcome', async ({ outcome, authority }) => {
+    const pendingUndoCreate = deferred<boolean>()
+    const persisted: IFreeCanvasProject[] = []
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      persisted.push(canvas)
+      return persisted.length === 2 ? pendingUndoCreate.promise : Promise.resolve(true)
+    })
+    let latestCanvas = initialCanvas()
+    let publishExternal!: (node: IFreeCanvasDocumentNode) => void
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      latestCanvas = canvas
+      publishExternal = node => setCanvas(current => ({
+        ...current,
+        nodes: [
+          ...current.nodes,
+          authority === 'kind'
+            ? { ...unrelatedTextNode(), id: node.id }
+            : {
+                ...node,
+                document: createPlanningDocumentV1([{
+                  id: `${node.id}-external-z`, type: 'paragraph', content: [{ text: 'Z' }]
+                }], 9)
+              }
+        ]
+      }))
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => {
+      renderer.root.findByProps({ title: 'Document' }).props.onClick()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const created = latestCanvas.nodes.find(node => node.id !== 'document-1') as IFreeCanvasDocumentNode
+    await dispatchWindowKey('z')
+    act(() => publishExternal(created))
+
+    await act(async () => {
+      if (outcome === 'throw') pendingUndoCreate.reject(new Error('storage unavailable'))
+      else pendingUndoCreate.resolve(false)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const sameIdNodes = latestCanvas.nodes.filter(node => node.id === created.id)
+    expect(sameIdNodes).toHaveLength(1)
+    if (authority === 'kind') expect(sameIdNodes[0].kind).toBe('text')
+    else expect(canvasDocumentTexts(latestCanvas)[created.id]).toBe('Z')
+    expect(onPersistCanvas).toHaveBeenCalledTimes(2)
+
+    await dispatchWindowKey('y')
+    expect(onPersistCanvas).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    { outcome: 'false', authority: 'document' },
+    { outcome: 'throw', authority: 'missing' }
+  ] as const)('does not delete external $authority authority after undo-delete restore $outcome', async ({ outcome, authority }) => {
+    const pendingRestore = deferred<boolean>()
+    const onPersistCanvas = vi.fn()
+      .mockImplementationOnce(() => pendingRestore.promise)
+      .mockResolvedValue(true)
+    let latestCanvas = initialCanvas()
+    let publishExternal!: () => void
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      latestCanvas = canvas
+      publishExternal = () => setCanvas(current => ({
+        ...current,
+        nodes: authority === 'missing'
+          ? current.nodes.filter(node => node.id !== 'document-1')
+          : current.nodes.map(node => node.id === 'document-1' && node.kind === 'document'
+            ? {
+                ...node,
+                document: createPlanningDocumentV1([{
+                  id: 'document-1-external-z', type: 'paragraph', content: [{ text: 'Z' }]
+                }], 9)
+              }
+            : node)
+      }))
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    act(() => { renderer.root.findByProps({ 'aria-label': '测试删除文档' }).props.onClick() })
+    await dispatchWindowKey('z')
+    act(() => publishExternal())
+
+    await act(async () => {
+      if (outcome === 'throw') pendingRestore.reject(new Error('storage unavailable'))
+      else pendingRestore.resolve(false)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    if (authority === 'missing') {
+      expect(latestCanvas.nodes.find(node => node.id === 'document-1')).toBeUndefined()
+    } else {
+      expect(canvasDocumentTexts(latestCanvas)).toEqual({ 'document-1': 'Z' })
+    }
+    expect(onPersistCanvas).toHaveBeenCalledTimes(1)
+
+    await dispatchWindowKey('y')
+    expect(onPersistCanvas).toHaveBeenCalledTimes(1)
+  })
+
   it('serializes rapid Document edits so double failures cannot stale-roll back the newer edit', async () => {
     const requests = [deferred<boolean>(), deferred<boolean>(), deferred<boolean>(), deferred<boolean>()]
     const persistedTexts: string[] = []

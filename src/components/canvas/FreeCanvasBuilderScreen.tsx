@@ -87,6 +87,7 @@ import {
 } from '@/domain/free-canvas/free-canvas-project'
 import {
   applyCanvasLocalCommand,
+  canvasHistoryEntryDocumentNodeIds,
   createCanvasCommandHistory,
   discardCanvasCommandHistoryEntry,
   duplicateCanvasImageNode,
@@ -247,15 +248,65 @@ const isCanvasImageDrag = (dataTransfer: DataTransfer): boolean =>
 
 type DocumentAuthorityNode = Extract<IFreeCanvasNode, { kind: 'document' }>
 
+type DocumentAuthoritySnapshot =
+  | { id: string; state: 'absent' }
+  | { id: string; state: 'document'; identity: string }
+  | { id: string; state: 'conflict' }
+
+interface DocumentMutationQueueScope {
+  hasNewerMutation: () => boolean
+}
+
+const currentDocumentMutationScope: DocumentMutationQueueScope = { hasNewerMutation: () => false }
+
 const documentMutationQueueKey = (projectId: string, nodeId: string): string => `${projectId}:${nodeId}`
+
+const stableSemanticJson = (value: unknown): string => {
+  if (value === undefined) return 'undefined'
+  if (typeof value === 'string') return JSON.stringify(value.normalize('NFC'))
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableSemanticJson).join(',')}]`
+  const record = value as Record<string, unknown>
+  return `{${Object.keys(record)
+    .filter(key => record[key] !== undefined)
+    .sort()
+    .map(key => `${JSON.stringify(key)}:${stableSemanticJson(record[key])}`)
+    .join(',')}}`
+}
+
+const captureDocumentAuthorities = (
+  canvas: IFreeCanvasProject,
+  nodeIds: readonly string[]
+): DocumentAuthoritySnapshot[] => nodeIds.map(id => {
+  const matching = canvas.nodes.filter(node => node.id === id)
+  if (matching.length === 0) return { id, state: 'absent' }
+  if (matching.length === 1 && matching[0].kind === 'document') {
+    return { id, state: 'document', identity: stableSemanticJson(matching[0]) }
+  }
+  return { id, state: 'conflict' }
+})
+
+const hasExactDocumentAuthorities = (
+  canvas: IFreeCanvasProject,
+  attempted: readonly DocumentAuthoritySnapshot[]
+): boolean => attempted.every(expected => {
+  const current = captureDocumentAuthorities(canvas, [expected.id])[0]
+  if (expected.state === 'conflict' || current.state !== expected.state) return false
+  return expected.state === 'absent' || (
+    current.state === 'document' && current.identity === expected.identity
+  )
+})
 
 const hasExactDocumentAuthority = (
   canvas: IFreeCanvasProject,
   nodeId: string,
   attempted: DocumentAuthorityNode
 ): boolean => {
-  const current = canvas.nodes.find(node => node.id === nodeId)
-  return current?.kind === 'document' && JSON.stringify(current) === JSON.stringify(attempted)
+  return hasExactDocumentAuthorities(canvas, [{
+    id: nodeId,
+    state: 'document',
+    identity: stableSemanticJson(attempted)
+  }])
 }
 
 const isTypingTarget = (target: EventTarget | null): boolean => {
@@ -1864,20 +1915,33 @@ const FreeCanvasBuilderInner = ({
 
   const enqueueDocumentMutation = useCallback(<T,>(
     projectId: string,
-    nodeId: string,
-    operation: () => Promise<T>
+    nodeIds: string | readonly string[],
+    operation: (scope: DocumentMutationQueueScope) => Promise<T>
   ): Promise<T> => {
-    const queueKey = documentMutationQueueKey(projectId, nodeId)
-    const previous = documentMutationQueuesRef.current.get(queueKey)
-    const result = previous
-      ? previous.then(operation)
-      : operation()
-    const tail = result.then(() => undefined, () => undefined)
-    documentMutationQueuesRef.current.set(queueKey, tail)
+    const queueKeys = [...new Set(typeof nodeIds === 'string' ? [nodeIds] : nodeIds)]
+      .sort()
+      .map(nodeId => documentMutationQueueKey(projectId, nodeId))
+    const previousTails = [...new Set(queueKeys.flatMap(queueKey => {
+      const tail = documentMutationQueuesRef.current.get(queueKey)
+      return tail ? [tail] : []
+    }))]
+    let tail!: Promise<void>
+    const scope: DocumentMutationQueueScope = {
+      hasNewerMutation: () => queueKeys.some(
+        queueKey => documentMutationQueuesRef.current.get(queueKey) !== tail
+      )
+    }
+    const result = previousTails.length > 0
+      ? Promise.all(previousTails).then(() => operation(scope))
+      : operation(scope)
+    tail = result.then(() => undefined, () => undefined)
+    queueKeys.forEach(queueKey => documentMutationQueuesRef.current.set(queueKey, tail))
     void tail.finally(() => {
-      if (documentMutationQueuesRef.current.get(queueKey) === tail) {
-        documentMutationQueuesRef.current.delete(queueKey)
-      }
+      queueKeys.forEach(queueKey => {
+        if (documentMutationQueuesRef.current.get(queueKey) === tail) {
+          documentMutationQueuesRef.current.delete(queueKey)
+        }
+      })
     })
     return result
   }, [])
@@ -2214,7 +2278,9 @@ const FreeCanvasBuilderInner = ({
 
   const applyPersistedCanvasHistoryStep = useCallback((direction: 'undo' | 'redo') => {
     const projectId = activeProjectIdRef.current
-    const run = async (): Promise<boolean> => {
+    const run = async (
+      queueScope: DocumentMutationQueueScope = currentDocumentMutationScope
+    ): Promise<boolean> => {
       if (activeProjectIdRef.current !== projectId) return true
       const beforeCanvas = freeCanvasRef.current
       const beforeHistory = canvasCommandHistoryRef.current
@@ -2225,13 +2291,11 @@ const FreeCanvasBuilderInner = ({
       const entry = direction === 'redo'
         ? beforeHistory.future[0]
         : beforeHistory.past[beforeHistory.past.length - 1]
-      const attemptedCommand = direction === 'redo' ? entry.redo : entry.undo
-      const attemptedDocumentNode = attemptedCommand.kind === 'update-document'
-        ? applied.project.nodes.find(
-            (node): node is DocumentAuthorityNode =>
-              node.id === attemptedCommand.nodeId && node.kind === 'document'
-          )
-        : undefined
+      const affectedDocumentNodeIds = canvasHistoryEntryDocumentNodeIds(entry)
+      const attemptedDocumentAuthorities = captureDocumentAuthorities(
+        applied.project,
+        affectedDocumentNodeIds
+      )
 
       canvasCommandHistoryRef.current = applied.history
       commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
@@ -2246,12 +2310,11 @@ const FreeCanvasBuilderInner = ({
       if (saved) return true
 
       const projectIsCurrent = activeProjectIdRef.current === projectId
-      const attemptedAuthorityIsCurrent = !attemptedDocumentNode || hasExactDocumentAuthority(
+      const attemptedAuthorityIsCurrent = hasExactDocumentAuthorities(
         freeCanvasRef.current,
-        attemptedDocumentNode.id,
-        attemptedDocumentNode
+        attemptedDocumentAuthorities
       )
-      if (!projectIsCurrent || !attemptedAuthorityIsCurrent) {
+      if (!projectIsCurrent || queueScope.hasNewerMutation() || !attemptedAuthorityIsCurrent) {
         if (projectIsCurrent) {
           canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
             canvasCommandHistoryRef.current,
@@ -2281,8 +2344,10 @@ const FreeCanvasBuilderInner = ({
 
     const history = canvasCommandHistoryRef.current
     const entry = direction === 'redo' ? history.future[0] : history.past[history.past.length - 1]
-    const command = direction === 'redo' ? entry?.redo : entry?.undo
-    if (command?.kind === 'update-document') return enqueueDocumentMutation(projectId, command.nodeId, run)
+    const affectedDocumentNodeIds = entry ? canvasHistoryEntryDocumentNodeIds(entry) : []
+    if (affectedDocumentNodeIds.length > 0) {
+      return enqueueDocumentMutation(projectId, affectedDocumentNodeIds, run)
+    }
     const selected = freeCanvasRef.current.nodes.find(node => node.id === freeCanvasRef.current.selectedNodeId)
     if (selected?.kind === 'document') return enqueueDocumentMutation(projectId, selected.id, run)
     return run()

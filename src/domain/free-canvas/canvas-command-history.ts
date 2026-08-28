@@ -46,6 +46,24 @@ export interface CanvasCommandHistory {
   future: CanvasCommandHistoryEntry[]
 }
 
+const commandDocumentNodeIds = (command: CanvasLocalCommand): string[] => {
+  if (command.kind === 'update-document') return [command.nodeId]
+  if (command.kind === 'insert-node') return command.node.kind === 'document' ? [command.node.id] : []
+  if (command.kind === 'restore-nodes') {
+    return command.nodes.flatMap(item => item.node.kind === 'document' ? [item.node.id] : [])
+  }
+  return []
+}
+
+export const canvasHistoryEntryDocumentNodeIds = (entry: CanvasCommandHistoryEntry): string[] => {
+  const commands = [entry.undo, entry.redo]
+  const typedDocumentIds = new Set(commands.flatMap(commandDocumentNodeIds))
+  const affectedDocumentIds = commands.flatMap(command => command.kind === 'delete-nodes'
+    ? command.nodeIds.filter(nodeId => typedDocumentIds.has(nodeId))
+    : commandDocumentNodeIds(command))
+  return [...new Set(affectedDocumentIds)].sort()
+}
+
 export const createCanvasCommandHistory = (): CanvasCommandHistory => ({
   past: [],
   future: []
