@@ -245,6 +245,19 @@ const isComposerReferenceImage = (file: File): boolean =>
 const isCanvasImageDrag = (dataTransfer: DataTransfer): boolean =>
   isFileDrag(dataTransfer) || isProjectMaterialDrag(dataTransfer)
 
+type DocumentAuthorityNode = Extract<IFreeCanvasNode, { kind: 'document' }>
+
+const documentMutationQueueKey = (projectId: string, nodeId: string): string => `${projectId}:${nodeId}`
+
+const hasExactDocumentAuthority = (
+  canvas: IFreeCanvasProject,
+  nodeId: string,
+  attempted: DocumentAuthorityNode
+): boolean => {
+  const current = canvas.nodes.find(node => node.id === nodeId)
+  return current?.kind === 'document' && JSON.stringify(current) === JSON.stringify(attempted)
+}
+
 const isTypingTarget = (target: EventTarget | null): boolean => {
   const element = target instanceof HTMLElement ? target : null
   return Boolean(element?.closest('input, textarea, [contenteditable="true"], [role="textbox"]'))
@@ -1850,24 +1863,27 @@ const FreeCanvasBuilderInner = ({
   }, [commitCanvasSelection])
 
   const enqueueDocumentMutation = useCallback(<T,>(
+    projectId: string,
     nodeId: string,
     operation: () => Promise<T>
   ): Promise<T> => {
-    const previous = documentMutationQueuesRef.current.get(nodeId)
+    const queueKey = documentMutationQueueKey(projectId, nodeId)
+    const previous = documentMutationQueuesRef.current.get(queueKey)
     const result = previous
       ? previous.then(operation)
       : operation()
     const tail = result.then(() => undefined, () => undefined)
-    documentMutationQueuesRef.current.set(nodeId, tail)
+    documentMutationQueuesRef.current.set(queueKey, tail)
     void tail.finally(() => {
-      if (documentMutationQueuesRef.current.get(nodeId) === tail) {
-        documentMutationQueuesRef.current.delete(nodeId)
+      if (documentMutationQueuesRef.current.get(queueKey) === tail) {
+        documentMutationQueuesRef.current.delete(queueKey)
       }
     })
     return result
   }, [])
 
   const createDocument = useCallback(async () => {
+    const projectId = activeProjectIdRef.current
     const beforeCanvas = freeCanvasRef.current
     const beforeHistory = canvasCommandHistoryRef.current
     const node = createFreeCanvasDocumentNode(nextNodePosition(reactFlow, beforeCanvas.nodes.length))
@@ -1876,6 +1892,10 @@ const FreeCanvasBuilderInner = ({
       node,
       index: beforeCanvas.nodes.length
     })
+    const attemptedNode = executed.project.nodes.find(
+      (candidate): candidate is DocumentAuthorityNode => candidate.id === node.id && candidate.kind === 'document'
+    )
+    if (!attemptedNode) return
     canvasCommandHistoryRef.current = executed.history
     commitCanvasSelection(executed.project, node.id)
     if (!onPersistCanvas) return
@@ -1890,6 +1910,15 @@ const FreeCanvasBuilderInner = ({
 
     const failedEntry = executed.history.past[executed.history.past.length - 1]
     const currentCanvas = freeCanvasRef.current
+    const projectIsCurrent = activeProjectIdRef.current === projectId
+    if (projectIsCurrent) {
+      canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
+        canvasCommandHistoryRef.current,
+        failedEntry
+      )
+    }
+    if (!projectIsCurrent || !hasExactDocumentAuthority(currentCanvas, node.id, attemptedNode)) return
+
     const rolledBack = applyCanvasLocalCommand(currentCanvas, failedEntry.undo)
     const recovery = {
       ...rolledBack.project,
@@ -1897,10 +1926,6 @@ const FreeCanvasBuilderInner = ({
         ? beforeCanvas.selectedNodeId
         : rolledBack.project.selectedNodeId
     }
-    canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
-      canvasCommandHistoryRef.current,
-      failedEntry
-    )
     commitCanvasSelection(recovery, recovery.selectedNodeId || null)
     try {
       await onPersistCanvas?.(recovery)
@@ -1913,97 +1938,118 @@ const FreeCanvasBuilderInner = ({
   const updateDocumentNode = useCallback((
     nodeId: string,
     document: PlanningDocumentV1
-  ): Promise<boolean> => enqueueDocumentMutation(nodeId, async () => {
-    const beforeCanvas = freeCanvasRef.current
-    const beforeHistory = canvasCommandHistoryRef.current
-    const current = beforeCanvas.nodes.find(node => node.id === nodeId)
-    if (!current || current.kind !== 'document') return false
-    if (current.document.digest === document.digest && current.document.revision === document.revision) return true
+  ): Promise<boolean> => {
+    const projectId = activeProjectIdRef.current
+    return enqueueDocumentMutation(projectId, nodeId, async () => {
+      if (activeProjectIdRef.current !== projectId) return true
+      const beforeCanvas = freeCanvasRef.current
+      const beforeHistory = canvasCommandHistoryRef.current
+      const current = beforeCanvas.nodes.find(node => node.id === nodeId)
+      if (!current || current.kind !== 'document') return false
+      if (current.document.digest === document.digest && current.document.revision === document.revision) return true
 
-    const executed = executeCanvasLocalCommand(beforeHistory, beforeCanvas, {
-      kind: 'update-document',
-      nodeId,
-      document
+      const executed = executeCanvasLocalCommand(beforeHistory, beforeCanvas, {
+        kind: 'update-document',
+        nodeId,
+        document
+      })
+      if (executed.project === beforeCanvas) return false
+      const attemptedNode = executed.project.nodes.find(
+        (node): node is DocumentAuthorityNode => node.id === nodeId && node.kind === 'document'
+      )
+      if (!attemptedNode) return false
+      canvasCommandHistoryRef.current = executed.history
+      emitGenerationCanvas(executed.project)
+      if (!onPersistCanvas) return true
+
+      let saved = false
+      try {
+        saved = Boolean(await onPersistCanvas?.(executed.project))
+      } catch {
+        saved = false
+      }
+      if (saved) return true
+
+      const failedEntry = executed.history.past[executed.history.past.length - 1]
+      const currentCanvas = freeCanvasRef.current
+      const projectIsCurrent = activeProjectIdRef.current === projectId
+      if (projectIsCurrent) {
+        canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
+          canvasCommandHistoryRef.current,
+          failedEntry
+        )
+      }
+      if (!projectIsCurrent || !hasExactDocumentAuthority(currentCanvas, nodeId, attemptedNode)) return true
+
+      const recovery = applyCanvasLocalCommand(currentCanvas, failedEntry.undo).project
+      emitGenerationCanvas(recovery)
+      try {
+        await onPersistCanvas?.(recovery)
+      } catch {
+        // Replacing the retained request with recovery is best-effort while Storage is unavailable.
+      }
+      return false
     })
-    if (executed.project === beforeCanvas) return false
-    canvasCommandHistoryRef.current = executed.history
-    emitGenerationCanvas(executed.project)
-    if (!onPersistCanvas) return true
-
-    let saved = false
-    try {
-      saved = Boolean(await onPersistCanvas?.(executed.project))
-    } catch {
-      saved = false
-    }
-    if (saved) return true
-
-    const failedEntry = executed.history.past[executed.history.past.length - 1]
-    const currentCanvas = freeCanvasRef.current
-    const currentDocumentNode = currentCanvas.nodes.find(node => node.id === nodeId)
-    const attemptedDocumentIsCurrent = currentDocumentNode?.kind === 'document' &&
-      currentDocumentNode.document.revision === document.revision &&
-      currentDocumentNode.document.digest === document.digest
-    canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
-      canvasCommandHistoryRef.current,
-      failedEntry
-    )
-    if (!attemptedDocumentIsCurrent) return true
-
-    const recovery = applyCanvasLocalCommand(currentCanvas, failedEntry.undo).project
-    emitGenerationCanvas(recovery)
-    try {
-      await onPersistCanvas?.(recovery)
-    } catch {
-      // Replacing the retained request with recovery is best-effort while Storage is unavailable.
-    }
-    return false
-  }), [emitGenerationCanvas, enqueueDocumentMutation, onPersistCanvas])
+  }, [emitGenerationCanvas, enqueueDocumentMutation, onPersistCanvas])
 
   const updateDocumentCollapsed = useCallback((
     nodeId: string,
     collapsed: boolean
-  ): Promise<boolean> => enqueueDocumentMutation(nodeId, async () => {
-    const beforeCanvas = freeCanvasRef.current
-    const current = beforeCanvas.nodes.find(node => node.id === nodeId)
-    if (!current || current.kind !== 'document') return false
-    if ((current.meta.collapsed === true) === collapsed) return true
-    const previousCollapsed = current.meta.collapsed
-    const next = {
-      ...beforeCanvas,
-      nodes: beforeCanvas.nodes.map(node => node.id === nodeId
-        ? { ...node, meta: { ...node.meta, collapsed } }
-        : node)
-    }
-    emitGenerationCanvas(next)
-    if (!onPersistCanvas) return true
+  ): Promise<boolean> => {
+    const projectId = activeProjectIdRef.current
+    return enqueueDocumentMutation(projectId, nodeId, async () => {
+      if (activeProjectIdRef.current !== projectId) return true
+      const beforeCanvas = freeCanvasRef.current
+      const current = beforeCanvas.nodes.find(node => node.id === nodeId)
+      if (!current || current.kind !== 'document') return false
+      if ((current.meta.collapsed === true) === collapsed) return true
+      const previousCollapsed = current.meta.collapsed
+      const next = {
+        ...beforeCanvas,
+        nodes: beforeCanvas.nodes.map(node => node.id === nodeId
+          ? { ...node, meta: { ...node.meta, collapsed } }
+          : node)
+      }
+      const attemptedNode = next.nodes.find(
+        (node): node is DocumentAuthorityNode => node.id === nodeId && node.kind === 'document'
+      )
+      if (!attemptedNode) return false
+      emitGenerationCanvas(next)
+      if (!onPersistCanvas) return true
 
-    let saved = false
-    try {
-      saved = Boolean(await onPersistCanvas(next))
-    } catch {
-      saved = false
-    }
-    if (saved) return true
+      let saved = false
+      try {
+        saved = Boolean(await onPersistCanvas(next))
+      } catch {
+        saved = false
+      }
+      if (saved) return true
 
-    const recovery = {
-      ...freeCanvasRef.current,
-      nodes: freeCanvasRef.current.nodes.map(node => {
-        if (node.id !== nodeId || node.kind !== 'document') return node
-        const meta = { ...node.meta }
-        if (previousCollapsed === undefined) delete meta.collapsed
-        else meta.collapsed = previousCollapsed
-        return { ...node, meta }
-      })
-    }
-    emitGenerationCanvas(recovery)
-    try {
-      await onPersistCanvas(recovery)
-    } catch {
-      // The recovery snapshot remains the newest retained request for an explicit retry.
-    }
-    return false
-  }), [emitGenerationCanvas, enqueueDocumentMutation, onPersistCanvas])
+      const currentCanvas = freeCanvasRef.current
+      if (
+        activeProjectIdRef.current !== projectId ||
+        !hasExactDocumentAuthority(currentCanvas, nodeId, attemptedNode)
+      ) return true
+
+      const recovery = {
+        ...currentCanvas,
+        nodes: currentCanvas.nodes.map(node => {
+          if (node.id !== nodeId || node.kind !== 'document') return node
+          const meta = { ...node.meta }
+          if (previousCollapsed === undefined) delete meta.collapsed
+          else meta.collapsed = previousCollapsed
+          return { ...node, meta }
+        })
+      }
+      emitGenerationCanvas(recovery)
+      try {
+        await onPersistCanvas(recovery)
+      } catch {
+        // The recovery snapshot remains the newest retained request for an explicit retry.
+      }
+      return false
+    })
+  }, [emitGenerationCanvas, enqueueDocumentMutation, onPersistCanvas])
 
   const closeNodeContextMenu = useCallback(() => {
     setNodeContextMenu(current => {
@@ -2167,7 +2213,9 @@ const FreeCanvasBuilderInner = ({
   }, [addCanvasTextAsComposerReference, copyTextNode, deleteCanvasNodes, sendTextNodeToAgent])
 
   const applyPersistedCanvasHistoryStep = useCallback((direction: 'undo' | 'redo') => {
+    const projectId = activeProjectIdRef.current
     const run = async (): Promise<boolean> => {
+      if (activeProjectIdRef.current !== projectId) return true
       const beforeCanvas = freeCanvasRef.current
       const beforeHistory = canvasCommandHistoryRef.current
       const applied = direction === 'redo'
@@ -2177,6 +2225,13 @@ const FreeCanvasBuilderInner = ({
       const entry = direction === 'redo'
         ? beforeHistory.future[0]
         : beforeHistory.past[beforeHistory.past.length - 1]
+      const attemptedCommand = direction === 'redo' ? entry.redo : entry.undo
+      const attemptedDocumentNode = attemptedCommand.kind === 'update-document'
+        ? applied.project.nodes.find(
+            (node): node is DocumentAuthorityNode =>
+              node.id === attemptedCommand.nodeId && node.kind === 'document'
+          )
+        : undefined
 
       canvasCommandHistoryRef.current = applied.history
       commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
@@ -2189,6 +2244,22 @@ const FreeCanvasBuilderInner = ({
         saved = false
       }
       if (saved) return true
+
+      const projectIsCurrent = activeProjectIdRef.current === projectId
+      const attemptedAuthorityIsCurrent = !attemptedDocumentNode || hasExactDocumentAuthority(
+        freeCanvasRef.current,
+        attemptedDocumentNode.id,
+        attemptedDocumentNode
+      )
+      if (!projectIsCurrent || !attemptedAuthorityIsCurrent) {
+        if (projectIsCurrent) {
+          canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
+            canvasCommandHistoryRef.current,
+            entry
+          )
+        }
+        return true
+      }
 
       const recoveryCommand = direction === 'redo' ? entry.undo : entry.redo
       const recovered = applyCanvasLocalCommand(freeCanvasRef.current, recoveryCommand).project
@@ -2211,9 +2282,9 @@ const FreeCanvasBuilderInner = ({
     const history = canvasCommandHistoryRef.current
     const entry = direction === 'redo' ? history.future[0] : history.past[history.past.length - 1]
     const command = direction === 'redo' ? entry?.redo : entry?.undo
-    if (command?.kind === 'update-document') return enqueueDocumentMutation(command.nodeId, run)
+    if (command?.kind === 'update-document') return enqueueDocumentMutation(projectId, command.nodeId, run)
     const selected = freeCanvasRef.current.nodes.find(node => node.id === freeCanvasRef.current.selectedNodeId)
-    if (selected?.kind === 'document') return enqueueDocumentMutation(selected.id, run)
+    if (selected?.kind === 'document') return enqueueDocumentMutation(projectId, selected.id, run)
     return run()
   }, [commitCanvasSelection, enqueueDocumentMutation, onPersistCanvas])
 

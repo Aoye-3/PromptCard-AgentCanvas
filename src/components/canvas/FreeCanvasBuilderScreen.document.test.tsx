@@ -177,8 +177,8 @@ const documentNode = (id = 'document-1', text = 'Before'): IFreeCanvasDocumentNo
   meta: {}
 })
 
-const project = (freeCanvas: IFreeCanvasProject): IPromptProject => ({
-  id: 'project-1',
+const project = (freeCanvas: IFreeCanvasProject, id = 'project-1'): IPromptProject => ({
+  id,
   title: 'Document project',
   type: 'free-canvas',
   revision: 1,
@@ -425,6 +425,233 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     await dispatchWindowKey('z')
     expect(canvasDocumentTexts(latestCanvas)).toEqual({ 'document-1': 'Z' })
     expect(persistedTexts).toEqual(['B'])
+  })
+
+  it.each([
+    { direction: 'undo', outcome: 'false', authority: 'document' },
+    { direction: 'undo', outcome: 'throw', authority: 'missing' },
+    { direction: 'redo', outcome: 'false', authority: 'kind' },
+    { direction: 'redo', outcome: 'throw', authority: 'document' }
+  ] as const)('does not recover stale $direction after external $authority authority and $outcome persistence', async ({ direction, outcome, authority }) => {
+    const pendingHistory = deferred<boolean>()
+    const persisted: IFreeCanvasProject[] = []
+    const failureCall = direction === 'undo' ? 2 : 3
+    const onPersistCanvas = vi.fn((canvas: IFreeCanvasProject) => {
+      persisted.push(canvas)
+      return persisted.length === failureCall ? pendingHistory.promise : Promise.resolve(true)
+    })
+    let latestCanvas = initialCanvas()
+    let publishExternal!: () => void
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      latestCanvas = canvas
+      publishExternal = () => setCanvas(current => ({
+        ...current,
+        nodes: authority === 'missing'
+          ? current.nodes.filter(node => node.id !== 'document-1')
+          : current.nodes.map(node => {
+            if (node.id !== 'document-1') return node
+            if (authority === 'kind') return { ...unrelatedTextNode(), id: node.id }
+            return {
+              ...node,
+              document: createPlanningDocumentV1([{
+                id: 'document-1-external-z', type: 'paragraph', content: [{ text: 'Z' }]
+              }], 9)
+            }
+          })
+      }))
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => renderedDocument(renderer, 'document-1').findByProps({ 'aria-label': '测试编辑文档' }).props.onClick())
+    if (direction === 'redo') await dispatchWindowKey('z')
+    await dispatchWindowKey(direction === 'undo' ? 'z' : 'y')
+    expect(persisted).toHaveLength(failureCall)
+
+    act(() => publishExternal())
+    await act(async () => {
+      if (outcome === 'throw') pendingHistory.reject(new Error('storage unavailable'))
+      else pendingHistory.resolve(false)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(onPersistCanvas).toHaveBeenCalledTimes(failureCall)
+    if (authority === 'document') {
+      expect(canvasDocumentTexts(latestCanvas)).toEqual({ 'document-1': 'Z' })
+    } else if (authority === 'missing') {
+      expect(latestCanvas.nodes.find(node => node.id === 'document-1')).toBeUndefined()
+    } else {
+      expect(latestCanvas.nodes.find(node => node.id === 'document-1')?.kind).toBe('text')
+    }
+
+    await dispatchWindowKey(direction === 'undo' ? 'y' : 'z')
+    expect(onPersistCanvas).toHaveBeenCalledTimes(failureCall)
+  })
+
+  it.each([
+    { outcome: 'false', authority: 'deleted' },
+    { outcome: 'throw', authority: 'replaced' }
+  ] as const)('preserves an externally $authority created-node authority when create persistence settles with $outcome', async ({ outcome, authority }) => {
+    const pendingCreate = deferred<boolean>()
+    const onPersistCanvas = vi.fn()
+      .mockImplementationOnce(() => pendingCreate.promise)
+      .mockResolvedValue(true)
+    let latestCanvas = initialCanvas()
+    let publishExternal!: (nodeId: string) => void
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      latestCanvas = canvas
+      publishExternal = nodeId => setCanvas(current => ({
+        ...current,
+        nodes: authority === 'deleted'
+          ? current.nodes.filter(node => node.id !== nodeId)
+          : current.nodes.map(node => node.id === nodeId ? { ...unrelatedTextNode(), id: nodeId } : node)
+      }))
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    act(() => { renderer.root.findByProps({ title: 'Document' }).props.onClick() })
+    const created = latestCanvas.nodes.find(node => node.id !== 'document-1')
+    expect(created?.kind).toBe('document')
+    act(() => publishExternal(created!.id))
+
+    await act(async () => {
+      if (outcome === 'throw') pendingCreate.reject(new Error('storage unavailable'))
+      else pendingCreate.resolve(false)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(onPersistCanvas).toHaveBeenCalledTimes(1)
+    const current = latestCanvas.nodes.find(node => node.id === created!.id)
+    if (authority === 'deleted') expect(current).toBeUndefined()
+    else expect(current?.kind).toBe('text')
+  })
+
+  it.each([
+    { outcome: 'false', authority: 'document' },
+    { outcome: 'throw', authority: 'meta' }
+  ] as const)('preserves external $authority authority when collapse persistence settles with $outcome', async ({ outcome, authority }) => {
+    const pendingCollapse = deferred<boolean>()
+    const onPersistCanvas = vi.fn()
+      .mockImplementationOnce(() => pendingCollapse.promise)
+      .mockResolvedValue(true)
+    let latestCanvas = initialCanvas()
+    let publishExternal!: () => void
+    const Harness = () => {
+      const [canvas, setCanvas] = useState(initialCanvas())
+      latestCanvas = canvas
+      publishExternal = () => setCanvas(current => ({
+        ...current,
+        nodes: current.nodes.map(node => node.id === 'document-1' && node.kind === 'document'
+          ? authority === 'document'
+            ? {
+                ...node,
+                document: createPlanningDocumentV1([{
+                  id: 'document-1-external-z', type: 'paragraph', content: [{ text: 'Z' }]
+                }], 9)
+              }
+            : { ...node, meta: { ...node.meta, collapsed: false, externalAuthority: 'Z' } }
+          : node)
+      }))
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(canvas)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCanvas} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    act(() => { renderer.root.findByProps({ 'aria-label': '测试折叠文档' }).props.onClick() })
+    act(() => publishExternal())
+    await act(async () => {
+      if (outcome === 'throw') pendingCollapse.reject(new Error('storage unavailable'))
+      else pendingCollapse.resolve(false)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(onPersistCanvas).toHaveBeenCalledTimes(1)
+    const current = latestCanvas.nodes.find(node => node.id === 'document-1') as IFreeCanvasDocumentNode
+    if (authority === 'document') {
+      expect(planningDocumentEffectiveText(current.document)).toBe('Z')
+      expect(current.meta.collapsed).toBe(true)
+    } else {
+      expect(current.meta).toMatchObject({ collapsed: false, externalAuthority: 'Z' })
+    }
+  })
+
+  it.each(['false', 'throw'] as const)('keeps P2 Document mutations independent when same-identity P1 persistence settles with $outcome', async outcome => {
+    const pendingP1 = deferred<boolean>()
+    const p1Persist = vi.fn()
+      .mockImplementationOnce(() => pendingP1.promise)
+      .mockResolvedValue(true)
+    const p2Persist = vi.fn().mockResolvedValue(true)
+    const latestByProject: Record<string, IFreeCanvasProject> = {
+      'project-1': initialCanvas(),
+      'project-2': initialCanvas()
+    }
+    const Harness = () => {
+      const [activeProjectId, setActiveProjectId] = useState<'project-1' | 'project-2'>('project-1')
+      const [canvases, setCanvases] = useState<Record<'project-1' | 'project-2', IFreeCanvasProject>>({
+        'project-1': initialCanvas(),
+        'project-2': initialCanvas()
+      })
+      const canvas = canvases[activeProjectId]
+      latestByProject[activeProjectId] = canvas
+      return (
+        <>
+          <button type="button" aria-label="切换到项目 P2" onClick={() => setActiveProjectId('project-2')}>P2</button>
+          <FreeCanvasBuilderScreen
+            activeProject={project(canvas, activeProjectId)} freeCanvas={canvas} onBack={vi.fn()} onRenameProject={vi.fn()}
+            onSave={vi.fn()}
+            onChange={next => setCanvases(current => ({ ...current, [activeProjectId]: next }))}
+            onPersistCanvas={activeProjectId === 'project-1' ? p1Persist : p2Persist}
+          />
+        </>
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    let p1Edit!: Promise<boolean>
+    act(() => { p1Edit = renderer.root.findByProps({ 'aria-label': '测试编辑文档 B' }).props.onClick() })
+    expect(p1Persist).toHaveBeenCalledTimes(1)
+    await act(async () => renderer.root.findByProps({ 'aria-label': '切换到项目 P2' }).props.onClick())
+
+    let p2Edit!: Promise<boolean>
+    act(() => { p2Edit = renderer.root.findByProps({ 'aria-label': '测试编辑文档 B' }).props.onClick() })
+    expect(p2Persist).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      if (outcome === 'throw') pendingP1.reject(new Error('storage unavailable'))
+      else pendingP1.resolve(false)
+      await Promise.all([p1Edit, p2Edit])
+    })
+
+    expect(p1Persist).toHaveBeenCalledTimes(1)
+    expect(p2Persist).toHaveBeenCalledTimes(1)
+    expect(canvasDocumentTexts(latestByProject['project-2'])).toEqual({ 'document-1': 'B' })
   })
 
   it('serializes rapid Document edits so double failures cannot stale-roll back the newer edit', async () => {
