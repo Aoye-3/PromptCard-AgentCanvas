@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Expand, FileText, RotateCcw, Trash2, X } from 'lucide-react'
 import { DocumentEditor } from '@/components/canvas/document/DocumentEditor'
-import { planningDocumentEffectiveText } from '@/domain/documents/planning-document'
+import { createPlanningDocumentV1, planningDocumentEffectiveText } from '@/domain/documents/planning-document'
 import type { IFreeCanvasDocumentNode, PlanningDocumentV1 } from '@/models/PromptHistory.model'
 
 interface DocumentNodeProps {
@@ -25,12 +25,17 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   const requestTokenRef = useRef(0)
   const authoritativeIdentity = planningDocumentNodeIdentity(node)
   const authoritativeIdentityRef = useRef(authoritativeIdentity)
+  const authoritativeDocumentRef = useRef(node.document)
   authoritativeIdentityRef.current = authoritativeIdentity
+  authoritativeDocumentRef.current = node.document
+  const pendingRequestTokensRef = useRef(new Set<number>())
+  const revisionClockRef = useRef(node.document.revision)
+  const [draftDocument, setDraftDocument] = useState(node.document)
   const [collapsed, setCollapsed] = useState(node.meta.collapsed === true)
   const [expanded, setExpanded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [retryRequest, setRetryRequest] = useState<DocumentRetryRequest | null>(null)
-  const summary = planningDocumentEffectiveText(node.document).replace(/\s+/g, ' ').trim().slice(0, 180)
+  const summary = planningDocumentEffectiveText(draftDocument).replace(/\s+/g, ' ').trim().slice(0, 180)
 
   useEffect(() => {
     setCollapsed(node.meta.collapsed === true)
@@ -41,6 +46,14 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
       current && current.authoritativeIdentity !== authoritativeIdentity ? null : current
     ))
   }, [authoritativeIdentity])
+
+  useEffect(() => {
+    revisionClockRef.current = Math.max(revisionClockRef.current, node.document.revision)
+    if (pendingRequestTokensRef.current.size > 0) return
+    setDraftDocument(current => planningDocumentIdentity(current) === planningDocumentIdentity(node.document)
+      ? current
+      : node.document)
+  }, [node.id, node.document.digest, node.document.revision])
 
   useEffect(() => {
     if (!expanded) return
@@ -57,12 +70,33 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   const commit = async (document: PlanningDocumentV1) => {
     const token = ++requestTokenRef.current
     const submittedFromIdentity = authoritativeIdentityRef.current
+    pendingRequestTokensRef.current.add(token)
+    revisionClockRef.current = Math.max(revisionClockRef.current, document.revision)
+    setDraftDocument(current => planningDocumentIdentity(current) === planningDocumentIdentity(document)
+      ? current
+      : document)
     setRetryRequest(null)
     setSaving(true)
     const saved = await onDocumentChange(document)
+    pendingRequestTokensRef.current.delete(token)
+    setSaving(pendingRequestTokensRef.current.size > 0)
     if (token !== requestTokenRef.current) return
-    setSaving(false)
-    setRetryRequest(saved ? null : { document, token, authoritativeIdentity: submittedFromIdentity })
+    if (saved) {
+      setRetryRequest(null)
+      return
+    }
+    const restoredDocument = authoritativeDocumentRef.current
+    setDraftDocument(restoredDocument)
+    setRetryRequest({ document, token, authoritativeIdentity: submittedFromIdentity })
+  }
+
+  const commitEditorChange = (document: PlanningDocumentV1) => {
+    const revision = Math.max(document.revision, revisionClockRef.current + 1)
+    const nextDocument = revision === document.revision
+      ? document
+      : createPlanningDocumentV1(document.blocks, revision)
+    revisionClockRef.current = revision
+    void commit(nextDocument)
   }
 
   const retry = (request: DocumentRetryRequest) => {
@@ -134,7 +168,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
         <header className="flex shrink-0 items-center gap-3 border-b border-gray-200 px-4 py-3">
           <FileText className="h-4 w-4 text-gray-500" />
           <h2 id={`document-editor-title-${node.id}`} className="min-w-0 flex-1 truncate text-sm font-black text-gray-950">{node.title}</h2>
-          <span className="text-xs font-semibold text-gray-400">修订 {node.document.revision}</span>
+          <span className="text-xs font-semibold text-gray-400">修订 {draftDocument.revision}</span>
           <button
             type="button"
             aria-label="关闭展开编辑器"
@@ -143,7 +177,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
           ><X className="h-4 w-4" /></button>
         </header>
         {retryAlert}
-        <DocumentEditor document={node.document} mode="expanded" autoFocus onChange={document => { void commit(document) }} />
+        <DocumentEditor document={draftDocument} mode="expanded" autoFocus onChange={commitEditorChange} />
       </section>
     </div>
   ) : null
@@ -188,7 +222,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
           {summary || '空白规划文档'}
         </p>
       ) : !expanded ? (
-        <DocumentEditor document={node.document} mode="inline" onChange={document => { void commit(document) }} />
+        <DocumentEditor document={draftDocument} mode="inline" onChange={commitEditorChange} />
       ) : (
         <div className="flex h-[300px] items-center justify-center px-4 text-xs font-semibold text-gray-400">文档正在展开编辑器中打开</div>
       )}
@@ -202,4 +236,8 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
 
 const planningDocumentNodeIdentity = (node: IFreeCanvasDocumentNode): string => (
   `${node.id}:${node.document.revision}:${node.document.digest}`
+)
+
+const planningDocumentIdentity = (document: PlanningDocumentV1): string => (
+  `${document.revision}:${document.digest}`
 )

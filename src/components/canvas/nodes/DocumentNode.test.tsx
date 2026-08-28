@@ -15,6 +15,7 @@ vi.mock('@/components/canvas/document/DocumentEditor', () => ({
         type="button"
         data-mock-document-editor={mode}
         data-document-digest={document.digest}
+        data-document-text={planningDocumentEffectiveText(document)}
         data-on-test-change={onChange}
         onClick={() => onChange(createPlanningDocumentV1([
           { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Edited canonical draft' }] }
@@ -381,6 +382,154 @@ describe('DocumentNode', () => {
     expect(onDocumentChange).toHaveBeenCalledTimes(1)
     expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-digest'])
       .toBe(authoritative.digest)
+  })
+
+  it('retains the live ABCD draft across view remounts while Screen rolls failed B back under queued C/D', async () => {
+    const gates = [deferred<boolean>(), deferred<boolean>(), deferred<boolean>()]
+    const recoveryRetained = deferred<void>()
+    const submissions: PlanningDocumentV1[] = []
+    const persisted: PlanningDocumentV1[] = []
+    const initialNode: IFreeCanvasDocumentNode = {
+      ...node(),
+      document: createPlanningDocumentV1([
+        { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'A' }] }
+      ], 0)
+    }
+    let savedDocument = initialNode.document
+    let queueTail: Promise<void> | null = null
+    const ScreenHarness = () => {
+      const [screenNode, setScreenNode] = useState(initialNode)
+      const onDocumentChange = (document: PlanningDocumentV1): Promise<boolean> => {
+        const gate = gates[submissions.length]
+        submissions.push(document)
+        const run = async () => {
+          setScreenNode(current => ({ ...current, document }))
+          const saved = await gate.promise
+          if (saved) {
+            savedDocument = document
+            persisted.push(document)
+          } else {
+            setScreenNode(current => ({ ...current, document: savedDocument }))
+            await recoveryRetained.promise
+          }
+          return saved
+        }
+        const result = queueTail ? queueTail.then(run) : run()
+        queueTail = result.then(() => undefined, () => undefined)
+        return result
+      }
+      return (
+        <DocumentNode
+          node={screenNode}
+          selected
+          onDocumentChange={onDocumentChange}
+          onCollapsedChange={vi.fn().mockResolvedValue(true)}
+          onDelete={vi.fn()}
+        />
+      )
+    }
+    const renderer = create(<ScreenHarness />)
+    const append = (suffix: string) => {
+      const editor = renderer.root.findAll(node => node.props['data-mock-document-editor'])[0]
+      const current = editor.props['data-document-text'] as string
+      const revision = (submissions[submissions.length - 1]?.revision || initialNode.document.revision) + 1
+      editor.props['data-on-test-change'](createPlanningDocumentV1([
+        { id: 'paragraph-1', type: 'paragraph', content: [{ text: `${current}${suffix}` }] }
+      ], revision))
+    }
+
+    act(() => append('B'))
+    act(() => append('C'))
+    act(() => renderer.root.findByProps({ 'aria-label': '展开编辑器' }).props.onClick())
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'expanded' }).props['data-document-text']).toBe('ABC')
+    act(() => renderer.root.findByProps({ 'aria-label': '关闭展开编辑器' }).props.onClick())
+    act(() => renderer.root.findByProps({ 'aria-label': '折叠文档' }).props.onClick())
+    expect(renderer.root.findAllByProps({ 'data-mock-document-editor': 'inline' })).toHaveLength(0)
+    act(() => renderer.root.findByProps({ 'aria-label': '展开文档' }).props.onClick())
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-text']).toBe('ABC')
+
+    await act(async () => {
+      gates[0].resolve(false)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-text']).toBe('ABC')
+    await act(async () => {
+      recoveryRetained.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-text']).toBe('ABC')
+
+    act(() => append('D'))
+    await act(async () => {
+      gates[1].resolve(true)
+      await Promise.resolve()
+      gates[2].resolve(true)
+      await queueTail
+    })
+
+    expect(submissions.map(planningDocumentEffectiveText)).toEqual(['AB', 'ABC', 'ABCD'])
+    expect(submissions.map(document => document.revision)).toEqual([1, 2, 3])
+    expect(persisted.map(planningDocumentEffectiveText)).toEqual(['ABC', 'ABCD'])
+    expect(planningDocumentEffectiveText(savedDocument)).toBe('ABCD')
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-text']).toBe('ABCD')
+  })
+
+  it('restores saved A after a lone optimistic B failure and retries the exact B snapshot', async () => {
+    const gates = [deferred<boolean>(), deferred<boolean>()]
+    const submissions: PlanningDocumentV1[] = []
+    const initialNode: IFreeCanvasDocumentNode = {
+      ...node(),
+      document: createPlanningDocumentV1([
+        { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'A' }] }
+      ], 0)
+    }
+    let savedDocument = initialNode.document
+    const ScreenHarness = () => {
+      const [screenNode, setScreenNode] = useState(initialNode)
+      return (
+        <DocumentNode
+          node={screenNode}
+          selected
+          onDocumentChange={async document => {
+            const gate = gates[submissions.length]
+            submissions.push(document)
+            setScreenNode(current => ({ ...current, document }))
+            const saved = await gate.promise
+            if (saved) savedDocument = document
+            else setScreenNode(current => ({ ...current, document: savedDocument }))
+            return saved
+          }}
+          onDelete={vi.fn()}
+        />
+      )
+    }
+    const renderer = create(<ScreenHarness />)
+    const failedB = createPlanningDocumentV1([
+      { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'AB' }] }
+    ], 1)
+
+    act(() => renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-on-test-change'](failedB))
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-text']).toBe('AB')
+    await act(async () => {
+      gates[0].resolve(false)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-text']).toBe('A')
+    const retry = renderer.root.findByProps({ 'aria-label': '重试保存文档' })
+    act(() => retry.props.onClick())
+    expect(submissions[1]).toEqual(failedB)
+
+    await act(async () => {
+      gates[1].resolve(true)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(planningDocumentEffectiveText(savedDocument)).toBe('AB')
+    expect(renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props['data-document-text']).toBe('AB')
   })
 
   it('persists collapsed state through node metadata and restores it on reload', async () => {
