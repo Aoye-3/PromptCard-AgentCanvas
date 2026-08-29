@@ -121,7 +121,7 @@ describe('Canvas Storyboard direct edits', () => {
       payload: { source: provenance, changes: [{ scope: 'row', rowId: 'row-1', field: 'imageUrl', value: 'secret' }] }, rationale: ''
     } as unknown as AgentStoryboardChangesEdit
 
-    expect(() => applyStoryboardChanges(node, invalid)).toThrow('storyboard_field_invalid')
+    expect(() => applyStoryboardChanges(node, invalid)).toThrow('storyboard_changes_invalid')
   })
 
   it('rejects Storyboard changes whose frozen source differs from the target node', () => {
@@ -181,5 +181,66 @@ describe('Canvas Storyboard direct edits', () => {
     } else {
       expect(applyStoryboardChanges(node, changes).pendingFieldChanges).toHaveLength(1)
     }
+  })
+
+  it('rejects removing a shrink when the remaining pending growth would exceed the aggregate budget', () => {
+    const baseSequence = aggregateSequence(256_000)
+    const create = createEdit()
+    create.payload = { ...create.payload, sequence: baseSequence }
+    create.expectedResultDigest = storyboardDigest(baseSequence, [])
+    const base = createStoryboardNode(create, { x: 0, y: 0 })
+    const pendingFieldChanges = [
+      {
+        id: 'change-shrink', editId: 'edit-review', scope: 'sequence' as const,
+        field: 'name' as const, previousValue: 'a'.repeat(10_000), newValue: ''
+      },
+      {
+        id: 'change-grow', editId: 'edit-review', scope: 'row' as const, rowId: 'row-3',
+        field: 'duration' as const, previousValue: '', newValue: 'b'.repeat(10_000)
+      }
+    ]
+    const node = {
+      ...base,
+      pendingFieldChanges,
+      revision: 1,
+      digest: storyboardDigest(base.sequence, pendingFieldChanges)
+    }
+    const before = structuredClone(node)
+
+    expect(() => resolveStoryboardFieldChanges(node, ['change-shrink'], 'reject'))
+      .toThrow('storyboard_changes_invalid')
+    expect(node).toEqual(before)
+  })
+
+  it.each([
+    ['33 operations', Array.from({ length: 33 }, (_, index) => ({
+      scope: 'row', rowId: `row-${index + 1}`, field: 'camera', value: 'close-up'
+    }))],
+    ['an extra key', [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up', browserTrusted: true }]],
+    ['an illegal scope/field pair', [{ scope: 'sequence', field: 'camera', value: 'close-up' }]],
+    ['a missing row', [{ scope: 'row', rowId: 'row-missing', field: 'camera', value: 'close-up' }]],
+    ['a decomposed row id', [{ scope: 'row', rowId: 'Cafe\u0301', field: 'camera', value: 'close-up' }]],
+    ['a decomposed value', [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'Cafe\u0301' }]],
+    ['an unpaired surrogate', [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'bad\ud800' }]],
+    ['an oversized field value', [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'x'.repeat(10_001) }]]
+  ])('strictly rejects direct Storyboard changes with %s without mutating the node', (_label, operations) => {
+    const manyRows = sequence()
+    manyRows.rows = Array.from({ length: 33 }, (_, index) => ({
+      ...manyRows.rows[0], id: `row-${index + 1}`, camera: '', createdAt: index + 1, updatedAt: index + 1
+    }))
+    const create = createEdit()
+    create.payload = { ...create.payload, sequence: manyRows }
+    create.expectedResultDigest = storyboardDigest(manyRows, [])
+    const node = createStoryboardNode(create, { x: 0, y: 0 })
+    const before = structuredClone(node)
+    const edit = {
+      kind: 'storyboard_changes', id: 'edit-invalid', editId: 'edit-invalid', conversationId: 'conversation-2',
+      requestId: 'request-invalid', nodeId: node.id, expectedResultDigest: `sha256:${'f'.repeat(64)}`,
+      base: { projectRevision: 13, nodeRevision: node.revision, nodeDigest: node.digest },
+      payload: { source: provenance, changes: operations }, rationale: 'Invalid changes'
+    } as unknown as AgentStoryboardChangesEdit
+
+    expect(() => applyStoryboardChanges(node, edit)).toThrow('storyboard_changes_invalid')
+    expect(node).toEqual(before)
   })
 })

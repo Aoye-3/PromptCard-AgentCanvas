@@ -816,6 +816,52 @@ describe('free canvas project domain', () => {
     })
   })
 
+  test('hydrates a Storyboard with an over-budget prospective pending change as lossless unsupported data', () => {
+    const rows = Array.from({ length: 3 }, (_, index) => ({
+      id: `row-${index + 1}`, cutLabel: '', timeRange: '', subject: '', action: '', scene: '', camera: '',
+      lighting: '', audio: '', duration: '', createdAt: index + 1, updatedAt: index + 1
+    }))
+    const sequence = {
+      id: 'sequence-budget', name: '', description: '', style: '', constraints: '', rows,
+      createdAt: 1, updatedAt: 1, meta: {}
+    }
+    const targets: Array<[Record<string, unknown>, string]> = [
+      ...['name', 'description', 'style', 'constraints'].map(field => [sequence, field] as [Record<string, unknown>, string]),
+      ...rows.flatMap(row => ['cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration']
+        .map(field => [row, field] as [Record<string, unknown>, string]))
+    ]
+    let remaining = 256_000
+    targets.forEach(([target, field]) => {
+      const size = Math.min(10_000, remaining)
+      target[field] = 'a'.repeat(size)
+      remaining -= size
+    })
+    const pendingFieldChanges = [{
+      id: 'change-grow', editId: 'edit-grow', scope: 'row' as const, rowId: 'row-3',
+      field: 'duration' as const, previousValue: '', newValue: 'b'.repeat(10_000)
+    }]
+    const originalNode = {
+      id: 'storyboard-over-budget', kind: 'storyboard', title: 'Over budget', position: { x: 0, y: 0 },
+      width: 680, height: 440, sequence,
+      source: {
+        documentNodeId: 'document-1', documentRevision: 4, documentDigest: `sha256:${'a'.repeat(64)}`,
+        documentResourceDigests: [], model: {
+          connectionId: 'c', providerId: 'p', modelId: 'm', displayName: 'Model', capabilities: {}
+        }, skills: []
+      },
+      pendingFieldChanges, revision: 1, digest: storyboardDigest(sequence, pendingFieldChanges), meta: {}
+    }
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 100)
+
+    expect(normalized.nodes[0]).toMatchObject({
+      kind: 'unsupported', originalKind: 'storyboard', originalNode
+    })
+    if (normalized.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported Storyboard')
+    expect(normalized.nodes[0].originalNode).toEqual(originalNode)
+    expect(Object.isFrozen(normalized.nodes[0].originalNode)).toBe(true)
+  })
+
   test.each([
     { label: 'empty document', blocks: [] },
     { label: 'empty bullet list', blocks: [{ id: 'empty-list', type: 'bulletList', items: [] }] },

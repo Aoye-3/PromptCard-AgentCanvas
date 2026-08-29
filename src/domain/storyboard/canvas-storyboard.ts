@@ -1,4 +1,8 @@
-import type { AgentStoryboardChangesEdit, AgentStoryboardCreateEdit } from '@/models/Agent.model'
+import type {
+  AgentStoryboardChangesEdit,
+  AgentStoryboardCreateEdit,
+  AgentStoryboardFieldChangeOperation
+} from '@/models/Agent.model'
 import type {
   IFreeCanvasPosition,
   IFreeCanvasStoryboardNode,
@@ -133,6 +137,95 @@ const storyboardSequenceTextBytes = (sequence: IStoryboardSequence): number => (
   )
 )
 
+export const isValidStoryboardChangeOperations = (
+  value: unknown,
+  sequence?: IStoryboardSequence
+): value is AgentStoryboardFieldChangeOperation[] => {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 32) return false
+  const rowIds = sequence ? new Set(sequence.rows.map(row => row.id)) : null
+  const identities = new Set<string>()
+  return value.every(operation => {
+    if (!isPlainRecord(operation) || !isWellFormedNfcText(operation.value)) return false
+    if (operation.scope === 'sequence') {
+      if (
+        !hasExactKeys(operation, ['scope', 'field', 'value'])
+        || !STORYBOARD_SEQUENCE_FIELDS.includes(operation.field as StoryboardSequenceField)
+      ) return false
+      const identity = `sequence:${String(operation.field)}`
+      if (identities.has(identity)) return false
+      identities.add(identity)
+      return true
+    }
+    if (operation.scope !== 'row' || !hasExactKeys(operation, ['scope', 'rowId', 'field', 'value'])) return false
+    if (
+      !isWellFormedNfcText(operation.rowId, true)
+      || !STORYBOARD_ROW_FIELDS.includes(operation.field as StoryboardRowField)
+      || (rowIds !== null && !rowIds.has(operation.rowId))
+    ) return false
+    const identity = `row:${operation.rowId}:${String(operation.field)}`
+    if (identities.has(identity)) return false
+    identities.add(identity)
+    return true
+  })
+}
+
+export const isValidStoryboardPendingFieldChanges = (
+  value: unknown,
+  sequence: IStoryboardSequence
+): value is StoryboardFieldChange[] => {
+  if (!Array.isArray(value) || value.length > 32) return false
+  try {
+    assertSequence(sequence)
+  } catch {
+    return false
+  }
+  const rows = new Map(sequence.rows.map(row => [row.id, row]))
+  const changeIds = new Set<string>()
+  const identities = new Set<string>()
+  const prospective = cloneSequence(sequence)
+  for (const change of value) {
+    if (!isPlainRecord(change) || (change.scope !== 'sequence' && change.scope !== 'row')) return false
+    const keys = [
+      'id', 'editId', 'scope', ...(change.scope === 'row' ? ['rowId'] : []),
+      'field', 'previousValue', 'newValue'
+    ]
+    if (
+      !hasExactKeys(change, keys)
+      || !isWellFormedNfcText(change.id, true) || changeIds.has(change.id)
+      || !isWellFormedNfcText(change.editId, true)
+      || !isWellFormedNfcText(change.previousValue)
+      || !isWellFormedNfcText(change.newValue)
+    ) return false
+    if (change.scope === 'sequence') {
+      if (!STORYBOARD_SEQUENCE_FIELDS.includes(change.field as StoryboardSequenceField)) return false
+      const field = change.field as StoryboardSequenceField
+      const identity = `sequence:${field}`
+      if (identities.has(identity) || change.previousValue !== sequence[field]) return false
+      prospective[field] = change.newValue
+      identities.add(identity)
+    } else {
+      if (
+        !isWellFormedNfcText(change.rowId, true)
+        || !STORYBOARD_ROW_FIELDS.includes(change.field as StoryboardRowField)
+      ) return false
+      const row = rows.get(change.rowId)
+      const prospectiveRow = prospective.rows.find(candidate => candidate.id === change.rowId)
+      const field = change.field as StoryboardRowField
+      const identity = `row:${change.rowId}:${field}`
+      if (!row || !prospectiveRow || identities.has(identity) || change.previousValue !== (row[field] || '')) return false
+      setRowField(prospectiveRow, field, change.newValue)
+      identities.add(identity)
+    }
+    changeIds.add(change.id)
+  }
+  try {
+    assertSequence(prospective)
+    return true
+  } catch {
+    return false
+  }
+}
+
 const assertSequence = (sequence: IStoryboardSequence) => {
   if (!sequence || !sequence.id || sequence.rows.length > 200) throw new Error('storyboard_sequence_invalid')
   const values = storyboardSequenceTextValues(sequence)
@@ -141,7 +234,7 @@ const assertSequence = (sequence: IStoryboardSequence) => {
     if (!row.id || rowIds.has(row.id)) throw new Error('storyboard_sequence_invalid')
     rowIds.add(row.id)
   })
-  if (values.some(value => typeof value !== 'string' || new TextEncoder().encode(value.normalize('NFC')).length > MAX_STORYBOARD_FIELD_BYTES)) {
+  if (values.some(value => !isWellFormedNfcText(value))) {
     throw new Error('storyboard_sequence_invalid')
   }
   if (storyboardSequenceTextBytes(sequence) > MAX_STORYBOARD_AGGREGATE_TEXT_BYTES) {
@@ -194,9 +287,12 @@ export const applyStoryboardChanges = (
     throw new Error('storyboard_edit_stale')
   }
   if (node.pendingFieldChanges.length) throw new Error('storyboard_review_pending')
+  if (!isValidStoryboardChangeOperations(edit.payload.changes, node.sequence)) {
+    throw new Error('storyboard_changes_invalid')
+  }
   const pendingFieldChanges = edit.payload.changes.map((change, index): StoryboardFieldChange => {
     const id = `sbf-${edit.editId}-${index}`
-    const newValue = normalizedFieldValue(change.value)
+    const newValue = change.value
     if (change.scope === 'sequence') {
       if (!STORYBOARD_SEQUENCE_FIELDS.includes(change.field)) throw new Error('storyboard_field_invalid')
       return { id, editId: edit.editId, scope: 'sequence', field: change.field, previousValue: node.sequence[change.field], newValue }
@@ -206,21 +302,7 @@ export const applyStoryboardChanges = (
     if (!row) throw new Error('storyboard_row_missing')
     return { id, editId: edit.editId, scope: 'row', rowId: row.id, field: change.field, previousValue: row[change.field] || '', newValue }
   })
-  if (!pendingFieldChanges.length || new Set(pendingFieldChanges.map(change => `${change.scope}:${change.scope === 'row' ? change.rowId : ''}:${change.field}`)).size !== pendingFieldChanges.length) {
-    throw new Error('storyboard_changes_invalid')
-  }
-  const prospectiveSequence = cloneSequence(node.sequence)
-  pendingFieldChanges.forEach(change => {
-    if (change.scope === 'sequence') prospectiveSequence[change.field] = change.newValue
-    else {
-      const row = prospectiveSequence.rows.find(candidate => candidate.id === change.rowId)
-      if (!row) throw new Error('storyboard_row_missing')
-      setRowField(row, change.field, change.newValue)
-    }
-  })
-  try {
-    assertSequence(prospectiveSequence)
-  } catch {
+  if (!isValidStoryboardPendingFieldChanges(pendingFieldChanges, node.sequence)) {
     throw new Error('storyboard_changes_invalid')
   }
   const resultDigest = storyboardDigest(node.sequence, pendingFieldChanges)
@@ -244,6 +326,9 @@ export const resolveStoryboardFieldChanges = (
   ids: readonly string[] | 'all',
   action: 'accept' | 'reject'
 ): IFreeCanvasStoryboardNode => {
+  if (!isValidStoryboardPendingFieldChanges(node.pendingFieldChanges, node.sequence)) {
+    throw new Error('storyboard_changes_invalid')
+  }
   const selected = ids === 'all' ? new Set(node.pendingFieldChanges.map(change => change.id)) : new Set(ids)
   if (!selected.size || [...selected].some(id => !node.pendingFieldChanges.some(change => change.id === id))) {
     throw new Error('storyboard_change_missing')
@@ -258,22 +343,13 @@ export const resolveStoryboardFieldChanges = (
         setRowField(row, change.field, change.newValue)
       }
     })
-    try {
-      assertSequence(sequence)
-    } catch {
-      throw new Error('storyboard_changes_invalid')
-    }
   }
   const pendingFieldChanges = node.pendingFieldChanges.filter(change => !selected.has(change.id))
+  if (!isValidStoryboardPendingFieldChanges(pendingFieldChanges, sequence)) {
+    throw new Error('storyboard_changes_invalid')
+  }
   const revision = (node.revision ?? 0) + 1
   return { ...node, sequence, pendingFieldChanges, revision, digest: storyboardDigest(sequence, pendingFieldChanges) }
-}
-
-const normalizedFieldValue = (value: string): string => {
-  if (typeof value !== 'string') throw new Error('storyboard_field_invalid')
-  const normalized = value.normalize('NFC')
-  if (new TextEncoder().encode(normalized).length > MAX_STORYBOARD_FIELD_BYTES) throw new Error('storyboard_field_invalid')
-  return normalized
 }
 
 const setRowField = (row: IStoryboardRow, field: StoryboardRowField, value: string) => {

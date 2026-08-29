@@ -30,6 +30,7 @@ import type { ImageRegion } from '@/domain/image-generation/image-generation'
 import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 import { createPlanningDocumentV1, parsePlanningDocumentV1 } from '@/domain/documents/planning-document'
 import {
+  isValidStoryboardPendingFieldChanges,
   isValidStoryboardSourceProvenance,
   MAX_STORYBOARD_AGGREGATE_TEXT_BYTES,
   storyboardDigest
@@ -1226,48 +1227,6 @@ const isValidStoryboardSequence = (value: unknown): value is IFreeCanvasStoryboa
   return validRows && aggregateTextBytes <= MAX_STORYBOARD_AGGREGATE_TEXT_BYTES
 }
 
-const isValidStoryboardPendingChanges = (
-  value: unknown,
-  sequence: IFreeCanvasStoryboardNode['sequence']
-): value is IFreeCanvasStoryboardNode['pendingFieldChanges'] => {
-  if (!Array.isArray(value) || value.length > 32) return false
-  const rowIds = new Set(sequence.rows.map(row => row.id))
-  const rows = new Map(sequence.rows.map(row => [row.id, row]))
-  const changeIds = new Set<string>()
-  const identities = new Set<string>()
-  let aggregateNewValueBytes = 0
-  const valid = value.every(change => {
-    if (!isPlainRecordValue(change) || (change.scope !== 'sequence' && change.scope !== 'row')) return false
-    const keys = ['id', 'editId', 'scope', ...(change.scope === 'row' ? ['rowId'] : []), 'field', 'previousValue', 'newValue']
-    if (
-      !hasExactRecordKeys(change, keys)
-      || !isValidStoryboardText(change.id) || !change.id || changeIds.has(change.id)
-      || !isValidStoryboardText(change.editId) || !change.editId
-      || !isValidStoryboardText(change.previousValue) || !isValidStoryboardText(change.newValue)
-    ) return false
-    const identity = change.scope === 'sequence'
-      ? `sequence:${String(change.field)}`
-      : `row:${String(change.rowId)}:${String(change.field)}`
-    if (
-      identities.has(identity)
-      || (change.scope === 'sequence' && !STORYBOARD_SEQUENCE_TEXT_FIELDS.includes(change.field as never))
-      || (change.scope === 'row' && (
-        !isValidStoryboardText(change.rowId) || !rowIds.has(change.rowId)
-        || !STORYBOARD_ROW_TEXT_FIELDS.includes(change.field as never)
-      ))
-    ) return false
-    const expectedPrevious = change.scope === 'sequence'
-      ? sequence[change.field as typeof STORYBOARD_SEQUENCE_TEXT_FIELDS[number]]
-      : rows.get(String(change.rowId))?.[change.field as typeof STORYBOARD_ROW_TEXT_FIELDS[number]]
-    if (change.previousValue !== expectedPrevious) return false
-    changeIds.add(change.id)
-    identities.add(identity)
-    aggregateNewValueBytes += new TextEncoder().encode(change.newValue).length
-    return true
-  })
-  return valid && aggregateNewValueBytes <= MAX_STORYBOARD_AGGREGATE_TEXT_BYTES
-}
-
 const isValidPersistedStoryboardNode = (
   node: Partial<IFreeCanvasStoryboardNode>
 ): node is IFreeCanvasStoryboardNode => {
@@ -1281,7 +1240,7 @@ const isValidPersistedStoryboardNode = (
     || typeof node.height !== 'number' || !Number.isFinite(node.height) || node.height <= 0
     || !isValidStoryboardSequence(node.sequence)
     || !isValidStoryboardSourceProvenance(node.source)
-    || !isValidStoryboardPendingChanges(node.pendingFieldChanges, node.sequence)
+    || !isValidStoryboardPendingFieldChanges(node.pendingFieldChanges, node.sequence)
     || (node.revision !== undefined && !isNonNegativeSafeInteger(node.revision))
     || (node.digest !== undefined && (typeof node.digest !== 'string' || !SHA256_DIGEST_PATTERN.test(node.digest)))
     || !isPlainRecordValue(node.meta)

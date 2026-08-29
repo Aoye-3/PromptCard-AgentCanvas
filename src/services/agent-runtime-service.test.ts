@@ -262,6 +262,27 @@ describe('agent runtime message contract', () => {
       .rejects.toThrow('Invalid agent canvas edits.')
   })
 
+  it.each([
+    ['33 operations', Array.from({ length: 33 }, (_, index) => ({
+      scope: 'row', rowId: `row-${index + 1}`, field: 'camera', value: 'close-up'
+    }))],
+    ['an operation extra key', [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up', browserTrusted: true }]],
+    ['an illegal scope/field pair', [{ scope: 'sequence', field: 'camera', value: 'close-up' }]],
+    ['a decomposed row id', [{ scope: 'row', rowId: 'Cafe\u0301', field: 'camera', value: 'close-up' }]],
+    ['a decomposed value', [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'Cafe\u0301' }]],
+    ['an unpaired surrogate', [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'bad\ud800' }]],
+    ['an oversized field value', [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'x'.repeat(10_001) }]]
+  ])('rejects enriched Storyboard changes with %s at service ingress', async (_label, changes) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-2', conversationId: 'conversation-2', text: 'ok', proposals: [],
+      canvasEdits: [storyboardChangesResponseEdit({ source: storyboardResponseSource(), changes })]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(agentRuntimeService.sendMessage({ content: 'Refine it', projectId: 'project-1' }))
+      .rejects.toThrow('Invalid agent canvas edits.')
+  })
+
   it('rejects a malformed enriched Document edit before it can be applied', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       threadId: 'thread-1', conversationId: 'conversation-1', requestId: 'request-1', text: 'ok', proposals: [],

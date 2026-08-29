@@ -14,7 +14,10 @@ import type {
   CanvasAgentNodeContext,
   PromptLibraryWriteProposal
 } from '@/models/Agent.model'
-import { isValidStoryboardSourceProvenance } from '@/domain/storyboard/canvas-storyboard'
+import {
+  isValidStoryboardChangeOperations,
+  isValidStoryboardSourceProvenance
+} from '@/domain/storyboard/canvas-storyboard'
 
 export type PromptLanguageMode = 'zh' | 'en' | 'mixed'
 
@@ -260,8 +263,9 @@ const isEnrichedDocumentEdit = (value: unknown): value is AgentCanvasEdit => {
     return hasOnlyKeys(value.base, ['projectRevision', 'nodeRevision', 'nodeDigest']) &&
       Number.isSafeInteger(value.base.projectRevision) && Number.isSafeInteger(value.base.nodeRevision) &&
       typeof value.base.nodeDigest === 'string' && SHA256_PATTERN.test(value.base.nodeDigest) &&
-      hasOnlyKeys(value.payload, ['changes', 'source']) && Array.isArray(value.payload.changes) &&
-      value.payload.changes.length > 0 && isValidStoryboardSourceProvenance(value.payload.source)
+      hasOnlyKeys(value.payload, ['changes', 'source']) &&
+      isValidStoryboardChangeOperations(value.payload.changes) &&
+      isValidStoryboardSourceProvenance(value.payload.source)
   }
   return false
 }
