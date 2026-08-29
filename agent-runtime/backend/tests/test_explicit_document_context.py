@@ -240,10 +240,12 @@ async def test_explicit_document_rejects_duplicate_ids_before_project_resolution
         raise AssertionError((method, path))
 
     monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    body = _body(["document-selected"])
+    body.explicit_document_node_ids = ["document-selected", "document-selected"]
 
     with pytest.raises(HTTPException) as error:
         await promptcard_runtime.runtime_service.send_message(
-            _body(["document-selected", "document-selected"]),
+            body,
             None,
         )
 
@@ -315,3 +317,209 @@ def test_explicit_document_request_rejects_invalid_identity_lists(node_ids):
             "projectId": "project-1",
             "explicitDocumentNodeIds": node_ids,
         })
+
+
+def test_explicit_document_request_rejects_duplicate_ids_during_model_validation():
+    with pytest.raises(ValidationError):
+        PromptCardRuntimeMessageRequest.model_validate({
+            "content": "Discuss it",
+            "projectId": "project-1",
+            "explicitDocumentNodeIds": ["document-1", "document-1"],
+        })
+
+
+@pytest.mark.anyio
+async def test_duplicate_explicit_document_without_conversation_has_no_side_effects(
+    monkeypatch,
+):
+    body = PromptCardRuntimeMessageRequest.model_validate({
+        "content": "Discuss it",
+        "projectId": "project-1",
+        "explicitDocumentNodeIds": ["document-1"],
+    })
+    body.explicit_document_node_ids = ["document-1", "document-1"]
+    monkeypatch.setattr(
+        promptcard_runtime,
+        "_storage_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("duplicate IDs must fail before conversation creation")
+        ),
+    )
+    monkeypatch.setattr(
+        promptcard_runtime,
+        "_resolve_skill_snapshots",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("duplicate IDs must fail before Skill resolution")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert error.value.detail == "explicit_document_node_ids_duplicate"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("revision", "accepted"),
+    [
+        (9_007_199_254_740_991, True),
+        (9_007_199_254_740_992, False),
+    ],
+    ids=["safe-max", "unsafe"],
+)
+async def test_explicit_document_requires_a_safe_revision(
+    monkeypatch,
+    revision,
+    accepted,
+):
+    project = _project([
+        _document_node("document-selected", _document("Safe revision", revision=revision))
+    ])
+    invoked: dict = {}
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path == "/api/agent-conversations/conversation-1":
+            return _conversation()
+        if method == "GET" and path == "/api/projects/project-1":
+            return project
+        if method == "POST" and path.endswith("/turns"):
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_invoke(payload):
+        invoked.update(payload)
+        return {
+            "threadId": "conversation-1",
+            "text": "ok",
+            "proposals": [],
+            "canvasEdits": [],
+            "diagnostics": {},
+        }
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_invoke_text_agent", fake_invoke)
+    _stub_model(monkeypatch)
+
+    if accepted:
+        await promptcard_runtime.runtime_service.send_message(
+            _body(["document-selected"]),
+            None,
+        )
+        assert f"revision={revision}" in invoked["content"]
+    else:
+        with pytest.raises(HTTPException) as error:
+            await promptcard_runtime.runtime_service.send_message(
+                _body(["document-selected"]),
+                None,
+            )
+        assert error.value.status_code == 409
+        assert error.value.detail == "document_integrity_failed"
+        assert invoked == {}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("left_size", "right_size", "accepted"),
+    [
+        (250_000, 250_000, True),
+        (250_000, 250_001, False),
+    ],
+    ids=["exactly-500000", "500001"],
+)
+async def test_explicit_document_aggregate_utf8_budget_across_documents(
+    monkeypatch,
+    left_size,
+    right_size,
+    accepted,
+):
+    project = _project([
+        _document_node("document-left", _document("a" * left_size)),
+        _document_node("document-right", _document("b" * right_size)),
+    ])
+    invoked = False
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path == "/api/agent-conversations/conversation-1":
+            return _conversation()
+        if method == "GET" and path == "/api/projects/project-1":
+            return project
+        if method == "POST" and path.endswith("/turns"):
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_invoke(_payload):
+        nonlocal invoked
+        invoked = True
+        return {
+            "threadId": "conversation-1",
+            "text": "ok",
+            "proposals": [],
+            "canvasEdits": [],
+            "diagnostics": {},
+        }
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_invoke_text_agent", fake_invoke)
+    _stub_model(monkeypatch)
+
+    if accepted:
+        await promptcard_runtime.runtime_service.send_message(
+            _body(["document-left", "document-right"]),
+            None,
+        )
+        assert invoked is True
+    else:
+        with pytest.raises(HTTPException) as error:
+            await promptcard_runtime.runtime_service.send_message(
+                _body(["document-left", "document-right"]),
+                None,
+            )
+        assert error.value.status_code == 413
+        assert error.value.detail == "document_context_too_large"
+        assert invoked is False
+
+
+@pytest.mark.anyio
+async def test_explicit_document_and_write_context_share_one_project_read(monkeypatch):
+    project = _project([
+        _document_node("document-selected", _document("Authoritative text"))
+    ])
+    project_reads = 0
+    invoked: dict = {}
+
+    async def fake_storage(method, path, **kwargs):
+        nonlocal project_reads
+        if method == "GET" and path == "/api/agent-conversations/conversation-1":
+            return _conversation()
+        if method == "GET" and path == "/api/projects/project-1":
+            project_reads += 1
+            return project
+        if method == "POST" and path.endswith("/turns"):
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_invoke(payload):
+        invoked.update(payload)
+        return {
+            "threadId": "conversation-1",
+            "text": "ok",
+            "proposals": [],
+            "canvasEdits": [],
+            "diagnostics": {},
+        }
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_invoke_text_agent", fake_invoke)
+    _stub_model(monkeypatch)
+    body = _body(["document-selected"])
+    body.document_write_context = {
+        "operationKind": "document_changes",
+        "nodeId": "document-selected",
+    }
+
+    await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert project_reads == 1
+    assert invoked["documentWriteContext"]["nodeId"] == "document-selected"
+    assert "Authoritative text" in invoked["content"]

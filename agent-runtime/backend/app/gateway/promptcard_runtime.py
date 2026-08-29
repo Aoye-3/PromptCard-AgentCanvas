@@ -181,7 +181,7 @@ class PromptCardRuntimeMessageRequest(BaseModel):
     @field_validator("explicit_document_node_ids")
     @classmethod
     def validate_explicit_document_node_ids(cls, value: list[str]) -> list[str]:
-        if any(
+        if len(value) != len(set(value)) or any(
             not isinstance(node_id, str)
             or _CANVAS_NODE_ID_PATTERN.fullmatch(node_id) is None
             for node_id in value
@@ -324,6 +324,13 @@ class PromptCardRuntimeService:
         body: PromptCardRuntimeMessageRequest,
         request: Request,
     ) -> dict[str, Any]:
+        if len(body.explicit_document_node_ids) != len(
+            set(body.explicit_document_node_ids)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="explicit_document_node_ids_duplicate",
+            )
         payload = body.model_dump(by_alias=True)
         payload.pop("documentResourceIds", None)
         payload.pop("explicitDocumentNodeIds", None)
@@ -411,13 +418,6 @@ class PromptCardRuntimeService:
         _validate_document_resource_ids(body.project_id, body.document_resource_ids)
         explicit_document_context: list[dict[str, Any]] = []
         if body.explicit_document_node_ids:
-            if len(set(body.explicit_document_node_ids)) != len(
-                body.explicit_document_node_ids
-            ):
-                raise HTTPException(
-                    status_code=422,
-                    detail="explicit_document_node_ids_duplicate",
-                )
             if interaction_mode != "chat-experimental" or not body.project_id:
                 raise HTTPException(
                     status_code=422,
@@ -2741,6 +2741,7 @@ def _normalize_persisted_document(value: Any) -> dict[str, Any] | None:
         or not isinstance(value.get("revision"), int)
         or isinstance(value.get("revision"), bool)
         or value["revision"] < 0
+        or value["revision"] > 9_007_199_254_740_991
         or not _valid_sha256_digest(value.get("digest"))
     ):
         return None
