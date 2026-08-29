@@ -28,6 +28,13 @@ test('fake Runtime fulfills the Agent startup contract', async ({ request }) => 
   const modelConfig = await request.get('/agent-api/promptcard/runtime/model-config')
   expect(modelConfig.status(), await modelConfig.text()).toBe(200)
   await expect(modelConfig.json()).resolves.toMatchObject({ enabled: false })
+
+  const reconciliation = await request.post(
+    '/agent-api/promptcard/runtime/projects/e2e-project/conversations/e2e-conversation/edits/reconcile',
+    { data: {} }
+  )
+  expect(reconciliation.status(), await reconciliation.text()).toBe(200)
+  await expect(reconciliation.json()).resolves.toEqual({ status: 'idle', canvasEdits: [] })
 })
 
 test('project image conversation uses real Runtime and SQLite while canvas continuation stays manual', async ({ page, request }) => {
@@ -59,7 +66,8 @@ test('project image conversation uses real Runtime and SQLite while canvas conti
   await page.getByRole('button', { name: '添加图片输入' }).click()
   await page.getByRole('button', { name: /注入已选节点/ }).click()
   const prompt = page.getByRole('textbox', { name: '图片描述' })
-  await expect(prompt).toHaveText('银色机械装置，干净产品摄影')
+  await expect(page.locator('[data-image-generation-text-reference="prompt-text"]')).toContainText('创作提示')
+  await expect(prompt).toHaveText('')
   await prompt.fill('第一轮：银色机械装置，电影感产品摄影')
   const firstGenerationResponse = page.waitForResponse(response => response.url().includes('/image-generations'))
   const placeholderNodeId = await observeRunningNodeWhileProviderPaused(page, request)
@@ -81,7 +89,7 @@ test('project image conversation uses real Runtime and SQLite while canvas conti
   expect(firstRuns.runs[0]).not.toHaveProperty('nodeId')
 
   await page.getByRole('button', { name: '再次生成' }).click()
-  await expect(prompt).toHaveText('第一轮：银色机械装置，电影感产品摄影')
+  await expect(prompt).toHaveText('第一轮：银色机械装置，电影感产品摄影\n银色机械装置，干净产品摄影')
   await prompt.fill('第二轮：只生成蓝色玻璃装置')
   const secondGenerationResponse = page.waitForResponse(response => response.url().includes('/image-generations'))
   await page.getByRole('button', { name: '生成图片', exact: true }).click()
@@ -92,7 +100,10 @@ test('project image conversation uses real Runtime and SQLite while canvas conti
 
   const provider = await runtimeJson(request, '/__test__/provider-requests')
   expect(provider.requests).toHaveLength(2)
-  expect(provider.requests[0].segments).toEqual([{ type: 'text', text: '第一轮：银色机械装置，电影感产品摄影' }])
+  expect(provider.requests[0].segments).toEqual([{
+    type: 'text',
+    text: '第一轮：银色机械装置，电影感产品摄影\n银色机械装置，干净产品摄影'
+  }])
   expect(provider.requests[1].segments).toEqual([{ type: 'text', text: '第二轮：只生成蓝色玻璃装置' }])
   expect(JSON.stringify(provider.requests[1])).not.toContain('第一轮')
 

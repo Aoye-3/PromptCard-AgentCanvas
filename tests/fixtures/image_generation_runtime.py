@@ -267,6 +267,13 @@ def runtime_model_config() -> dict[str, Any]:
     }
 
 
+@app.post(
+    "/api/promptcard/runtime/projects/{project_id}/conversations/{conversation_id}/edits/reconcile"
+)
+def reconcile_document_edits() -> dict[str, Any]:
+    return {"status": "idle", "canvasEdits": []}
+
+
 @app.get("/api/promptcard/runtime/model-catalog")
 def model_catalog() -> dict[str, Any]:
     return {
