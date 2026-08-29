@@ -411,6 +411,44 @@ describe('DocumentNode', () => {
     expect(expanded.props['data-document-digest']).not.toBe(node().document.digest)
   })
 
+  it('does not persist an expanded editor prop-sync update when only its revision changed', async () => {
+    const onDocumentChange = vi.fn().mockResolvedValue(true)
+    const Wrapper = () => {
+      const [current, setCurrent] = useState(node())
+      return (
+        <DocumentNode
+          node={current}
+          selected
+          onDocumentChange={async document => {
+            onDocumentChange(document)
+            setCurrent(value => ({ ...value, document }))
+            return true
+          }}
+          onDelete={vi.fn()}
+        />
+      )
+    }
+    const renderer = create(<Wrapper />)
+    act(() => renderer.root.findByProps({ 'aria-label': '展开编辑器' }).props.onClick())
+    const edited = createPlanningDocumentV1([
+      { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Expanded canonical draft' }] }
+    ], 1)
+
+    await act(async () => {
+      renderer.root.findByProps({ 'data-mock-document-editor': 'expanded' }).props['data-on-test-change'](edited)
+      await Promise.resolve()
+    })
+    const propSyncUpdate = createPlanningDocumentV1(edited.blocks, edited.revision + 1)
+    await act(async () => {
+      renderer.root.findByProps({ 'data-mock-document-editor': 'expanded' }).props['data-on-test-change'](propSyncUpdate)
+      await Promise.resolve()
+    })
+
+    expect(onDocumentChange).toHaveBeenCalledTimes(1)
+    expect(onDocumentChange).toHaveBeenCalledWith(edited)
+    expect(renderer.root.findAllByProps({ role: 'status' })).toHaveLength(0)
+  })
+
   it('shows Retry after persistence failure and retries the same canonical document', async () => {
     const onDocumentChange = vi.fn()
       .mockResolvedValueOnce(false)

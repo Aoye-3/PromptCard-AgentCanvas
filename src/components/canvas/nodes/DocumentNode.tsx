@@ -141,6 +141,7 @@ export const DocumentNode = ({ node, selected, locked = false, onDocumentChange,
   const commitEditorChange = (document: PlanningDocumentV1) => {
     if (locked) return
     if (draftDocument.suggestions.length > 0 || document.suggestions.length > 0) return
+    if (document.digest === draftDocument.digest) return
     const revision = Math.max(document.revision, revisionClockRef.current + 1)
     const nextDocument = revision === document.revision
       ? document
