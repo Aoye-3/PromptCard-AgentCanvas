@@ -4392,7 +4392,7 @@ const FreeCanvasNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
           <button
             type="button"
             aria-label={`从文档 ${node.title} 创建分镜表`}
-            className="nodrag absolute right-[7.75rem] top-2 rounded-md border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-sky-700 shadow-sm hover:bg-sky-50"
+            className="nodrag absolute right-36 top-2 rounded-md border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-sky-700 shadow-sm hover:bg-sky-50"
             onClick={() => data.onDocumentToStoryboard(node.id)}
           >
             从文档创建分镜表

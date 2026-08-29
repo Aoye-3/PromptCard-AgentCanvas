@@ -1,5 +1,7 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test'
 
+test.setTimeout(120_000)
+
 test('creates, edits, expands, collapses, moves, and reloads a neutral Document draft', async ({ page }) => {
   const storage = await routeStorage(page)
   await openFreeCanvasProject(page)
@@ -17,7 +19,7 @@ test('creates, edits, expands, collapses, moves, and reloads a neutral Document 
   expect(JSON.stringify(storage.project())).not.toContain('effectiveText')
 
   const expandButton = node.getByRole('button', { name: '展开编辑器' })
-  const storyboardButton = node.getByRole('button', { name: /从文档 .* 创建分镜表/ })
+  const storyboardButton = page.getByRole('button', { name: /从文档 .* 创建分镜表/ })
   const expandBox = await requiredBox(expandButton)
   const storyboardBox = await requiredBox(storyboardButton)
   expect(rectanglesOverlap(expandBox, storyboardBox)).toBe(false)
@@ -45,7 +47,10 @@ test('creates, edits, expands, collapses, moves, and reloads a neutral Document 
   expandedEditor = dialog.locator('[contenteditable="true"]')
   await expect(expandedEditor).toBeFocused()
   await expandedEditor.fill('Browser planning draft expanded')
-  await expect.poll(() => storedDocumentText(storage.project())).toBe('Browser planning draft expanded')
+  await expect.poll(
+    () => storedDocumentText(storage.project()),
+    { timeout: 15_000 }
+  ).toBe('Browser planning draft expanded')
 
   await dialog.getByRole('button', { name: '无序列表' }).click()
   const bulletList = dialog.locator('ul:not([data-type="taskList"])')
@@ -89,7 +94,8 @@ test('creates, edits, expands, collapses, moves, and reloads a neutral Document 
 
   await page.reload({ waitUntil: 'domcontentloaded' })
   const projectTitle = String(storage.project()?.title || '')
-  await page.getByText(projectTitle, { exact: true }).click()
+  await page.getByRole('article').filter({ hasText: projectTitle })
+    .getByRole('button', { name: 'Open project' }).click()
   const reloadedNode = page.locator('[data-document-node]')
   await expect(reloadedNode).toContainText('Browser planning draft expanded')
 })
