@@ -46,6 +46,31 @@ export type DocumentWriteContext =
     baseDigest: string
     sequence: Record<string, unknown>
   }
+  | PromptHandoffContext
+
+export type PromptHandoffBasis =
+  | {
+    kind: 'document-selection'
+    nodeId: string
+    documentRevision: number
+    documentDigest: string
+    blockId: string
+    utf8Start: number
+    utf8End: number
+    selectedText: string
+    selectedTextDigest: string
+  }
+  | {
+    kind: 'storyboard-shot'
+    nodeId: string
+    storyboardRevision: number
+    storyboardDigest: string
+    rowId: string
+    shotDigest: string
+    shotText: string
+  }
+
+export type PromptHandoffContext = { operationKind: 'prompt_handoff'; basis: PromptHandoffBasis }
 
 export interface PromptLibraryItem {
   id?: string
@@ -125,6 +150,7 @@ export interface InvocationPolicy {
   canSearchPromptLibrary: boolean
   canvasSegments: Array<{ id: string; text: string }>
   documentWriteContext: DocumentWriteContext | null
+  promptHandoffContext: PromptHandoffContext | null
 }
 
 export function buildInvocation(input: InvocationInput) {
@@ -142,6 +168,9 @@ export function buildInvocation(input: InvocationInput) {
   const documentWriteContext = isExperimentalChat
     && input.permissionScope === 'workspace-chatbot-agent'
     ? normalizeDocumentWriteContext(input.documentWriteContext)
+    : null
+  const promptHandoffContext = documentWriteContext?.operationKind === 'prompt_handoff'
+    ? documentWriteContext
     : null
   const selectedTextNodeId = isExperimentalChat
     ? null
@@ -173,8 +202,10 @@ export function buildInvocation(input: InvocationInput) {
   let allowedProposalKinds: string[] = []
   let allowedCanvasEditKinds: string[] = []
   if (isExperimentalChat) {
-    allowedProposalKinds = []
-    allowedCanvasEditKinds = documentWriteContext ? [documentWriteContext.operationKind] : []
+    allowedProposalKinds = promptHandoffContext ? ['free_canvas_text_create'] : []
+    allowedCanvasEditKinds = documentWriteContext && documentWriteContext.operationKind !== 'prompt_handoff'
+      ? [documentWriteContext.operationKind]
+      : []
   } else if (input.permissionScope === 'prompt-library-agent') {
     allowedProposalKinds = ['prompt_library_write_proposal']
   } else if (input.permissionScope === 'workspace-chatbot-agent') {
@@ -225,13 +256,55 @@ export function buildInvocation(input: InvocationInput) {
       canvasSelection,
       canSearchPromptLibrary,
       canvasSegments,
-      documentWriteContext
+      documentWriteContext,
+      promptHandoffContext
     } satisfies InvocationPolicy
   }
 }
 
 function normalizeDocumentWriteContext(value: unknown): DocumentWriteContext | null {
   if (!isRecord(value)) return null
+  if (value.operationKind === 'prompt_handoff') {
+    if (!hasExactKeys(value, ['operationKind', 'basis']) || !isRecord(value.basis)) return null
+    const basis = value.basis
+    if (basis.kind === 'document-selection') {
+      if (!hasExactKeys(basis, [
+        'kind', 'nodeId', 'documentRevision', 'documentDigest', 'blockId',
+        'utf8Start', 'utf8End', 'selectedText', 'selectedTextDigest'
+      ])
+        || !isBoundIdentity(basis.nodeId) || !isBoundIdentity(basis.blockId)
+        || !Number.isSafeInteger(basis.documentRevision) || Number(basis.documentRevision) < 0
+        || !isSha256Digest(basis.documentDigest) || !isSha256Digest(basis.selectedTextDigest)
+        || !Number.isSafeInteger(basis.utf8Start) || !Number.isSafeInteger(basis.utf8End)
+        || Number(basis.utf8Start) < 0 || Number(basis.utf8End) <= Number(basis.utf8Start)
+        || typeof basis.selectedText !== 'string' || !basis.selectedText
+        || !isWellFormed(basis.selectedText) || basis.selectedText !== basis.selectedText.normalize('NFC')
+        || new TextEncoder().encode(basis.selectedText).length > MAX_DOCUMENT_CONTEXT_BYTES) return null
+      return { operationKind: 'prompt_handoff', basis: {
+        kind: 'document-selection', nodeId: basis.nodeId,
+        documentRevision: Number(basis.documentRevision), documentDigest: basis.documentDigest,
+        blockId: basis.blockId, utf8Start: Number(basis.utf8Start), utf8End: Number(basis.utf8End),
+        selectedText: basis.selectedText, selectedTextDigest: basis.selectedTextDigest
+      } }
+    }
+    if (basis.kind === 'storyboard-shot') {
+      if (!hasExactKeys(basis, [
+        'kind', 'nodeId', 'storyboardRevision', 'storyboardDigest', 'rowId', 'shotDigest', 'shotText'
+      ])
+        || !isBoundIdentity(basis.nodeId) || !isBoundIdentity(basis.rowId)
+        || !Number.isSafeInteger(basis.storyboardRevision) || Number(basis.storyboardRevision) < 0
+        || !isSha256Digest(basis.storyboardDigest) || !isSha256Digest(basis.shotDigest)
+        || typeof basis.shotText !== 'string' || !basis.shotText
+        || !isWellFormed(basis.shotText) || basis.shotText !== basis.shotText.normalize('NFC')
+        || new TextEncoder().encode(basis.shotText).length > MAX_DOCUMENT_CONTEXT_BYTES) return null
+      return { operationKind: 'prompt_handoff', basis: {
+        kind: 'storyboard-shot', nodeId: basis.nodeId,
+        storyboardRevision: Number(basis.storyboardRevision), storyboardDigest: basis.storyboardDigest,
+        rowId: basis.rowId, shotDigest: basis.shotDigest, shotText: basis.shotText
+      } }
+    }
+    return null
+  }
   if (value.operationKind === 'document_create') {
     if (!hasExactKeys(value, ['operationKind', 'linkedDocumentResourceIds'])) return null
     if (!Array.isArray(value.linkedDocumentResourceIds) || value.linkedDocumentResourceIds.length > 5) return null
@@ -338,6 +411,10 @@ function isBoundDigest(value: unknown): value is string {
     && value.length > 0
     && value.length <= 192
     && isWellFormed(value)
+}
+
+function isSha256Digest(value: unknown): value is string {
+  return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value)
 }
 
 function isWellFormed(value: string): boolean {

@@ -30,9 +30,10 @@ describe('StoryboardNode', () => {
   })
 
   it('disables review controls while saved-edit reconciliation owns the node', () => {
-    const renderer = create(<StoryboardNode node={node} selected={false} locked onResolve={vi.fn()} />)
+    const renderer = create(<StoryboardNode node={node} selected={false} locked onResolve={vi.fn()} onPromptHandoff={vi.fn()} />)
 
     expect(renderer.root.findByProps({ 'aria-label': '接受 camera 修改' }).props.disabled).toBe(true)
     expect(renderer.root.findByProps({ 'aria-label': '拒绝全部分镜修改' }).props.disabled).toBe(true)
+    expect(renderer.root.findByProps({ 'aria-label': '镜头转为 Prompt 提案' }).props.disabled).toBe(true)
   })
 })

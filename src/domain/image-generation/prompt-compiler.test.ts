@@ -217,6 +217,14 @@ describe('compileImageGeneratorPrompt', () => {
         linkedDocumentResourceIds: [], meta: {}
       },
       {
+        id: 'storyboard', kind: 'storyboard', title: 'Shots', position: { x: 0, y: 0 }, width: 640, height: 480,
+        sequence: { id: 'sequence', name: 'PRIVATE STORYBOARD BODY', description: '', style: '', constraints: '', rows: [], createdAt: 1, updatedAt: 1, meta: {} },
+        source: {
+          documentNodeId: 'document', documentRevision: 1, documentDigest: 'digest', documentResourceDigests: [],
+          model: { connectionId: 'c', providerId: 'p', modelId: 'm', displayName: 'Model', capabilities: {} }, skills: []
+        }, pendingFieldChanges: [], meta: {}
+      },
+      {
         id: 'unknown', kind: 'unsupported', originalKind: 'future-layout', title: 'Future',
         position: { x: 0, y: 0 }, width: 360, height: 220,
         originalNode: { id: 'unknown', kind: 'future-layout', assetId: 'private-asset' }, meta: {}
@@ -224,9 +232,10 @@ describe('compileImageGeneratorPrompt', () => {
     ]
     const project = projectWith([generatorNode(), ...isolatedNodes], [
       { id: 'document-prompt', source: 'document', target: 'generator-1', targetHandle: 'prompt', createdAt: 1 },
+      { id: 'storyboard-prompt', source: 'storyboard', target: 'generator-1', targetHandle: 'prompt', createdAt: 2 },
       {
         id: 'unknown-image', source: 'unknown', target: 'generator-1', targetHandle: 'reference-image',
-        referenceId: 'unknown-reference', createdAt: 2
+        referenceId: 'unknown-reference', createdAt: 3
       }
     ])
 
@@ -239,7 +248,17 @@ describe('compileImageGeneratorPrompt', () => {
       code: 'unresolved_reference', referenceId: 'unknown-reference', edgeId: 'unknown-image'
     })
     expect(JSON.stringify(result)).not.toContain('PRIVATE DOCUMENT BODY')
+    expect(JSON.stringify(result)).not.toContain('PRIVATE STORYBOARD BODY')
     expect(JSON.stringify(result)).not.toContain('private-asset')
+
+    const storyboardOnly = compileImageGeneratorPrompt(projectWith(
+      [generatorNode(), isolatedNodes[1]],
+      [{ id: 'storyboard-only-prompt', source: 'storyboard', target: 'generator-1', targetHandle: 'prompt', createdAt: 1 }]
+    ), 'generator-1')
+    expect(storyboardOnly.validationErrors).toContainEqual({
+      code: 'connected_prompt_unresolved', edgeId: 'storyboard-only-prompt'
+    })
+    expect(JSON.stringify(storyboardOnly)).not.toContain('PRIVATE STORYBOARD BODY')
   })
 
   it('lists only connected source/reference images with stable reference and asset identities', () => {

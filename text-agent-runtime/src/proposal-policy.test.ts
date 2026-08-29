@@ -2,6 +2,72 @@ import { describe, expect, it } from 'vitest'
 import { buildInvocation } from './proposal-policy.ts'
 
 describe('pi text-agent invocation boundary', () => {
+  it('exposes one pending Prompt handoff proposal only for an explicit experimental Document selection', () => {
+    const basis = {
+      kind: 'document-selection' as const,
+      nodeId: 'document-1', documentRevision: 4,
+      documentDigest: `sha256:${'a'.repeat(64)}`, blockId: 'paragraph-1',
+      utf8Start: 0, utf8End: 5, selectedText: 'Café',
+      selectedTextDigest: `sha256:${'b'.repeat(64)}`
+    }
+    const explicit = buildInvocation({
+      content: '生成 Prompt 提案', permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [],
+      documentWriteContext: { operationKind: 'prompt_handoff', basis }
+    })
+    expect(explicit.policy.allowedProposalKinds).toEqual(['free_canvas_text_create'])
+    expect(explicit.policy.allowedCanvasEditKinds).toEqual([])
+    expect(explicit.policy.promptHandoffContext).toEqual({ operationKind: 'prompt_handoff', basis })
+
+    const implicit = buildInvocation({
+      content: '生成 Prompt', permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: []
+    })
+    expect(implicit.policy.allowedProposalKinds).toEqual([])
+  })
+
+  it('rejects non-NFC, cross-block, and oversized Prompt handoff contexts', () => {
+    const base = {
+      operationKind: 'prompt_handoff' as const,
+      basis: {
+        kind: 'document-selection' as const,
+        nodeId: 'document-1', documentRevision: 1,
+        documentDigest: `sha256:${'a'.repeat(64)}`, blockId: 'block-1',
+        utf8Start: 0, utf8End: 2, selectedText: 'e\u0301',
+        selectedTextDigest: `sha256:${'b'.repeat(64)}`
+      }
+    }
+    for (const context of [
+      base,
+      { ...base, basis: { ...base.basis, endBlockId: 'block-2' } },
+      { ...base, basis: { ...base.basis, selectedText: 'x'.repeat(100_001), utf8End: 100_001 } }
+    ]) {
+      const invocation = buildInvocation({
+        content: 'handoff', permissionScope: 'workspace-chatbot-agent',
+        interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [],
+        documentWriteContext: context as never
+      })
+      expect(invocation.policy.allowedProposalKinds).toEqual([])
+      expect(invocation.policy.promptHandoffContext).toBeNull()
+    }
+  })
+
+  it('rejects Prompt handoff digests that only imitate the sha256 prefix', () => {
+    const invocation = buildInvocation({
+      content: 'handoff', permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'prompt_handoff',
+        basis: {
+          kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 1,
+          storyboardDigest: 'sha256:not-a-digest', rowId: 'shot-1',
+          shotDigest: `sha256:${'b'.repeat(64)}`, shotText: '{"id":"shot-1"}'
+        }
+      }
+    })
+    expect(invocation.policy.allowedProposalKinds).toEqual([])
+    expect(invocation.policy.promptHandoffContext).toBeNull()
+  })
   it('exposes storyboard creation only for an explicit authoritative transform context', () => {
     const invocation = buildInvocation({
       content: '从文档创建分镜表', permissionScope: 'workspace-chatbot-agent', interactionMode: 'chat-experimental',

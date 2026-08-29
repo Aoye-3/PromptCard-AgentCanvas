@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { applyDocumentChangeOperations } from '@/domain/documents/document-suggestions'
 import { createPlanningDocumentV1, planningDocumentEffectiveText, sha256Utf8 } from '@/domain/documents/planning-document'
 import { storyboardDigest } from '@/domain/storyboard/canvas-storyboard'
-import type { AgentCanvasEdit } from '@/models/Agent.model'
+import type { AgentCanvasEdit, AgentPromptHandoffBasis, AgentWorkspaceProposal } from '@/models/Agent.model'
 import type { IFreeCanvasDocumentNode, IFreeCanvasImageNode, IFreeCanvasProject, IFreeCanvasStoryboardNode, IFreeCanvasTextNode, IPromptProject, IStoryboardSequence, PlanningDocumentV1, StoryboardSourceProvenance } from '@/models/PromptHistory.model'
 
 const windowListeners = new Map<string, Set<(event: KeyboardEvent) => void>>()
@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   acknowledgeDocumentEdit: vi.fn(),
   reconcileDocumentEdits: vi.fn(),
   agentCanvasEdit: null as AgentCanvasEdit | null,
+  agentProposal: null as AgentWorkspaceProposal | null,
   applyResults: [] as Array<boolean | void>
 }))
 
@@ -118,12 +119,13 @@ vi.mock('@xyflow/react', () => {
 
 vi.mock('@/components/canvas/nodes/DocumentNode', async importOriginal => {
   const original = await importOriginal<typeof import('@/components/canvas/nodes/DocumentNode')>()
-  const MockDocumentNode = ({ node, locked, onDocumentChange, onCollapsedChange, onDelete }: {
+  const MockDocumentNode = ({ node, locked, onDocumentChange, onCollapsedChange, onDelete, onPromptHandoff }: {
     node: IFreeCanvasDocumentNode
     locked?: boolean
     onDocumentChange: (document: PlanningDocumentV1) => Promise<boolean> | boolean
     onCollapsedChange?: (collapsed: boolean) => Promise<boolean> | boolean
     onDelete: () => void
+    onPromptHandoff?: (basis: Extract<AgentPromptHandoffBasis, { kind: 'document-selection' }>) => void
   }) => (
     <div
       data-screen-document-node={node.id}
@@ -150,6 +152,12 @@ vi.mock('@/components/canvas/nodes/DocumentNode', async importOriginal => {
       ))}
       <button type="button" aria-label="测试折叠文档" onClick={() => onCollapsedChange?.(true)}>Collapse</button>
       <button type="button" aria-label="测试删除文档" onClick={onDelete}>Delete</button>
+      <button type="button" aria-label="选中文本转为 Prompt 提案" onClick={() => onPromptHandoff?.({
+        kind: 'document-selection', nodeId: node.id, documentRevision: node.document.revision,
+        documentDigest: node.document.digest, blockId: `${node.id}-paragraph`,
+        utf8Start: 0, utf8End: 6, selectedText: 'Before',
+        selectedTextDigest: `sha256:${sha256Utf8('Before')}`
+      })}>Handoff</button>
     </div>
   )
   return {
@@ -162,8 +170,9 @@ vi.mock('@/components/canvas/nodes/DocumentNode', async importOriginal => {
 })
 
 vi.mock('@/components/AgentCollaborationPanel', () => ({
-  AIChatbotBox: ({ onApplyCanvasEdit, onDocumentReconcileStateChange, draftRequest }: {
+  AIChatbotBox: ({ onApplyCanvasEdit, onApplyWorkspaceProposal, onDocumentReconcileStateChange, draftRequest }: {
     onApplyCanvasEdit?: (edit: AgentCanvasEdit) => Promise<boolean | void> | boolean | void
+    onApplyWorkspaceProposal?: (proposal: AgentWorkspaceProposal) => Promise<boolean | void> | boolean | void
     onDocumentReconcileStateChange?: (state: {
       projectId: string
       conversationId: string
@@ -171,12 +180,14 @@ vi.mock('@/components/AgentCollaborationPanel', () => ({
       pending: boolean
       nodeId?: string
     }) => Promise<void> | void
-    draftRequest?: { documentWriteContext?: { operationKind: string; documentNodeId?: string; nodeId?: string } }
+    draftRequest?: { documentWriteContext?: { operationKind: string; documentNodeId?: string; nodeId?: string; basis?: AgentPromptHandoffBasis } }
   }) => (
     <div
       data-agent-draft-operation={draftRequest?.documentWriteContext?.operationKind}
       data-agent-draft-document={draftRequest?.documentWriteContext?.documentNodeId}
       data-agent-draft-node={draftRequest?.documentWriteContext?.nodeId}
+      data-agent-draft-basis-kind={draftRequest?.documentWriteContext?.basis?.kind}
+      data-agent-draft-basis-row={draftRequest?.documentWriteContext?.basis?.kind === 'storyboard-shot' ? draftRequest.documentWriteContext.basis.rowId : undefined}
     >
       <button
         type="button"
@@ -218,6 +229,15 @@ vi.mock('@/components/AgentCollaborationPanel', () => ({
             mocks.applyResults.push(await onApplyCanvasEdit?.(mocks.agentCanvasEdit as AgentCanvasEdit))
           }}
         >Apply agent Document edit</button>
+      )}
+      {mocks.agentProposal && (
+        <button
+          type="button"
+          aria-label="测试应用 Prompt handoff 提案"
+          onClick={async () => {
+            mocks.applyResults.push(await onApplyWorkspaceProposal?.(mocks.agentProposal as AgentWorkspaceProposal))
+          }}
+        >Apply Prompt handoff proposal</button>
       )}
     </div>
   )
@@ -423,6 +443,7 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     vi.clearAllMocks()
     mocks.useRealDocumentNode = false
     mocks.agentCanvasEdit = null
+    mocks.agentProposal = null
     mocks.applyResults = []
     windowListeners.clear()
     vi.stubGlobal('window', {
@@ -519,6 +540,75 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
 
     expect(renderer.root.findByProps({ 'data-agent-draft-operation': 'storyboard_create' }).props)
       .toMatchObject({ 'data-agent-draft-document': 'document-1' })
+  })
+
+  it('binds an explicit current Document selection to a one-shot Prompt handoff draft', () => {
+    const canvas = initialCanvas()
+    const renderer = create(
+      <FreeCanvasBuilderScreen
+        activeProject={project(canvas)} freeCanvas={canvas}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={vi.fn()} onPersistCanvas={vi.fn().mockResolvedValue(true)}
+      />
+    )
+    act(() => renderer.root.findByProps({ 'aria-label': '选中文本转为 Prompt 提案' }).props.onClick())
+    expect(renderer.root.findByProps({ 'data-agent-draft-operation': 'prompt_handoff' }).props)
+      .toMatchObject({ 'data-agent-draft-basis-kind': 'document-selection' })
+  })
+
+  it('approves a fresh Document handoff as a new all-user Prompt node without rewriting its source', async () => {
+    const canvas = initialCanvas()
+    const source = canvas.nodes[0] as IFreeCanvasDocumentNode
+    const basis: AgentPromptHandoffBasis = {
+      kind: 'document-selection', nodeId: source.id, documentRevision: source.document.revision,
+      documentDigest: source.document.digest, blockId: `${source.id}-paragraph`,
+      utf8Start: 0, utf8End: 6, selectedText: 'Before',
+      selectedTextDigest: `sha256:${sha256Utf8('Before')}`
+    }
+    mocks.agentProposal = {
+      kind: 'free_canvas_text_create', id: 'prompt-handoff-1', status: 'pending',
+      agentName: 'PromptCard Agent', title: 'Prompt proposal', userText: 'Cinematic portrait',
+      handoffBasis: basis, rationale: 'Explicit handoff', createdAt: 1
+    }
+    const onChange = vi.fn()
+    const renderer = create(
+      <FreeCanvasBuilderScreen
+        activeProject={project(canvas)} freeCanvas={canvas}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={onChange} onPersistCanvas={vi.fn().mockResolvedValue(true)}
+      />
+    )
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick()
+    })
+
+    const updated = onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] as IFreeCanvasProject
+    expect(updated.nodes.filter(node => node.kind === 'document')).toEqual([source])
+    const created = updated.nodes.find(node => node.kind === 'text') as IFreeCanvasTextNode
+    expect(created).toMatchObject({ kind: 'text', title: 'Prompt proposal' })
+    expect(created.segments).toEqual([
+      expect.objectContaining({ source: 'user', text: 'Cinematic portrait' })
+    ])
+    expect(created.meta).not.toHaveProperty('provenance.sourceNodeId')
+    expect(mocks.applyResults).toEqual([true])
+  })
+
+  it('binds one explicit current Storyboard row to a one-shot Prompt handoff draft', () => {
+    const storyboard = pendingStoryboardNode()
+    storyboard.pendingFieldChanges = []
+    storyboard.digest = storyboardDigest(storyboard.sequence, [])
+    const canvas = { ...initialCanvas(), nodes: [storyboard] }
+    const renderer = create(
+      <FreeCanvasBuilderScreen
+        activeProject={project(canvas)} freeCanvas={canvas}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={vi.fn()} onPersistCanvas={vi.fn().mockResolvedValue(true)}
+      />
+    )
+    act(() => renderer.root.findByProps({ children: '镜头转为 Prompt 提案' }).props.onClick())
+    expect(renderer.root.findByProps({ 'data-agent-draft-operation': 'prompt_handoff' }).props)
+      .toMatchObject({ 'data-agent-draft-basis-kind': 'storyboard-shot', 'data-agent-draft-basis-row': 'row-1' })
   })
 
   it('uses the production Storyboard revision action to request and directly apply storyboard_changes', async () => {

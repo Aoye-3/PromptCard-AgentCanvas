@@ -101,7 +101,8 @@ import {
 import { markCanvasNodeReferencePending } from '@/domain/reference-codes/canvas-node-reference-lifecycle'
 import { applyDocumentChangeOperations } from '@/domain/documents/document-suggestions'
 import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
-import { applyStoryboardChanges, createStoryboardNode, resolveStoryboardFieldChanges, storyboardDigest } from '@/domain/storyboard/canvas-storyboard'
+import { matchesDocumentPromptHandoffBasis } from '@/domain/documents/prompt-handoff-selection'
+import { applyStoryboardChanges, createStoryboardNode, resolveStoryboardFieldChanges, storyboardDigest, storyboardShotDigest } from '@/domain/storyboard/canvas-storyboard'
 import {
   resolveImageNodeCommands,
   type ImageNodeCommandId,
@@ -178,7 +179,7 @@ import {
   type ImageGenerationRun,
   type ProjectResource
 } from '@/storage/storage-service-client'
-import type { AgentCanvasEdit, AgentWorkspaceProposal, CanvasAgentSelection } from '@/models/Agent.model'
+import type { AgentCanvasEdit, AgentPromptHandoffBasis, AgentWorkspaceProposal, CanvasAgentSelection } from '@/models/Agent.model'
 import type { IPreset } from '@/models/Card.model'
 import type { FreeCanvasImageAnnotationKind, IFreeCanvasImageAnnotation, IFreeCanvasImageGeneratorNode, IFreeCanvasImageNode, IFreeCanvasNode, IFreeCanvasProject, IFreeCanvasTextNode, IPromptProject, PlanningDocumentV1 } from '@/models/PromptHistory.model'
 
@@ -209,8 +210,10 @@ type FreeCanvasFlowNodeData = {
   onDocumentCollapsedChange: (nodeId: string, collapsed: boolean) => Promise<boolean>
   onDocumentDelete: (nodeId: string) => void
   onDocumentToStoryboard: (nodeId: string) => void
+  onDocumentPromptHandoff: (basis: Extract<AgentPromptHandoffBasis, { kind: 'document-selection' }>) => void
   onStoryboardResolve: (nodeId: string, ids: readonly string[] | 'all', action: 'accept' | 'reject') => void
   onStoryboardRevise: (nodeId: string) => void
+  onStoryboardPromptHandoff: (nodeId: string, rowId: string) => void
   documentLocked: boolean
   storyboardLocked: boolean
   onImageResize: (nodeId: string, frame: { position?: { x: number; y: number }; width: number; height: number }) => void
@@ -2289,6 +2292,35 @@ const FreeCanvasBuilderInner = ({
     })
   }, [])
 
+  const requestDocumentPromptHandoff = useCallback((basis: Extract<AgentPromptHandoffBasis, { kind: 'document-selection' }>) => {
+    const node = freeCanvasRef.current.nodes.find(candidate => candidate.id === basis.nodeId)
+    if (!node || node.kind !== 'document' || !matchesDocumentPromptHandoffBasis(node.document, basis)) return
+    setRightPanelMode('agent')
+    setAgentDraftRequest({
+      id: `prompt-handoff-document:${basis.nodeId}:${Date.now()}`,
+      content: `请将选中的文档文字整理为一个新的 Prompt 提案：${basis.selectedText}`,
+      documentWriteContext: { operationKind: 'prompt_handoff', basis }
+    })
+  }, [])
+
+  const requestStoryboardPromptHandoff = useCallback((nodeId: string, rowId: string) => {
+    const node = freeCanvasRef.current.nodes.find(candidate => candidate.id === nodeId)
+    if (!node || node.kind !== 'storyboard' || node.pendingFieldChanges.length > 0) return
+    const row = node.sequence.rows.find(candidate => candidate.id === rowId)
+    if (!row) return
+    const basis: Extract<AgentPromptHandoffBasis, { kind: 'storyboard-shot' }> = {
+      kind: 'storyboard-shot', nodeId, storyboardRevision: node.revision ?? 0,
+      storyboardDigest: node.digest ?? storyboardDigest(node.sequence, node.pendingFieldChanges),
+      rowId, shotDigest: storyboardShotDigest(row)
+    }
+    setRightPanelMode('agent')
+    setAgentDraftRequest({
+      id: `prompt-handoff-shot:${nodeId}:${rowId}:${Date.now()}`,
+      content: `请将镜头“${row.cutLabel}”整理为一个新的 Prompt 提案。`,
+      documentWriteContext: { operationKind: 'prompt_handoff', basis }
+    })
+  }, [])
+
   const resolveStoryboardReview = useCallback((
     nodeId: string,
     ids: readonly string[] | 'all',
@@ -2940,8 +2972,10 @@ const FreeCanvasBuilderInner = ({
       onDocumentCollapsedChange: updateDocumentCollapsed,
       onDocumentDelete: deleteCanvasNodes,
       onDocumentToStoryboard: requestDocumentStoryboard,
+      onDocumentPromptHandoff: requestDocumentPromptHandoff,
       onStoryboardResolve: resolveStoryboardReview,
       onStoryboardRevise: requestStoryboardRevision,
+      onStoryboardPromptHandoff: requestStoryboardPromptHandoff,
       documentLocked: node.kind === 'document' && documentReconcileLockedNodeIds.includes(node.id),
       storyboardLocked: node.kind === 'storyboard' && documentReconcileLockedNodeIds.includes(node.id),
       onImageResize: resizeImageNode,
@@ -2963,7 +2997,7 @@ const FreeCanvasBuilderInner = ({
         referenceCount: freeCanvas.edges.filter(edge => edge.target === node.id && edge.targetHandle === 'reference-image').length
       } : undefined
     }
-  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, deleteCanvasNodes, documentReconcileLockedNodeIds, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, requestDocumentStoryboard, requestStoryboardRevision, resizeImageNode, resolveStoryboardReview, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateDocumentCollapsed, updateDocumentNode, updateTextStyle])
+  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, deleteCanvasNodes, documentReconcileLockedNodeIds, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, requestDocumentPromptHandoff, requestDocumentStoryboard, requestStoryboardPromptHandoff, requestStoryboardRevision, resizeImageNode, resolveStoryboardReview, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateDocumentCollapsed, updateDocumentNode, updateTextStyle])
 
   const [flowNodes, setFlowNodes] = useState<FreeCanvasFlowNode[]>(nodes)
   useEffect(() => {
@@ -3491,6 +3525,21 @@ const FreeCanvasBuilderInner = ({
     }
     if (proposal.kind === 'free_canvas_text_create') {
       const currentCanvas = freeCanvasRef.current
+      if (proposal.handoffBasis) {
+        const basis = proposal.handoffBasis
+        const source = currentCanvas.nodes.find(node => node.id === basis.nodeId)
+        const sourceIsCurrent = basis.kind === 'document-selection'
+          ? source?.kind === 'document' && matchesDocumentPromptHandoffBasis(source.document, basis)
+          : source?.kind === 'storyboard'
+            && (source.revision ?? 0) === basis.storyboardRevision
+            && (source.digest ?? storyboardDigest(source.sequence, source.pendingFieldChanges)) === basis.storyboardDigest
+            && source.pendingFieldChanges.length === 0
+            && source.sequence.rows.some(row => row.id === basis.rowId && storyboardShotDigest(row) === basis.shotDigest)
+        if (!sourceIsCurrent) {
+          window.alert('规划来源已发生变化，请重新生成 Prompt 提案。')
+          return false
+        }
+      }
       if (proposal.sourceNodeId) {
         const source = currentCanvas.nodes.find((node): node is IFreeCanvasTextNode => (
           node.id === proposal.sourceNodeId && node.kind === 'text'
@@ -4231,6 +4280,7 @@ const FreeCanvasNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
           onDocumentChange={document => data.onDocumentChange(node.id, document)}
           onCollapsedChange={collapsed => data.onDocumentCollapsedChange(node.id, collapsed)}
           onDelete={() => data.onDocumentDelete(node.id)}
+          onPromptHandoff={data.onDocumentPromptHandoff}
         />
         {!data.documentLocked && (
           <button
@@ -4252,6 +4302,7 @@ const FreeCanvasNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
         selected={selected}
         locked={data.storyboardLocked}
         onRequestRevision={() => data.onStoryboardRevise(node.id)}
+        onPromptHandoff={rowId => data.onStoryboardPromptHandoff(node.id, rowId)}
         onResolve={(ids, action) => data.onStoryboardResolve(node.id, ids, action)}
       />
     )

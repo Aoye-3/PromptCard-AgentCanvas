@@ -252,6 +252,34 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     )
   })
 
+  it('forwards an explicit Prompt handoff only in the persisted experimental mode and consumes its authority once', async () => {
+    let renderer!: ReactTestRenderer
+    const props = {
+      title: 'Free Canvas Agent', mode: 'free-canvas-workspace' as const, workspaceContext,
+      onApplyWorkspaceProposal: vi.fn(), embedded: true
+    }
+    const basis = {
+      kind: 'storyboard-shot' as const, nodeId: 'storyboard-1', storyboardRevision: 3,
+      storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1', shotDigest: `sha256:${'b'.repeat(64)}`
+    }
+    act(() => { renderer = create(<AgentCollaborationPanel {...props} />) })
+    await settleConversationSelection(renderer)
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.update(<AgentCollaborationPanel {...props} draftRequest={{
+      id: 'prompt-handoff-shot-1', content: 'Create Prompt proposal',
+      documentWriteContext: { operationKind: 'prompt_handoff', basis }
+    }} />))
+    expect(renderer.root.findByProps({ 'aria-label': 'Agent 交互模式' }).props.value).toBe('chat-experimental')
+    await act(async () => renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Create Prompt proposal', []))
+    expect(mocks.sendMessage).toHaveBeenLastCalledWith(
+      'Create Prompt proposal', [],
+      expect.objectContaining({ interactionMode: 'chat-experimental', documentWriteContext: { operationKind: 'prompt_handoff', basis } })
+    )
+    await act(async () => renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Next turn', []))
+    expect(mocks.sendMessage.mock.calls[mocks.sendMessage.mock.calls.length - 1]?.[2])
+      .not.toHaveProperty('documentWriteContext')
+  })
+
   it('replaces a one-draft Storyboard authority with a newer external draft that has no write context', async () => {
     const baseProps = {
       title: 'Free Canvas Agent', mode: 'free-canvas-workspace' as const, workspaceContext,

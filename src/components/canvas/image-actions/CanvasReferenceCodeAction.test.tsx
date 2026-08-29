@@ -139,6 +139,20 @@ describe('Canvas reference-code copy actions', () => {
     expect(html.match(/disabled=""/g)).toHaveLength(3)
   })
 
+  it('closes the runtime union fallback instead of treating an unnormalized future node as CVM', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const forgedFutureNode = {
+      id: 'future-direct', kind: 'future-layout', title: 'Future', position: { x: 0, y: 0 },
+      width: 320, height: 200, referenceCode: `CVM-${validUlid}`, meta: {}
+    } as unknown as IFreeCanvasNode
+    const renderer = create(<CanvasNodeReferenceCodeAction node={forgedFutureNode} />)
+    const button = renderer.root.findByType('button')
+    await act(async () => button.props.onClick({ stopPropagation: vi.fn() }))
+    expect(button.props.disabled).toBe(true)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
   it.each([
     ['running', { meta: { generationState: 'running' } }, '仍在生成'],
     ['failed', { meta: { generationState: 'failed' } }, '生成失败'],

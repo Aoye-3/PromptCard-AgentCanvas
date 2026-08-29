@@ -8,6 +8,7 @@ import type {
   AgentPermissionScope,
   AgentInteractionMode,
   AgentPlanningWriteContext,
+  AgentPromptHandoffBasis,
   AgentSkillInfo,
   AgentToolInfo,
   AgentWorkspaceProposal,
@@ -498,6 +499,10 @@ function validatePlanningWriteContext(value: unknown): AgentPlanningWriteContext
     && typeof value.documentNodeId === 'string' && CANVAS_NODE_ID_PATTERN.test(value.documentNodeId)) {
     return { operationKind: 'storyboard_create', documentNodeId: value.documentNodeId }
   }
+  if (value.operationKind === 'prompt_handoff' && hasOnlyKeys(value, ['operationKind', 'basis'])) {
+    const basis = normalizePromptHandoffBasis(value.basis, false)
+    if (basis) return { operationKind: 'prompt_handoff', basis }
+  }
   throw new Error('Invalid documentWriteContext.')
 }
 
@@ -733,6 +738,9 @@ function normalizeProposal(value: unknown, index: number): AgentWorkspaceProposa
       : undefined
     const basis = sourceNodeId ? normalizeFreeCanvasTextProposalBasis(proposal.basis) : undefined
     const provenance = normalizeAgentRunProvenance(proposal.provenance)
+    const handoffBasis = normalizePromptHandoffBasis(proposal.handoffBasis, true)
+    if (proposal.handoffBasis !== undefined && !handoffBasis) return null
+    if (handoffBasis && (sourceNodeId || proposal.basis !== undefined)) return null
     if (sourceNodeId && !basis) return null
     if (sourceNodeId && basis) return {
       ...base,
@@ -747,10 +755,58 @@ function normalizeProposal(value: unknown, index: number): AgentWorkspaceProposa
       ...base,
       kind: 'free_canvas_text_create',
       title: typeof proposal.title === 'string' ? proposal.title : 'Agent Prompt',
-      userText: proposal.userText
+      userText: proposal.userText,
+      ...(handoffBasis ? { handoffBasis } : {})
     }
   }
 
+  return null
+}
+
+function normalizePromptHandoffBasis(value: unknown, allowShotText: boolean): AgentPromptHandoffBasis | null {
+  if (!isRecord(value) || typeof value.kind !== 'string') return null
+  if (value.kind === 'document-selection') {
+    if (!hasOnlyKeys(value, [
+      'kind', 'nodeId', 'documentRevision', 'documentDigest', 'blockId',
+      'utf8Start', 'utf8End', 'selectedText', 'selectedTextDigest'
+    ])
+      || typeof value.nodeId !== 'string' || !CANVAS_NODE_ID_PATTERN.test(value.nodeId)
+      || typeof value.blockId !== 'string' || !CANVAS_NODE_ID_PATTERN.test(value.blockId)
+      || !Number.isSafeInteger(value.documentRevision) || Number(value.documentRevision) < 0
+      || typeof value.documentDigest !== 'string' || !SHA256_PATTERN.test(value.documentDigest)
+      || !Number.isSafeInteger(value.utf8Start) || !Number.isSafeInteger(value.utf8End)
+      || Number(value.utf8Start) < 0 || Number(value.utf8End) <= Number(value.utf8Start)
+      || typeof value.selectedText !== 'string' || !value.selectedText
+      || value.selectedText !== value.selectedText.normalize('NFC')
+      || new TextEncoder().encode(value.selectedText).length > 100_000
+      || typeof value.selectedTextDigest !== 'string' || !SHA256_PATTERN.test(value.selectedTextDigest)) return null
+    return {
+      kind: 'document-selection', nodeId: value.nodeId,
+      documentRevision: Number(value.documentRevision), documentDigest: value.documentDigest,
+      blockId: value.blockId, utf8Start: Number(value.utf8Start), utf8End: Number(value.utf8End),
+      selectedText: value.selectedText, selectedTextDigest: value.selectedTextDigest
+    }
+  }
+  if (value.kind === 'storyboard-shot') {
+    const allowed = allowShotText
+      ? ['kind', 'nodeId', 'storyboardRevision', 'storyboardDigest', 'rowId', 'shotDigest', 'shotText']
+      : ['kind', 'nodeId', 'storyboardRevision', 'storyboardDigest', 'rowId', 'shotDigest']
+    if (!hasOnlyKeys(value, allowed)
+      || typeof value.nodeId !== 'string' || !CANVAS_NODE_ID_PATTERN.test(value.nodeId)
+      || typeof value.rowId !== 'string' || !CANVAS_NODE_ID_PATTERN.test(value.rowId)
+      || !Number.isSafeInteger(value.storyboardRevision) || Number(value.storyboardRevision) < 0
+      || typeof value.storyboardDigest !== 'string' || !SHA256_PATTERN.test(value.storyboardDigest)
+      || typeof value.shotDigest !== 'string' || !SHA256_PATTERN.test(value.shotDigest)
+      || (value.shotText !== undefined && (typeof value.shotText !== 'string'
+        || value.shotText !== value.shotText.normalize('NFC')
+        || new TextEncoder().encode(value.shotText).length > 100_000))) return null
+    return {
+      kind: 'storyboard-shot', nodeId: value.nodeId,
+      storyboardRevision: Number(value.storyboardRevision), storyboardDigest: value.storyboardDigest,
+      rowId: value.rowId, shotDigest: value.shotDigest,
+      ...(typeof value.shotText === 'string' ? { shotText: value.shotText } : {})
+    }
+  }
   return null
 }
 

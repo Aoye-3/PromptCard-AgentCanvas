@@ -5,12 +5,14 @@ export function StoryboardNode({
   selected,
   locked = false,
   onRequestRevision,
+  onPromptHandoff,
   onResolve
 }: {
   node: IFreeCanvasStoryboardNode
   selected: boolean
   locked?: boolean
   onRequestRevision?: () => void
+  onPromptHandoff?: (rowId: string) => void
   onResolve: (ids: readonly string[] | 'all', action: 'accept' | 'reject') => void
 }) {
   return (
@@ -39,6 +41,17 @@ export function StoryboardNode({
         {node.sequence.rows.map(row => (
           <div key={row.id} className="rounded border border-gray-100 bg-gray-50 p-2 text-[11px] text-gray-600">
             <b>{row.cutLabel}</b> · {row.subject} · {row.action} · {row.camera}
+            {onPromptHandoff ? (
+              <button
+                type="button"
+                aria-label="镜头转为 Prompt 提案"
+                className="ml-2 font-bold text-sky-700 disabled:text-gray-400"
+                disabled={locked || node.pendingFieldChanges.length > 0}
+                onClick={() => onPromptHandoff(row.id)}
+              >
+                镜头转为 Prompt 提案
+              </button>
+            ) : null}
           </div>
         ))}
         {node.pendingFieldChanges.map(change => (

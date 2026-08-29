@@ -11,6 +11,7 @@ import {
   rejectDocumentSuggestion
 } from '@/domain/documents/document-suggestions'
 import type { IFreeCanvasDocumentNode, PlanningDocumentV1 } from '@/models/PromptHistory.model'
+import type { AgentPromptHandoffBasis } from '@/models/Agent.model'
 
 interface DocumentNodeProps {
   node: IFreeCanvasDocumentNode
@@ -19,6 +20,7 @@ interface DocumentNodeProps {
   onDocumentChange: (document: PlanningDocumentV1) => Promise<boolean> | boolean
   onCollapsedChange?: (collapsed: boolean) => Promise<boolean> | boolean
   onDelete: () => void
+  onPromptHandoff?: (basis: Extract<AgentPromptHandoffBasis, { kind: 'document-selection' }>) => void
 }
 
 interface DocumentRetryRequest {
@@ -27,7 +29,7 @@ interface DocumentRetryRequest {
   authoritativeIdentity: string
 }
 
-export const DocumentNode = ({ node, selected, locked = false, onDocumentChange, onCollapsedChange, onDelete }: DocumentNodeProps) => {
+export const DocumentNode = ({ node, selected, locked = false, onDocumentChange, onCollapsedChange, onDelete, onPromptHandoff }: DocumentNodeProps) => {
   const expandButtonRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
   const requestTokenRef = useRef(0)
@@ -322,6 +324,8 @@ export const DocumentNode = ({ node, selected, locked = false, onDocumentChange,
             view={documentView}
             autoFocus={!locked}
             onChange={commitEditorChange}
+            nodeId={node.id}
+            onPromptHandoff={onPromptHandoff}
           />
         </div>
       </section>
@@ -380,6 +384,8 @@ export const DocumentNode = ({ node, selected, locked = false, onDocumentChange,
             mode="inline"
             view={documentView}
             onChange={commitEditorChange}
+            nodeId={node.id}
+            onPromptHandoff={onPromptHandoff}
           />
         </div>
       ) : (

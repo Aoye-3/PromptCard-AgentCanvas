@@ -350,6 +350,10 @@ export function AgentCollaborationPanel({
     }
   ) => {
     if (!content.trim() || running || documentUploadingCount > 0 || documentEditReconciling) return
+    if (pendingWriteContext?.operationKind === 'prompt_handoff' && interactionMode !== 'chat-experimental') {
+      setPostSendApplyError('请先切换到对话模式【测试中】，再发送此 Prompt 提案请求。')
+      return
+    }
     const writeContextForTurn = interactionMode === 'chat-experimental'
       ? pendingWriteContext
       : undefined

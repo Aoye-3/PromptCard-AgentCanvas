@@ -3,6 +3,34 @@ import { buildAgentSystemPrompt, buildAgentTools } from './agent-service.ts'
 import { buildInvocation } from './proposal-policy.ts'
 
 describe('pi text-agent system boundary', () => {
+  it('emits at most one pending all-user Prompt create proposal with authoritative handoff basis', async () => {
+    const invocation = buildInvocation({
+      content: 'Create a prompt', permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'prompt_handoff',
+        basis: {
+          kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 3,
+          storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1',
+          shotDigest: `sha256:${'b'.repeat(64)}`, shotText: 'Wide shot'
+        }
+      }
+    })
+    const proposals: Record<string, unknown>[] = []
+    const tools = buildAgentTools(invocation.policy, [], proposals, [])
+    const emit = tools.find(tool => tool.name === 'emit_prompt_handoff')
+    expect(emit).toBeTruthy()
+    const first = await emit!.execute('call-1', { userText: 'cinematic prompt', rationale: 'explicit handoff' } as never)
+    const second = await emit!.execute('call-2', { userText: 'duplicate', rationale: 'duplicate' } as never)
+    expect(first).toMatchObject({ terminate: true })
+    expect(second).toMatchObject({ details: { error: 'write_tool_already_used' } })
+    expect(proposals).toEqual([expect.objectContaining({
+      kind: 'free_canvas_text_create', status: 'pending', userText: 'cinematic prompt',
+      handoffBasis: invocation.policy.promptHandoffContext!.basis
+    })])
+    expect(proposals[0]).not.toHaveProperty('sourceNodeId')
+    expect(proposals[0]).not.toHaveProperty('segments')
+  })
   it('places skill instructions below immutable runtime policy', () => {
     const prompt = buildAgentSystemPrompt(buildInvocation({
       content: 'Edit', permissionScope: 'workspace-chatbot-agent',

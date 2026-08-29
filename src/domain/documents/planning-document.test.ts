@@ -10,6 +10,7 @@ import {
   sha256Utf8
 } from './planning-document'
 import { applyDocumentChangeOperations } from './document-suggestions'
+import { createDocumentPromptHandoffBasis } from './prompt-handoff-selection'
 
 const richBlocks = (): PlanningDocumentBlockV1[] => [
   {
@@ -72,6 +73,19 @@ const richBlocks = (): PlanningDocumentBlockV1[] => [
 ]
 
 describe('planning document domain', () => {
+  test('creates an NFC UTF-8 single-leaf Prompt handoff basis and rejects invalid ranges', () => {
+    const document = createPlanningDocumentV1([
+      { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Café scene' }] },
+      { id: 'paragraph-2', type: 'paragraph', content: [{ text: 'Second' }] }
+    ], 4)
+    expect(createDocumentPromptHandoffBasis(document, 'document-1', 'paragraph-1', 0, 4)).toMatchObject({
+      kind: 'document-selection', nodeId: 'document-1', documentRevision: 4,
+      documentDigest: document.digest, blockId: 'paragraph-1',
+      utf8Start: 0, utf8End: 5, selectedText: 'Café'
+    })
+    expect(createDocumentPromptHandoffBasis(document, 'document-1', 'paragraph-1', 0, 0)).toBeNull()
+    expect(createDocumentPromptHandoffBasis(document, 'document-1', 'paragraph-2', 0, 99)).toBeNull()
+  })
   test('matches standard synchronous SHA-256 vectors', () => {
     expect(sha256Utf8('')).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
     expect(sha256Utf8('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')

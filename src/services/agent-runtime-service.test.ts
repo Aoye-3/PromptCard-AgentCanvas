@@ -206,6 +206,24 @@ describe('agent runtime message contract', () => {
     expect(result.canvasEdits).toEqual([edit])
   })
 
+  it('serializes one closed Document selection Prompt handoff selector', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-1', conversationId: 'conversation-1', text: 'ok', proposals: [], canvasEdits: []
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const basis = {
+      kind: 'document-selection' as const, nodeId: 'document-1', documentRevision: 4,
+      documentDigest: `sha256:${'a'.repeat(64)}`, blockId: 'paragraph-1',
+      utf8Start: 0, utf8End: 5, selectedText: 'Café', selectedTextDigest: `sha256:${'b'.repeat(64)}`
+    }
+    await agentRuntimeService.sendMessage({
+      content: '转为 Prompt 提案', projectId: 'project-1', interactionMode: 'chat-experimental',
+      documentWriteContext: { operationKind: 'prompt_handoff', basis }
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).documentWriteContext)
+      .toEqual({ operationKind: 'prompt_handoff', basis })
+  })
+
   it.each([
     ['empty rows', (candidate: Record<string, unknown>) => { candidate.rows = [] }],
     ['missing lighting', (candidate: Record<string, unknown>) => {
@@ -543,6 +561,39 @@ describe('agent runtime proposal parsing', () => {
         userText: 'cinematic portrait'
       })
     ])
+  })
+
+  it('preserves a strict planning handoff basis without turning it into rewrite source authority', () => {
+    const proposal = parseAgentWorkspaceProposals(JSON.stringify({
+      kind: 'free_canvas_text_create', id: 'handoff-1', userText: 'cinematic portrait',
+      handoffBasis: {
+        kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 3,
+        storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1',
+        shotDigest: `sha256:${'b'.repeat(64)}`, shotText: '{"id":"shot-1"}'
+      }
+    }))[0]
+    expect(proposal).toMatchObject({
+      kind: 'free_canvas_text_create', handoffBasis: expect.objectContaining({ kind: 'storyboard-shot', rowId: 'shot-1' })
+    })
+    expect(proposal).not.toHaveProperty('sourceNodeId')
+  })
+
+  it('rejects a Prompt create response that carries a malformed planning handoff basis', () => {
+    expect(parseAgentWorkspaceProposals(JSON.stringify({
+      kind: 'free_canvas_text_create', id: 'handoff-bad', userText: 'must not bypass freshness',
+      handoffBasis: { kind: 'storyboard-shot', nodeId: 'storyboard-1', rowId: 'missing-authority' }
+    }))).toEqual([])
+  })
+
+  it('rejects Prompt handoff digests that only imitate the sha256 prefix', () => {
+    expect(parseAgentWorkspaceProposals(JSON.stringify({
+      kind: 'free_canvas_text_create', id: 'handoff-forged-digest', userText: 'must not bypass freshness',
+      handoffBasis: {
+        kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 3,
+        storyboardDigest: 'sha256:not-a-digest', rowId: 'shot-1',
+        shotDigest: `sha256:${'b'.repeat(64)}`, shotText: '{"id":"shot-1"}'
+      }
+    }))).toEqual([])
   })
 
   it('parses an editable media prompt preview without treating it as a write', () => {

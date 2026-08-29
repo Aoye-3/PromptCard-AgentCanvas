@@ -227,6 +227,25 @@ export function buildAgentTools(
       writeGuard
     ))
   }
+  if (policy.allowedProposalKinds.includes('free_canvas_text_create') && policy.promptHandoffContext) {
+    tools.push(proposalTool(
+      'emit_prompt_handoff',
+      'Propose one new Prompt Canvas node from the explicitly selected planning source',
+      Type.Object({
+        userText: Type.String({ minLength: 1, maxLength: 100_000 }),
+        rationale: Type.String({ minLength: 1 })
+      }, { additionalProperties: false }),
+      params => ({
+        kind: 'free_canvas_text_create',
+        title: 'Agent Prompt',
+        userText: params.userText,
+        handoffBasis: policy.promptHandoffContext!.basis,
+        rationale: params.rationale
+      }),
+      proposals,
+      writeGuard
+    ))
+  }
 
   if (policy.allowedCanvasEditKinds.includes('document_create')
     && policy.documentWriteContext?.operationKind === 'document_create') {

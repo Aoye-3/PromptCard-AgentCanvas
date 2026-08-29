@@ -136,6 +136,30 @@ describe('DocumentEditor', () => {
     ]))
   })
 
+  it('offers Prompt handoff only for a single planning leaf selection', () => {
+    const document = createPlanningDocumentV1([{ id: 'p1', type: 'paragraph', content: [{ text: 'Café scene' }] }], 4)
+    const onPromptHandoff = vi.fn()
+    const renderer = create(
+      <DocumentEditor document={document} nodeId="document-1" mode="inline" onChange={vi.fn()} onPromptHandoff={onPromptHandoff} />
+    )
+    const paragraph = { attrs: { blockId: 'p1' } }
+    const position = (offset: number) => ({
+      depth: 1, parentOffset: offset, sameParent: () => true, node: () => paragraph
+    })
+    act(() => (mocks.options?.onSelectionUpdate as (event: unknown) => void)({
+      editor: { state: { selection: { empty: false, $from: position(0), $to: position(4) } } }
+    }))
+    act(() => renderer.root.findByProps({ children: '选中文本转为 Prompt 提案' }).props.onClick())
+    expect(onPromptHandoff).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'document-selection', blockId: 'p1', utf8Start: 0, utf8End: 5, selectedText: 'Café'
+    }))
+
+    act(() => (mocks.options?.onSelectionUpdate as (event: unknown) => void)({
+      editor: { state: { selection: { empty: false, $from: { ...position(0), sameParent: () => false }, $to: position(4) } } }
+    }))
+    expect(renderer.root.findAllByProps({ children: '选中文本转为 Prompt 提案' })).toHaveLength(0)
+  })
+
   it('keeps lists and links visibly semantic under Tailwind preflight', () => {
     const renderer = create(
       <DocumentEditor document={blankDocument()} mode="expanded" onChange={vi.fn()} />

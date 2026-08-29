@@ -48,6 +48,7 @@ MAX_CANVAS_AGENT_IMAGE_BYTES = 30 * 1024 * 1024
 MAX_DOCUMENT_ATTACHMENTS = 5
 MAX_DOCUMENT_TURN_BYTES = 100 * 1024 * 1024
 MAX_DOCUMENT_MODEL_TEXT_CHARS = 500_000
+MAX_PROMPT_HANDOFF_BYTES = 100_000
 _DOCUMENT_INVOCATION_TTL_SECONDS = 300
 _MAX_DOCUMENT_INVOCATIONS = 32
 _DOCUMENT_EDIT_KINDS = {
@@ -530,6 +531,8 @@ class PromptCardRuntimeService:
             workspace_context=body.workspace_context,
             permission_scope=validation_permission_scope,
             canvas_node_context=resolved_canvas_context,
+            expected_write_context=document_write_context,
+            interaction_mode=interaction_mode,
         )
         response["proposals"] = [
             {
@@ -1081,6 +1084,8 @@ def validate_agent_proposals(
     workspace_context: dict[str, Any] | None,
     permission_scope: str,
     canvas_node_context: dict[str, Any] | None = None,
+    expected_write_context: dict[str, Any] | None = None,
+    interaction_mode: str = "prompt-edit",
 ) -> list[dict[str, Any]]:
     validated = []
     snapshot = (
@@ -1112,6 +1117,43 @@ def validate_agent_proposals(
         if not isinstance(proposal, dict):
             continue
         kind = proposal.get("kind")
+        if (
+            isinstance(expected_write_context, dict)
+            and expected_write_context.get("operationKind") == "prompt_handoff"
+            and validated
+        ):
+            continue
+        if (
+            not validated
+            and permission_scope == "chat-experimental"
+            and interaction_mode == "chat-experimental"
+            and isinstance(expected_write_context, dict)
+            and expected_write_context.get("operationKind") == "prompt_handoff"
+            and kind == "free_canvas_text_create"
+            and _normalize_storyboard_text(
+                proposal.get("userText"), persisted=False,
+                max_bytes=MAX_PROMPT_HANDOFF_BYTES, nonempty=True,
+            ) is not None
+            and isinstance(expected_write_context.get("basis"), dict)
+        ):
+            base = _proposal_base(proposal, index)
+            validated.append({
+                "id": base["id"],
+                "agentName": base["agentName"],
+                "status": "pending",
+                "createdAt": base["createdAt"],
+                "kind": "free_canvas_text_create",
+                "title": str(proposal.get("title") or "Agent Prompt")[:128],
+                "userText": _normalize_storyboard_text(
+                    proposal["userText"], persisted=False,
+                    max_bytes=MAX_PROMPT_HANDOFF_BYTES, nonempty=True,
+                ),
+                "handoffBasis": expected_write_context["basis"],
+                "rationale": unicodedata.normalize(
+                    "NFC", str(proposal.get("rationale") or "Explicit planning handoff")
+                )[:2000],
+            })
+            continue
         if (
             permission_scope == "workspace-chatbot-agent"
             and selected_text_id
@@ -1174,6 +1216,7 @@ def validate_agent_proposals(
             })
         elif (
             permission_scope == "workspace-chatbot-agent"
+            and interaction_mode != "chat-experimental"
             and selected_text_id is None
             and canvas_node_context is None
             and kind == "free_canvas_text_create"
@@ -1861,6 +1904,8 @@ def _resolve_document_write_context(
     if not isinstance(value, dict):
         raise HTTPException(status_code=422, detail="document_write_context_invalid")
     operation_kind = value.get("operationKind")
+    if operation_kind == "prompt_handoff":
+        return _resolve_prompt_handoff_context(value, project)
     if operation_kind == "document_create":
         if set(value) != {"operationKind"}:
             raise HTTPException(status_code=422, detail="document_write_context_invalid")
@@ -1942,6 +1987,102 @@ def _resolve_document_write_context(
         "baseDigest": document["digest"],
         "blocks": blocks,
     }
+
+
+def _resolve_prompt_handoff_context(
+    value: dict[str, Any],
+    project: dict[str, Any],
+) -> dict[str, Any]:
+    if set(value) != {"operationKind", "basis"} or not isinstance(value.get("basis"), dict):
+        raise HTTPException(status_code=422, detail="prompt_handoff_context_invalid")
+    basis = value["basis"]
+    kind = basis.get("kind")
+    if kind == "document-selection":
+        required = {
+            "kind", "nodeId", "documentRevision", "documentDigest", "blockId",
+            "utf8Start", "utf8End", "selectedText", "selectedTextDigest",
+        }
+        if set(basis) != required:
+            raise HTTPException(status_code=422, detail="prompt_handoff_selection_invalid")
+        node = _project_canvas_node(project, str(basis.get("nodeId") or "").strip())
+        if not isinstance(node, dict) or node.get("kind") != "document":
+            raise HTTPException(status_code=422, detail="prompt_handoff_source_invalid")
+        document = _normalize_persisted_document(node.get("document"))
+        if document is None:
+            raise HTTPException(status_code=409, detail="prompt_handoff_source_invalid")
+        if (
+            basis.get("documentRevision") != document["revision"]
+            or basis.get("documentDigest") != document["digest"]
+        ):
+            raise HTTPException(status_code=409, detail="prompt_handoff_source_stale")
+        block_id = basis.get("blockId")
+        leaf = next((text for identity, text in _planning_document_leaf_texts(document["blocks"]) if identity == block_id), None)
+        if leaf is None:
+            raise HTTPException(status_code=409, detail="prompt_handoff_selection_stale")
+        if any(
+            isinstance(item, dict) and item.get("blockId") == block_id
+            for item in document.get("suggestions", [])
+        ):
+            raise HTTPException(status_code=409, detail="prompt_handoff_selection_pending")
+        start = basis.get("utf8Start")
+        end = basis.get("utf8End")
+        if (
+            not isinstance(start, int) or isinstance(start, bool)
+            or not isinstance(end, int) or isinstance(end, bool)
+            or start < 0 or end <= start or end - start > MAX_PROMPT_HANDOFF_BYTES
+            or start not in _utf8_boundaries(leaf) or end not in _utf8_boundaries(leaf)
+        ):
+            raise HTTPException(status_code=422, detail="prompt_handoff_selection_invalid")
+        selected_text = _utf8_text_slice(leaf, start, end)
+        if (
+            selected_text != basis.get("selectedText")
+            or selected_text != unicodedata.normalize("NFC", selected_text)
+            or basis.get("selectedTextDigest") != _text_digest(selected_text)
+        ):
+            raise HTTPException(status_code=409, detail="prompt_handoff_selection_stale")
+        return {"operationKind": "prompt_handoff", "basis": {
+            "kind": "document-selection", "nodeId": str(node["id"]),
+            "documentRevision": document["revision"], "documentDigest": document["digest"],
+            "blockId": str(block_id), "utf8Start": start, "utf8End": end,
+            "selectedText": selected_text, "selectedTextDigest": _text_digest(selected_text),
+        }}
+    if kind == "storyboard-shot":
+        required = {
+            "kind", "nodeId", "storyboardRevision", "storyboardDigest", "rowId", "shotDigest",
+        }
+        if set(basis) != required:
+            raise HTTPException(status_code=422, detail="prompt_handoff_shot_invalid")
+        node = _project_canvas_node(project, str(basis.get("nodeId") or "").strip())
+        if not isinstance(node, dict) or node.get("kind") != "storyboard":
+            raise HTTPException(status_code=422, detail="prompt_handoff_source_invalid")
+        sequence = _normalize_storyboard_sequence(node.get("sequence"), model_output=False)
+        pending = _normalize_storyboard_pending_changes(node.get("pendingFieldChanges"), sequence)
+        revision = node.get("revision", 0)
+        digest = node.get("digest")
+        if sequence is None or pending is None or pending:
+            raise HTTPException(status_code=409, detail="prompt_handoff_shot_pending")
+        if (
+            not isinstance(revision, int) or isinstance(revision, bool)
+            or digest != _storyboard_digest(sequence, pending)
+            or basis.get("storyboardRevision") != revision
+            or basis.get("storyboardDigest") != digest
+        ):
+            raise HTTPException(status_code=409, detail="prompt_handoff_source_stale")
+        row = next((item for item in sequence["rows"] if item["id"] == basis.get("rowId")), None)
+        if row is None:
+            raise HTTPException(status_code=409, detail="prompt_handoff_shot_stale")
+        shot_text = _canonical_nfc_json(row)
+        shot_digest = _text_digest(shot_text)
+        if basis.get("shotDigest") != shot_digest:
+            raise HTTPException(status_code=409, detail="prompt_handoff_shot_stale")
+        if len(shot_text.encode("utf-8")) > MAX_PROMPT_HANDOFF_BYTES:
+            raise HTTPException(status_code=413, detail="prompt_handoff_shot_too_large")
+        return {"operationKind": "prompt_handoff", "basis": {
+            "kind": "storyboard-shot", "nodeId": str(node["id"]),
+            "storyboardRevision": revision, "storyboardDigest": digest,
+            "rowId": str(row["id"]), "shotDigest": shot_digest, "shotText": shot_text,
+        }}
+    raise HTTPException(status_code=422, detail="prompt_handoff_context_invalid")
 
 
 def _planning_document_leaf_texts(

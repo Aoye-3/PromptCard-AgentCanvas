@@ -1,7 +1,9 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import type { Editor } from '@tiptap/core'
 import type { PlanningDocumentV1 } from '@/models/PromptHistory.model'
+import type { AgentPromptHandoffBasis } from '@/models/Agent.model'
+import { createDocumentPromptHandoffBasis } from '@/domain/documents/prompt-handoff-selection'
 import {
   createPlanningDocumentEditorProps,
   createPlanningDocumentTiptapExtensions,
@@ -16,6 +18,8 @@ export interface DocumentEditorProps {
   onChange: (document: PlanningDocumentV1) => void
   autoFocus?: boolean
   view?: PlanningDocumentDisplayView
+  nodeId?: string
+  onPromptHandoff?: (basis: Extract<AgentPromptHandoffBasis, { kind: 'document-selection' }>) => void
 }
 
 export const DocumentEditor = ({
@@ -23,7 +27,9 @@ export const DocumentEditor = ({
   mode,
   onChange,
   autoFocus = false,
-  view = 'effective'
+  view = 'effective',
+  nodeId,
+  onPromptHandoff
 }: DocumentEditorProps) => {
   const readOnly = view !== 'effective' || document.suggestions.length > 0
   const documentRef = useRef(document)
@@ -34,6 +40,7 @@ export const DocumentEditor = ({
   const revisionClockRef = useRef(document.revision)
   const authoritativeIdentityRef = useRef(planningDocumentIdentity(document, view))
   const pendingLocalIdentitiesRef = useRef<string[]>([])
+  const [promptSelection, setPromptSelection] = useState<Extract<AgentPromptHandoffBasis, { kind: 'document-selection' }>>()
 
   useLayoutEffect(() => {
     documentRef.current = document
@@ -65,6 +72,25 @@ export const DocumentEditor = ({
       pendingLocalIdentitiesRef.current.push(planningDocumentIdentity(next, viewRef.current))
       lastEditorProjectionRef.current = `${next.digest}:${viewRef.current}`
       onChangeRef.current(next)
+    },
+    onSelectionUpdate: ({ editor: currentEditor }) => {
+      if (!nodeId || !onPromptHandoff || viewRef.current !== 'effective') {
+        setPromptSelection(undefined)
+        return
+      }
+      const { $from, $to, empty } = currentEditor.state.selection
+      if (empty || !$from.sameParent($to)) {
+        setPromptSelection(undefined)
+        return
+      }
+      const blockId = nearestPlanningLeafId($from)
+      if (!blockId || blockId !== nearestPlanningLeafId($to)) {
+        setPromptSelection(undefined)
+        return
+      }
+      setPromptSelection(createDocumentPromptHandoffBasis(
+        documentRef.current, nodeId, blockId, $from.parentOffset, $to.parentOffset
+      ) || undefined)
     }
   })
 
@@ -98,6 +124,13 @@ export const DocumentEditor = ({
       onKeyDown={event => event.stopPropagation()}
     >
       <DocumentEditorToolbar editor={editor} disabled={readOnly} />
+      {promptSelection && onPromptHandoff ? (
+        <button
+          type="button"
+          className="nodrag border-b border-sky-100 bg-sky-50 px-3 py-2 text-left text-xs font-bold text-sky-700"
+          onClick={() => onPromptHandoff(promptSelection)}
+        >选中文本转为 Prompt 提案</button>
+      ) : null}
       <EditorContent
         editor={editor}
         aria-readonly={readOnly}
@@ -106,6 +139,14 @@ export const DocumentEditor = ({
       />
     </section>
   )
+}
+
+const nearestPlanningLeafId = ($position: { depth: number; node: (depth: number) => { attrs?: Record<string, unknown> } }): string | null => {
+  for (let depth = $position.depth; depth > 0; depth -= 1) {
+    const blockId = $position.node(depth).attrs?.blockId
+    if (typeof blockId === 'string' && blockId) return blockId
+  }
+  return null
 }
 
 const planningDocumentIdentity = (

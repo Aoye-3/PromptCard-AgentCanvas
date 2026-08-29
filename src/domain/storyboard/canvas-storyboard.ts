@@ -133,6 +133,9 @@ const canonicalJson = (value: unknown): string => {
   return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`
 }
 
+export const storyboardShotText = (row: IStoryboardRow): string => canonicalJson(row)
+export const storyboardShotDigest = (row: IStoryboardRow): string => `sha256:${sha256Utf8(storyboardShotText(row))}`
+
 const canonicalSequence = (sequence: IStoryboardSequence) => ({
   id: sequence.id,
   name: sequence.name,

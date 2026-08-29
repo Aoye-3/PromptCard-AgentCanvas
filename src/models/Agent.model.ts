@@ -166,11 +166,34 @@ export type CanvasAgentEditMode = 'complete' | 'rewrite' | 'prompt-library'
 
 export type AgentInteractionMode = 'prompt-edit' | 'chat-experimental'
 
+export type AgentPromptHandoffBasis =
+  | {
+    kind: 'document-selection'
+    nodeId: string
+    documentRevision: number
+    documentDigest: string
+    blockId: string
+    utf8Start: number
+    utf8End: number
+    selectedText: string
+    selectedTextDigest: string
+  }
+  | {
+    kind: 'storyboard-shot'
+    nodeId: string
+    storyboardRevision: number
+    storyboardDigest: string
+    rowId: string
+    shotDigest: string
+    shotText?: string
+  }
+
 export type AgentPlanningWriteContext =
   | { operationKind: 'document_create' }
   | { operationKind: 'document_changes'; nodeId: string }
   | { operationKind: 'storyboard_create'; documentNodeId: string }
   | { operationKind: 'storyboard_changes'; nodeId: string }
+  | { operationKind: 'prompt_handoff'; basis: AgentPromptHandoffBasis }
 
 export interface CanvasAgentSelection {
   start: number
@@ -329,6 +352,7 @@ export interface AgentFreeCanvasTextCreateEdit {
   userText: string
   sourceNodeId?: string
   basis?: AgentFreeCanvasTextProposalBasis
+  handoffBasis?: AgentPromptHandoffBasis
   provenance?: AgentRunProvenance
   rationale: string
   createdAt: number

@@ -193,6 +193,10 @@ const nodeReferenceState = (node: IFreeCanvasNode): {
     const kindLabel = `${node.originalKind} 节点`
     return { expectedPrefix: null, code: null, kindLabel, unavailableReason: `${kindLabel}不支持节点代码` }
   }
+  if (node.kind !== 'text' && node.kind !== 'image') {
+    return { expectedPrefix: null, code: null, kindLabel: '未知节点', unavailableReason: '未知节点不支持节点代码' }
+  }
+  // ADR-020: reference-code dispatch is closed; planning/future kinds never fall through to CVM.
   const expectedPrefix = node.kind === 'text' ? 'CVT' : 'CVM'
   const kindLabel = node.kind === 'text' ? '文字节点' : '图片节点'
   if (isCanvasNodeReferencePending(node)) {
