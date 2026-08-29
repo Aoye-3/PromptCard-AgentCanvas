@@ -14,6 +14,7 @@ import type {
   CanvasAgentNodeContext,
   PromptLibraryWriteProposal
 } from '@/models/Agent.model'
+import { isValidStoryboardSourceProvenance } from '@/domain/storyboard/canvas-storyboard'
 
 export type PromptLanguageMode = 'zh' | 'en' | 'mixed'
 
@@ -172,6 +173,20 @@ const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 
+const AGENT_EDIT_STATUSES = new Set<AgentDocumentEditStatus['status']>([
+  'pending_apply', 'applied', 'failed_conflict', 'failed_integrity', 'failed_target_missing'
+])
+
+const isAgentDocumentEditStatus = (value: unknown): value is AgentDocumentEditStatus => (
+  isRecord(value)
+  && typeof value.conversationId === 'string' && value.conversationId.length > 0
+  && typeof value.requestId === 'string' && value.requestId.length > 0
+  && typeof value.editId === 'string' && value.editId.length > 0
+  && typeof value.status === 'string'
+  && AGENT_EDIT_STATUSES.has(value.status as AgentDocumentEditStatus['status'])
+  && (value.evidence === undefined || value.evidence === null || isRecord(value.evidence))
+)
+
 const hasOnlyKeys = (value: Record<string, unknown>, keys: readonly string[]) =>
   Object.keys(value).every(key => keys.includes(key))
 
@@ -239,10 +254,7 @@ const isEnrichedDocumentEdit = (value: unknown): value is AgentCanvasEdit => {
     return hasOnlyKeys(value.base, ['projectRevision']) && Number.isSafeInteger(value.base.projectRevision) &&
       hasOnlyKeys(value.payload, ['title', 'sequence', 'source']) && typeof value.payload.title === 'string' &&
       isRecord(value.payload.sequence) && Array.isArray(value.payload.sequence.rows) &&
-      isRecord(value.payload.source) && typeof value.payload.source.documentNodeId === 'string' &&
-      Number.isSafeInteger(value.payload.source.documentRevision) && typeof value.payload.source.documentDigest === 'string' &&
-      Array.isArray(value.payload.source.documentResourceDigests) && isRecord(value.payload.source.model) &&
-      Array.isArray(value.payload.source.skills)
+      isValidStoryboardSourceProvenance(value.payload.source)
   }
   if (value.kind === 'storyboard_changes') {
     return hasOnlyKeys(value.base, ['projectRevision', 'nodeRevision', 'nodeDigest']) &&
@@ -336,35 +348,53 @@ export const agentRuntimeService = {
     }
   ),
 
-  acknowledgeDocumentEdit: (
+  acknowledgeDocumentEdit: async (
     projectId: string,
     conversationId: string,
     editId: string,
     body: AgentDocumentEditAcknowledgement
-  ) => requestJson<AgentDocumentEditStatus>(
-    `${PROMPTCARD_RUNTIME_BASE}/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/edits/${encodeURIComponent(editId)}/ack`,
-    {
+  ) => {
+    const response = await requestJson<unknown>(
+      `${PROMPTCARD_RUNTIME_BASE}/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/edits/${encodeURIComponent(editId)}/ack`, {
       method: 'POST',
       headers: jsonHeaders(),
       body: JSON.stringify(body)
-    }
-  ),
+      }
+    )
+    if (
+      !isAgentDocumentEditStatus(response)
+      || response.conversationId !== conversationId
+      || response.requestId !== body.requestId
+      || response.editId !== editId
+    ) throw new Error('Invalid agent edit status.')
+    return response
+  },
 
   reconcileDocumentEdits: async (
     projectId: string,
     conversationId: string
   ) => {
-    const response = await requestJson<Omit<AgentDocumentEditReconciliation, 'canvasEdits'> & { canvasEdits?: unknown }>(
+    const response = await requestJson<unknown>(
       `${PROMPTCARD_RUNTIME_BASE}/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/edits/reconcile`, {
       method: 'POST',
       headers: jsonHeaders(),
       body: JSON.stringify({})
       }
     )
+    if (!isRecord(response) || typeof response.status !== 'string') {
+      throw new Error('Invalid agent edit reconciliation.')
+    }
+    if (response.status === 'idle') {
+      if (response.conversationId !== undefined && response.conversationId !== conversationId) {
+        throw new Error('Invalid agent edit reconciliation.')
+      }
+    } else if (!isAgentDocumentEditStatus(response) || response.conversationId !== conversationId) {
+      throw new Error('Invalid agent edit reconciliation.')
+    }
     return {
       ...response,
       canvasEdits: validateAgentCanvasEdits(response.canvasEdits ?? [])
-    }
+    } as AgentDocumentEditReconciliation
   },
 
   analyzeMedia: (body: {

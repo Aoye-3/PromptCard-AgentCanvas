@@ -12,6 +12,34 @@ const successfulMessageResponse = () => new Response(JSON.stringify({
   canvasEdits: []
 }), { status: 200, headers: { 'Content-Type': 'application/json' } })
 
+const storyboardResponseSource = () => ({
+  documentNodeId: 'document-1', documentRevision: 4, documentDigest: `sha256:${'b'.repeat(64)}`,
+  documentResourceDigests: [`sha256:${'c'.repeat(64)}`],
+  model: {
+    connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1',
+    displayName: 'Model', capabilities: {}
+  },
+  skills: [{ skillId: 'skill-1', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
+})
+
+const storyboardResponseEdit = (source: unknown = storyboardResponseSource()) => ({
+  kind: 'storyboard_create', id: 'edit-1', editId: 'edit-1', conversationId: 'conversation-1',
+  requestId: 'request-1', nodeId: 'storyboard-1', expectedResultDigest: `sha256:${'a'.repeat(64)}`,
+  base: { projectRevision: 7 },
+  payload: {
+    title: 'Shots',
+    sequence: {
+      id: 'sequence-1', name: 'Opening', description: '', style: 'ink', constraints: '', rows: [{
+        id: 'row-1', cutLabel: '1', timeRange: '0-1s', subject: '', action: '', scene: '', camera: '',
+        lighting: '', audio: '', duration: '1s', createdAt: 1, updatedAt: 1
+      }],
+      createdAt: 1, updatedAt: 1, meta: {}
+    },
+    source
+  },
+  rationale: 'Explicit transform'
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -153,27 +181,7 @@ describe('agent runtime message contract', () => {
   })
 
   it('serializes only the explicit Storyboard transform selector and accepts an enriched create edit', async () => {
-    const sequence = {
-      id: 'sequence-1', name: 'Opening', description: '', style: 'ink', constraints: '', rows: [{
-        id: 'row-1', cutLabel: '1', timeRange: '0-1s', subject: '', action: '', scene: '', camera: '',
-        lighting: '', audio: '', duration: '1s', createdAt: 1, updatedAt: 1
-      }],
-      createdAt: 1, updatedAt: 1, meta: {}
-    }
-    const edit = {
-      kind: 'storyboard_create', id: 'edit-1', editId: 'edit-1', conversationId: 'conversation-1',
-      requestId: 'request-1', nodeId: 'storyboard-1', expectedResultDigest: `sha256:${'a'.repeat(64)}`,
-      base: { projectRevision: 7 },
-      payload: {
-        title: 'Shots', sequence,
-        source: {
-          documentNodeId: 'document-1', documentRevision: 4, documentDigest: `sha256:${'b'.repeat(64)}`,
-          documentResourceDigests: [`sha256:${'c'.repeat(64)}`],
-          model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1', displayName: 'Model', capabilities: {} },
-          skills: [{ skillId: 'skill-1', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
-        }
-      }, rationale: 'Explicit transform'
-    }
+    const edit = storyboardResponseEdit()
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       threadId: 'thread-1', conversationId: 'conversation-1', text: 'ok', proposals: [], canvasEdits: [edit]
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
@@ -188,6 +196,39 @@ describe('agent runtime message contract', () => {
       operationKind: 'storyboard_create', documentNodeId: 'document-1'
     })
     expect(result.canvasEdits).toEqual([edit])
+  })
+
+  it.each([
+    ['nine Skills', () => ({
+      ...storyboardResponseSource(),
+      skills: Array.from({ length: 9 }, (_, index) => ({
+        skillId: `skill-${index + 1}`, revision: index + 1,
+        digest: `sha256:${String(index + 1).repeat(64)}`
+      }))
+    })],
+    ['a legacy three-key model', () => ({
+      ...storyboardResponseSource(),
+      model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1' }
+    })],
+    ['malformed model capabilities', () => ({
+      ...storyboardResponseSource(),
+      model: { ...storyboardResponseSource().model, capabilities: [] }
+    })],
+    ['a bad Document digest', () => ({ ...storyboardResponseSource(), documentDigest: 'not-a-digest' })],
+    ['duplicate Skills', () => ({
+      ...storyboardResponseSource(),
+      skills: [storyboardResponseSource().skills[0], storyboardResponseSource().skills[0]]
+    })],
+    ['an extraneous source key', () => ({ ...storyboardResponseSource(), browserTrusted: true })]
+  ])('rejects Storyboard response ingress with %s', async (_label, source) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-1', conversationId: 'conversation-1', text: 'ok', proposals: [],
+      canvasEdits: [storyboardResponseEdit(source())]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(agentRuntimeService.sendMessage({ content: 'Create it', projectId: 'project-1' }))
+      .rejects.toThrow('Invalid agent canvas edits.')
   })
 
   it('rejects a malformed enriched Document edit before it can be applied', async () => {
@@ -211,7 +252,7 @@ describe('agent document apply acknowledgement contract', () => {
   it('sends an exact applied acknowledgement through the existing runtime prefix', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       status: 'applied',
-      editId: 'edit-1'
+      conversationId: 'conversation one', requestId: 'request-1', editId: 'edit:one'
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -235,7 +276,7 @@ describe('agent document apply acknowledgement contract', () => {
   it('sends a bounded failed acknowledgement without leaking provider evidence', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       status: 'pending_apply',
-      editId: 'edit-1'
+      conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1'
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -253,6 +294,29 @@ describe('agent document apply acknowledgement contract', () => {
     })
     expect(JSON.stringify(body)).not.toContain('providerFileId')
     expect(JSON.stringify(body)).not.toContain('F:\\')
+  })
+
+  it.each([
+    ['an unknown status', {
+      status: 'maybe', conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1'
+    }],
+    ['a mismatched conversation', {
+      status: 'applied', conversationId: 'conversation-other', requestId: 'request-1', editId: 'edit-1'
+    }],
+    ['a mismatched request', {
+      status: 'applied', conversationId: 'conversation-1', requestId: 'request-other', editId: 'edit-1'
+    }],
+    ['a mismatched edit', {
+      status: 'applied', conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-other'
+    }]
+  ])('rejects an ACK response with %s', async (_label, response) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(response), {
+      status: 200, headers: { 'Content-Type': 'application/json' }
+    })))
+
+    await expect(agentRuntimeService.acknowledgeDocumentEdit(
+      'project-1', 'conversation-1', 'edit-1', { requestId: 'request-1', status: 'applied' }
+    )).rejects.toThrow('Invalid agent edit status.')
   })
 
   it('reconciles pending edits with an empty closed body', async () => {
@@ -277,12 +341,28 @@ describe('agent document apply acknowledgement contract', () => {
   it('rejects a malformed replayed Document edit during restart reconciliation', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       status: 'pending_apply',
+      conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-only',
       canvasEdits: [{ kind: 'document_create', id: 'edit-only' }]
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(agentRuntimeService.reconcileDocumentEdits('project-1', 'conversation-1'))
       .rejects.toThrow('Invalid agent canvas edits.')
+  })
+
+  it.each([
+    ['an unknown status', { status: 'maybe', canvasEdits: [] }],
+    ['a mismatched conversation', {
+      status: 'applied', conversationId: 'conversation-other', requestId: 'request-1', editId: 'edit-1',
+      canvasEdits: []
+    }]
+  ])('rejects reconciliation with %s', async (_label, response) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(response), {
+      status: 200, headers: { 'Content-Type': 'application/json' }
+    })))
+
+    await expect(agentRuntimeService.reconcileDocumentEdits('project-1', 'conversation-1'))
+      .rejects.toThrow('Invalid agent edit reconciliation.')
   })
 })
 

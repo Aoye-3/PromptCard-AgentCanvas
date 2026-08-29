@@ -4,6 +4,7 @@ import type {
   IFreeCanvasStoryboardNode,
   IStoryboardRow,
   IStoryboardSequence,
+  StoryboardSourceProvenance,
   StoryboardFieldChange,
   StoryboardRowField,
   StoryboardSequenceField
@@ -18,6 +19,66 @@ export const STORYBOARD_ROW_FIELDS: readonly StoryboardRowField[] = [
 ]
 export const MAX_STORYBOARD_AGGREGATE_TEXT_BYTES = 256_000
 const MAX_STORYBOARD_FIELD_BYTES = 10_000
+const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> => (
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+)
+
+const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => (
+  Object.keys(value).length === keys.length && keys.every(key => Object.prototype.hasOwnProperty.call(value, key))
+)
+
+const isNonNegativeSafeInteger = (value: unknown): value is number => (
+  Number.isSafeInteger(value) && Number(value) >= 0
+)
+
+const isWellFormedNfcText = (value: unknown, nonempty = false): value is string => {
+  if (typeof value !== 'string' || value !== value.normalize('NFC')) return false
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false
+      index += 1
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false
+  }
+  return (!nonempty || value.length > 0) && new TextEncoder().encode(value).length <= MAX_STORYBOARD_FIELD_BYTES
+}
+
+export const isValidStoryboardSourceProvenance = (
+  value: unknown
+): value is StoryboardSourceProvenance => {
+  if (!isPlainRecord(value) || !hasExactKeys(value, [
+    'documentNodeId', 'documentRevision', 'documentDigest', 'documentResourceDigests', 'model', 'skills'
+  ])) return false
+  const model = value.model
+  const skills = value.skills
+  if (
+    !isWellFormedNfcText(value.documentNodeId, true)
+    || !isNonNegativeSafeInteger(value.documentRevision)
+    || typeof value.documentDigest !== 'string' || !SHA256_DIGEST_PATTERN.test(value.documentDigest)
+    || !Array.isArray(value.documentResourceDigests) || value.documentResourceDigests.length > 5
+    || value.documentResourceDigests.some(digest => typeof digest !== 'string' || !SHA256_DIGEST_PATTERN.test(digest))
+    || !isPlainRecord(model)
+    || !hasExactKeys(model, ['connectionId', 'providerId', 'modelId', 'displayName', 'capabilities'])
+    || ['connectionId', 'providerId', 'modelId', 'displayName'].some(key => !isWellFormedNfcText(model[key], true))
+    || !isPlainRecord(model.capabilities)
+    || !Array.isArray(skills) || skills.length > 8
+  ) return false
+  const skillIds = new Set<string>()
+  return skills.every(skill => {
+    if (!isPlainRecord(skill) || !hasExactKeys(skill, ['skillId', 'revision', 'digest'])) return false
+    if (
+      !isWellFormedNfcText(skill.skillId, true)
+      || skillIds.has(skill.skillId)
+      || !isNonNegativeSafeInteger(skill.revision)
+      || typeof skill.digest !== 'string' || !SHA256_DIGEST_PATTERN.test(skill.digest)
+    ) return false
+    skillIds.add(skill.skillId)
+    return true
+  })
+}
 
 const canonicalJson = (value: unknown): string => {
   if (typeof value === 'string') return JSON.stringify(value.normalize('NFC'))
@@ -78,6 +139,7 @@ export const createStoryboardNode = (
   edit: AgentStoryboardCreateEdit,
   position: IFreeCanvasPosition
 ): IFreeCanvasStoryboardNode => {
+  if (!isValidStoryboardSourceProvenance(edit.payload.source)) throw new Error('storyboard_source_invalid')
   assertSequence(edit.payload.sequence)
   const sequence = cloneSequence(edit.payload.sequence)
   const digest = storyboardDigest(sequence, [])

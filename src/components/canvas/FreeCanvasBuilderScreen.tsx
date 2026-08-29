@@ -268,6 +268,25 @@ interface DocumentReconcileLease {
   nodeIds: Set<string>
 }
 
+interface DocumentReconcileState {
+  projectId: string
+  conversationId: string
+  leaseId: string
+  pending: boolean
+  nodeId?: string
+}
+
+interface StoryboardAckRecoveryTarget extends Omit<DocumentReconcileState, 'pending'> {
+  requestId: string
+  editId: string
+}
+
+interface StoryboardAckRecoveryState {
+  token: symbol
+  promise: Promise<boolean>
+  resolve: (applied: boolean) => void
+}
+
 const documentMutationQueueKey = (scope: ProjectMutationScope): string => (
   `${scope.projectId}:${scope.epoch}`
 )
@@ -502,6 +521,8 @@ const FreeCanvasBuilderInner = ({
   const documentMutationQueuesRef = useRef(new Map<string, Promise<void>>())
   const documentReconcileLocksRef = useRef(new Map<string, DocumentReconcileLease>())
   const documentReconcileLockedNodeIdsRef = useRef(new Set<string>())
+  const storyboardAckRecoveriesRef = useRef(new Map<string, StoryboardAckRecoveryState>())
+  const storyboardAckRecoveryTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>())
   const fileDragDepthRef = useRef(0)
   const composerFileDragDepthRef = useRef(0)
   const activeProjectIdRef = useRef(activeProject.id)
@@ -1999,13 +2020,7 @@ const FreeCanvasBuilderInner = ({
     }
   }, [commitCanvasSelection])
 
-  const handleDocumentReconcileStateChange = useCallback(async (state: {
-    projectId: string
-    conversationId: string
-    leaseId: string
-    pending: boolean
-    nodeId?: string
-  }) => {
+  const updateDocumentReconcileLease = useCallback((state: DocumentReconcileState) => {
     if (!state.pending) {
       documentReconcileLocksRef.current.delete(state.leaseId)
     } else {
@@ -2039,6 +2054,72 @@ const FreeCanvasBuilderInner = ({
     )
     documentReconcileLockedNodeIdsRef.current = next
     setDocumentReconcileLockedNodeIds([...next])
+  }, [])
+
+  const stopStoryboardAckRecovery = useCallback((leaseId: string, applied?: boolean) => {
+    const recovery = storyboardAckRecoveriesRef.current.get(leaseId)
+    storyboardAckRecoveriesRef.current.delete(leaseId)
+    const timer = storyboardAckRecoveryTimersRef.current.get(leaseId)
+    if (timer !== undefined) clearTimeout(timer)
+    storyboardAckRecoveryTimersRef.current.delete(leaseId)
+    if (recovery && applied !== undefined) recovery.resolve(applied)
+  }, [])
+
+  const startStoryboardAckRecovery = useCallback((target: StoryboardAckRecoveryTarget) => {
+    const existing = storyboardAckRecoveriesRef.current.get(target.leaseId)
+    if (existing) return existing.promise
+    const token = Symbol(target.leaseId)
+    let resolveRecovery!: (applied: boolean) => void
+    const promise = new Promise<boolean>(resolve => { resolveRecovery = resolve })
+    storyboardAckRecoveriesRef.current.set(target.leaseId, {
+      token, promise, resolve: resolveRecovery
+    })
+    const isExactResponse = (response: {
+      conversationId?: unknown
+      requestId?: unknown
+      editId?: unknown
+    }) => (
+      response.conversationId === target.conversationId
+      && response.requestId === target.requestId
+      && response.editId === target.editId
+    )
+    const attempt = (delayMs: number) => {
+      const timer = setTimeout(() => {
+        storyboardAckRecoveryTimersRef.current.delete(target.leaseId)
+        void agentRuntimeService.acknowledgeDocumentEdit(
+          target.projectId,
+          target.conversationId,
+          target.editId,
+          { requestId: target.requestId, status: 'applied' }
+        ).then(response => {
+          if (storyboardAckRecoveriesRef.current.get(target.leaseId)?.token !== token) return
+          if (!isExactResponse(response) || response.status === 'pending_apply') {
+            attempt(Math.min(delayMs * 2, 5_000))
+            return
+          }
+          updateDocumentReconcileLease({ ...target, pending: false })
+          stopStoryboardAckRecovery(target.leaseId, response.status === 'applied')
+        }).catch(() => {
+          if (storyboardAckRecoveriesRef.current.get(target.leaseId)?.token === token) {
+            attempt(Math.min(delayMs * 2, 5_000))
+          }
+        })
+      }, delayMs)
+      storyboardAckRecoveryTimersRef.current.set(target.leaseId, timer)
+    }
+    attempt(100)
+    return promise
+  }, [stopStoryboardAckRecovery, updateDocumentReconcileLease])
+
+  useEffect(() => () => {
+    storyboardAckRecoveriesRef.current.forEach(recovery => recovery.resolve(false))
+    storyboardAckRecoveriesRef.current.clear()
+    storyboardAckRecoveryTimersRef.current.forEach(timer => clearTimeout(timer))
+    storyboardAckRecoveryTimersRef.current.clear()
+  }, [])
+
+  const handleDocumentReconcileStateChange = useCallback(async (state: DocumentReconcileState) => {
+    updateDocumentReconcileLease(state)
     if (state.pending) {
       const scope = activeProjectScopeRef.current
       const currentTail = scope.projectId === state.projectId
@@ -2046,7 +2127,7 @@ const FreeCanvasBuilderInner = ({
         : undefined
       if (currentTail) await currentTail
     }
-  }, [])
+  }, [updateDocumentReconcileLease])
 
   const enqueueDocumentMutation = useCallback(<T,>(
     scope: ProjectMutationScope,
@@ -3120,23 +3201,86 @@ const FreeCanvasBuilderInner = ({
           return false
         }
         const confirmAppliedAcknowledgement = async () => {
+          const acknowledgementRequest = () => agentRuntimeService.acknowledgeDocumentEdit(
+            activeProject.id,
+            proposal.conversationId,
+            proposal.editId,
+            { requestId: proposal.requestId, status: 'applied' }
+          )
+          const reconciliationLease = {
+            projectId: activeProject.id,
+            conversationId: proposal.conversationId,
+            leaseId: `saved-agent-edit:${activeProject.id}:${proposal.conversationId}:${proposal.editId}`,
+            nodeId: proposal.nodeId
+          }
+          const recoveryTarget = {
+            ...reconciliationLease,
+            requestId: proposal.requestId,
+            editId: proposal.editId
+          }
+          const retainAmbiguousRecoveryLock = (
+            proposal.kind === 'storyboard_create' || proposal.kind === 'storyboard_changes'
+          )
+          const isExpectedStatus = (status: {
+            conversationId?: unknown
+            requestId?: unknown
+            editId?: unknown
+          }) => (
+            status.conversationId === proposal.conversationId
+            && status.requestId === proposal.requestId
+            && status.editId === proposal.editId
+          )
+          const finishExactStatus = (response: Awaited<ReturnType<typeof acknowledgementRequest>>) => {
+            if (!isExpectedStatus(response)) throw new Error('agent_edit_ack_identity_mismatch')
+            if (response.status === 'pending_apply') {
+              if (retainAmbiguousRecoveryLock) {
+                updateDocumentReconcileLease({ ...reconciliationLease, pending: true })
+                return startStoryboardAckRecovery(recoveryTarget)
+              }
+              return false
+            }
+            stopStoryboardAckRecovery(reconciliationLease.leaseId, response.status === 'applied')
+            updateDocumentReconcileLease({ ...reconciliationLease, pending: false })
+            return response.status === 'applied'
+          }
           try {
-            const acknowledgement = await agentRuntimeService.acknowledgeDocumentEdit(
-              activeProject.id,
-              proposal.conversationId,
-              proposal.editId,
-              { requestId: proposal.requestId, status: 'applied' }
-            )
-            return acknowledgement.status === 'applied'
+            return finishExactStatus(await acknowledgementRequest())
           } catch {
             try {
-              const reconciliation = await agentRuntimeService.reconcileDocumentEdits(
-                activeProject.id,
-                proposal.conversationId
-              )
-              return reconciliation.status === 'applied' || reconciliation.status === 'idle'
+              return finishExactStatus(await acknowledgementRequest())
             } catch {
-              return false
+              try {
+                const reconciliation = await agentRuntimeService.reconcileDocumentEdits(
+                  activeProject.id,
+                  proposal.conversationId
+                )
+                if (reconciliation.status === 'idle' || reconciliation.status === 'pending_apply') {
+                  if (retainAmbiguousRecoveryLock) {
+                    updateDocumentReconcileLease({ ...reconciliationLease, pending: true })
+                    return startStoryboardAckRecovery(recoveryTarget)
+                  }
+                  return false
+                }
+                if (!isExpectedStatus(reconciliation)) {
+                  if (retainAmbiguousRecoveryLock) {
+                    updateDocumentReconcileLease({ ...reconciliationLease, pending: true })
+                    return startStoryboardAckRecovery(recoveryTarget)
+                  }
+                  return false
+                }
+                stopStoryboardAckRecovery(
+                  reconciliationLease.leaseId,
+                  reconciliation.status === 'applied'
+                )
+                updateDocumentReconcileLease({ ...reconciliationLease, pending: false })
+                return reconciliation.status === 'applied'
+              } catch {
+                if (retainAmbiguousRecoveryLock) {
+                  updateDocumentReconcileLease({ ...reconciliationLease, pending: true })
+                  return startStoryboardAckRecovery(recoveryTarget)
+                }
+                return false
+              }
             }
           }
         }

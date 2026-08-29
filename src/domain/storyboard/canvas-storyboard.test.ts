@@ -56,6 +56,31 @@ describe('Canvas Storyboard direct edits', () => {
     })
   })
 
+  it.each([
+    ['nine Skills', {
+      ...provenance,
+      skills: Array.from({ length: 9 }, (_, index) => ({
+        skillId: `skill-${index + 1}`, revision: index + 1,
+        digest: `sha256:${String(index + 1).repeat(64)}`
+      }))
+    }],
+    ['a legacy three-key model', {
+      ...provenance,
+      model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1' }
+    }],
+    ['malformed model capabilities', {
+      ...provenance, model: { ...provenance.model, capabilities: [] }
+    }],
+    ['a bad Document digest', { ...provenance, documentDigest: 'not-a-digest' }],
+    ['duplicate Skills', { ...provenance, skills: [provenance.skills[0], provenance.skills[0]] }],
+    ['an extraneous source key', { ...provenance, browserTrusted: true }]
+  ])('rejects direct apply with non-canonical Storyboard source provenance: %s', (_label, source) => {
+    const edit = createEdit()
+    edit.payload = { ...edit.payload, source: source as typeof provenance }
+
+    expect(() => createStoryboardNode(edit, { x: 0, y: 0 })).toThrow('storyboard_source_invalid')
+  })
+
   it('keeps later sequence and row edits as reviewable differences and rejects stale bases', () => {
     const initial = createStoryboardNode(createEdit(), { x: 0, y: 0 })
     const changes: AgentStoryboardChangesEdit = {

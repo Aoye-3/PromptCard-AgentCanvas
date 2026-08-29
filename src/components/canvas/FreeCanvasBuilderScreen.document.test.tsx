@@ -447,7 +447,11 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     mocks.getConversations.mockResolvedValue({ conversations: [], nextCursor: null })
     mocks.getConversationRuns.mockResolvedValue({ runs: [], nextCursor: null })
     mocks.getPendingPlacements.mockResolvedValue([])
-    mocks.acknowledgeDocumentEdit.mockResolvedValue({ status: 'applied', editId: 'edit-1' })
+    mocks.acknowledgeDocumentEdit.mockImplementation((
+      _projectId: string, conversationId: string, editId: string, body: { requestId: string }
+    ) => Promise.resolve({
+      status: 'applied', conversationId, requestId: body.requestId, editId
+    }))
     mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'idle', canvasEdits: [] })
   })
 
@@ -561,9 +565,14 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     })
   })
 
-  it('persists an idempotent Storyboard create marker before ACK and reconciles a lost ACK', async () => {
+  it('persists an idempotent Storyboard create marker before ACK and retries the exact lost ACK', async () => {
     mocks.agentCanvasEdit = storyboardCreateEdit()
-    mocks.acknowledgeDocumentEdit.mockRejectedValue(new Error('response lost'))
+    mocks.acknowledgeDocumentEdit
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValue({
+        status: 'applied', conversationId: 'conversation-1', requestId: 'request-storyboard',
+        editId: 'edit-storyboard'
+      })
     const onPersistCanvas = vi.fn().mockResolvedValue(true)
     const Harness = () => {
       const [current, setCurrent] = useState<IFreeCanvasProject>({ ...initialCanvas(), nodes: [] })
@@ -589,7 +598,8 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     })
     expect(mocks.acknowledgeDocumentEdit.mock.invocationCallOrder[0])
       .toBeGreaterThan(onPersistCanvas.mock.invocationCallOrder[0])
-    expect(mocks.reconcileDocumentEdits).toHaveBeenCalledWith('project-1', 'conversation-1')
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledTimes(3)
+    expect(mocks.reconcileDocumentEdits).not.toHaveBeenCalled()
     expect(renderer.root.findAllByProps({ 'aria-label': '分镜表：Opening shots' })).toHaveLength(1)
 
     await dispatchWindowKey('z')
@@ -599,7 +609,8 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
   it('does not report a saved Storyboard apply as successful when ACK returns a terminal failure', async () => {
     mocks.agentCanvasEdit = storyboardCreateEdit()
     mocks.acknowledgeDocumentEdit.mockResolvedValue({
-      status: 'failed_integrity', editId: 'edit-storyboard', errorCode: 'failed_integrity'
+      status: 'failed_integrity', conversationId: 'conversation-1', requestId: 'request-storyboard',
+      editId: 'edit-storyboard', errorCode: 'failed_integrity'
     })
     const onPersistCanvas = vi.fn().mockResolvedValue(true)
     const Harness = () => {
@@ -619,6 +630,210 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
 
     expect(onPersistCanvas).toHaveBeenCalledTimes(1)
     expect(mocks.applyResults).toEqual([false])
+  })
+
+  it('reports a lost terminal Storyboard ACK as failed after the exact idempotent retry', async () => {
+    mocks.agentCanvasEdit = storyboardCreateEdit()
+    mocks.acknowledgeDocumentEdit
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce({
+        status: 'failed_integrity', conversationId: 'conversation-1', requestId: 'request-storyboard',
+        editId: 'edit-storyboard', errorCode: 'failed_integrity'
+      })
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>({ ...initialCanvas(), nodes: [] })
+      return <FreeCanvasBuilderScreen
+        activeProject={project(current)} freeCanvas={current}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+      />
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+    })
+
+    expect(onPersistCanvas).toHaveBeenCalledOnce()
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledTimes(2)
+    expect(mocks.reconcileDocumentEdits).not.toHaveBeenCalled()
+    expect(mocks.applyResults).toEqual([false])
+  })
+
+  it('recovers a lost applied Storyboard ACK through the exact idempotent retry', async () => {
+    mocks.agentCanvasEdit = storyboardCreateEdit()
+    mocks.acknowledgeDocumentEdit
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce({
+        status: 'applied', conversationId: 'conversation-1', requestId: 'request-storyboard',
+        editId: 'edit-storyboard'
+      })
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>({ ...initialCanvas(), nodes: [] })
+      return <FreeCanvasBuilderScreen
+        activeProject={project(current)} freeCanvas={current}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+      />
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+    })
+
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledTimes(2)
+    expect(mocks.reconcileDocumentEdits).not.toHaveBeenCalled()
+    expect(mocks.applyResults).toEqual([true])
+  })
+
+  it('keeps Storyboard review locked for an exact pending ACK until a later exact ACK applies', async () => {
+    const clean = pendingStoryboardNode()
+    clean.pendingFieldChanges = []
+    clean.digest = storyboardDigest(clean.sequence, [])
+    const changes = [{
+      id: 'sbf-edit-storyboard-pending-0', editId: 'edit-storyboard-pending', scope: 'row' as const,
+      rowId: 'row-1', field: 'camera' as const, previousValue: 'wide', newValue: 'close-up'
+    }]
+    mocks.agentCanvasEdit = {
+      kind: 'storyboard_changes', id: 'edit-storyboard-pending', editId: 'edit-storyboard-pending',
+      conversationId: 'conversation-1', requestId: 'request-storyboard-pending', nodeId: clean.id,
+      expectedResultDigest: storyboardDigest(clean.sequence, changes),
+      base: { projectRevision: 1, nodeRevision: clean.revision!, nodeDigest: clean.digest },
+      payload: { changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }] },
+      rationale: 'Refine camera'
+    }
+    const recovery = deferred<{
+      status: 'applied'
+      conversationId: string
+      requestId: string
+      editId: string
+    }>()
+    mocks.acknowledgeDocumentEdit
+      .mockResolvedValueOnce({
+        status: 'pending_apply', conversationId: 'conversation-1', requestId: 'request-storyboard-pending',
+        editId: 'edit-storyboard-pending'
+      })
+      .mockReturnValueOnce(recovery.promise)
+    const canvas = { ...initialCanvas(), nodes: [clean], selectedNodeId: clean.id }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>(canvas)
+      return <FreeCanvasBuilderScreen
+        activeProject={project(current)} freeCanvas={current}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+      />
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+    const apply = () => renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+
+    let application!: Promise<void>
+    act(() => { application = apply() })
+    await act(async () => { for (let index = 0; index < 5; index += 1) await Promise.resolve() })
+    expect(mocks.applyResults).toEqual([])
+    expect(renderer.root.findByProps({ 'aria-label': '接受 camera 修改' }).props.disabled).toBe(true)
+    expect(mocks.reconcileDocumentEdits).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 120))
+      recovery.resolve({
+        status: 'applied', conversationId: 'conversation-1', requestId: 'request-storyboard-pending',
+        editId: 'edit-storyboard-pending'
+      })
+      await application
+    })
+    expect(mocks.applyResults).toEqual([true])
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledTimes(2)
+    expect(renderer.root.findByProps({ 'aria-label': '接受 camera 修改' }).props.disabled).toBe(false)
+    expect(onPersistCanvas).toHaveBeenCalledOnce()
+  })
+
+  it('locks saved Storyboard review after ambiguous ACK recovery and unlocks after exact recovery succeeds', async () => {
+    const clean = pendingStoryboardNode()
+    clean.pendingFieldChanges = []
+    clean.digest = storyboardDigest(clean.sequence, [])
+    const changes = [{
+      id: 'sbf-edit-storyboard-lock-0', editId: 'edit-storyboard-lock', scope: 'row' as const,
+      rowId: 'row-1', field: 'camera' as const, previousValue: 'wide', newValue: 'close-up'
+    }]
+    mocks.agentCanvasEdit = {
+      kind: 'storyboard_changes', id: 'edit-storyboard-lock', editId: 'edit-storyboard-lock',
+      conversationId: 'conversation-1', requestId: 'request-storyboard-lock', nodeId: clean.id,
+      expectedResultDigest: storyboardDigest(clean.sequence, changes),
+      base: { projectRevision: 1, nodeRevision: clean.revision!, nodeDigest: clean.digest },
+      payload: { changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }] },
+      rationale: 'Refine camera'
+    }
+    mocks.acknowledgeDocumentEdit
+      .mockRejectedValueOnce(new Error('first response lost'))
+      .mockRejectedValueOnce(new Error('exact retry unavailable'))
+    const recovery = deferred<{
+      status: 'applied'
+      conversationId: string
+      requestId: string
+      editId: string
+    }>()
+    mocks.acknowledgeDocumentEdit.mockReturnValueOnce(recovery.promise)
+    mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'idle', canvasEdits: [] })
+    const canvas = { ...initialCanvas(), nodes: [clean], selectedNodeId: clean.id }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>(canvas)
+      return <FreeCanvasBuilderScreen
+        activeProject={project(current)} freeCanvas={current}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+      />
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    let application!: Promise<void>
+    act(() => {
+      application = renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+    })
+    await act(async () => { for (let index = 0; index < 5; index += 1) await Promise.resolve() })
+    const saved = onPersistCanvas.mock.calls[0][0] as IFreeCanvasProject
+    const savedStoryboard = saved.nodes[0] as IFreeCanvasStoryboardNode
+    const savedDigest = savedStoryboard.digest
+    const savedMarker = structuredClone(savedStoryboard.agentAppliedEdit)
+    const accept = renderer.root.findByProps({ 'aria-label': '接受 camera 修改' })
+    expect(accept.props.disabled).toBe(true)
+
+    await act(async () => {
+      accept.props.onClick()
+      for (let index = 0; index < 5; index += 1) await Promise.resolve()
+    })
+    expect(onPersistCanvas).toHaveBeenCalledTimes(1)
+    expect(savedStoryboard.digest).toBe(savedDigest)
+    expect(savedStoryboard.agentAppliedEdit).toEqual(savedMarker)
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 120))
+      recovery.resolve({
+        status: 'applied', conversationId: 'conversation-1', requestId: 'request-storyboard-lock',
+        editId: 'edit-storyboard-lock'
+      })
+      await application
+    })
+    expect(mocks.applyResults).toEqual([true])
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledTimes(3)
+    const recoveredAccept = renderer.root.findByProps({ 'aria-label': '接受 camera 修改' })
+    expect(recoveredAccept.props.disabled).toBe(false)
+
+    await act(async () => {
+      recoveredAccept.props.onClick()
+      for (let index = 0; index < 5; index += 1) await Promise.resolve()
+    })
+    expect(onPersistCanvas).toHaveBeenCalledTimes(2)
+    const accepted = onPersistCanvas.mock.calls[1][0] as IFreeCanvasProject
+    expect((accepted.nodes[0] as IFreeCanvasStoryboardNode).sequence.rows[0].camera).toBe('close-up')
   })
 
   it('rolls back an unsaved Storyboard direct apply and sends a bounded failed ACK', async () => {

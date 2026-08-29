@@ -29,7 +29,11 @@ import type {
 import type { ImageRegion } from '@/domain/image-generation/image-generation'
 import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 import { createPlanningDocumentV1, parsePlanningDocumentV1 } from '@/domain/documents/planning-document'
-import { MAX_STORYBOARD_AGGREGATE_TEXT_BYTES, storyboardDigest } from '@/domain/storyboard/canvas-storyboard'
+import {
+  isValidStoryboardSourceProvenance,
+  MAX_STORYBOARD_AGGREGATE_TEXT_BYTES,
+  storyboardDigest
+} from '@/domain/storyboard/canvas-storyboard'
 
 const DEFAULT_USER_COLOR = '#111827'
 const DEFAULT_PRESET_COLOR = '#ef4423'
@@ -1186,39 +1190,6 @@ const isValidStoryboardText = (value: unknown): value is string => (
   && new TextEncoder().encode(value).length <= MAX_STORYBOARD_FIELD_BYTES
 )
 
-const isValidStoryboardSource = (value: unknown): boolean => {
-  if (!isPlainRecordValue(value) || !hasExactRecordKeys(value, [
-    'documentNodeId', 'documentRevision', 'documentDigest', 'documentResourceDigests', 'model', 'skills'
-  ])) return false
-  const model = value.model
-  if (
-    !isValidStoryboardText(value.documentNodeId) || !value.documentNodeId
-    || !isNonNegativeSafeInteger(value.documentRevision)
-    || typeof value.documentDigest !== 'string' || !SHA256_DIGEST_PATTERN.test(value.documentDigest)
-    || !Array.isArray(value.documentResourceDigests) || value.documentResourceDigests.length > 5
-    || value.documentResourceDigests.some(item => typeof item !== 'string' || !SHA256_DIGEST_PATTERN.test(item))
-    || !isPlainRecordValue(model)
-    || !hasExactRecordKeys(model, ['connectionId', 'providerId', 'modelId', 'displayName', 'capabilities'])
-    || ['connectionId', 'providerId', 'modelId', 'displayName'].some(key => (
-      !isValidStoryboardText(model[key]) || !model[key]
-    ))
-    || !isPlainRecordValue(model.capabilities)
-    || !Array.isArray(value.skills)
-    || value.skills.length > 8
-  ) return false
-  const skillIds = new Set<string>()
-  return value.skills.every(skill => {
-    if (!isPlainRecordValue(skill) || !hasExactRecordKeys(skill, ['skillId', 'revision', 'digest'])) return false
-    if (
-      !isValidStoryboardText(skill.skillId) || !skill.skillId || skillIds.has(skill.skillId)
-      || !isNonNegativeSafeInteger(skill.revision)
-      || typeof skill.digest !== 'string' || !SHA256_DIGEST_PATTERN.test(skill.digest)
-    ) return false
-    skillIds.add(skill.skillId)
-    return true
-  })
-}
-
 const isValidStoryboardSequence = (value: unknown): value is IFreeCanvasStoryboardNode['sequence'] => {
   if (!isPlainRecordValue(value) || !hasExactRecordKeys(value, [
     'id', 'name', 'description', 'style', 'constraints', 'rows', 'createdAt', 'updatedAt', 'meta'
@@ -1309,7 +1280,7 @@ const isValidPersistedStoryboardNode = (
     || typeof node.width !== 'number' || !Number.isFinite(node.width) || node.width <= 0
     || typeof node.height !== 'number' || !Number.isFinite(node.height) || node.height <= 0
     || !isValidStoryboardSequence(node.sequence)
-    || !isValidStoryboardSource(node.source)
+    || !isValidStoryboardSourceProvenance(node.source)
     || !isValidStoryboardPendingChanges(node.pendingFieldChanges, node.sequence)
     || (node.revision !== undefined && !isNonNegativeSafeInteger(node.revision))
     || (node.digest !== undefined && (typeof node.digest !== 'string' || !SHA256_DIGEST_PATTERN.test(node.digest)))
