@@ -1279,12 +1279,17 @@ def validate_agent_document_edits(
         title = payload_source.get("title")
         blocks = payload_source.get("blocks")
         resource_ids = payload_source.get("linkedDocumentResourceIds", [])
+        authoritative_resource_ids = expected_write_context.get(
+            "linkedDocumentResourceIds"
+        )
         if (
             not isinstance(title, str)
             or not title.strip()
             or len(title) > 200
             or not _valid_planning_document_blocks(blocks)
             or not isinstance(resource_ids, list)
+            or not isinstance(authoritative_resource_ids, list)
+            or resource_ids != authoritative_resource_ids
             or len(resource_ids) > MAX_DOCUMENT_ATTACHMENTS
             or len(resource_ids) != len(set(resource_ids))
             or not all(isinstance(item, str) and item.strip() for item in resource_ids)
@@ -1293,7 +1298,7 @@ def validate_agent_document_edits(
         payload = {
             "title": unicodedata.normalize("NFC", title.strip()),
             "blocks": _normalize_nfc_json_value(blocks),
-            "linkedDocumentResourceIds": [item.strip() for item in resource_ids],
+            "linkedDocumentResourceIds": list(authoritative_resource_ids),
         }
         expected_result_digest = _planning_document_digest(payload["blocks"], [])
         supplied_digest = edit.get("expectedResultDigest")

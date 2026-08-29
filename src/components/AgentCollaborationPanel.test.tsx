@@ -2,10 +2,17 @@ import { startTransition } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentDocumentAttachment, AgentMessage, AgentWorkspaceContext, AgentWorkspaceProposal } from '@/models/Agent.model'
+import type { AgentCanvasEdit, AgentDocumentAttachment, AgentMessage, AgentWorkspaceContext, AgentWorkspaceProposal } from '@/models/Agent.model'
 
 const DOCUMENT_RESOURCE_A = 'a'.repeat(32)
 const DOCUMENT_RESOURCE_B = 'b'.repeat(32)
+
+const settleConversationSelection = async (renderer: ReactTestRenderer, ariaLabel = '加载实验会话') => {
+  await act(async () => {
+    renderer.root.findByProps({ 'aria-label': ariaLabel }).props.onClick()
+    for (let index = 0; index < 4; index += 1) await Promise.resolve()
+  })
+}
 
 const mocks = vi.hoisted(() => ({
   checkRuntime: vi.fn(),
@@ -253,6 +260,103 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     expect(renderer.root.findByType(CanvasAgentComposer).props.disabled).toBe(false)
   })
 
+  it('holds the target reconciliation barrier from the request through the recovered apply', async () => {
+    const pendingReconcile = deferred<{
+      status: 'pending_apply'
+      canvasEdits: AgentCanvasEdit[]
+    }>()
+    const pendingApply = deferred<boolean>()
+    const edit = {
+      kind: 'document_changes' as const,
+      id: 'edit-reconcile-barrier', editId: 'edit-reconcile-barrier',
+      conversationId: 'conversation-experimental', requestId: 'request-reconcile-barrier',
+      nodeId: 'document-reconcile', expectedResultDigest: `sha256:${'b'.repeat(64)}`,
+      base: { projectRevision: 1, nodeRevision: 2, nodeDigest: `sha256:${'a'.repeat(64)}` },
+      payload: { operations: [] }, rationale: 'Recover the saved edit before local changes.'
+    }
+    mocks.reconcileDocumentEdits.mockReturnValue(pendingReconcile.promise)
+    const onApplyCanvasEdit = vi.fn(() => pendingApply.promise)
+    const onDocumentReconcileStateChange = vi.fn()
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={onApplyCanvasEdit}
+          onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+        />
+      )
+    })
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
+      conversationId: 'conversation-experimental', pending: true
+    })
+    expect(renderer.root.findByType(CanvasAgentComposer).props.disabled).toBe(true)
+    expect(onApplyCanvasEdit).not.toHaveBeenCalled()
+
+    await act(async () => {
+      pendingReconcile.resolve({ status: 'pending_apply', canvasEdits: [edit] })
+      await pendingReconcile.promise
+      await Promise.resolve()
+    })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
+      conversationId: 'conversation-experimental', pending: true, nodeId: 'document-reconcile'
+    })
+    expect(onApplyCanvasEdit).toHaveBeenCalledWith(edit)
+
+    await act(async () => { pendingApply.resolve(true); await pendingApply.promise })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
+      conversationId: 'conversation-experimental', pending: false
+    })
+  })
+
+  it('releases the old conversation barrier when hydration switches during reconciliation', async () => {
+    const pendingOldReconcile = deferred<{ status: 'idle'; canvasEdits: [] }>()
+    mocks.reconcileDocumentEdits
+      .mockReturnValueOnce(pendingOldReconcile.promise)
+      .mockResolvedValueOnce({ status: 'idle', canvasEdits: [] })
+    const onDocumentReconcileStateChange = vi.fn()
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={vi.fn()}
+          onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+        />
+      )
+    })
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
+      conversationId: 'conversation-experimental', pending: true
+    })
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载会话 B' }).props.onClick()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith({
+      conversationId: 'conversation-experimental', pending: false
+    })
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith({
+      conversationId: 'conversation-b', pending: true
+    })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
+      conversationId: 'conversation-b', pending: false
+    })
+  })
+
   it('does not expose a failed conversation retry after switching conversations', () => {
     mocks.sessionError = 'response lost'
     mocks.retryRequest = {
@@ -310,7 +414,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         />
       )
     })
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
 
     await act(async () => {
       renderer.root.findByProps({ 'aria-label': '使用原请求重试' }).props.onClick()
@@ -747,7 +851,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         />
       )
     })
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
     const attachment = {
       resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown' as const,
       size: 7, sha256: 'a'.repeat(64)
@@ -786,7 +890,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         />
       )
     })
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
     const attachment = {
       resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown' as const,
       size: 7, sha256: 'a'.repeat(64)
@@ -989,7 +1093,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         />
       )
     })
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
     act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([{
       resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown',
       size: 7, sha256: 'a'.repeat(64)
@@ -1069,7 +1173,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         />
       )
     })
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
 
     await act(async () => {
       await renderer.root.findByProps({ 'aria-label': '使用原请求重试' }).props.onClick()
@@ -1099,7 +1203,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         />
       )
     })
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
     const composer = renderer.root.findByProps({ 'data-agent-composer': true })
     act(() => composer.props.onInput({ currentTarget: { textContent: 'Apply in conversation A' } }))
     let submission!: Promise<void>
@@ -1109,7 +1213,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
     expect(applyCanvasEdit).toHaveBeenCalledOnce()
 
-    act(() => renderer.root.findByProps({ 'aria-label': '加载会话 B' }).props.onClick())
+    await settleConversationSelection(renderer, '加载会话 B')
     await act(async () => {
       pendingApply.reject(new Error('conversation A apply failed'))
       await submission
@@ -1143,7 +1247,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         />
       )
     })
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
     const composer = renderer.root.findByProps({ 'data-agent-composer': true })
     act(() => composer.props.onInput({ currentTarget: { textContent: 'Apply workspace in conversation A' } }))
     let submission!: Promise<void>
@@ -1153,7 +1257,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
     expect(applyWorkspaceProposal).toHaveBeenCalledOnce()
 
-    act(() => renderer.root.findByProps({ 'aria-label': '加载会话 B' }).props.onClick())
+    await settleConversationSelection(renderer, '加载会话 B')
     await act(async () => {
       pendingApply.reject(new Error('conversation A workspace apply failed'))
       await submission
@@ -1190,7 +1294,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         />
       )
     })
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
     act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
       currentTarget: { textContent: 'Start old apply' }
     }))
@@ -1238,7 +1342,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         />
       )
     })
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
     act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
       currentTarget: { textContent: 'Apply after reselecting this conversation' }
     }))
@@ -1249,7 +1353,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
     expect(applyCanvasEdit).toHaveBeenCalledOnce()
 
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
     await act(async () => {
       pendingApply.reject(new Error('current conversation Canvas apply failed'))
       await submission
@@ -1282,7 +1386,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         />
       )
     })
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
     act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
       currentTarget: { textContent: 'Apply workspace after reselecting this conversation' }
     }))
@@ -1293,7 +1397,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
     expect(applyWorkspaceProposal).toHaveBeenCalledOnce()
 
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
     await act(async () => {
       pendingApply.reject(new Error('current conversation workspace apply failed'))
       await submission
@@ -1330,7 +1434,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     act(() => {
       renderer = create(panel('session-a', workspaceContext))
     })
-    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    await settleConversationSelection(renderer)
     act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
       currentTarget: { textContent: 'Apply before committed identity switch' }
     }))
@@ -1404,7 +1508,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
           { unstable_isConcurrent: true } as never
         )
       })
-      act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+      await settleConversationSelection(renderer)
       act(() =>
         renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
           currentTarget: {

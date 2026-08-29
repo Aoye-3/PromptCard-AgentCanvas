@@ -46,10 +46,11 @@ vi.mock('@/components/canvas/document/DocumentEditor', () => ({
 vi.mock('@xyflow/react', () => {
   const PassThrough = ({ children }: { children?: ReactNode }) => <Fragment>{children}</Fragment>
   const reactFlow = { screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({ x, y }) }
-  const ReactFlow = ({ nodes, nodeTypes, onSelectionChange, children }: {
+  const ReactFlow = ({ nodes, nodeTypes, onSelectionChange, onNodesChange, children }: {
     nodes: Array<{ id: string; type: string; data: Record<string, unknown>; selected?: boolean; draggable?: boolean; connectable?: boolean; deletable?: boolean }>
     nodeTypes: Record<string, (props: Record<string, unknown>) => ReactNode>
     onSelectionChange?: (selection: { nodes: Array<{ id: string }> }) => void
+    onNodesChange?: (changes: Array<{ type: 'remove'; id: string }>) => void
     children?: ReactNode
   }) => (
     <div data-mock-react-flow>
@@ -73,6 +74,11 @@ vi.mock('@xyflow/react', () => {
         aria-label="测试清空画布选择"
         onClick={() => onSelectionChange?.({ nodes: [] })}
       >Clear selection</button>
+      <button
+        type="button"
+        aria-label="测试 ReactFlow 删除首个节点"
+        onClick={() => nodes[0] && onNodesChange?.([{ type: 'remove', id: nodes[0].id }])}
+      >Remove first</button>
       {nodes.map(node => {
         const Component = nodeTypes[node.type]
         return (
@@ -110,8 +116,9 @@ vi.mock('@xyflow/react', () => {
 
 vi.mock('@/components/canvas/nodes/DocumentNode', async importOriginal => {
   const original = await importOriginal<typeof import('@/components/canvas/nodes/DocumentNode')>()
-  const MockDocumentNode = ({ node, onDocumentChange, onCollapsedChange, onDelete }: {
+  const MockDocumentNode = ({ node, locked, onDocumentChange, onCollapsedChange, onDelete }: {
     node: IFreeCanvasDocumentNode
+    locked?: boolean
     onDocumentChange: (document: PlanningDocumentV1) => Promise<boolean> | boolean
     onCollapsedChange?: (collapsed: boolean) => Promise<boolean> | boolean
     onDelete: () => void
@@ -120,6 +127,7 @@ vi.mock('@/components/canvas/nodes/DocumentNode', async importOriginal => {
       data-screen-document-node={node.id}
       data-document-text={planningDocumentEffectiveText(node.document)}
       data-document-collapsed={node.meta.collapsed === true}
+      data-document-locked={locked === true}
     >
       <button
         type="button"
@@ -152,10 +160,25 @@ vi.mock('@/components/canvas/nodes/DocumentNode', async importOriginal => {
 })
 
 vi.mock('@/components/AgentCollaborationPanel', () => ({
-  AIChatbotBox: ({ onApplyCanvasEdit }: {
+  AIChatbotBox: ({ onApplyCanvasEdit, onDocumentReconcileStateChange }: {
     onApplyCanvasEdit?: (edit: AgentCanvasEdit) => Promise<boolean | void> | boolean | void
+    onDocumentReconcileStateChange?: (state: { conversationId: string; pending: boolean; nodeId?: string }) => void
   }) => (
     <div>
+      <button
+        type="button"
+        aria-label="测试开始 Document reconcile"
+        onClick={() => onDocumentReconcileStateChange?.({
+          conversationId: 'conversation-restart', pending: true
+        })}
+      >Start reconcile</button>
+      <button
+        type="button"
+        aria-label="测试结束 Document reconcile"
+        onClick={() => onDocumentReconcileStateChange?.({
+          conversationId: 'conversation-restart', pending: false
+        })}
+      >Finish reconcile</button>
       {mocks.agentCanvasEdit && (
         <button
           type="button"
@@ -1767,5 +1790,56 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     const savedNode = persisted[persisted.length - 1]?.nodes.find(candidate => candidate.id === 'document-1') as IFreeCanvasDocumentNode
     expect(savedNode.meta.collapsed).toBe(true)
     expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-collapsed']).toBe(true)
+  })
+
+  it('locks only the saved-before-ACK Document while restart reconciliation is in flight', async () => {
+    const canvas = twoDocumentCanvas()
+    canvas.nodes = canvas.nodes.map(node => node.id === 'document-1' && node.kind === 'document'
+      ? {
+          ...node,
+          agentAppliedEdit: {
+            conversationId: 'conversation-restart', requestId: 'request-restart',
+            editId: 'edit-restart', resultDigest: node.document.digest
+          }
+        }
+      : node)
+    const persisted: IFreeCanvasProject[] = []
+    const Harness = () => {
+      const [current, setCurrent] = useState(canvas)
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(current)} freeCanvas={current} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCurrent}
+          onPersistCanvas={async next => { persisted.push(next); return true }}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />); await Promise.resolve() })
+
+    await act(async () => renderedDocument(renderer, 'document-1').findByProps({ 'aria-label': '测试编辑文档 A' }).props.onClick())
+    expect(renderedDocument(renderer, 'document-1').props['data-document-text']).toBe('A')
+
+    act(() => renderer.root.findByProps({ 'aria-label': '测试开始 Document reconcile' }).props.onClick())
+    expect(renderedDocument(renderer, 'document-1').props['data-document-locked']).toBe(true)
+    expect(renderedDocument(renderer, 'document-2').props['data-document-locked']).toBe(false)
+
+    await act(async () => renderedDocument(renderer, 'document-1').findByProps({ 'aria-label': '测试编辑文档 B' }).props.onClick())
+    act(() => renderedDocument(renderer, 'document-1').findByProps({ 'aria-label': '测试删除文档' }).props.onClick())
+    act(() => renderer.root.findByProps({ 'aria-label': '测试 ReactFlow 删除首个节点' }).props.onClick())
+    await dispatchWindowKey('z')
+    expect(renderedDocument(renderer, 'document-1').props['data-document-text']).toBe('A')
+
+    await act(async () => renderedDocument(renderer, 'document-2').findByProps({ 'aria-label': '测试编辑文档 B' }).props.onClick())
+    expect(renderedDocument(renderer, 'document-2').props['data-document-text']).toBe('B')
+    expect(persisted[persisted.length - 1]).toEqual(expect.objectContaining({
+      nodes: expect.arrayContaining([
+        expect.objectContaining({ id: 'document-1' }),
+        expect.objectContaining({ id: 'document-2' })
+      ])
+    }))
+
+    act(() => renderer.root.findByProps({ 'aria-label': '测试结束 Document reconcile' }).props.onClick())
+    expect(renderedDocument(renderer, 'document-1').props['data-document-locked']).toBe(false)
   })
 })

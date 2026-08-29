@@ -225,6 +225,69 @@ async def test_send_stores_pending_before_return_and_response_loss_replays_witho
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("request_resource_ids", "runtime_resource_ids", "accepted"),
+    [
+        ([], ["resource-from-another-project"], False),
+        (["resource-project-1"], ["resource-project-2"], False),
+        (["resource-project-1"], ["resource-project-1"], True),
+    ],
+)
+async def test_document_create_binds_linked_resources_to_authoritative_request_context(
+    monkeypatch,
+    request_resource_ids,
+    runtime_resource_ids,
+    accepted,
+):
+    saved: dict = {}
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return conversation([])
+        if method == "GET" and path == "/api/projects/project-1":
+            return project_with_node({"id": "other", "kind": "text"}, revision=1)
+        if method == "POST" and path.endswith("/turns"):
+            saved.update(kwargs["json"])
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_invoke(_payload):
+        edit = create_edit()
+        edit["linkedDocumentResourceIds"] = runtime_resource_ids
+        return {
+            "threadId": "conversation-1",
+            "text": "ok",
+            "proposals": [],
+            "canvasEdits": [edit],
+        }
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_invoke_text_agent", fake_invoke)
+    monkeypatch.setattr(promptcard_runtime, "resolve_text_model", lambda _: descriptor())
+    monkeypatch.setattr(
+        promptcard_runtime,
+        "_resolve_skill_snapshots",
+        lambda _: __import__("asyncio").sleep(0, result=[]),
+    )
+    monkeypatch.setattr(
+        promptcard_runtime,
+        "_load_document_resources",
+        lambda *_: __import__("asyncio").sleep(0, result=[]),
+    )
+    request = body().model_copy(update={"document_resource_ids": request_resource_ids})
+
+    result = await promptcard_runtime.runtime_service.send_message(request, None)
+
+    if accepted:
+        assert result["canvasEdits"][0]["payload"]["linkedDocumentResourceIds"] == request_resource_ids
+        assert saved["applyEdit"]["status"] == "pending_apply"
+    else:
+        assert result["canvasEdits"] == []
+        assert "applyEdit" not in saved
+    assert saved["proposals"] == []
+
+
+@pytest.mark.anyio
 async def test_changes_context_is_storage_derived_and_result_digest_is_gateway_computed(monkeypatch):
     source = document([{
         "id": "block-1",

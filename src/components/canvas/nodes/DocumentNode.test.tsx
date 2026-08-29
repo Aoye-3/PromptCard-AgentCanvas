@@ -138,6 +138,58 @@ describe('DocumentNode', () => {
     expect(planningDocumentEffectiveText(submitted)).toBe(expectedText)
   })
 
+  it('blocks editing, suggestion decisions, collapse, retry, and delete while reconciliation owns the Document', async () => {
+    const onDocumentChange = vi.fn().mockResolvedValue(true)
+    const onCollapsedChange = vi.fn().mockResolvedValue(true)
+    const onDelete = vi.fn()
+    const renderer = create(
+      <DocumentNode
+        node={proposedNode()} selected locked
+        onDocumentChange={onDocumentChange} onCollapsedChange={onCollapsedChange} onDelete={onDelete}
+      />
+    )
+
+    expect(renderer.root.findByProps({ 'data-document-node': 'document-1' }).props['aria-busy']).toBe(true)
+    expect(renderer.root.findByProps({ 'aria-label': '接受修订 1' }).props.disabled).toBe(true)
+    expect(renderer.root.findByProps({ 'aria-label': '删除文档' }).props.disabled).toBe(true)
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '接受修订 1' }).props.onClick()
+      renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props.onClick()
+      renderer.root.findByProps({ 'aria-label': '折叠文档' }).props.onClick()
+      renderer.root.findByProps({ 'aria-label': '删除文档' }).props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(onDocumentChange).not.toHaveBeenCalled()
+    expect(onCollapsedChange).not.toHaveBeenCalled()
+    expect(onDelete).not.toHaveBeenCalled()
+  })
+
+  it('disables a visible failed-save retry while reconciliation owns the Document', async () => {
+    const onDocumentChange = vi.fn().mockResolvedValue(false)
+    const authority = node()
+    const view = (locked: boolean) => (
+      <DocumentNode
+        node={authority} selected locked={locked}
+        onDocumentChange={onDocumentChange} onDelete={vi.fn()}
+      />
+    )
+    const renderer = create(view(false))
+
+    await act(async () => {
+      renderer.root.findByProps({ 'data-mock-document-editor': 'inline' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(renderer.root.findByProps({ 'aria-label': '重试保存文档' }).props.disabled).toBe(false)
+
+    act(() => renderer.update(view(true)))
+    const retryButton = renderer.root.findByProps({ 'aria-label': '重试保存文档' })
+    expect(retryButton.props.disabled).toBe(true)
+    await act(async () => { retryButton.props.onClick(); await Promise.resolve() })
+    expect(onDocumentChange).toHaveBeenCalledTimes(1)
+  })
+
   it.each([
     ['accepts', '全部接受修订', 'New draft'],
     ['rejects', '全部拒绝修订', 'Old draft']

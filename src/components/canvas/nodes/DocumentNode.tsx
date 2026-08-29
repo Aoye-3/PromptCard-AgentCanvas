@@ -15,6 +15,7 @@ import type { IFreeCanvasDocumentNode, PlanningDocumentV1 } from '@/models/Promp
 interface DocumentNodeProps {
   node: IFreeCanvasDocumentNode
   selected: boolean
+  locked?: boolean
   onDocumentChange: (document: PlanningDocumentV1) => Promise<boolean> | boolean
   onCollapsedChange?: (collapsed: boolean) => Promise<boolean> | boolean
   onDelete: () => void
@@ -26,7 +27,7 @@ interface DocumentRetryRequest {
   authoritativeIdentity: string
 }
 
-export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChange, onDelete }: DocumentNodeProps) => {
+export const DocumentNode = ({ node, selected, locked = false, onDocumentChange, onCollapsedChange, onDelete }: DocumentNodeProps) => {
   const expandButtonRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
   const requestTokenRef = useRef(0)
@@ -90,7 +91,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   }, [node.document.suggestions.length])
 
   useEffect(() => {
-    if (!expanded) return
+    if (!expanded || locked) return
     const frame = requestAnimationFrame(() => {
       dialogRef.current
         ?.querySelector<HTMLElement>('[role="textbox"], [contenteditable="true"]')
@@ -99,9 +100,10 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
     return () => {
       if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
     }
-  }, [expanded])
+  }, [expanded, locked])
 
   const commit = async (document: PlanningDocumentV1) => {
+    if (locked) return
     const token = ++requestTokenRef.current
     const submittedNodeId = authoritativeNodeIdRef.current
     pendingRequestTokensRef.current.add(token)
@@ -135,6 +137,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   }
 
   const commitEditorChange = (document: PlanningDocumentV1) => {
+    if (locked) return
     if (draftDocument.suggestions.length > 0 || document.suggestions.length > 0) return
     const revision = Math.max(document.revision, revisionClockRef.current + 1)
     const nextDocument = revision === document.revision
@@ -145,6 +148,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   }
 
   const resolveSuggestion = (suggestionId: string, decision: 'accept' | 'reject') => {
+    if (locked) return
     const next = decision === 'accept'
       ? acceptDocumentSuggestion(draftDocument, suggestionId)
       : rejectDocumentSuggestion(draftDocument, suggestionId)
@@ -152,6 +156,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   }
 
   const resolveAllSuggestions = (decision: 'accept' | 'reject') => {
+    if (locked) return
     const next = decision === 'accept'
       ? acceptAllDocumentSuggestions(draftDocument)
       : rejectAllDocumentSuggestions(draftDocument)
@@ -159,6 +164,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   }
 
   const retry = (request: DocumentRetryRequest) => {
+    if (locked) return
     if (
       request.token !== requestTokenRef.current ||
       request.authoritativeIdentity !== authoritativeIdentityRef.current
@@ -195,6 +201,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   }
 
   const toggleCollapsed = async () => {
+    if (locked) return
     const next = !collapsed
     setCollapsed(next)
     if (!onCollapsedChange) return
@@ -208,7 +215,8 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
       <button
         type="button"
         aria-label="重试保存文档"
-        className="flex items-center gap-1 rounded-md bg-white px-2 py-1 text-red-700 shadow-sm hover:bg-red-100"
+        disabled={locked}
+        className="flex items-center gap-1 rounded-md bg-white px-2 py-1 text-red-700 shadow-sm hover:bg-red-100 disabled:opacity-50"
         onClick={() => retry(retryRequest)}
       ><RotateCcw className="h-3 w-3" />重试</button>
     </div>
@@ -246,14 +254,14 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
         <button
           type="button"
           aria-label="全部接受修订"
-          disabled={saving}
+          disabled={saving || locked}
           className="rounded-md bg-white px-2 py-1 text-emerald-700 shadow-sm disabled:opacity-50"
           onClick={() => resolveAllSuggestions('accept')}
         >全部接受</button>
         <button
           type="button"
           aria-label="全部拒绝修订"
-          disabled={saving}
+          disabled={saving || locked}
           className="rounded-md bg-white px-2 py-1 text-red-700 shadow-sm disabled:opacity-50"
           onClick={() => resolveAllSuggestions('reject')}
         >全部拒绝</button>
@@ -265,14 +273,14 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
             <button
               type="button"
               aria-label={`接受修订 ${index + 1}`}
-              disabled={saving}
+              disabled={saving || locked}
               className="font-bold text-emerald-700 disabled:opacity-50"
               onClick={() => resolveSuggestion(suggestion.id, 'accept')}
             >接受</button>
             <button
               type="button"
               aria-label={`拒绝修订 ${index + 1}`}
-              disabled={saving}
+              disabled={saving || locked}
               className="font-bold text-red-700 disabled:opacity-50"
               onClick={() => resolveSuggestion(suggestion.id, 'reject')}
             >拒绝</button>
@@ -306,13 +314,16 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
         {retryAlert}
         {viewTabs}
         {suggestionReview}
-        <DocumentEditor
-          document={draftDocument}
-          mode="expanded"
-          view={documentView}
-          autoFocus
-          onChange={commitEditorChange}
-        />
+        <div data-document-edit-lock={locked} className={locked ? 'pointer-events-none' : undefined}>
+          <DocumentEditor
+            key={locked ? 'locked' : 'editable'}
+            document={draftDocument}
+            mode="expanded"
+            view={documentView}
+            autoFocus={!locked}
+            onChange={commitEditorChange}
+          />
+        </div>
       </section>
     </div>
   ) : null
@@ -320,6 +331,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
   return (
     <article
       data-document-node={node.id}
+      aria-busy={locked}
       className={`overflow-hidden rounded-[8px] border bg-white shadow-[0_12px_32px_rgba(15,23,42,0.12)] ${
         selected ? 'border-sky-500 ring-2 ring-sky-200' : 'border-gray-200'
       }`}
@@ -328,7 +340,7 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
       <header className="flex h-12 items-center gap-2 border-b border-gray-200 px-3">
         <FileText className="h-4 w-4 shrink-0 text-gray-500" />
         <strong className="min-w-0 flex-1 truncate text-sm text-gray-950">{node.title}</strong>
-        {saving && <span role="status" className="text-[11px] font-semibold text-gray-400">保存中…</span>}
+        {(saving || locked) && <span role="status" className="text-[11px] font-semibold text-gray-400">{locked ? '同步中…' : '保存中…'}</span>}
         <button
           ref={expandButtonRef}
           type="button"
@@ -339,14 +351,16 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
         <button
           type="button"
           aria-label={collapsed ? '展开文档' : '折叠文档'}
+          disabled={locked}
           className="nodrag flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-950"
           onClick={() => { void toggleCollapsed() }}
         ><ChevronDown className={`h-3.5 w-3.5 transition-transform ${collapsed ? '-rotate-90' : ''}`} /></button>
         <button
           type="button"
           aria-label="删除文档"
+          disabled={locked}
           className="nodrag flex h-8 w-8 items-center justify-center rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600"
-          onClick={onDelete}
+          onClick={() => { if (!locked) onDelete() }}
         ><Trash2 className="h-3.5 w-3.5" /></button>
       </header>
 
@@ -359,7 +373,15 @@ export const DocumentNode = ({ node, selected, onDocumentChange, onCollapsedChan
           {summary || '空白规划文档'}
         </p>
       ) : !expanded ? (
-        <DocumentEditor document={draftDocument} mode="inline" view={documentView} onChange={commitEditorChange} />
+        <div data-document-edit-lock={locked} className={locked ? 'pointer-events-none' : undefined}>
+          <DocumentEditor
+            key={locked ? 'locked' : 'editable'}
+            document={draftDocument}
+            mode="inline"
+            view={documentView}
+            onChange={commitEditorChange}
+          />
+        </div>
       ) : (
         <div className="flex h-[300px] items-center justify-center px-4 text-xs font-semibold text-gray-400">文档正在展开编辑器中打开</div>
       )}

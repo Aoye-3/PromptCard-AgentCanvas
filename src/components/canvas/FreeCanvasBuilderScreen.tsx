@@ -206,6 +206,7 @@ type FreeCanvasFlowNodeData = {
   onDocumentChange: (nodeId: string, document: PlanningDocumentV1) => Promise<boolean>
   onDocumentCollapsedChange: (nodeId: string, collapsed: boolean) => Promise<boolean>
   onDocumentDelete: (nodeId: string) => void
+  documentLocked: boolean
   onImageResize: (nodeId: string, frame: { position?: { x: number; y: number }; width: number; height: number }) => void
   resultThumbnailUrl?: string
   onOpenImageHistory: (nodeId: string) => void
@@ -425,6 +426,7 @@ const FreeCanvasBuilderInner = ({
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(
     () => freeCanvas.selectedNodeId ? [freeCanvas.selectedNodeId] : []
   )
+  const [documentReconcileLockedNodeIds, setDocumentReconcileLockedNodeIds] = useState<string[]>([])
   const [agentDraftRequest, setAgentDraftRequest] = useState<{
     id: string
     canvasNode: {
@@ -475,6 +477,8 @@ const FreeCanvasBuilderInner = ({
   const copiedImageNodeRef = useRef<IFreeCanvasImageNode | null>(null)
   const canvasCommandHistoryRef = useRef(createCanvasCommandHistory())
   const documentMutationQueuesRef = useRef(new Map<string, Promise<void>>())
+  const documentReconcileLocksRef = useRef(new Map<string, Set<string>>())
+  const documentReconcileLockedNodeIdsRef = useRef(new Set<string>())
   const fileDragDepthRef = useRef(0)
   const composerFileDragDepthRef = useRef(0)
   const activeProjectIdRef = useRef(activeProject.id)
@@ -579,6 +583,9 @@ const FreeCanvasBuilderInner = ({
         epoch: projectEpochRef.current
       }
       canvasCommandHistoryRef.current = createCanvasCommandHistory()
+      documentReconcileLocksRef.current.clear()
+      documentReconcileLockedNodeIdsRef.current = new Set()
+      setDocumentReconcileLockedNodeIds([])
     }
     activeProjectIdRef.current = activeProject.id
     freeCanvasRef.current = freeCanvas
@@ -1965,6 +1972,34 @@ const FreeCanvasBuilderInner = ({
     }
   }, [commitCanvasSelection])
 
+  const handleDocumentReconcileStateChange = useCallback((state: {
+    conversationId: string
+    pending: boolean
+    nodeId?: string
+  }) => {
+    if (!state.pending) {
+      documentReconcileLocksRef.current.delete(state.conversationId)
+    } else {
+      const locked = new Set(documentReconcileLocksRef.current.get(state.conversationId))
+      freeCanvasRef.current.nodes.forEach(node => {
+        if (
+          node.kind === 'document'
+          && node.agentAppliedEdit?.conversationId === state.conversationId
+        ) locked.add(node.id)
+      })
+      if (state.nodeId) {
+        const target = freeCanvasRef.current.nodes.find(node => node.id === state.nodeId)
+        if (target?.kind === 'document') locked.add(target.id)
+      }
+      documentReconcileLocksRef.current.set(state.conversationId, locked)
+    }
+    const next = new Set(
+      [...documentReconcileLocksRef.current.values()].flatMap(nodeIds => [...nodeIds])
+    )
+    documentReconcileLockedNodeIdsRef.current = next
+    setDocumentReconcileLockedNodeIds([...next])
+  }, [])
+
   const enqueueDocumentMutation = useCallback(<T,>(
     scope: ProjectMutationScope,
     operation: () => Promise<T>
@@ -2043,9 +2078,11 @@ const FreeCanvasBuilderInner = ({
     nodeId: string,
     document: PlanningDocumentV1
   ): Promise<boolean> => {
+    if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return Promise.resolve(false)
     const scope = activeProjectScopeRef.current
     return enqueueDocumentMutation(scope, async () => {
       if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return true
+      if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return false
       const beforeCanvas = freeCanvasRef.current
       const beforeHistory = canvasCommandHistoryRef.current
       const current = beforeCanvas.nodes.find(node => node.id === nodeId)
@@ -2100,9 +2137,11 @@ const FreeCanvasBuilderInner = ({
     nodeId: string,
     collapsed: boolean
   ): Promise<boolean> => {
+    if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return Promise.resolve(false)
     const scope = activeProjectScopeRef.current
     return enqueueDocumentMutation(scope, async () => {
       if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return true
+      if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return false
       const beforeCanvas = freeCanvasRef.current
       const current = beforeCanvas.nodes.find(node => node.id === nodeId)
       if (!current || current.kind !== 'document') return false
@@ -2170,7 +2209,9 @@ const FreeCanvasBuilderInner = ({
       : [nodeId]
     const nodeIds = requestedNodeIds.filter(candidateId => {
       const candidate = current.nodes.find(node => node.id === candidateId)
-      return candidate && !isIsolatedReadOnlyCanvasNode(candidate)
+      return candidate
+        && !isIsolatedReadOnlyCanvasNode(candidate)
+        && !(candidate.kind === 'document' && documentReconcileLockedNodeIdsRef.current.has(candidate.id))
     })
     if (nodeIds.length === 0) return
     applyCanvasCommand({ kind: 'delete-nodes', nodeIds })
@@ -2326,6 +2367,9 @@ const FreeCanvasBuilderInner = ({
         ? beforeHistory.future[0]
         : beforeHistory.past[beforeHistory.past.length - 1]
       if (!entry) return true
+      const entryNodeIds = [entry.undo, entry.redo]
+        .flatMap(command => canvasCommandAuthorityImpact(command).nodeIds)
+      if (entryNodeIds.some(nodeId => documentReconcileLockedNodeIdsRef.current.has(nodeId))) return false
       const applied = direction === 'redo'
         ? redoCanvasLocalCommand(beforeHistory, beforeCanvas)
         : undoCanvasLocalCommand(beforeHistory, beforeCanvas)
@@ -2654,9 +2698,12 @@ const FreeCanvasBuilderInner = ({
     type: node.kind === 'image-generator' ? 'imageGeneratorNode' : 'freeCanvasNode',
     position: node.position,
     selected: selectedNodeIds.includes(node.id),
-    draggable: !isIsolatedReadOnlyCanvasNode(node),
+    draggable: !isIsolatedReadOnlyCanvasNode(node)
+      && !(node.kind === 'document' && documentReconcileLockedNodeIds.includes(node.id)),
     connectable: !isNonConnectableCanvasNode(node),
-    deletable: !isIsolatedReadOnlyCanvasNode(node) && !isRunningFreeCanvasImageGeneration(node),
+    deletable: !isIsolatedReadOnlyCanvasNode(node)
+      && !isRunningFreeCanvasImageGeneration(node)
+      && !(node.kind === 'document' && documentReconcileLockedNodeIds.includes(node.id)),
     initialWidth: node.kind === 'image' ? node.width : undefined,
     initialHeight: node.kind === 'image' ? node.height : undefined,
     style: node.kind === 'image' ? { width: node.width, height: node.height } : undefined,
@@ -2672,6 +2719,7 @@ const FreeCanvasBuilderInner = ({
       onDocumentChange: updateDocumentNode,
       onDocumentCollapsedChange: updateDocumentCollapsed,
       onDocumentDelete: deleteCanvasNodes,
+      documentLocked: node.kind === 'document' && documentReconcileLockedNodeIds.includes(node.id),
       onImageResize: resizeImageNode,
       resultThumbnailUrl: node.kind === 'image-generator' && node.primaryAssetId
         ? canvasImageAssetUrl(node.primaryAssetId)
@@ -2691,7 +2739,7 @@ const FreeCanvasBuilderInner = ({
         referenceCount: freeCanvas.edges.filter(edge => edge.target === node.id && edge.targetHandle === 'reference-image').length
       } : undefined
     }
-  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, deleteCanvasNodes, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, resizeImageNode, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateDocumentCollapsed, updateDocumentNode, updateTextStyle])
+  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, deleteCanvasNodes, documentReconcileLockedNodeIds, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, resizeImageNode, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateDocumentCollapsed, updateDocumentNode, updateTextStyle])
 
   const [flowNodes, setFlowNodes] = useState<FreeCanvasFlowNode[]>(nodes)
   useEffect(() => {
@@ -2737,7 +2785,9 @@ const FreeCanvasBuilderInner = ({
       .map(change => change.id)
       .filter(nodeId => {
         const node = freeCanvasRef.current.nodes.find(candidate => candidate.id === nodeId)
-        return node && !isIsolatedReadOnlyCanvasNode(node)
+        return node
+          && !isIsolatedReadOnlyCanvasNode(node)
+          && !(node.kind === 'document' && documentReconcileLockedNodeIdsRef.current.has(node.id))
       })
     if (removedNodeIds.length > 0 && !isCanvasKeyboardLocked) {
       const nextCanvas = removeFreeCanvasProjectNodes(freeCanvasRef.current, removedNodeIds)
@@ -3815,6 +3865,7 @@ const FreeCanvasBuilderInner = ({
               workspaceContext={workspaceContext}
               onApplyWorkspaceProposal={handleApplyAgentProposal}
               onApplyCanvasEdit={handleApplyAgentProposal}
+              onDocumentReconcileStateChange={handleDocumentReconcileStateChange}
               draftRequest={agentDraftRequest}
               compact
               embedded
@@ -3868,6 +3919,7 @@ const FreeCanvasNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
       <DocumentNode
         node={node}
         selected={selected}
+        locked={data.documentLocked}
         onDocumentChange={document => data.onDocumentChange(node.id, document)}
         onCollapsedChange={collapsed => data.onDocumentCollapsedChange(node.id, collapsed)}
         onDelete={() => data.onDocumentDelete(node.id)}

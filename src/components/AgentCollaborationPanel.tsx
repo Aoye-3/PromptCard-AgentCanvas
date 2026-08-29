@@ -36,6 +36,11 @@ interface AgentCollaborationPanelProps {
   sessionKey?: string
   onApplyWorkspaceProposal: (proposal: AgentWorkspaceProposal) => Promise<boolean | void> | boolean | void
   onApplyCanvasEdit?: (edit: AgentCanvasEdit) => Promise<boolean | void> | boolean | void
+  onDocumentReconcileStateChange?: (state: {
+    conversationId: string
+    pending: boolean
+    nodeId?: string
+  }) => void
   autoApplyWorkspaceChanges?: boolean
   compact?: boolean
   embedded?: boolean
@@ -77,6 +82,7 @@ export function AgentCollaborationPanel({
   sessionKey: sessionKeyProp,
   onApplyWorkspaceProposal,
   onApplyCanvasEdit,
+  onDocumentReconcileStateChange,
   autoApplyWorkspaceChanges = false,
   compact = false,
   embedded = false,
@@ -133,6 +139,8 @@ export function AgentCollaborationPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const onApplyCanvasEditRef = useRef(onApplyCanvasEdit)
   onApplyCanvasEditRef.current = onApplyCanvasEdit
+  const onDocumentReconcileStateChangeRef = useRef(onDocumentReconcileStateChange)
+  onDocumentReconcileStateChangeRef.current = onDocumentReconcileStateChange
   const canvasIdentityRef = useRef(`${sessionKey}:${workspaceContext.projectId}`)
   const postSendApplyIdentity = `${sessionKey}:${workspaceContext.projectId}:${conversationId || 'new'}`
   const postSendApplyIdentityRef = useRef(postSendApplyIdentity)
@@ -216,7 +224,15 @@ export function AgentCollaborationPanel({
       return
     }
     let cancelled = false
+    let barrierReleased = false
     const identity = `${sessionKey}:${workspaceContext.projectId}:${conversationId}`
+    const releaseBarrier = () => {
+      if (barrierReleased) return
+      barrierReleased = true
+      onDocumentReconcileStateChangeRef.current?.({ conversationId, pending: false })
+    }
+    setDocumentEditReconciling(true)
+    onDocumentReconcileStateChangeRef.current?.({ conversationId, pending: true })
     void (async () => {
       try {
         const reconciliation = await agentRuntimeService.reconcileDocumentEdits(
@@ -225,8 +241,15 @@ export function AgentCollaborationPanel({
         )
         if (cancelled || postSendApplyIdentityRef.current !== identity) return
         if (reconciliation.status === 'pending_apply' && reconciliation.canvasEdits.length === 1) {
-          setDocumentEditReconciling(true)
-          const applied = await onApplyCanvasEditRef.current?.(reconciliation.canvasEdits[0])
+          const edit = reconciliation.canvasEdits[0]
+          if (edit.kind === 'document_create' || edit.kind === 'document_changes') {
+            onDocumentReconcileStateChangeRef.current?.({
+              conversationId,
+              pending: true,
+              nodeId: edit.nodeId
+            })
+          }
+          const applied = await onApplyCanvasEditRef.current?.(edit)
           if (applied === false && !cancelled && postSendApplyIdentityRef.current === identity) {
             setPostSendApplyError(POST_SEND_APPLY_ERROR)
           }
@@ -239,9 +262,13 @@ export function AgentCollaborationPanel({
         if (!cancelled && postSendApplyIdentityRef.current === identity) {
           setDocumentEditReconciling(false)
         }
+        releaseBarrier()
       }
     })()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      releaseBarrier()
+    }
   }, [conversationId, sessionKey, workspaceContext.projectId])
 
   const conversationMessages = useMemo(
