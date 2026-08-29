@@ -4,6 +4,7 @@ import type {
   IFreeCanvasImageNode,
   IFreeCanvasNode,
   IFreeCanvasProject,
+  IFreeCanvasStoryboardNode,
   PlanningDocumentV1
 } from '@/models/PromptHistory.model'
 import { markCanvasNodeReferencePending } from '@/domain/reference-codes/canvas-node-reference-lifecycle'
@@ -30,6 +31,7 @@ export type CanvasLocalCommand =
       nodeId: string
       document: PlanningDocumentV1
     }
+  | { kind: 'update-storyboard'; nodeId: string; storyboard: IFreeCanvasStoryboardNode }
 
 export interface CanvasCommandApplication {
   project: IFreeCanvasProject
@@ -47,10 +49,10 @@ export interface CanvasCommandHistory {
 }
 
 const commandDocumentNodeIds = (command: CanvasLocalCommand): string[] => {
-  if (command.kind === 'update-document') return [command.nodeId]
-  if (command.kind === 'insert-node') return command.node.kind === 'document' ? [command.node.id] : []
+  if (command.kind === 'update-document' || command.kind === 'update-storyboard') return [command.nodeId]
+  if (command.kind === 'insert-node') return command.node.kind === 'document' || command.node.kind === 'storyboard' ? [command.node.id] : []
   if (command.kind === 'restore-nodes') {
-    return command.nodes.flatMap(item => item.node.kind === 'document' ? [item.node.id] : [])
+    return command.nodes.flatMap(item => item.node.kind === 'document' || item.node.kind === 'storyboard' ? [item.node.id] : [])
   }
   return []
 }
@@ -233,6 +235,17 @@ export const applyCanvasLocalCommand = (
     }
   }
 
+  if (command.kind === 'update-storyboard') {
+    const current = project.nodes.find(node => node.id === command.nodeId)
+    if (!current || current.kind !== 'storyboard' || command.storyboard.id !== command.nodeId || command.storyboard.kind !== 'storyboard') {
+      return { project, inverse: command }
+    }
+    return {
+      project: { ...project, nodes: project.nodes.map(node => node.id === command.nodeId ? cloneNode(command.storyboard) : node) },
+      inverse: { kind: 'update-storyboard', nodeId: command.nodeId, storyboard: cloneNode(current) as IFreeCanvasStoryboardNode }
+    }
+  }
+
   if (project.nodes.some(node => node.id === command.node.id)) {
     return { project, inverse: command }
   }
@@ -341,6 +354,9 @@ const cloneEdge = (edge: IFreeCanvasEdge): IFreeCanvasEdge => structuredClone(ed
 const cloneCommand = (command: CanvasLocalCommand): CanvasLocalCommand => {
   if (command.kind === 'update-document') {
     return { ...command, document: clonePlanningDocumentV1(command.document) }
+  }
+  if (command.kind === 'update-storyboard') {
+    return { ...command, storyboard: cloneNode(command.storyboard) as IFreeCanvasStoryboardNode }
   }
   if (command.kind === 'insert-node') {
     return { ...command, node: cloneNode(command.node) }

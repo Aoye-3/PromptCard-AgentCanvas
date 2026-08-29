@@ -7,6 +7,7 @@ import type {
   AgentModelInfo,
   AgentPermissionScope,
   AgentInteractionMode,
+  AgentPlanningWriteContext,
   AgentSkillInfo,
   AgentToolInfo,
   AgentWorkspaceProposal,
@@ -36,7 +37,8 @@ const AGENT_RUNTIME_MESSAGE_KEYS = new Set([
   'interactionMode',
   'canvasNodeContext',
   'documentResourceIds',
-  'explicitDocumentNodeIds'
+  'explicitDocumentNodeIds',
+  'documentWriteContext'
 ])
 
 export interface DeepSeekModelConfig {
@@ -81,6 +83,7 @@ export interface AgentRuntimeMessageRequest {
   canvasNodeContext?: CanvasAgentNodeContext
   documentResourceIds?: string[]
   explicitDocumentNodeIds?: string[]
+  documentWriteContext?: AgentPlanningWriteContext
 }
 
 export interface AgentDocumentEditAcknowledgement {
@@ -232,13 +235,28 @@ const isEnrichedDocumentEdit = (value: unknown): value is AgentCanvasEdit => {
       hasOnlyKeys(value.payload, ['operations']) && Array.isArray(value.payload.operations) &&
       value.payload.operations.length > 0 && value.payload.operations.every(isDocumentChangeOperation)
   }
+  if (value.kind === 'storyboard_create') {
+    return hasOnlyKeys(value.base, ['projectRevision']) && Number.isSafeInteger(value.base.projectRevision) &&
+      hasOnlyKeys(value.payload, ['title', 'sequence', 'source']) && typeof value.payload.title === 'string' &&
+      isRecord(value.payload.sequence) && Array.isArray(value.payload.sequence.rows) &&
+      isRecord(value.payload.source) && typeof value.payload.source.documentNodeId === 'string' &&
+      Number.isSafeInteger(value.payload.source.documentRevision) && typeof value.payload.source.documentDigest === 'string' &&
+      Array.isArray(value.payload.source.documentResourceDigests) && isRecord(value.payload.source.model) &&
+      Array.isArray(value.payload.source.skills)
+  }
+  if (value.kind === 'storyboard_changes') {
+    return hasOnlyKeys(value.base, ['projectRevision', 'nodeRevision', 'nodeDigest']) &&
+      Number.isSafeInteger(value.base.projectRevision) && Number.isSafeInteger(value.base.nodeRevision) &&
+      typeof value.base.nodeDigest === 'string' && SHA256_PATTERN.test(value.base.nodeDigest) &&
+      hasOnlyKeys(value.payload, ['changes']) && Array.isArray(value.payload.changes) && value.payload.changes.length > 0
+  }
   return false
 }
 
 const validateAgentCanvasEdits = (value: unknown): AgentCanvasEdit[] => {
   if (!Array.isArray(value)) throw new Error('Invalid agent canvas edits.')
   const documentEdits = value.filter(edit => isRecord(edit) &&
-    (edit.kind === 'document_create' || edit.kind === 'document_changes'))
+    ['document_create', 'document_changes', 'storyboard_create', 'storyboard_changes'].includes(String(edit.kind)))
   if (documentEdits.length > 1 || documentEdits.some(edit => !isEnrichedDocumentEdit(edit))) {
     throw new Error('Invalid agent canvas edits.')
   }
@@ -428,8 +446,23 @@ function agentRuntimeMessageBody(body: AgentRuntimeMessageRequest): AgentRuntime
     ...(body.interactionMode !== undefined ? { interactionMode: body.interactionMode } : {}),
     ...(body.canvasNodeContext !== undefined ? { canvasNodeContext: body.canvasNodeContext } : {}),
     ...(documentResourceIds !== undefined ? { documentResourceIds } : {}),
-    ...(explicitDocumentNodeIds !== undefined ? { explicitDocumentNodeIds } : {})
+    ...(explicitDocumentNodeIds !== undefined ? { explicitDocumentNodeIds } : {}),
+    ...(body.documentWriteContext !== undefined ? { documentWriteContext: validatePlanningWriteContext(body.documentWriteContext) } : {})
   }
+}
+
+function validatePlanningWriteContext(value: unknown): AgentPlanningWriteContext {
+  if (!isRecord(value) || typeof value.operationKind !== 'string') throw new Error('Invalid documentWriteContext.')
+  if (value.operationKind === 'document_create' && hasOnlyKeys(value, ['operationKind'])) return { operationKind: 'document_create' }
+  if ((value.operationKind === 'document_changes' || value.operationKind === 'storyboard_changes')
+    && hasOnlyKeys(value, ['operationKind', 'nodeId']) && typeof value.nodeId === 'string' && CANVAS_NODE_ID_PATTERN.test(value.nodeId)) {
+    return { operationKind: value.operationKind, nodeId: value.nodeId }
+  }
+  if (value.operationKind === 'storyboard_create' && hasOnlyKeys(value, ['operationKind', 'documentNodeId'])
+    && typeof value.documentNodeId === 'string' && CANVAS_NODE_ID_PATTERN.test(value.documentNodeId)) {
+    return { operationKind: 'storyboard_create', documentNodeId: value.documentNodeId }
+  }
+  throw new Error('Invalid documentWriteContext.')
 }
 
 function validateIdentityArray(

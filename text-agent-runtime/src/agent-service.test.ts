@@ -277,6 +277,60 @@ describe('pi text-agent system boundary', () => {
     }])
   })
 
+  it('exposes closed Storyboard create/change tools only for explicit bound contexts', async () => {
+    const createInvocation = storyboardCreateInvocation()
+    const createEdits: Record<string, unknown>[] = []
+    const createTool = buildAgentTools(createInvocation.policy, [], [], createEdits)
+      .find(candidate => candidate.name === 'emit_storyboard_create')
+    const createSchema = JSON.stringify(createTool?.parameters)
+
+    expect(createTool).toBeDefined()
+    expect(createSchema).toContain('cutLabel')
+    expect(createSchema).not.toContain('documentDigest')
+    expect(createSchema).not.toContain('source')
+    await createTool?.execute('storyboard-create', {
+      title: 'Opening shots',
+      sequence: {
+        id: 'sequence-1', name: 'Opening', description: 'Draft-derived shots', style: 'ink', constraints: '',
+        rows: [{ id: 'row-1', cutLabel: '1', timeRange: '0-3s', subject: 'Mara', action: 'enters', scene: 'hall', camera: 'wide', lighting: 'dawn', audio: '', duration: '3s' }]
+      }, rationale: 'Explicit transform'
+    })
+    expect(createEdits).toEqual([{
+      kind: 'storyboard_create',
+      payload: {
+        title: 'Opening shots',
+        sequence: expect.objectContaining({ id: 'sequence-1', rows: [expect.objectContaining({ id: 'row-1', camera: 'wide' })] })
+      },
+      rationale: 'Explicit transform'
+    }])
+
+    const changesInvocation = storyboardChangesInvocation()
+    const changeEdits: Record<string, unknown>[] = []
+    const changeTool = buildAgentTools(changesInvocation.policy, [], [], changeEdits)
+      .find(candidate => candidate.name === 'emit_storyboard_changes')
+    await changeTool?.execute('storyboard-changes', {
+      changes: [
+        { scope: 'sequence', field: 'style', value: 'watercolour' },
+        { scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }
+      ], rationale: 'Refine fields'
+    })
+    expect(changeEdits).toEqual([{
+      kind: 'storyboard_changes',
+      payload: {
+        nodeId: 'storyboard-1', baseRevision: 3, baseDigest: `sha256:${'d'.repeat(64)}`,
+        changes: [
+          { scope: 'sequence', field: 'style', value: 'watercolour' },
+          { scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }
+        ]
+      }, rationale: 'Refine fields'
+    }])
+
+    const rejected = await changeTool?.execute('storyboard-invalid', {
+      changes: [{ scope: 'row', rowId: 'row-1', field: 'imageUrl', value: 'forged' }], rationale: 'No'
+    })
+    expect(JSON.stringify(rejected)).toContain('storyboard_')
+  })
+
   it.each([
     ['Tiptap JSON', {
       title: 'Bad', blocks: [{ type: 'doc', content: [{ type: 'paragraph' }] }], rationale: 'No'
@@ -566,5 +620,24 @@ const documentChangesInvocation = () => buildInvocation({
       { blockId: 'paragraph-b', text: 'Old text', expectedTextDigest: 'sha256:paragraph-b' }
     ],
     wrapperBlockIds: ['list-wrapper']
+  }
+})
+
+const storyboardCreateInvocation = () => buildInvocation({
+  content: 'Create a storyboard', permissionScope: 'workspace-chatbot-agent', interactionMode: 'chat-experimental',
+  workspaceContext: null, promptLibrary: [],
+  documentWriteContext: {
+    operationKind: 'storyboard_create', documentNodeId: 'document-1', documentRevision: 7,
+    documentDigest: `sha256:${'a'.repeat(64)}`, effectiveText: 'Effective draft',
+    documentResourceDigests: [`sha256:${'b'.repeat(64)}`]
+  }
+})
+
+const storyboardChangesInvocation = () => buildInvocation({
+  content: 'Revise storyboard fields', permissionScope: 'workspace-chatbot-agent', interactionMode: 'chat-experimental',
+  workspaceContext: null, promptLibrary: [],
+  documentWriteContext: {
+    operationKind: 'storyboard_changes', nodeId: 'storyboard-1', baseRevision: 3,
+    baseDigest: `sha256:${'d'.repeat(64)}`, sequence: { id: 'sequence-1', rows: [{ id: 'row-1' }] }
   }
 })

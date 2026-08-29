@@ -152,6 +152,41 @@ describe('agent runtime message contract', () => {
     expect(result.canvasEdits).toEqual([edit])
   })
 
+  it('serializes only the explicit Storyboard transform selector and accepts an enriched create edit', async () => {
+    const sequence = {
+      id: 'sequence-1', name: 'Opening', description: '', style: 'ink', constraints: '', rows: [],
+      createdAt: 1, updatedAt: 1, meta: {}
+    }
+    const edit = {
+      kind: 'storyboard_create', id: 'edit-1', editId: 'edit-1', conversationId: 'conversation-1',
+      requestId: 'request-1', nodeId: 'storyboard-1', expectedResultDigest: `sha256:${'a'.repeat(64)}`,
+      base: { projectRevision: 7 },
+      payload: {
+        title: 'Shots', sequence,
+        source: {
+          documentNodeId: 'document-1', documentRevision: 4, documentDigest: `sha256:${'b'.repeat(64)}`,
+          documentResourceDigests: [`sha256:${'c'.repeat(64)}`],
+          model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1' },
+          skills: [{ skillId: 'skill-1', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
+        }
+      }, rationale: 'Explicit transform'
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-1', conversationId: 'conversation-1', text: 'ok', proposals: [], canvasEdits: [edit]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await agentRuntimeService.sendMessage({
+      content: '从文档创建分镜表', projectId: 'project-1', interactionMode: 'chat-experimental',
+      documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
+    })
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).documentWriteContext).toEqual({
+      operationKind: 'storyboard_create', documentNodeId: 'document-1'
+    })
+    expect(result.canvasEdits).toEqual([edit])
+  })
+
   it('rejects a malformed enriched Document edit before it can be applied', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       threadId: 'thread-1', conversationId: 'conversation-1', requestId: 'request-1', text: 'ok', proposals: [],

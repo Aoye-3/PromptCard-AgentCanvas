@@ -1142,7 +1142,7 @@ class SqliteStore:
                     "nodeId",
                     "kind",
                     "resultDigest",
-                } or normalized_evidence.get("kind") != "document":
+                } or normalized_evidence.get("kind") not in {"document", "storyboard"}:
                     raise ValueError("Applied Agent edit evidence is incomplete")
             elif "code" not in normalized_evidence:
                 raise ValueError("Failed Agent edit evidence code is required")
@@ -5857,7 +5857,7 @@ def _normalize_agent_apply_edit(
         or normalized["requestId"] != request_id
     ):
         raise ValueError("Agent apply edit conversation/request identity is invalid")
-    if normalized["kind"] not in {"document_create", "document_changes"}:
+    if normalized["kind"] not in {"document_create", "document_changes", "storyboard_create", "storyboard_changes"}:
         raise ValueError("Agent apply edit kind is invalid")
     if not normalized["editId"] or not normalized["nodeId"]:
         raise ValueError("Agent apply edit identity is required")

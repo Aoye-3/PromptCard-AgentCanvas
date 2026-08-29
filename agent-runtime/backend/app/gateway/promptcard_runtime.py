@@ -50,7 +50,14 @@ MAX_DOCUMENT_TURN_BYTES = 100 * 1024 * 1024
 MAX_DOCUMENT_MODEL_TEXT_CHARS = 500_000
 _DOCUMENT_INVOCATION_TTL_SECONDS = 300
 _MAX_DOCUMENT_INVOCATIONS = 32
-_DOCUMENT_EDIT_KINDS = {"document_create", "document_changes"}
+_DOCUMENT_EDIT_KINDS = {
+    "document_create", "document_changes", "storyboard_create", "storyboard_changes"
+}
+_STORYBOARD_SEQUENCE_FIELDS = {"name", "description", "style", "constraints"}
+_STORYBOARD_ROW_FIELDS = {
+    "cutLabel", "timeRange", "subject", "action", "scene", "camera",
+    "lighting", "audio", "duration",
+}
 _DOCUMENT_EDIT_MAX_OPERATIONS = 16
 _DOCUMENT_EDIT_MAX_TEXT_BYTES = 64 * 1024
 
@@ -416,6 +423,13 @@ class PromptCardRuntimeService:
                 body,
                 authoritative_document_project,
             )
+            if document_write_context.get("operationKind") == "storyboard_create":
+                resource_ids = document_write_context.pop("linkedDocumentResourceIds", [])
+                source_assets = await _load_document_resources(body.project_id, resource_ids)
+                document_write_context["documentResourceDigests"] = [
+                    "sha256:" + hashlib.sha256(asset.content).hexdigest()
+                    for asset in source_assets
+                ]
         payload["documentWriteContext"] = document_write_context
         if interaction_mode == "prompt-edit":
             resolved_canvas_context = _resolve_canvas_node_context(body)
@@ -472,6 +486,12 @@ class PromptCardRuntimeService:
             if interaction_mode == "chat-experimental"
             else body.permission_scope
         )
+        model_snapshot = _model_snapshot(descriptor)
+        skill_audit = [
+            {key: skill[key] for key in ("skillId", "revision", "digest")}
+            for skill in skill_snapshots
+        ]
+        run_provenance = {"model": model_snapshot, "skills": skill_audit}
         if interaction_mode == "chat-experimental" and any(
             isinstance(edit, dict) and edit.get("kind") in _DOCUMENT_EDIT_KINDS
             for edit in raw_canvas_edits
@@ -485,6 +505,7 @@ class PromptCardRuntimeService:
                 request_id=request_id,
                 project=authoritative_project,
                 expected_write_context=document_write_context,
+                run_provenance=run_provenance,
             )
         else:
             response["canvasEdits"] = validate_agent_canvas_edits(
@@ -509,11 +530,6 @@ class PromptCardRuntimeService:
             permission_scope=validation_permission_scope,
             canvas_node_context=resolved_canvas_context,
         )
-        model_snapshot = _model_snapshot(descriptor)
-        skill_audit = [
-            {key: skill[key] for key in ("skillId", "revision", "digest")}
-            for skill in skill_snapshots
-        ]
         response["proposals"] = [
             {
                 **proposal,
@@ -819,9 +835,12 @@ class PromptCardRuntimeService:
         node_id = str(ledger.get("nodeId") or "")
         node = _project_canvas_node(project, node_id)
         base = edit.get("base")
+        edit_kind = str(ledger.get("kind") or "")
+        storyboard_edit = edit_kind in {"storyboard_create", "storyboard_changes"}
+        expected_node_kind = "storyboard" if storyboard_edit else "document"
         marker = node.get("agentAppliedEdit") if isinstance(node, dict) else None
         if isinstance(marker, dict):
-            if node.get("kind") != "document":
+            if node.get("kind") != expected_node_kind:
                 return await _terminal_agent_edit(
                     conversation_id,
                     request_id,
@@ -837,7 +856,10 @@ class PromptCardRuntimeService:
                 "editId": edit_id,
                 "resultDigest": expected_digest,
             }
-            digest_matches = _persisted_document_digest(node.get("document")) == expected_digest
+            storyboard_state = _persisted_storyboard_state(node) if storyboard_edit else None
+            digest_matches = (
+                storyboard_state is not None and storyboard_state["digest"] == expected_digest
+            ) if storyboard_edit else _persisted_document_digest(node.get("document")) == expected_digest
             if marker_matches and digest_matches:
                 return await _terminal_agent_edit(
                     conversation_id,
@@ -847,7 +869,7 @@ class PromptCardRuntimeService:
                     {
                         "projectRevision": int(project.get("revision") or 1),
                         "nodeId": node_id,
-                        "kind": "document",
+                        "kind": expected_node_kind,
                         "resultDigest": expected_digest,
                     },
                     include_canvas_edits=include_canvas_edits,
@@ -857,7 +879,7 @@ class PromptCardRuntimeService:
                 request_id,
                 edit_id,
                 "failed_integrity",
-                {"nodeId": node_id, "kind": "document", "code": "marker_or_digest_mismatch"},
+                {"nodeId": node_id, "kind": expected_node_kind, "code": "marker_or_digest_mismatch"},
                 include_canvas_edits=include_canvas_edits,
             )
         if not isinstance(base, dict) or not isinstance(base.get("projectRevision"), int) or isinstance(base.get("projectRevision"), bool):
@@ -879,7 +901,7 @@ class PromptCardRuntimeService:
                 include_canvas_edits=include_canvas_edits,
             )
         if node is None:
-            if ledger.get("kind") == "document_create":
+            if edit_kind in {"document_create", "storyboard_create"}:
                 return {
                     "status": "pending_apply",
                     "conversationId": conversation_id,
@@ -892,10 +914,10 @@ class PromptCardRuntimeService:
                 request_id,
                 edit_id,
                 "failed_target_missing",
-                {"code": "document_target_missing"},
+                {"code": f"{expected_node_kind}_target_missing"},
                 include_canvas_edits=include_canvas_edits,
             )
-        if node.get("kind") != "document":
+        if node.get("kind") != expected_node_kind:
             return await _terminal_agent_edit(
                 conversation_id,
                 request_id,
@@ -904,29 +926,32 @@ class PromptCardRuntimeService:
                 {"nodeId": node_id, "kind": str(node.get("kind") or "unknown"), "code": "node_kind_mismatch"},
                 include_canvas_edits=include_canvas_edits,
             )
-        document = node.get("document")
-        if ledger.get("kind") == "document_create":
+        if edit_kind in {"document_create", "storyboard_create"}:
             return await _terminal_agent_edit(
                 conversation_id,
                 request_id,
                 edit_id,
                 "failed_integrity",
-                {"nodeId": node_id, "kind": "document", "code": "create_identity_occupied"},
+                {"nodeId": node_id, "kind": expected_node_kind, "code": "create_identity_occupied"},
                 include_canvas_edits=include_canvas_edits,
             )
-        persisted_document = _normalize_persisted_document(document)
-        if persisted_document is None:
+        persisted_state = (
+            _persisted_storyboard_state(node)
+            if storyboard_edit
+            else _normalize_persisted_document(node.get("document"))
+        )
+        if persisted_state is None:
             return await _terminal_agent_edit(
                 conversation_id,
                 request_id,
                 edit_id,
                 "failed_integrity",
-                {"nodeId": node_id, "kind": "document", "code": "document_shape_invalid"},
+                {"nodeId": node_id, "kind": expected_node_kind, "code": f"{expected_node_kind}_shape_invalid"},
                 include_canvas_edits=include_canvas_edits,
             )
         if (
-            persisted_document["revision"] == base.get("nodeRevision")
-            and persisted_document["digest"] == base.get("nodeDigest")
+            persisted_state["revision"] == base.get("nodeRevision")
+            and persisted_state["digest"] == base.get("nodeDigest")
         ):
             return {
                 "status": "pending_apply",
@@ -940,7 +965,7 @@ class PromptCardRuntimeService:
             request_id,
             edit_id,
             "failed_conflict",
-            {"nodeId": node_id, "kind": "document", "code": "document_base_changed"},
+            {"nodeId": node_id, "kind": expected_node_kind, "code": f"{expected_node_kind}_base_changed"},
             include_canvas_edits=include_canvas_edits,
         )
 
@@ -1220,6 +1245,162 @@ def _canonical_nfc_json(value: Any) -> str:
     )
 
 
+def _normalize_storyboard_sequence(value: Any, *, model_output: bool) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    core = {"id", "name", "description", "style", "constraints", "rows"}
+    persisted = core | {"createdAt", "updatedAt", "meta"}
+    if set(value) != (core if model_output else persisted):
+        return None
+    sequence_id = value.get("id")
+    rows = value.get("rows")
+    if not isinstance(sequence_id, str) or not sequence_id.strip() or not isinstance(rows, list) or not 0 < len(rows) <= 200:
+        return None
+    fields: dict[str, str] = {}
+    for field in _STORYBOARD_SEQUENCE_FIELDS:
+        item = value.get(field)
+        if not isinstance(item, str) or len(item.encode("utf-8")) > 10_000:
+            return None
+        fields[field] = unicodedata.normalize("NFC", item)
+    normalized_rows: list[dict[str, Any]] = []
+    row_ids: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        row_core = {"id", *_STORYBOARD_ROW_FIELDS}
+        row_persisted = row_core | {"createdAt", "updatedAt"}
+        allowed_persisted = {frozenset(row_persisted), frozenset(row_persisted | {"imageUrl"})}
+        if (model_output and set(row) != row_core) or (not model_output and frozenset(row) not in allowed_persisted):
+            return None
+        row_id = row.get("id")
+        if not isinstance(row_id, str) or not row_id.strip() or row_id in row_ids:
+            return None
+        row_ids.add(row_id)
+        normalized_row: dict[str, Any] = {"id": unicodedata.normalize("NFC", row_id)}
+        for field in _STORYBOARD_ROW_FIELDS:
+            item = row.get(field)
+            if not isinstance(item, str) or len(item.encode("utf-8")) > 10_000:
+                return None
+            normalized_row[field] = unicodedata.normalize("NFC", item)
+        timestamp = int(time.time() * 1000)
+        normalized_row["createdAt"] = timestamp if model_output else row["createdAt"]
+        normalized_row["updatedAt"] = timestamp if model_output else row["updatedAt"]
+        if not model_output and "imageUrl" in row:
+            if not isinstance(row["imageUrl"], str):
+                return None
+            normalized_row["imageUrl"] = row["imageUrl"]
+        normalized_rows.append(normalized_row)
+    timestamp = int(time.time() * 1000)
+    return {
+        "id": unicodedata.normalize("NFC", sequence_id),
+        **fields,
+        "rows": normalized_rows,
+        "createdAt": timestamp if model_output else value["createdAt"],
+        "updatedAt": timestamp if model_output else value["updatedAt"],
+        "meta": {} if model_output else deepcopy(value["meta"]),
+    }
+
+
+def _storyboard_digest(sequence: dict[str, Any], pending: list[dict[str, Any]]) -> str:
+    canonical_sequence = {
+        "id": sequence["id"],
+        **{field: sequence[field] for field in sorted(_STORYBOARD_SEQUENCE_FIELDS)},
+        "rows": [{"id": row["id"], **{field: row[field] for field in sorted(_STORYBOARD_ROW_FIELDS)}} for row in sequence["rows"]],
+    }
+    return "sha256:" + hashlib.sha256(
+        _canonical_nfc_json({"sequence": canonical_sequence, "pendingFieldChanges": pending}).encode("utf-8")
+    ).hexdigest()
+
+
+def _valid_storyboard_source(value: Any) -> bool:
+    if not isinstance(value, dict) or set(value) != {"documentNodeId", "documentRevision", "documentDigest", "documentResourceDigests", "model", "skills"}:
+        return False
+    model = value.get("model")
+    skills = value.get("skills")
+    return (
+        isinstance(value.get("documentNodeId"), str) and bool(value["documentNodeId"])
+        and isinstance(value.get("documentRevision"), int) and not isinstance(value["documentRevision"], bool) and value["documentRevision"] >= 0
+        and _valid_sha256_digest(value.get("documentDigest"))
+        and isinstance(value.get("documentResourceDigests"), list) and len(value["documentResourceDigests"]) <= 5
+        and all(_valid_sha256_digest(item) for item in value["documentResourceDigests"])
+        and isinstance(model, dict) and all(isinstance(model.get(key), str) and model[key] for key in ("connectionId", "providerId", "modelId"))
+        and isinstance(skills, list) and all(isinstance(skill, dict) and isinstance(skill.get("skillId"), str) and isinstance(skill.get("revision"), int) and _valid_sha256_digest(skill.get("digest")) for skill in skills)
+    )
+
+
+def _normalize_storyboard_pending_changes(value: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list) or len(value) > 32:
+        return None
+    result: list[dict[str, Any]] = []
+    for change in value:
+        if not isinstance(change, dict) or change.get("scope") not in {"sequence", "row"}:
+            return None
+        required = {"id", "editId", "scope", "field", "previousValue", "newValue"}
+        if change["scope"] == "row":
+            required.add("rowId")
+        if set(change) != required or not all(isinstance(change.get(key), str) for key in required - {"scope"}):
+            return None
+        if (
+            change["scope"] == "sequence" and change.get("field") not in _STORYBOARD_SEQUENCE_FIELDS
+        ) or (
+            change["scope"] == "row" and change.get("field") not in _STORYBOARD_ROW_FIELDS
+        ):
+            return None
+        result.append(deepcopy(change))
+    return result
+
+
+def _normalize_storyboard_change_operations(value: Any, sequence: dict[str, Any]) -> list[dict[str, str]] | None:
+    if not isinstance(value, list) or not 0 < len(value) <= 32:
+        return None
+    row_ids = {row["id"] for row in sequence["rows"]}
+    identities: set[str] = set()
+    result: list[dict[str, str]] = []
+    for change in value:
+        if not isinstance(change, dict) or change.get("scope") not in {"sequence", "row"} or not isinstance(change.get("value"), str):
+            return None
+        scope = change["scope"]
+        field = change.get("field")
+        if len(change["value"].encode("utf-8")) > 10_000:
+            return None
+        if scope == "sequence":
+            if set(change) != {"scope", "field", "value"} or field not in _STORYBOARD_SEQUENCE_FIELDS:
+                return None
+            identity = f"sequence:{field}"
+            normalized = {"scope": "sequence", "field": field, "value": unicodedata.normalize("NFC", change["value"])}
+        else:
+            row_id = change.get("rowId")
+            if set(change) != {"scope", "rowId", "field", "value"} or row_id not in row_ids or field not in _STORYBOARD_ROW_FIELDS:
+                return None
+            identity = f"row:{row_id}:{field}"
+            normalized = {"scope": "row", "rowId": row_id, "field": field, "value": unicodedata.normalize("NFC", change["value"])}
+        if identity in identities:
+            return None
+        identities.add(identity)
+        result.append(normalized)
+    return result
+
+
+def _storyboard_pending_from_operations(edit_id: str, sequence: dict[str, Any], operations: list[dict[str, str]]) -> list[dict[str, Any]]:
+    rows = {row["id"]: row for row in sequence["rows"]}
+    result: list[dict[str, Any]] = []
+    for index, operation in enumerate(operations):
+        if operation["scope"] == "sequence":
+            result.append({
+                "id": f"sbf-{edit_id}-{index}", "editId": edit_id, "scope": "sequence",
+                "field": operation["field"], "previousValue": sequence[operation["field"]],
+                "newValue": operation["value"],
+            })
+        else:
+            result.append({
+                "id": f"sbf-{edit_id}-{index}", "editId": edit_id, "scope": "row",
+                "rowId": operation["rowId"], "field": operation["field"],
+                "previousValue": rows[operation["rowId"]][operation["field"]],
+                "newValue": operation["value"],
+            })
+    return result
+
+
 def _deterministic_document_edit_ids(
     conversation_id: str,
     request_id: str,
@@ -1236,10 +1417,10 @@ def _deterministic_document_edit_ids(
         normalized_target,
     ])
     edit_id = str(uuid.uuid5(uuid.NAMESPACE_URL, edit_name))
-    if kind == "document_create":
+    if kind in {"document_create", "storyboard_create"}:
         node_name = _canonical_nfc_json([
             "promptcard",
-            "agent-document-node-v1",
+            "agent-document-node-v1" if kind == "document_create" else "agent-storyboard-node-v1",
             conversation_id,
             request_id,
         ])
@@ -1256,6 +1437,7 @@ def validate_agent_document_edits(
     request_id: str,
     project: dict[str, Any],
     expected_write_context: dict[str, Any] | None,
+    run_provenance: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if len(edits) != 1 or not conversation_id or not request_id:
         return []
@@ -1274,7 +1456,65 @@ def validate_agent_document_edits(
     target_node_id = None
     payload: dict[str, Any]
     expected_result_digest: str
-    if kind == "document_create":
+    if kind == "storyboard_create":
+        payload_source = edit.get("payload") if isinstance(edit.get("payload"), dict) else edit
+        title = payload_source.get("title")
+        sequence = _normalize_storyboard_sequence(payload_source.get("sequence"), model_output=True)
+        if (
+            not isinstance(title, str) or not title.strip() or len(title) > 200
+            or sequence is None or not isinstance(run_provenance, dict)
+        ):
+            return []
+        source = {
+            "documentNodeId": expected_write_context.get("documentNodeId"),
+            "documentRevision": expected_write_context.get("documentRevision"),
+            "documentDigest": expected_write_context.get("documentDigest"),
+            "documentResourceDigests": expected_write_context.get("documentResourceDigests"),
+            "model": deepcopy(run_provenance.get("model")),
+            "skills": deepcopy(run_provenance.get("skills")),
+        }
+        if not _valid_storyboard_source(source):
+            return []
+        payload = {
+            "title": unicodedata.normalize("NFC", title.strip()),
+            "sequence": sequence,
+            "source": source,
+        }
+        expected_result_digest = _storyboard_digest(sequence, [])
+        supplied_digest = edit.get("expectedResultDigest")
+        if supplied_digest is not None and supplied_digest != expected_result_digest:
+            return []
+        base = {"projectRevision": project_revision}
+    elif kind == "storyboard_changes":
+        payload_source = edit.get("payload") if isinstance(edit.get("payload"), dict) else edit
+        target_node_id = str(payload_source.get("nodeId") or "").strip()
+        target = _project_canvas_node(project, target_node_id)
+        if target_node_id != expected_write_context.get("nodeId") or not isinstance(target, dict) or target.get("kind") != "storyboard":
+            return []
+        sequence = _normalize_storyboard_sequence(target.get("sequence"), model_output=False)
+        pending = _normalize_storyboard_pending_changes(target.get("pendingFieldChanges"))
+        revision = target.get("revision", 0)
+        digest = target.get("digest") or (_storyboard_digest(sequence, pending) if sequence is not None and pending is not None else None)
+        if (
+            sequence is None or pending is None or pending
+            or not isinstance(revision, int) or isinstance(revision, bool) or revision < 0
+            or digest != _storyboard_digest(sequence, pending)
+            or payload_source.get("baseRevision") != revision
+            or payload_source.get("baseDigest") != digest
+        ):
+            return []
+        changes = _normalize_storyboard_change_operations(payload_source.get("changes"), sequence)
+        if changes is None:
+            return []
+        candidate_edit_id, _ = _deterministic_document_edit_ids(conversation_id, request_id, kind, target_node_id)
+        field_changes = _storyboard_pending_from_operations(candidate_edit_id, sequence, changes)
+        expected_result_digest = _storyboard_digest(sequence, field_changes)
+        supplied_digest = edit.get("expectedResultDigest")
+        if supplied_digest is not None and supplied_digest != expected_result_digest:
+            return []
+        payload = {"changes": changes}
+        base = {"projectRevision": project_revision, "nodeRevision": revision, "nodeDigest": digest}
+    elif kind == "document_create":
         payload_source = edit.get("payload") if isinstance(edit.get("payload"), dict) else edit
         title = payload_source.get("title")
         blocks = payload_source.get("blocks")
@@ -1385,6 +1625,42 @@ def _resolve_document_write_context(
             "operationKind": "document_create",
             "linkedDocumentResourceIds": list(body.document_resource_ids),
         }
+    if operation_kind == "storyboard_create":
+        if set(value) != {"operationKind", "documentNodeId"}:
+            raise HTTPException(status_code=422, detail="document_write_context_invalid")
+        node_id = value.get("documentNodeId")
+        node = _project_canvas_node(project, str(node_id or "").strip())
+        if not isinstance(node, dict) or node.get("kind") != "document":
+            raise HTTPException(status_code=422, detail="document_write_target_invalid")
+        document = _normalize_persisted_document(node.get("document"))
+        resource_ids = node.get("linkedDocumentResourceIds", [])
+        if document is None or not isinstance(resource_ids, list) or len(resource_ids) > MAX_DOCUMENT_ATTACHMENTS or not all(isinstance(item, str) and item for item in resource_ids):
+            raise HTTPException(status_code=409, detail="document_write_target_invalid")
+        effective_text = "\n".join(text for _, text in _planning_document_leaf_texts(document["blocks"]))
+        if len(effective_text.encode("utf-8")) > MAX_DOCUMENT_MODEL_TEXT_CHARS:
+            raise HTTPException(status_code=413, detail="document_context_too_large")
+        return {
+            "operationKind": "storyboard_create",
+            "documentNodeId": str(node_id).strip(),
+            "documentRevision": document["revision"],
+            "documentDigest": document["digest"],
+            "effectiveText": effective_text,
+            "linkedDocumentResourceIds": list(resource_ids),
+        }
+    if operation_kind == "storyboard_changes":
+        if set(value) != {"operationKind", "nodeId"}:
+            raise HTTPException(status_code=422, detail="document_write_context_invalid")
+        node_id = value.get("nodeId")
+        node = _project_canvas_node(project, str(node_id or "").strip())
+        if not isinstance(node, dict) or node.get("kind") != "storyboard":
+            raise HTTPException(status_code=422, detail="document_write_target_invalid")
+        sequence = _normalize_storyboard_sequence(node.get("sequence"), model_output=False)
+        pending = _normalize_storyboard_pending_changes(node.get("pendingFieldChanges"))
+        revision = node.get("revision", 0)
+        digest = node.get("digest") or (_storyboard_digest(sequence, pending) if sequence is not None and pending is not None else None)
+        if sequence is None or pending is None or pending or not isinstance(revision, int) or digest != _storyboard_digest(sequence, pending):
+            raise HTTPException(status_code=409, detail="storyboard_write_target_invalid")
+        return {"operationKind": "storyboard_changes", "nodeId": str(node_id).strip(), "baseRevision": revision, "baseDigest": digest, "sequence": sequence}
     if operation_kind != "document_changes" or set(value) != {"operationKind", "nodeId"}:
         raise HTTPException(status_code=422, detail="document_write_context_invalid")
     node_id = value.get("nodeId")
@@ -1937,6 +2213,26 @@ def _turn_document_edit(turn: dict[str, Any], edit_id: str) -> dict[str, Any] | 
 def _persisted_document_digest(value: Any) -> str | None:
     document = _normalize_persisted_document(value)
     return document["digest"] if document is not None else None
+
+
+def _persisted_storyboard_state(node: Any) -> dict[str, Any] | None:
+    if not isinstance(node, dict):
+        return None
+    sequence = _normalize_storyboard_sequence(node.get("sequence"), model_output=False)
+    pending = _normalize_storyboard_pending_changes(node.get("pendingFieldChanges"))
+    revision = node.get("revision")
+    digest = node.get("digest")
+    if (
+        sequence is None
+        or pending is None
+        or not isinstance(revision, int)
+        or isinstance(revision, bool)
+        or revision < 0
+        or not _valid_sha256_digest(digest)
+        or digest != _storyboard_digest(sequence, pending)
+    ):
+        return None
+    return {"sequence": sequence, "pendingFieldChanges": pending, "revision": revision, "digest": digest}
 
 
 def _normalize_persisted_document(value: Any) -> dict[str, Any] | None:

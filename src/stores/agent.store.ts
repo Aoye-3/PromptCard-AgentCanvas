@@ -7,6 +7,7 @@ import type {
   AgentDocumentAttachment,
   AgentInfo,
   AgentInteractionMode,
+  AgentPlanningWriteContext,
   AgentMessage,
   AgentPermissionScope,
   AgentModelInfo,
@@ -59,6 +60,7 @@ interface AgentState {
       documentResourceIds?: string[]
       explicitDocumentNodeIds?: string[]
       documentAttachments?: AgentDocumentAttachment[]
+      documentWriteContext?: AgentPlanningWriteContext
     }
   ) => Promise<{ proposals: AgentWorkspaceProposal[]; canvasEdits: AgentCanvasEdit[] }>
   getAgentSession: (sessionKey: AgentSessionKey) => AgentConversationSession
@@ -267,6 +269,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         workspaceContext: options?.workspaceContext,
         ...(options?.selectedSkillIds?.length ? { selectedSkillIds: options.selectedSkillIds } : {}),
         ...(options?.canvasNodeContext ? { canvasNodeContext: options.canvasNodeContext } : {}),
+        ...(options?.documentWriteContext ? { documentWriteContext: options.documentWriteContext } : {}),
         ...(includesDocumentRequest ? {
           documentResourceIds: documentRequest.documentResourceIds,
           explicitDocumentNodeIds: documentRequest.explicitDocumentNodeIds
@@ -291,7 +294,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         contextId: proposal.contextId || options?.workspaceContext?.contextId
       }))
       const canvasEdits = (result.canvasEdits || []).map(edit => (
-        edit.kind === 'document_create' || edit.kind === 'document_changes'
+        edit.kind === 'document_create' || edit.kind === 'document_changes' || edit.kind === 'storyboard_create' || edit.kind === 'storyboard_changes'
           ? edit
           : {
               ...edit,

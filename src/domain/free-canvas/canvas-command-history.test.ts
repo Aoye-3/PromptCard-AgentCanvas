@@ -3,6 +3,7 @@ import type {
   IFreeCanvasDocumentNode,
   IFreeCanvasImageNode,
   IFreeCanvasProject,
+  IFreeCanvasStoryboardNode,
   IFreeCanvasTextNode
 } from '@/models/PromptHistory.model'
 import {
@@ -55,6 +56,13 @@ const documentNode = (id: string, text = 'Before'): IFreeCanvasDocumentNode => (
   meta: {}
 })
 
+const storyboardNode = (style = 'ink'): IFreeCanvasStoryboardNode => ({
+  id: 'storyboard-1', kind: 'storyboard', title: 'Shots', position: { x: 0, y: 0 }, width: 680, height: 440,
+  sequence: { id: 'sequence-1', name: 'Opening', description: '', style, constraints: '', rows: [], createdAt: 1, updatedAt: 1, meta: {} },
+  source: { documentNodeId: 'document-1', documentRevision: 1, documentDigest: `sha256:${'a'.repeat(64)}`, documentResourceDigests: [], model: { connectionId: 'c', providerId: 'p', modelId: 'm' }, skills: [] },
+  pendingFieldChanges: [], revision: 0, digest: `sha256:${'b'.repeat(64)}`, meta: {}
+})
+
 const project = (): IFreeCanvasProject => ({
   nodes: [imageNode('image-a'), textNode('text-b'), imageNode('image-c')],
   edges: [{
@@ -69,6 +77,18 @@ const project = (): IFreeCanvasProject => ({
 })
 
 describe('canvas command history', () => {
+  it('updates Storyboard review state as one undoable command with deep snapshots', () => {
+    const before = storyboardNode('ink')
+    const after = { ...storyboardNode('watercolour'), revision: 1, digest: `sha256:${'c'.repeat(64)}` }
+    const executed = executeCanvasLocalCommand(createCanvasCommandHistory(), { ...project(), nodes: [before] }, {
+      kind: 'update-storyboard', nodeId: before.id, storyboard: after
+    })
+    const undone = undoCanvasLocalCommand(executed.history, executed.project)
+    after.sequence.style = 'mutated'
+
+    expect(executed.project.nodes[0]).toMatchObject({ kind: 'storyboard', sequence: { style: 'watercolour' }, revision: 1 })
+    expect(undone.project.nodes[0]).toMatchObject({ kind: 'storyboard', sequence: { style: 'ink' }, revision: 0 })
+  })
   it.each([
     {
       label: 'Document',

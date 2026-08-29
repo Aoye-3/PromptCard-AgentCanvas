@@ -226,6 +226,36 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     )
   })
 
+  it('forwards the explicit Storyboard transform selector only with the submitted experimental turn', async () => {
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} embedded
+          draftRequest={{
+            id: 'storyboard-create-document-1',
+            content: 'Create a storyboard',
+            documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
+          }}
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Create a storyboard', [])
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      'Create a storyboard', [],
+      expect.objectContaining({
+        interactionMode: 'chat-experimental',
+        documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
+      })
+    )
+  })
+
   it('reconciles one pending Document edit on conversation hydration and locks send until apply settles', async () => {
     const pendingApply = deferred<boolean>()
     const edit = {

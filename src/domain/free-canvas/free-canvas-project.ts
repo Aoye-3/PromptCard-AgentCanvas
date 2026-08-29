@@ -29,6 +29,7 @@ import type {
 import type { ImageRegion } from '@/domain/image-generation/image-generation'
 import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 import { createPlanningDocumentV1, parsePlanningDocumentV1 } from '@/domain/documents/planning-document'
+import { storyboardDigest } from '@/domain/storyboard/canvas-storyboard'
 
 const DEFAULT_USER_COLOR = '#111827'
 const DEFAULT_PRESET_COLOR = '#ef4423'
@@ -1116,37 +1117,39 @@ const normalizeAgentAppliedEditMarker = (value: unknown): AgentAppliedEditMarker
 const normalizeStoryboardNode = (
   node: Partial<IFreeCanvasStoryboardNode>,
   timestamp: number
-): IFreeCanvasStoryboardNode => ({
-  id: node.id || `free-storyboard-${timestamp}`,
-  kind: 'storyboard',
-  title: node.title || 'Storyboard',
-  position: normalizePosition(node.position),
-  width: Number(node.width || 640),
-  height: Number(node.height || 480),
-  sequence: cloneStructuredValue(node.sequence || {
-    id: `sequence-${timestamp}`,
-    name: 'Storyboard',
-    description: '',
-    style: '',
-    constraints: '',
-    rows: [],
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    meta: {}
-  }),
-  source: cloneStructuredValue(node.source || {
-    documentNodeId: '',
-    documentRevision: 0,
-    documentDigest: '',
-    documentResourceDigests: [],
-    model: { connectionId: '', providerId: '', modelId: '' },
-    skills: []
-  }),
-  pendingFieldChanges: Array.isArray(node.pendingFieldChanges)
-    ? cloneStructuredValue(node.pendingFieldChanges)
-    : [],
-  meta: node.meta || {}
-})
+): IFreeCanvasStoryboardNode | IFreeCanvasUnsupportedNode => {
+  const sequence = cloneStructuredValue(node.sequence || {
+    id: `sequence-${timestamp}`, name: 'Storyboard', description: '', style: '', constraints: '', rows: [],
+    createdAt: timestamp, updatedAt: timestamp, meta: {}
+  })
+  const pendingFieldChanges = Array.isArray(node.pendingFieldChanges) ? cloneStructuredValue(node.pendingFieldChanges) : []
+  const agentAppliedEdit = normalizeAgentAppliedEditMarker(node.agentAppliedEdit)
+  const digest = storyboardDigest(sequence, pendingFieldChanges)
+  if ((node.digest !== undefined && node.digest !== digest) || (node.agentAppliedEdit !== undefined && !agentAppliedEdit)) {
+    return normalizeUnsupportedNode({
+      id: node.id, kind: 'unsupported', title: node.title, position: node.position, width: node.width, height: node.height,
+      originalKind: 'storyboard', originalNode: cloneFrozenRecord({ ...(node as unknown as Record<string, unknown>) }), meta: node.meta
+    }, timestamp)
+  }
+  return {
+    id: node.id || `free-storyboard-${timestamp}`,
+    kind: 'storyboard',
+    title: node.title || 'Storyboard',
+    position: normalizePosition(node.position),
+    width: Number(node.width || 640),
+    height: Number(node.height || 480),
+    sequence,
+    source: cloneStructuredValue(node.source || {
+      documentNodeId: '', documentRevision: 0, documentDigest: '', documentResourceDigests: [],
+      model: { connectionId: '', providerId: '', modelId: '' }, skills: []
+    }),
+    pendingFieldChanges,
+    ...(node.revision !== undefined ? { revision: Number(node.revision) } : {}),
+    ...(node.digest !== undefined ? { digest } : {}),
+    ...(agentAppliedEdit ? { agentAppliedEdit } : {}),
+    meta: node.meta || {}
+  }
+}
 
 const normalizeUnsupportedNode = (
   node: Partial<IFreeCanvasUnsupportedNode>,

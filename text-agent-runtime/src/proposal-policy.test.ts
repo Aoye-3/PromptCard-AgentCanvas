@@ -2,6 +2,35 @@ import { describe, expect, it } from 'vitest'
 import { buildInvocation } from './proposal-policy.ts'
 
 describe('pi text-agent invocation boundary', () => {
+  it('exposes storyboard creation only for an explicit authoritative transform context', () => {
+    const invocation = buildInvocation({
+      content: '从文档创建分镜表', permissionScope: 'workspace-chatbot-agent', interactionMode: 'chat-experimental',
+      workspaceContext: null, promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'storyboard_create', documentNodeId: 'document-1', documentRevision: 7,
+        documentDigest: `sha256:${'a'.repeat(64)}`, effectiveText: 'The accepted and pending-effective draft.',
+        documentResourceDigests: [`sha256:${'b'.repeat(64)}`]
+      }
+    })
+
+    expect(invocation.policy.allowedCanvasEditKinds).toEqual(['storyboard_create'])
+    expect(invocation.documentWriteContext).toMatchObject({
+      operationKind: 'storyboard_create', documentNodeId: 'document-1', documentRevision: 7,
+      effectiveText: 'The accepted and pending-effective draft.'
+    })
+  })
+
+  it('rejects ambient or forged storyboard authority outside explicit experimental context', () => {
+    const context = {
+      operationKind: 'storyboard_create' as const, documentNodeId: 'document-1', documentRevision: 7,
+      documentDigest: `sha256:${'a'.repeat(64)}`, effectiveText: 'private draft', documentResourceDigests: []
+    }
+    const promptEdit = buildInvocation({ content: 'transform', permissionScope: 'workspace-chatbot-agent', workspaceContext: null, promptLibrary: [], documentWriteContext: context })
+    const malformed = buildInvocation({ content: 'transform', permissionScope: 'workspace-chatbot-agent', interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [], documentWriteContext: { ...context, model: { modelId: 'browser-forged' } } as never })
+
+    expect(promptEdit.policy.allowedCanvasEditKinds).not.toContain('storyboard_create')
+    expect(malformed.policy.allowedCanvasEditKinds).not.toContain('storyboard_create')
+  })
   it('allows only the selected canvas text node as an update target', () => {
     const invocation = buildInvocation({
       content: '补全当前文字节点',

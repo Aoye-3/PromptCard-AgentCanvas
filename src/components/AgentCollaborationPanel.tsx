@@ -9,6 +9,7 @@ import type {
   AgentDocumentAttachment,
   AgentModelInfo,
   AgentInteractionMode,
+  AgentPlanningWriteContext,
   AgentWorkspaceContext,
   AgentWorkspaceMode,
   AgentWorkspaceProposal,
@@ -50,6 +51,7 @@ interface AgentCollaborationPanelProps {
   draftRequest?: {
     id: string
     content?: string
+    documentWriteContext?: AgentPlanningWriteContext
     canvasNode?: {
       nodeId: string
       role: CanvasAgentAttachment['role']
@@ -144,6 +146,7 @@ export function AgentCollaborationPanel({
   const [canvasSelection, setCanvasSelection] = useState<(CanvasAgentSelection & { nodeId: string }) | undefined>()
   const [composerResetKey, setComposerResetKey] = useState(0)
   const [composerDraft, setComposerDraft] = useState<{ id: string; content: string }>()
+  const [pendingWriteContext, setPendingWriteContext] = useState<AgentPlanningWriteContext>()
   const [selectedModelKey, setSelectedModelKey] = useState('')
   const [modelSelectionRequired, setModelSelectionRequired] = useState(false)
   const [modelSaving, setModelSaving] = useState(false)
@@ -197,6 +200,7 @@ export function AgentCollaborationPanel({
 
   useEffect(() => {
     if (!draftRequest || lastDraftRequestIdRef.current === draftRequest.id) return
+    if (draftRequest.documentWriteContext) setPendingWriteContext(draftRequest.documentWriteContext)
     if (typeof draftRequest.content === 'string') {
       if (embedded) setComposerDraft({ id: draftRequest.id, content: draftRequest.content })
       else setDraft(draftRequest.content)
@@ -280,7 +284,12 @@ export function AgentCollaborationPanel({
         if (cancelled || postSendApplyIdentityRef.current !== identity) return
         if (reconciliation.status === 'pending_apply' && reconciliation.canvasEdits.length === 1) {
           const edit = reconciliation.canvasEdits[0]
-          if (edit.kind === 'document_create' || edit.kind === 'document_changes') {
+          if (
+            edit.kind === 'document_create'
+            || edit.kind === 'document_changes'
+            || edit.kind === 'storyboard_create'
+            || edit.kind === 'storyboard_changes'
+          ) {
             await onDocumentReconcileStateChangeRef.current?.({
               projectId,
               conversationId,
@@ -382,7 +391,8 @@ export function AgentCollaborationPanel({
       ...(interactionMode === 'chat-experimental' ? {
         documentResourceIds,
         explicitDocumentNodeIds,
-        documentAttachments: activeDocumentAttachments
+        documentAttachments: activeDocumentAttachments,
+        ...(pendingWriteContext ? { documentWriteContext: pendingWriteContext } : {})
       } : {})
     })
     const succeeded = !getAgentSession(sessionKey).runtimeError
@@ -408,6 +418,7 @@ export function AgentCollaborationPanel({
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
     setComposerResetKey(key => key + 1)
+    setPendingWriteContext(undefined)
 
     try {
       const appliedCanvasEdits: AgentCanvasEdit[] = []
@@ -1195,7 +1206,7 @@ function readUniquePendingDocumentLedgerNodeId(conversation: AgentConversationDe
     const ledger = turn.applyEdit
     if (
       ledger.status !== 'pending_apply'
-      || (ledger.kind !== 'document_create' && ledger.kind !== 'document_changes')
+      || !['document_create', 'document_changes', 'storyboard_create', 'storyboard_changes'].includes(String(ledger.kind))
       || ledger.conversationId !== conversation.id
       || typeof ledger.nodeId !== 'string'
       || !ledger.nodeId

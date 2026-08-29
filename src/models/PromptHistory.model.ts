@@ -99,8 +99,27 @@ export interface StoryboardSourceProvenance {
   skills: AgentRunProvenance['skills']
 }
 
-/** Task 15.6 freezes pending field differences as neutral data; Task 15.10 owns field operations. */
-export type StoryboardFieldChange = Readonly<Record<string, unknown>>
+export type StoryboardSequenceField = 'name' | 'description' | 'style' | 'constraints'
+export type StoryboardRowField = 'cutLabel' | 'timeRange' | 'subject' | 'action' | 'scene' | 'camera' | 'lighting' | 'audio' | 'duration'
+
+export type StoryboardFieldChange =
+  | {
+    id: string
+    editId: string
+    scope: 'sequence'
+    field: StoryboardSequenceField
+    previousValue: string
+    newValue: string
+  }
+  | {
+    id: string
+    editId: string
+    scope: 'row'
+    rowId: string
+    field: StoryboardRowField
+    previousValue: string
+    newValue: string
+  }
 
 export interface IFreeCanvasImageGeneratorSettings {
   resolution: FreeCanvasImageResolution
@@ -214,6 +233,9 @@ export interface IFreeCanvasStoryboardNode extends IFreeCanvasBaseNode {
   sequence: IStoryboardSequence
   source: StoryboardSourceProvenance
   pendingFieldChanges: StoryboardFieldChange[]
+  revision?: number
+  digest?: string
+  agentAppliedEdit?: AgentAppliedEditMarker
 }
 
 export interface IFreeCanvasUnsupportedNode extends IFreeCanvasBaseNode {

@@ -31,6 +31,21 @@ export type DocumentWriteContext =
     blocks: Array<{ blockId: string; text: string; expectedTextDigest: string }>
     wrapperBlockIds?: string[]
   }
+  | {
+    operationKind: 'storyboard_create'
+    documentNodeId: string
+    documentRevision: number
+    documentDigest: string
+    effectiveText: string
+    documentResourceDigests: string[]
+  }
+  | {
+    operationKind: 'storyboard_changes'
+    nodeId: string
+    baseRevision: number
+    baseDigest: string
+    sequence: Record<string, unknown>
+  }
 
 export interface PromptLibraryItem {
   id?: string
@@ -223,6 +238,34 @@ function normalizeDocumentWriteContext(value: unknown): DocumentWriteContext | n
     const resourceIds = value.linkedDocumentResourceIds
     if (!resourceIds.every(isBoundIdentity) || new Set(resourceIds).size !== resourceIds.length) return null
     return { operationKind: 'document_create', linkedDocumentResourceIds: [...resourceIds] }
+  }
+  if (value.operationKind === 'storyboard_create') {
+    if (!hasExactKeys(value, [
+      'operationKind', 'documentNodeId', 'documentRevision', 'documentDigest', 'effectiveText', 'documentResourceDigests'
+    ])) return null
+    if (!isBoundIdentity(value.documentNodeId)
+      || !Number.isSafeInteger(value.documentRevision) || Number(value.documentRevision) < 0
+      || !isBoundDigest(value.documentDigest)
+      || typeof value.effectiveText !== 'string' || !isWellFormed(value.effectiveText)
+      || value.effectiveText !== value.effectiveText.normalize('NFC')
+      || new TextEncoder().encode(value.effectiveText).length > MAX_DOCUMENT_CONTEXT_BYTES
+      || !Array.isArray(value.documentResourceDigests) || value.documentResourceDigests.length > 5
+      || !value.documentResourceDigests.every(isBoundDigest)) return null
+    return {
+      operationKind: 'storyboard_create',
+      documentNodeId: value.documentNodeId,
+      documentRevision: Number(value.documentRevision),
+      documentDigest: value.documentDigest,
+      effectiveText: value.effectiveText,
+      documentResourceDigests: [...value.documentResourceDigests]
+    }
+  }
+  if (value.operationKind === 'storyboard_changes') {
+    if (!hasExactKeys(value, ['operationKind', 'nodeId', 'baseRevision', 'baseDigest', 'sequence'])
+      || !isBoundIdentity(value.nodeId)
+      || !Number.isSafeInteger(value.baseRevision) || Number(value.baseRevision) < 0
+      || !isBoundDigest(value.baseDigest) || !isRecord(value.sequence)) return null
+    return { operationKind: 'storyboard_changes', nodeId: value.nodeId, baseRevision: Number(value.baseRevision), baseDigest: value.baseDigest, sequence: structuredClone(value.sequence) }
   }
   if (value.operationKind !== 'document_changes') return null
   if (!hasExactKeys(value, [

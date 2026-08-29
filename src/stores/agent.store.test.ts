@@ -177,6 +177,23 @@ describe('agent store', () => {
       .toMatchObject({ role: 'user', documentAttachments })
   })
 
+  it('forwards the explicit Storyboard write selector without adding it to optimistic message metadata', async () => {
+    const documentWriteContext = {
+      operationKind: 'storyboard_create' as const,
+      documentNodeId: 'document-node-1'
+    }
+    await useAgentStore.getState().sendMessage('Create shots', [], {
+      sessionKey: 'workspace:free-canvas:project-1',
+      mode: 'free-canvas-workspace',
+      interactionMode: 'chat-experimental',
+      documentWriteContext
+    })
+
+    expect(serviceMock.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ documentWriteContext }))
+    expect(useAgentStore.getState().getAgentSession('workspace:free-canvas:project-1').messages[0])
+      .not.toHaveProperty('documentWriteContext')
+  })
+
   it('returns validated Canvas edits separately without storing them as pending proposals', async () => {
     const canvasEdit = {
       id: 'canvas-edit-1',

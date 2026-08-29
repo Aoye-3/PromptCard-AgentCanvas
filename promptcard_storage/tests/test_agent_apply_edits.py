@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+import shutil
+import uuid
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -230,6 +232,37 @@ class AgentApplyEditStorageTests(unittest.TestCase):
             )
         turn = self.store.get_agent_conversation("conversation-1", "project-1")["turns"][0]
         self.assertEqual(turn["applyEdit"]["status"], "pending_apply")
+
+
+class StoryboardApplyEditStorageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.data_root = Path(__file__).resolve().parents[1] / "pytest-tmp-native" / f"task-15-10-storyboard-{uuid.uuid4().hex}"
+        self.data_root.mkdir(parents=True)
+        self.store = JsonCollectionStore(self.data_root / "data")
+        self.store.create_project(project())
+        self.store.create_agent_conversation({
+            "id": "conversation-1", "projectId": "project-1",
+            "entrypoint": "workspace-chatbot-agent", "mode": "free-canvas-workspace",
+        })
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.data_root)
+
+    def test_storyboard_create_and_changes_share_the_pending_apply_cas_without_document_evidence(self) -> None:
+        for kind in ("storyboard_create", "storyboard_changes"):
+            with self.subTest(kind=kind):
+                request_id = f"request-{kind}"
+                edit_id = f"edit-{kind}"
+                turn = pending_turn(request_id, edit_id)
+                turn["applyEdit"].update({"kind": kind, "nodeId": "storyboard-node-1"})
+                turn["assistantMessage"]["canvasEdits"] = [{"kind": kind, "editId": edit_id}]
+                saved = self.store.append_agent_conversation_turn("conversation-1", "project-1", turn)
+                applied = self.store.update_agent_apply_edit(
+                    "conversation-1", request_id=request_id, edit_id=edit_id, status="applied",
+                    evidence={"projectRevision": 3, "nodeId": "storyboard-node-1", "kind": "storyboard", "resultDigest": "sha256:" + "a" * 64},
+                )
+                self.assertEqual(saved["applyEdit"]["kind"], kind)
+                self.assertEqual(applied["status"], "applied")
 
 
 if __name__ == "__main__":

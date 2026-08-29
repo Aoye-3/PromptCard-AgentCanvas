@@ -1,5 +1,12 @@
 import type { CardType, IPreset } from './Card.model'
-import type { IStoryboardRow, IStoryboardSequence, PlanningDocumentBlockV1 } from './PromptHistory.model'
+import type {
+  IStoryboardRow,
+  IStoryboardSequence,
+  PlanningDocumentBlockV1,
+  StoryboardRowField,
+  StoryboardSequenceField,
+  StoryboardSourceProvenance
+} from './PromptHistory.model'
 import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 
 export type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
@@ -158,6 +165,12 @@ export interface AgentWorkspaceContext {
 export type CanvasAgentEditMode = 'complete' | 'rewrite' | 'prompt-library'
 
 export type AgentInteractionMode = 'prompt-edit' | 'chat-experimental'
+
+export type AgentPlanningWriteContext =
+  | { operationKind: 'document_create' }
+  | { operationKind: 'document_changes'; nodeId: string }
+  | { operationKind: 'storyboard_create'; documentNodeId: string }
+  | { operationKind: 'storyboard_changes'; nodeId: string }
 
 export interface CanvasAgentSelection {
   start: number
@@ -337,6 +350,30 @@ interface AgentDocumentEditIdentity {
   provenance?: AgentRunProvenance
 }
 
+export type AgentStoryboardFieldChangeOperation =
+  | { scope: 'sequence'; field: StoryboardSequenceField; value: string }
+  | { scope: 'row'; rowId: string; field: StoryboardRowField; value: string }
+
+export interface AgentStoryboardCreateEdit extends AgentDocumentEditIdentity {
+  kind: 'storyboard_create'
+  base: { projectRevision: number }
+  payload: {
+    title: string
+    sequence: IStoryboardSequence
+    source: StoryboardSourceProvenance
+  }
+}
+
+export interface AgentStoryboardChangesEdit extends AgentDocumentEditIdentity {
+  kind: 'storyboard_changes'
+  base: {
+    projectRevision: number
+    nodeRevision: number
+    nodeDigest: string
+  }
+  payload: { changes: AgentStoryboardFieldChangeOperation[] }
+}
+
 export interface AgentDocumentCreateEdit extends AgentDocumentEditIdentity {
   kind: 'document_create'
   base: { projectRevision: number }
@@ -362,6 +399,8 @@ export type AgentCanvasEdit =
   | AgentFreeCanvasTextCreateEdit
   | AgentDocumentCreateEdit
   | AgentDocumentChangesEdit
+  | AgentStoryboardCreateEdit
+  | AgentStoryboardChangesEdit
 
 export interface AgentFreeCanvasTextInsertionsProposal extends AgentFreeCanvasTextInsertionsEdit {
   status: 'pending' | 'approved' | 'rejected'

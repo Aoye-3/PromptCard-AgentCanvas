@@ -235,7 +235,171 @@ export function buildAgentTools(
     && policy.documentWriteContext?.operationKind === 'document_changes') {
     tools.push(documentChangesTool(policy.documentWriteContext, canvasEdits, writeGuard))
   }
+  if (policy.allowedCanvasEditKinds.includes('storyboard_create')
+    && policy.documentWriteContext?.operationKind === 'storyboard_create') {
+    tools.push(storyboardCreateTool(canvasEdits, writeGuard))
+  }
+  if (policy.allowedCanvasEditKinds.includes('storyboard_changes')
+    && policy.documentWriteContext?.operationKind === 'storyboard_changes') {
+    tools.push(storyboardChangesTool(policy.documentWriteContext, canvasEdits, writeGuard))
+  }
   return tools
+}
+
+const storyboardRowSchema = () => Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 192 }),
+  cutLabel: Type.String({ maxLength: 10_000 }),
+  timeRange: Type.String({ maxLength: 10_000 }),
+  subject: Type.String({ maxLength: 10_000 }),
+  action: Type.String({ maxLength: 10_000 }),
+  scene: Type.String({ maxLength: 10_000 }),
+  camera: Type.String({ maxLength: 10_000 }),
+  lighting: Type.String({ maxLength: 10_000 }),
+  audio: Type.String({ maxLength: 10_000 }),
+  duration: Type.String({ maxLength: 10_000 })
+}, { additionalProperties: false })
+
+function storyboardCreateTool(
+  canvasEdits: Record<string, unknown>[],
+  writeGuard: WriteOnceGuard
+): AgentTool {
+  return {
+    name: 'emit_storyboard_create',
+    label: 'Create Storyboard from Document',
+    description: 'Create one structured Storyboard from the effective Document text bound by Gateway policy.',
+    parameters: Type.Object({
+      title: Type.String({ minLength: 1, maxLength: 200 }),
+      sequence: Type.Object({
+        id: Type.String({ minLength: 1, maxLength: 192 }),
+        name: Type.String({ maxLength: 10_000 }),
+        description: Type.String({ maxLength: 10_000 }),
+        style: Type.String({ maxLength: 10_000 }),
+        constraints: Type.String({ maxLength: 10_000 }),
+        rows: Type.Array(storyboardRowSchema(), { minItems: 1, maxItems: 200 })
+      }, { additionalProperties: false }),
+      rationale: Type.String({ minLength: 1, maxLength: 4000 })
+    }, { additionalProperties: false }),
+    executionMode: 'sequential',
+    execute: async (_toolCallId, rawParams) => {
+      const parsed = parseStoryboardCreateParams(rawParams)
+      if (!parsed.ok) return rejectedToolResult(parsed.error)
+      if (writeGuard.used) return rejectedToolResult('write_tool_already_used')
+      const edit = { kind: 'storyboard_create', payload: { title: parsed.title, sequence: parsed.sequence }, rationale: parsed.rationale }
+      canvasEdits.push(edit)
+      writeGuard.used = true
+      return acceptedToolResult(edit)
+    }
+  }
+}
+
+function storyboardChangesTool(
+  context: Extract<DocumentWriteContext, { operationKind: 'storyboard_changes' }>,
+  canvasEdits: Record<string, unknown>[],
+  writeGuard: WriteOnceGuard
+): AgentTool {
+  const sequenceField = Type.Union(['name', 'description', 'style', 'constraints'].map(value => Type.Literal(value)))
+  const rowField = Type.Union(['cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration'].map(value => Type.Literal(value)))
+  return {
+    name: 'emit_storyboard_changes',
+    label: 'Suggest Storyboard field changes',
+    description: 'Emit reviewable field replacements against the single Storyboard bound by Gateway policy.',
+    parameters: Type.Object({
+      changes: Type.Array(Type.Union([
+        Type.Object({ scope: Type.Literal('sequence'), field: sequenceField, value: Type.String({ maxLength: 10_000 }) }, { additionalProperties: false }),
+        Type.Object({ scope: Type.Literal('row'), rowId: Type.String({ minLength: 1, maxLength: 192 }), field: rowField, value: Type.String({ maxLength: 10_000 }) }, { additionalProperties: false })
+      ]), { minItems: 1, maxItems: 32 }),
+      rationale: Type.String({ minLength: 1, maxLength: 4000 })
+    }, { additionalProperties: false }),
+    executionMode: 'sequential',
+    execute: async (_toolCallId, rawParams) => {
+      const parsed = parseStoryboardChangesParams(rawParams, context)
+      if (!parsed.ok) return rejectedToolResult(parsed.error)
+      if (writeGuard.used) return rejectedToolResult('write_tool_already_used')
+      const edit = {
+        kind: 'storyboard_changes',
+        payload: { nodeId: context.nodeId, baseRevision: context.baseRevision, baseDigest: context.baseDigest, changes: parsed.changes },
+        rationale: parsed.rationale
+      }
+      canvasEdits.push(edit)
+      writeGuard.used = true
+      return acceptedToolResult(edit)
+    }
+  }
+}
+
+function parseStoryboardCreateParams(value: unknown):
+  | { ok: true; title: string; sequence: Record<string, unknown>; rationale: string }
+  | { ok: false; error: string } {
+  if (!isRecord(value) || !hasExactKeys(value, ['title', 'sequence', 'rationale']) || !isRecord(value.sequence)) {
+    return { ok: false, error: 'storyboard_create_arguments_invalid' }
+  }
+  const title = normalizedBoundedText(value.title, 200, true)
+  const rationale = normalizedBoundedText(value.rationale, 4000, true)
+  const sequence = value.sequence
+  if (title === null || rationale === null || !hasExactKeys(sequence, ['id', 'name', 'description', 'style', 'constraints', 'rows']) || !Array.isArray(sequence.rows) || sequence.rows.length < 1 || sequence.rows.length > 200) {
+    return { ok: false, error: 'storyboard_create_arguments_invalid' }
+  }
+  const id = normalizedBoundedText(sequence.id, 192, true)
+  const fields = ['name', 'description', 'style', 'constraints'] as const
+  const normalizedFields = Object.fromEntries(fields.map(field => [field, normalizedStoryboardText(sequence[field], 10_000)]))
+  if (!id || Object.values(normalizedFields).some(item => item === null)) return { ok: false, error: 'storyboard_sequence_invalid' }
+  const rowIds = new Set<string>()
+  const rows: Record<string, string>[] = []
+  for (const candidate of sequence.rows) {
+    const keys = ['id', 'cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration']
+    if (!isRecord(candidate) || !hasExactKeys(candidate, keys)) return { ok: false, error: 'storyboard_row_invalid' }
+    const row = Object.fromEntries(keys.map(key => [key, key === 'id'
+      ? normalizedBoundedText(candidate[key], 192, true)
+      : normalizedStoryboardText(candidate[key], 10_000)]))
+    if (Object.values(row).some(item => item === null) || rowIds.has(String(row.id))) return { ok: false, error: 'storyboard_row_invalid' }
+    rowIds.add(String(row.id))
+    rows.push(row as Record<string, string>)
+  }
+  return { ok: true, title, rationale, sequence: { id, ...normalizedFields, rows } }
+}
+
+function parseStoryboardChangesParams(
+  value: unknown,
+  context: Extract<DocumentWriteContext, { operationKind: 'storyboard_changes' }>
+): { ok: true; changes: Record<string, string>[]; rationale: string } | { ok: false; error: string } {
+  if (!isRecord(value) || !hasExactKeys(value, ['changes', 'rationale']) || !Array.isArray(value.changes) || value.changes.length < 1 || value.changes.length > 32) {
+    return { ok: false, error: 'storyboard_changes_arguments_invalid' }
+  }
+  const rationale = normalizedBoundedText(value.rationale, 4000, true)
+  if (rationale === null) return { ok: false, error: 'storyboard_changes_arguments_invalid' }
+  const sequenceFields = new Set(['name', 'description', 'style', 'constraints'])
+  const rowFields = new Set(['cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration'])
+  const rows = Array.isArray(context.sequence.rows) ? context.sequence.rows : []
+  const rowIds = new Set(rows.flatMap(row => isRecord(row) && typeof row.id === 'string' ? [row.id] : []))
+  const identities = new Set<string>()
+  const changes: Record<string, string>[] = []
+  for (const candidate of value.changes) {
+    if (!isRecord(candidate) || typeof candidate.scope !== 'string' || typeof candidate.field !== 'string') return { ok: false, error: 'storyboard_field_invalid' }
+    const text = normalizedStoryboardText(candidate.value, 10_000)
+    if (text === null) return { ok: false, error: 'storyboard_field_invalid' }
+    if (candidate.scope === 'sequence' && hasExactKeys(candidate, ['scope', 'field', 'value']) && sequenceFields.has(candidate.field)) {
+      const identity = `sequence:${candidate.field}`
+      if (identities.has(identity)) return { ok: false, error: 'storyboard_field_duplicate' }
+      identities.add(identity)
+      changes.push({ scope: 'sequence', field: candidate.field, value: text })
+      continue
+    }
+    if (candidate.scope === 'row' && hasExactKeys(candidate, ['scope', 'rowId', 'field', 'value']) && typeof candidate.rowId === 'string' && rowIds.has(candidate.rowId) && rowFields.has(candidate.field)) {
+      const identity = `row:${candidate.rowId}:${candidate.field}`
+      if (identities.has(identity)) return { ok: false, error: 'storyboard_field_duplicate' }
+      identities.add(identity)
+      changes.push({ scope: 'row', rowId: candidate.rowId, field: candidate.field, value: text })
+      continue
+    }
+    return { ok: false, error: 'storyboard_field_invalid' }
+  }
+  return { ok: true, changes, rationale }
+}
+
+function normalizedStoryboardText(value: unknown, maxBytes: number): string | null {
+  if (typeof value !== 'string' || !isWellFormed(value)) return null
+  const normalized = value.normalize('NFC')
+  return utf8Length(normalized) <= maxBytes ? normalized : null
 }
 
 function documentCreateTool(
@@ -916,6 +1080,13 @@ export function buildAgentSystemPrompt(invocation: ReturnType<typeof buildInvoca
           'Revise only the bound planning Document. Use emit_document_changes exactly once after analysis. Use NFC text and UTF-8 byte offsets within one listed leaf block; never target a list/table wrapper or Prompt node.',
           `Current effective Document blocks: ${JSON.stringify(documentContext.blocks.map(block => ({ blockId: block.blockId, text: block.text })))}.`
         ].join('\n')
+      : documentContext?.operationKind === 'storyboard_create'
+        ? [
+            'Create exactly one Storyboard only because the user explicitly invoked the Document transform. Use emit_storyboard_create exactly once.',
+            `Authoritative effective Document text: ${JSON.stringify(documentContext.effectiveText)}.`
+          ].join('\n')
+        : documentContext?.operationKind === 'storyboard_changes'
+          ? 'Use emit_storyboard_changes exactly once. Change only allowed sequence/row text fields on the bound Storyboard; do not emit imageUrl, metadata, IDs, or timestamps.'
       : ''
   const skills = invocation.skillSnapshots.map(skill => ({
     skillId: skill.skillId,

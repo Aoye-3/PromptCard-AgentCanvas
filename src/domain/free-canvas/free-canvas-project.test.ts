@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import { createThreeStageProject } from '@/domain/projects/project-normalization'
+import { storyboardDigest } from '@/domain/storyboard/canvas-storyboard'
 import { updateFreeCanvasNodePosition, threeStageFormNodeId, createFreeCanvasMediaNode, addFreeCanvasMediaNode, addFreeCanvasEdge, mediaNodeFlowId } from './free-canvas'
 import {
   addFreeCanvasImageAnnotation,
@@ -678,6 +679,42 @@ describe('free canvas project domain', () => {
     expect(project.nodes[0]).toMatchObject(document)
     expect(project.nodes[1]).toMatchObject(storyboard)
     expect(project.nodes.every(node => node.kind !== 'text')).toBe(true)
+  })
+
+  test('reloads strict Storyboard digest/marker evidence and freezes corrupted evidence losslessly', () => {
+    const sequence = {
+      id: 'sequence-strict', name: 'Opening', description: '', style: 'ink', constraints: '',
+      rows: [{
+        id: 'row-1', cutLabel: '1', timeRange: '0-3s', subject: 'Mara', action: 'enters', scene: 'hall',
+        camera: 'wide', lighting: '', audio: '', duration: '3s', createdAt: 1, updatedAt: 1
+      }],
+      createdAt: 1, updatedAt: 1, meta: {}
+    }
+    const digest = storyboardDigest(sequence, [])
+    const strictNode = {
+      id: 'storyboard-strict', kind: 'storyboard', title: 'Strict shots', position: { x: 0, y: 0 },
+      width: 680, height: 440, sequence,
+      source: {
+        documentNodeId: 'document-1', documentRevision: 4, documentDigest: `sha256:${'a'.repeat(64)}`,
+        documentResourceDigests: [], model: { connectionId: 'c', providerId: 'p', modelId: 'm' }, skills: []
+      },
+      pendingFieldChanges: [], revision: 0, digest,
+      agentAppliedEdit: {
+        conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1', resultDigest: digest
+      },
+      meta: {}
+    }
+
+    const valid = normalizeFreeCanvasProject({ nodes: [strictNode] as never, edges: [], meta: {} }, 100)
+    const corrupt = normalizeFreeCanvasProject({
+      nodes: [{ ...strictNode, digest: `sha256:${'f'.repeat(64)}` }] as never, edges: [], meta: {}
+    }, 100)
+
+    expect(valid.nodes[0]).toMatchObject({ kind: 'storyboard', revision: 0, digest, agentAppliedEdit: strictNode.agentAppliedEdit })
+    expect(corrupt.nodes[0]).toMatchObject({
+      kind: 'unsupported', originalKind: 'storyboard',
+      originalNode: expect.objectContaining({ id: 'storyboard-strict', digest: `sha256:${'f'.repeat(64)}` })
+    })
   })
 
   test.each([
