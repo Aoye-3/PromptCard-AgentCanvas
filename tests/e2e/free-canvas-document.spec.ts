@@ -16,7 +16,13 @@ test('creates, edits, expands, collapses, moves, and reloads a neutral Document 
   expect(JSON.stringify(storage.project())).not.toContain('tiptap')
   expect(JSON.stringify(storage.project())).not.toContain('effectiveText')
 
-  await node.getByRole('button', { name: '展开编辑器' }).click()
+  const expandButton = node.getByRole('button', { name: '展开编辑器' })
+  const storyboardButton = node.getByRole('button', { name: /从文档 .* 创建分镜表/ })
+  const expandBox = await requiredBox(expandButton)
+  const storyboardBox = await requiredBox(storyboardButton)
+  expect(rectanglesOverlap(expandBox, storyboardBox)).toBe(false)
+
+  await expandButton.click()
   let dialog = page.getByRole('dialog', { name: '未命名文档' })
   await expect(dialog).toBeVisible()
   await expect(node.locator('[contenteditable="true"]')).toHaveCount(0)
@@ -108,6 +114,16 @@ async function requiredBox(locator: Locator) {
   const box = await locator.boundingBox()
   if (!box) throw new Error('Expected element to have a bounding box')
   return box
+}
+
+function rectanglesOverlap(
+  left: { x: number; y: number; width: number; height: number },
+  right: { x: number; y: number; width: number; height: number }
+) {
+  return left.x < right.x + right.width
+    && left.x + left.width > right.x
+    && left.y < right.y + right.height
+    && left.y + left.height > right.y
 }
 
 function storedDocumentText(project: Record<string, unknown> | null): string | null {

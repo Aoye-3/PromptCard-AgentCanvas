@@ -3,7 +3,7 @@ import { act, create } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { applyDocumentChangeOperations } from '@/domain/documents/document-suggestions'
 import { createPlanningDocumentV1, planningDocumentEffectiveText, sha256Utf8 } from '@/domain/documents/planning-document'
-import { storyboardDigest } from '@/domain/storyboard/canvas-storyboard'
+import { storyboardDigest, storyboardShotDigest } from '@/domain/storyboard/canvas-storyboard'
 import type { AgentCanvasEdit, AgentPromptHandoffBasis, AgentWorkspaceProposal } from '@/models/Agent.model'
 import type { IFreeCanvasDocumentNode, IFreeCanvasImageNode, IFreeCanvasProject, IFreeCanvasStoryboardNode, IFreeCanvasTextNode, IPromptProject, IStoryboardSequence, PlanningDocumentV1, StoryboardSourceProvenance } from '@/models/PromptHistory.model'
 
@@ -82,11 +82,11 @@ vi.mock('@xyflow/react', () => {
         aria-label="测试 ReactFlow 删除首个节点"
         onClick={() => nodes[0] && onNodesChange?.([{ type: 'remove', id: nodes[0].id }])}
       >Remove first</button>
-      {nodes.map(node => {
+      {nodes.map((node, index) => {
         const Component = nodeTypes[node.type]
         return (
           <div
-            key={node.id}
+            key={`${node.id}:${index}`}
             data-flow-node={node.id}
             data-draggable={node.draggable}
             data-connectable={node.connectable}
@@ -542,6 +542,123 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
       .toBeGreaterThan(onPersistCanvas.mock.invocationCallOrder[0])
   })
 
+  it('fails closed before persisting when a duplicate Document target is inserted after proposal generation', async () => {
+    const canvas = initialCanvas()
+    const source = canvas.nodes[0] as IFreeCanvasDocumentNode
+    const operation = {
+      kind: 'insert' as const,
+      blockId: 'document-1-paragraph',
+      utf8Offset: new TextEncoder().encode('Before').length,
+      text: '!',
+      expectedTextDigest: `sha256:${sha256Utf8('Before')}`
+    }
+    const expectedDocument = applyDocumentChangeOperations(source.document, 'edit-duplicate-document', [operation])
+    mocks.agentCanvasEdit = {
+      kind: 'document_changes', id: 'edit-duplicate-document', editId: 'edit-duplicate-document',
+      conversationId: 'conversation-1', requestId: 'request-duplicate-document', nodeId: source.id,
+      expectedResultDigest: expectedDocument.digest,
+      base: { projectRevision: 1, nodeRevision: source.document.revision, nodeDigest: source.document.digest },
+      payload: { operations: [operation] }, rationale: 'Tighten the opening.'
+    }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState(canvas)
+      return <>
+        <button
+          type="button"
+          aria-label="测试插入重复 Document 权威节点"
+          onClick={() => setCurrent(value => ({
+            ...value,
+            nodes: [...value.nodes, { ...source, title: 'Duplicate authority' }]
+          }))}
+        >Duplicate Document</button>
+        <FreeCanvasBuilderScreen
+          activeProject={project(current)} freeCanvas={current}
+          onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+          onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+        />
+      </>
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '测试插入重复 Document 权威节点' }).props.onClick())
+    const storyboardButtons = renderer.root.findAllByProps({
+      'aria-label': '从文档 Creative brief document-1 创建分镜表'
+    })
+    act(() => storyboardButtons[0].props.onClick())
+    expect(renderer.root.findByProps({ 'data-agent-draft-operation': undefined })).toBeTruthy()
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+    })
+
+    expect(onPersistCanvas).not.toHaveBeenCalled()
+    expect(mocks.applyResults).toEqual([false])
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledWith(
+      'project-1', 'conversation-1', 'edit-duplicate-document',
+      { requestId: 'request-duplicate-document', status: 'failed', errorCode: 'failed_integrity' }
+    )
+  })
+
+  it('does not acknowledge an already-applied Document marker when its target id becomes ambiguous', async () => {
+    const source = documentNode()
+    const operation = {
+      kind: 'insert' as const,
+      blockId: 'document-1-paragraph',
+      utf8Offset: new TextEncoder().encode('Before').length,
+      text: '!',
+      expectedTextDigest: `sha256:${sha256Utf8('Before')}`
+    }
+    const document = applyDocumentChangeOperations(source.document, 'edit-duplicate-marker', [operation])
+    const marked: IFreeCanvasDocumentNode = {
+      ...source,
+      document,
+      agentAppliedEdit: {
+        conversationId: 'conversation-1', requestId: 'request-duplicate-marker',
+        editId: 'edit-duplicate-marker', resultDigest: document.digest
+      }
+    }
+    mocks.agentCanvasEdit = {
+      kind: 'document_changes', id: 'edit-duplicate-marker', editId: 'edit-duplicate-marker',
+      conversationId: 'conversation-1', requestId: 'request-duplicate-marker', nodeId: source.id,
+      expectedResultDigest: document.digest,
+      base: { projectRevision: 1, nodeRevision: source.document.revision, nodeDigest: source.document.digest },
+      payload: { operations: [operation] }, rationale: 'Tighten the opening.'
+    }
+    const canvas = { ...initialCanvas(), nodes: [marked], selectedNodeId: marked.id }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>(canvas)
+      return <>
+        <button
+          type="button"
+          aria-label="测试插入重复已应用 Document 标记"
+          onClick={() => setCurrent(value => ({ ...value, nodes: [...value.nodes, structuredClone(marked)] }))}
+        >Duplicate applied marker</button>
+        <FreeCanvasBuilderScreen
+          activeProject={project(current)} freeCanvas={current}
+          onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+          onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+        />
+      </>
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '测试插入重复已应用 Document 标记' }).props.onClick())
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+    })
+
+    expect(onPersistCanvas).not.toHaveBeenCalled()
+    expect(mocks.applyResults).toEqual([false])
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledTimes(1)
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledWith(
+      'project-1', 'conversation-1', 'edit-duplicate-marker',
+      { requestId: 'request-duplicate-marker', status: 'failed', errorCode: 'failed_integrity' }
+    )
+  })
+
   it('requires the explicit Document action before binding a Storyboard create request', async () => {
     const canvas = initialCanvas()
     const renderer = create(
@@ -573,6 +690,52 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
       .toMatchObject({ 'data-agent-draft-basis-kind': 'document-selection' })
     expect(renderer.root.findByProps({ 'data-agent-draft-operation': 'prompt_handoff' }).props['data-agent-draft-content'])
       .not.toContain('Before')
+  })
+
+  it('does not bind or approve a Document Prompt handoff after its source id becomes ambiguous', async () => {
+    const canvas = initialCanvas()
+    const source = canvas.nodes[0] as IFreeCanvasDocumentNode
+    const basis: AgentPromptHandoffBasis = {
+      kind: 'document-selection', nodeId: source.id, documentRevision: source.document.revision,
+      documentDigest: source.document.digest, blockId: `${source.id}-paragraph`,
+      utf8Start: 0, utf8End: 6, selectedText: 'Before',
+      selectedTextDigest: `sha256:${sha256Utf8('Before')}`
+    }
+    mocks.agentProposal = {
+      kind: 'free_canvas_text_create', id: 'prompt-handoff-duplicate-document', status: 'pending',
+      agentName: 'PromptCard Agent', title: 'Prompt proposal', userText: 'Cinematic portrait',
+      threadId: 'conversation-1', provenance: handoffProvenance(), handoffBasis: basis,
+      rationale: 'Explicit handoff', createdAt: 1
+    }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState(canvas)
+      return <>
+        <button
+          type="button"
+          aria-label="测试插入重复 Document handoff 来源"
+          onClick={() => setCurrent(value => ({ ...value, nodes: [...value.nodes, structuredClone(source)] }))}
+        >Duplicate Document source</button>
+        <FreeCanvasBuilderScreen
+          activeProject={project(current)} freeCanvas={current}
+          onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+          onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+        />
+      </>
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '测试插入重复 Document handoff 来源' }).props.onClick())
+    const handoffButtons = renderer.root.findAllByProps({ 'aria-label': '选中文本转为 Prompt 提案' })
+    act(() => handoffButtons[0].props.onClick())
+    expect(renderer.root.findByProps({ 'data-agent-draft-operation': undefined })).toBeTruthy()
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick()
+    })
+    expect(onPersistCanvas).not.toHaveBeenCalled()
+    expect(mocks.applyResults).toEqual([false])
   })
 
   it('approves a fresh Document handoff as a new all-user Prompt node without rewriting its source', async () => {
@@ -631,6 +794,43 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     })
     expect(mocks.applyResults).toEqual([true])
     expect(onChange.mock.invocationCallOrder[0]).toBeGreaterThan(onPersistCanvas.mock.invocationCallOrder[0])
+  })
+
+  it('rejects a handoff when the authoritative save receipt makes its Document source ambiguous', async () => {
+    const canvas = initialCanvas()
+    const source = canvas.nodes[0] as IFreeCanvasDocumentNode
+    mocks.agentProposal = {
+      kind: 'free_canvas_text_create', id: 'prompt-handoff-winning-duplicate', status: 'pending',
+      agentName: 'PromptCard Agent', title: 'Prompt proposal', userText: 'Cinematic portrait',
+      threadId: 'conversation-1', provenance: handoffProvenance(),
+      handoffBasis: {
+        kind: 'document-selection', nodeId: source.id, documentRevision: source.document.revision,
+        documentDigest: source.document.digest, blockId: `${source.id}-paragraph`,
+        utf8Start: 0, utf8End: 6, selectedText: 'Before',
+        selectedTextDigest: `sha256:${sha256Utf8('Before')}`
+      }, rationale: 'Explicit handoff', createdAt: 1
+    }
+    const onChange = vi.fn()
+    const onPersistCanvas = vi.fn(async (next: IFreeCanvasProject) => persistedReceipt({
+      ...next,
+      nodes: [...next.nodes, structuredClone(source)]
+    }))
+    const renderer = create(
+      <FreeCanvasBuilderScreen
+        activeProject={project(canvas)} freeCanvas={canvas}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={onChange} onPersistCanvas={onPersistCanvas}
+      />
+    )
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick()
+    })
+
+    expect(onPersistCanvas).toHaveBeenCalledOnce()
+    expect(onChange).not.toHaveBeenCalled()
+    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining('规划来源'))
+    expect(mocks.applyResults).toEqual([false])
   })
 
   it('rebases a superseded handoff onto concurrent Canvas changes and commits only the authoritative winning payload', async () => {
@@ -889,6 +1089,138 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     })
   })
 
+  it('fails closed before persisting when a duplicate Storyboard target is inserted after proposal generation', async () => {
+    const clean = pendingStoryboardNode()
+    clean.pendingFieldChanges = []
+    clean.digest = storyboardDigest(clean.sequence, [])
+    const expectedChanges = [{
+      id: 'sbf-edit-storyboard-duplicate-0', editId: 'edit-storyboard-duplicate', scope: 'row' as const,
+      rowId: 'row-1', field: 'camera' as const, previousValue: 'wide', newValue: 'close-up'
+    }]
+    mocks.agentCanvasEdit = {
+      kind: 'storyboard_changes', id: 'edit-storyboard-duplicate', editId: 'edit-storyboard-duplicate',
+      conversationId: 'conversation-1', requestId: 'request-storyboard-duplicate', nodeId: clean.id,
+      expectedResultDigest: storyboardDigest(clean.sequence, expectedChanges),
+      base: { projectRevision: 1, nodeRevision: clean.revision!, nodeDigest: clean.digest },
+      payload: { source: storyboardSource(), changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }] },
+      rationale: 'Revise camera'
+    }
+    const canvas = { ...initialCanvas(), nodes: [clean], selectedNodeId: clean.id }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>(canvas)
+      return <>
+        <button
+          type="button"
+          aria-label="测试插入重复 Storyboard 权威节点"
+          onClick={() => setCurrent(value => ({ ...value, nodes: [...value.nodes, structuredClone(clean)] }))}
+        >Duplicate Storyboard</button>
+        <FreeCanvasBuilderScreen
+          activeProject={project(current)} freeCanvas={current}
+          onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+          onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+        />
+      </>
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '测试插入重复 Storyboard 权威节点' }).props.onClick())
+    const revisionButtons = renderer.root.findAllByProps({ 'aria-label': '让 Agent 修订分镜表 Review shots' })
+    act(() => revisionButtons[0].props.onClick())
+    expect(renderer.root.findByProps({ 'data-agent-draft-operation': undefined })).toBeTruthy()
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+    })
+
+    expect(onPersistCanvas).not.toHaveBeenCalled()
+    expect(mocks.applyResults).toEqual([false])
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledWith(
+      'project-1', 'conversation-1', 'edit-storyboard-duplicate',
+      { requestId: 'request-storyboard-duplicate', status: 'failed', errorCode: 'failed_integrity' }
+    )
+  })
+
+  it('does not persist Storyboard review approval when its target id is ambiguous', async () => {
+    const source = pendingStoryboardNode()
+    const canvas = { ...initialCanvas(), nodes: [source], selectedNodeId: source.id }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>(canvas)
+      return <>
+        <button
+          type="button"
+          aria-label="测试插入重复 Storyboard 审阅节点"
+          onClick={() => setCurrent(value => ({ ...value, nodes: [...value.nodes, structuredClone(source)] }))}
+        >Duplicate Storyboard review</button>
+        <FreeCanvasBuilderScreen
+          activeProject={project(current)} freeCanvas={current}
+          onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+          onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+        />
+      </>
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '测试插入重复 Storyboard 审阅节点' }).props.onClick())
+    const acceptButtons = renderer.root.findAllByProps({ 'aria-label': '接受 camera 修改' })
+    await act(async () => {
+      acceptButtons[0].props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(onPersistCanvas).not.toHaveBeenCalled()
+    expect(renderer.root.findAllByProps({ 'aria-label': '接受 camera 修改' })).toHaveLength(2)
+  })
+
+  it('does not bind or approve a Storyboard Prompt handoff after its source id becomes ambiguous', async () => {
+    const source = pendingStoryboardNode()
+    source.pendingFieldChanges = []
+    source.digest = storyboardDigest(source.sequence, [])
+    const row = source.sequence.rows[0]
+    const basis: AgentPromptHandoffBasis = {
+      kind: 'storyboard-shot', nodeId: source.id, storyboardRevision: source.revision ?? 0,
+      storyboardDigest: source.digest, rowId: row.id, shotDigest: storyboardShotDigest(row)
+    }
+    mocks.agentProposal = {
+      kind: 'free_canvas_text_create', id: 'prompt-handoff-duplicate-storyboard', status: 'pending',
+      agentName: 'PromptCard Agent', title: 'Shot prompt', userText: 'Wide establishing shot',
+      threadId: 'conversation-1', provenance: handoffProvenance(), handoffBasis: basis,
+      rationale: 'Explicit handoff', createdAt: 1
+    }
+    const canvas = { ...initialCanvas(), nodes: [source], selectedNodeId: source.id }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>(canvas)
+      return <>
+        <button
+          type="button"
+          aria-label="测试插入重复 Storyboard handoff 来源"
+          onClick={() => setCurrent(value => ({ ...value, nodes: [...value.nodes, structuredClone(source)] }))}
+        >Duplicate Storyboard source</button>
+        <FreeCanvasBuilderScreen
+          activeProject={project(current)} freeCanvas={current}
+          onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+          onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+        />
+      </>
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '测试插入重复 Storyboard handoff 来源' }).props.onClick())
+    const handoffButtons = renderer.root.findAllByProps({ 'aria-label': '镜头转为 Prompt 提案' })
+    act(() => handoffButtons[0].props.onClick())
+    expect(renderer.root.findByProps({ 'data-agent-draft-operation': undefined })).toBeTruthy()
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick()
+    })
+    expect(onPersistCanvas).not.toHaveBeenCalled()
+    expect(mocks.applyResults).toEqual([false])
+  })
+
   it('persists an idempotent Storyboard create marker before ACK and retries the exact lost ACK', async () => {
     mocks.agentCanvasEdit = storyboardCreateEdit()
     mocks.acknowledgeDocumentEdit
@@ -1076,6 +1408,68 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledTimes(2)
     expect(renderer.root.findByProps({ 'aria-label': '接受 camera 修改' }).props.disabled).toBe(false)
     expect(onPersistCanvas).toHaveBeenCalledOnce()
+  })
+
+  it('fails a pending Storyboard ACK recovery when its saved marker id becomes ambiguous', async () => {
+    const clean = pendingStoryboardNode()
+    clean.pendingFieldChanges = []
+    clean.digest = storyboardDigest(clean.sequence, [])
+    const changes = [{
+      id: 'sbf-edit-storyboard-recovery-duplicate-0', editId: 'edit-storyboard-recovery-duplicate', scope: 'row' as const,
+      rowId: 'row-1', field: 'camera' as const, previousValue: 'wide', newValue: 'close-up'
+    }]
+    mocks.agentCanvasEdit = {
+      kind: 'storyboard_changes', id: 'edit-storyboard-recovery-duplicate', editId: 'edit-storyboard-recovery-duplicate',
+      conversationId: 'conversation-1', requestId: 'request-storyboard-recovery-duplicate', nodeId: clean.id,
+      expectedResultDigest: storyboardDigest(clean.sequence, changes),
+      base: { projectRevision: 1, nodeRevision: clean.revision!, nodeDigest: clean.digest },
+      payload: { source: storyboardSource(), changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }] },
+      rationale: 'Refine camera'
+    }
+    mocks.acknowledgeDocumentEdit.mockResolvedValueOnce({
+      status: 'pending_apply', conversationId: 'conversation-1',
+      requestId: 'request-storyboard-recovery-duplicate', editId: 'edit-storyboard-recovery-duplicate'
+    })
+    const canvas = { ...initialCanvas(), nodes: [clean], selectedNodeId: clean.id }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>(canvas)
+      return <>
+        <button
+          type="button"
+          aria-label="测试插入重复 Storyboard 恢复标记"
+          onClick={() => setCurrent(value => {
+            const authority = value.nodes.find(node => node.id === clean.id)
+            return authority ? { ...value, nodes: [...value.nodes, structuredClone(authority)] } : value
+          })}
+        >Duplicate recovery marker</button>
+        <FreeCanvasBuilderScreen
+          activeProject={project(current)} freeCanvas={current}
+          onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+          onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+        />
+      </>
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    let application!: Promise<void>
+    act(() => {
+      application = renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+    })
+    await act(async () => { for (let index = 0; index < 5; index += 1) await Promise.resolve() })
+    act(() => renderer.root.findByProps({ 'aria-label': '测试插入重复 Storyboard 恢复标记' }).props.onClick())
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 140))
+      await application
+    })
+
+    expect(mocks.applyResults).toEqual([false])
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenCalledTimes(2)
+    expect(mocks.acknowledgeDocumentEdit).toHaveBeenLastCalledWith(
+      'project-1', 'conversation-1', 'edit-storyboard-recovery-duplicate',
+      { requestId: 'request-storyboard-recovery-duplicate', status: 'failed', errorCode: 'failed_integrity' }
+    )
   })
 
   it('locks saved Storyboard review after ambiguous ACK recovery and unlocks after exact recovery succeeds', async () => {

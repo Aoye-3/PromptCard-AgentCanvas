@@ -260,6 +260,14 @@ const isCanvasImageDrag = (dataTransfer: DataTransfer): boolean =>
 
 type DocumentAuthorityNode = Extract<IFreeCanvasNode, { kind: 'document' }>
 
+const exactCanvasNode = (
+  canvas: IFreeCanvasProject,
+  nodeId: string
+): IFreeCanvasNode | null => {
+  const matching = canvas.nodes.filter(node => node.id === nodeId)
+  return matching.length === 1 ? matching[0] : null
+}
+
 interface ProjectMutationScope {
   projectId: string
   epoch: number
@@ -323,10 +331,9 @@ const hasExactDocumentAuthority = (
   nodeId: string,
   attempted: DocumentAuthorityNode
 ): boolean => {
-  const matching = canvas.nodes.filter(node => node.id === nodeId)
-  return matching.length === 1
-    && matching[0].kind === 'document'
-    && stableSemanticJson(matching[0]) === stableSemanticJson(attempted)
+  const matching = exactCanvasNode(canvas, nodeId)
+  return matching?.kind === 'document'
+    && stableSemanticJson(matching) === stableSemanticJson(attempted)
 }
 
 const hasExactCanvasNodeAuthority = (
@@ -334,8 +341,8 @@ const hasExactCanvasNodeAuthority = (
   nodeId: string,
   attempted: IFreeCanvasNode
 ): boolean => {
-  const matching = canvas.nodes.filter(node => node.id === nodeId)
-  return matching.length === 1 && stableSemanticJson(matching[0]) === stableSemanticJson(attempted)
+  const matching = exactCanvasNode(canvas, nodeId)
+  return matching !== null && stableSemanticJson(matching) === stableSemanticJson(attempted)
 }
 
 const canvasCommandAuthorityImpact = (command: CanvasLocalCommand) => {
@@ -2040,7 +2047,7 @@ const FreeCanvasBuilderInner = ({
         : new Set<string>()
       if (state.nodeId) {
         const target = state.projectId === activeProjectIdRef.current
-          ? freeCanvasRef.current.nodes.find(node => node.id === state.nodeId)
+          ? exactCanvasNode(freeCanvasRef.current, state.nodeId)
           : undefined
         if (
           state.projectId !== activeProjectIdRef.current
@@ -2095,6 +2102,27 @@ const FreeCanvasBuilderInner = ({
     const attempt = (delayMs: number) => {
       const timer = setTimeout(() => {
         storyboardAckRecoveryTimersRef.current.delete(target.leaseId)
+        if (target.projectId === activeProjectIdRef.current && target.nodeId) {
+          const authority = exactCanvasNode(freeCanvasRef.current, target.nodeId)
+          const marker = authority?.kind === 'document' || authority?.kind === 'storyboard'
+            ? authority.agentAppliedEdit
+            : undefined
+          if (
+            marker?.conversationId !== target.conversationId
+            || marker.requestId !== target.requestId
+            || marker.editId !== target.editId
+          ) {
+            void agentRuntimeService.acknowledgeDocumentEdit(
+              target.projectId,
+              target.conversationId,
+              target.editId,
+              { requestId: target.requestId, status: 'failed', errorCode: 'failed_integrity' }
+            ).catch(() => undefined)
+            updateDocumentReconcileLease({ ...target, pending: false })
+            stopStoryboardAckRecovery(target.leaseId, false)
+            return
+          }
+        }
         void agentRuntimeService.acknowledgeDocumentEdit(
           target.projectId,
           target.conversationId,
@@ -2223,7 +2251,7 @@ const FreeCanvasBuilderInner = ({
       if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return false
       const beforeCanvas = freeCanvasRef.current
       const beforeHistory = canvasCommandHistoryRef.current
-      const current = beforeCanvas.nodes.find(node => node.id === nodeId)
+      const current = exactCanvasNode(beforeCanvas, nodeId)
       if (!current || current.kind !== 'document') return false
       if (current.document.digest === document.digest && current.document.revision === document.revision) return true
 
@@ -2233,10 +2261,8 @@ const FreeCanvasBuilderInner = ({
         document
       })
       if (executed.project === beforeCanvas) return false
-      const attemptedNode = executed.project.nodes.find(
-        (node): node is DocumentAuthorityNode => node.id === nodeId && node.kind === 'document'
-      )
-      if (!attemptedNode) return false
+      const attemptedNode = exactCanvasNode(executed.project, nodeId)
+      if (!attemptedNode || attemptedNode.kind !== 'document') return false
       canvasCommandHistoryRef.current = executed.history
       emitGenerationCanvas(executed.project)
       if (!onPersistCanvas) return true
@@ -2272,7 +2298,7 @@ const FreeCanvasBuilderInner = ({
   }, [emitGenerationCanvas, enqueueDocumentMutation, onPersistCanvas])
 
   const requestDocumentStoryboard = useCallback((nodeId: string) => {
-    const node = freeCanvasRef.current.nodes.find(candidate => candidate.id === nodeId)
+    const node = exactCanvasNode(freeCanvasRef.current, nodeId)
     if (!node || node.kind !== 'document' || documentReconcileLockedNodeIdsRef.current.has(nodeId)) return
     setRightPanelMode('agent')
     setAgentDraftRequest({
@@ -2283,7 +2309,7 @@ const FreeCanvasBuilderInner = ({
   }, [])
 
   const requestStoryboardRevision = useCallback((nodeId: string) => {
-    const node = freeCanvasRef.current.nodes.find(candidate => candidate.id === nodeId)
+    const node = exactCanvasNode(freeCanvasRef.current, nodeId)
     if (
       !node
       || node.kind !== 'storyboard'
@@ -2299,7 +2325,7 @@ const FreeCanvasBuilderInner = ({
   }, [])
 
   const requestDocumentPromptHandoff = useCallback((basis: Extract<AgentPromptHandoffBasis, { kind: 'document-selection' }>) => {
-    const node = freeCanvasRef.current.nodes.find(candidate => candidate.id === basis.nodeId)
+    const node = exactCanvasNode(freeCanvasRef.current, basis.nodeId)
     if (!node || node.kind !== 'document' || !matchesDocumentPromptHandoffBasis(node.document, basis)) return
     setRightPanelMode('agent')
     setAgentDraftRequest({
@@ -2310,7 +2336,7 @@ const FreeCanvasBuilderInner = ({
   }, [])
 
   const requestStoryboardPromptHandoff = useCallback((nodeId: string, rowId: string) => {
-    const node = freeCanvasRef.current.nodes.find(candidate => candidate.id === nodeId)
+    const node = exactCanvasNode(freeCanvasRef.current, nodeId)
     if (!node || node.kind !== 'storyboard' || node.pendingFieldChanges.length > 0) return
     const row = node.sequence.rows.find(candidate => candidate.id === rowId)
     if (!row) return
@@ -2338,7 +2364,7 @@ const FreeCanvasBuilderInner = ({
       if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return
       if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return
       const beforeCanvas = freeCanvasRef.current
-      const current = beforeCanvas.nodes.find(node => node.id === nodeId)
+      const current = exactCanvasNode(beforeCanvas, nodeId)
       if (!current || current.kind !== 'storyboard') return
       let updated: typeof current
       try {
@@ -2352,7 +2378,7 @@ const FreeCanvasBuilderInner = ({
         storyboard: updated
       })
       if (executed.project === beforeCanvas) return
-      const attempted = executed.project.nodes.find(node => node.id === nodeId)
+      const attempted = exactCanvasNode(executed.project, nodeId)
       if (!attempted || attempted.kind !== 'storyboard') return
       emitGenerationCanvas(executed.project)
       if (!onPersistCanvas) {
@@ -2398,7 +2424,7 @@ const FreeCanvasBuilderInner = ({
       if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return true
       if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return false
       const beforeCanvas = freeCanvasRef.current
-      const current = beforeCanvas.nodes.find(node => node.id === nodeId)
+      const current = exactCanvasNode(beforeCanvas, nodeId)
       if (!current || current.kind !== 'document') return false
       if ((current.meta.collapsed === true) === collapsed) return true
       const previousCollapsed = current.meta.collapsed
@@ -2408,10 +2434,8 @@ const FreeCanvasBuilderInner = ({
           ? { ...node, meta: { ...node.meta, collapsed } }
           : node)
       }
-      const attemptedNode = next.nodes.find(
-        (node): node is DocumentAuthorityNode => node.id === nodeId && node.kind === 'document'
-      )
-      if (!attemptedNode) return false
+      const attemptedNode = exactCanvasNode(next, nodeId)
+      if (!attemptedNode || attemptedNode.kind !== 'document') return false
       emitGenerationCanvas(next)
       if (!onPersistCanvas) return true
 
@@ -3327,7 +3351,9 @@ const FreeCanvasBuilderInner = ({
         if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
 
         const beforeCanvas = freeCanvasRef.current
-        const existing = beforeCanvas.nodes.find(node => node.id === proposal.nodeId)
+        const authorityMatches = beforeCanvas.nodes.filter(node => node.id === proposal.nodeId)
+        if (authorityMatches.length > 1) return acknowledgeFailure('failed_integrity')
+        const existing = authorityMatches[0]
         if (
           (existing?.kind === 'document' || existing?.kind === 'storyboard') &&
           existing.agentAppliedEdit?.conversationId === proposal.conversationId &&
@@ -3349,6 +3375,17 @@ const FreeCanvasBuilderInner = ({
           requestId: proposal.requestId,
           editId: proposal.editId,
           resultDigest: proposal.expectedResultDigest
+        }
+        const hasExpectedAppliedAuthority = (canvas: IFreeCanvasProject) => {
+          const node = exactCanvasNode(canvas, proposal.nodeId)
+          return (node?.kind === 'document' || node?.kind === 'storyboard')
+            && node.agentAppliedEdit?.conversationId === marker.conversationId
+            && node.agentAppliedEdit.requestId === marker.requestId
+            && node.agentAppliedEdit.editId === marker.editId
+            && node.agentAppliedEdit.resultDigest === marker.resultDigest
+            && (node.kind === 'document'
+              ? node.document.digest
+              : node.digest ?? storyboardDigest(node.sequence, node.pendingFieldChanges)) === proposal.expectedResultDigest
         }
         let executed: ReturnType<typeof executeCanvasLocalCommand>
         try {
@@ -3432,22 +3469,32 @@ const FreeCanvasBuilderInner = ({
               : node
           ))
         }
+        if (!hasExpectedAppliedAuthority(persistedCanvas)) {
+          return acknowledgeFailure('failed_integrity')
+        }
         emitGenerationCanvas(persistedCanvas)
         if (!onPersistCanvas) {
           emitGenerationCanvas(beforeCanvas)
           return acknowledgeFailure('save_failed')
         }
-        let saved = false
+        let receipt: boolean | FreeCanvasPersistReceipt = false
         try {
-          saved = Boolean(await onPersistCanvas(persistedCanvas))
+          receipt = await onPersistCanvas(persistedCanvas)
         } catch {
-          saved = false
+          receipt = false
         }
-        if (!saved) {
+        if (!receipt) {
           if (sameProjectMutationScope(activeProjectScopeRef.current, scope)) {
             emitGenerationCanvas(beforeCanvas)
           }
           return acknowledgeFailure('save_failed')
+        }
+        const authoritativeCanvas = authoritativePersistedCanvas(receipt)
+        if (
+          (authoritativeCanvas && !hasExpectedAppliedAuthority(authoritativeCanvas))
+          || !hasExpectedAppliedAuthority(freeCanvasRef.current)
+        ) {
+          return acknowledgeFailure('failed_integrity')
         }
         if (sameProjectMutationScope(activeProjectScopeRef.current, scope)) {
           canvasCommandHistoryRef.current = executed.history
@@ -3579,6 +3626,10 @@ const FreeCanvasBuilderInner = ({
           const liveCanvas = freeCanvasRef.current
           const liveChanged = canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(baseCanvas)
             && canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(winningCanvas)
+          if (winning.status === 'exact' && !promptHandoffSourceIsCurrent(winningCanvas, basis)) {
+            window.alert('规划来源已发生变化，请重新生成 Prompt 提案。')
+            return false
+          }
           if (winning.status === 'exact' && !liveChanged) {
             commitCanvasSelection(winningCanvas, application.nodeId)
             return true
@@ -4341,7 +4392,7 @@ const FreeCanvasNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
           <button
             type="button"
             aria-label={`从文档 ${node.title} 创建分镜表`}
-            className="nodrag absolute right-4 top-4 rounded-md border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-sky-700 shadow-sm hover:bg-sky-50"
+            className="nodrag absolute right-[7.75rem] top-2 rounded-md border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-sky-700 shadow-sm hover:bg-sky-50"
             onClick={() => data.onDocumentToStoryboard(node.id)}
           >
             从文档创建分镜表
@@ -6657,7 +6708,7 @@ const promptHandoffSourceIsCurrent = (
   canvas: IFreeCanvasProject,
   basis: AgentPromptHandoffBasis
 ): boolean => {
-  const source = canvas.nodes.find(node => node.id === basis.nodeId)
+  const source = exactCanvasNode(canvas, basis.nodeId)
   return basis.kind === 'document-selection'
     ? source?.kind === 'document' && matchesDocumentPromptHandoffBasis(source.document, basis)
     : source?.kind === 'storyboard'
