@@ -14,6 +14,7 @@ const MAX_DOCUMENT_BLOCKS = 128
 const MAX_DOCUMENT_OPERATIONS = 16
 const MAX_DOCUMENT_TEXT_BYTES = 100_000
 const MAX_DOCUMENT_CHANGE_TEXT_BYTES = 64 * 1024
+const MAX_STORYBOARD_AGGREGATE_TEXT_BYTES = 256_000
 
 type DocumentChangeOperation =
   | { kind: 'insert'; blockId: string; utf8Offset: number; text: string; expectedTextDigest: string }
@@ -355,6 +356,14 @@ function parseStoryboardCreateParams(value: unknown):
     rowIds.add(String(row.id))
     rows.push(row as Record<string, string>)
   }
+  const aggregateTextBytes = [
+    ...Object.values(normalizedFields),
+    ...rows.flatMap(row => ['cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration']
+      .map(field => row[field]))
+  ].reduce((total, item) => total + utf8Length(String(item)), 0)
+  if (aggregateTextBytes > MAX_STORYBOARD_AGGREGATE_TEXT_BYTES) {
+    return { ok: false, error: 'storyboard_sequence_budget_exceeded' }
+  }
   return { ok: true, title, rationale, sequence: { id, ...normalizedFields, rows } }
 }
 
@@ -373,6 +382,7 @@ function parseStoryboardChangesParams(
   const rowIds = new Set(rows.flatMap(row => isRecord(row) && typeof row.id === 'string' ? [row.id] : []))
   const identities = new Set<string>()
   const changes: Record<string, string>[] = []
+  let aggregateTextBytes = 0
   for (const candidate of value.changes) {
     if (!isRecord(candidate) || typeof candidate.scope !== 'string' || typeof candidate.field !== 'string') return { ok: false, error: 'storyboard_field_invalid' }
     const text = normalizedStoryboardText(candidate.value, 10_000)
@@ -382,6 +392,7 @@ function parseStoryboardChangesParams(
       if (identities.has(identity)) return { ok: false, error: 'storyboard_field_duplicate' }
       identities.add(identity)
       changes.push({ scope: 'sequence', field: candidate.field, value: text })
+      aggregateTextBytes += utf8Length(text)
       continue
     }
     if (candidate.scope === 'row' && hasExactKeys(candidate, ['scope', 'rowId', 'field', 'value']) && typeof candidate.rowId === 'string' && rowIds.has(candidate.rowId) && rowFields.has(candidate.field)) {
@@ -389,9 +400,13 @@ function parseStoryboardChangesParams(
       if (identities.has(identity)) return { ok: false, error: 'storyboard_field_duplicate' }
       identities.add(identity)
       changes.push({ scope: 'row', rowId: candidate.rowId, field: candidate.field, value: text })
+      aggregateTextBytes += utf8Length(text)
       continue
     }
     return { ok: false, error: 'storyboard_field_invalid' }
+  }
+  if (aggregateTextBytes > MAX_STORYBOARD_AGGREGATE_TEXT_BYTES) {
+    return { ok: false, error: 'storyboard_changes_budget_exceeded' }
   }
   return { ok: true, changes, rationale }
 }

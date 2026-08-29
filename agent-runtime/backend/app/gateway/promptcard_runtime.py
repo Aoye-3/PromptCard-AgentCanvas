@@ -58,6 +58,7 @@ _STORYBOARD_ROW_FIELDS = {
     "cutLabel", "timeRange", "subject", "action", "scene", "camera",
     "lighting", "audio", "duration",
 }
+_MAX_STORYBOARD_AGGREGATE_TEXT_BYTES = 256_000
 _DOCUMENT_EDIT_MAX_OPERATIONS = 16
 _DOCUMENT_EDIT_MAX_TEXT_BYTES = 64 * 1024
 
@@ -838,6 +839,22 @@ class PromptCardRuntimeService:
         edit_kind = str(ledger.get("kind") or "")
         storyboard_edit = edit_kind in {"storyboard_create", "storyboard_changes"}
         expected_node_kind = "storyboard" if storyboard_edit else "document"
+        if (
+            storyboard_edit
+            and isinstance(node, dict)
+            and node.get("kind") == "storyboard"
+            and not await _storyboard_source_matches_storage(
+                project_id, project, conversation, turn, edit, node
+            )
+        ):
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_integrity",
+                {"nodeId": node_id, "kind": "storyboard", "code": "storyboard_source_mismatch"},
+                include_canvas_edits=include_canvas_edits,
+            )
         marker = node.get("agentAppliedEdit") if isinstance(node, dict) else None
         if isinstance(marker, dict):
             if node.get("kind") != expected_node_kind:
@@ -1257,11 +1274,15 @@ def _normalize_storyboard_sequence(value: Any, *, model_output: bool) -> dict[st
     if not isinstance(sequence_id, str) or not sequence_id.strip() or not isinstance(rows, list) or not 0 < len(rows) <= 200:
         return None
     fields: dict[str, str] = {}
+    aggregate_text_bytes = 0
     for field in _STORYBOARD_SEQUENCE_FIELDS:
         item = value.get(field)
-        if not isinstance(item, str) or len(item.encode("utf-8")) > 10_000:
+        if not isinstance(item, str):
             return None
         fields[field] = unicodedata.normalize("NFC", item)
+        if len(fields[field].encode("utf-8")) > 10_000:
+            return None
+        aggregate_text_bytes += len(fields[field].encode("utf-8"))
     normalized_rows: list[dict[str, Any]] = []
     row_ids: set[str] = set()
     for row in rows:
@@ -1279,9 +1300,12 @@ def _normalize_storyboard_sequence(value: Any, *, model_output: bool) -> dict[st
         normalized_row: dict[str, Any] = {"id": unicodedata.normalize("NFC", row_id)}
         for field in _STORYBOARD_ROW_FIELDS:
             item = row.get(field)
-            if not isinstance(item, str) or len(item.encode("utf-8")) > 10_000:
+            if not isinstance(item, str):
                 return None
             normalized_row[field] = unicodedata.normalize("NFC", item)
+            if len(normalized_row[field].encode("utf-8")) > 10_000:
+                return None
+            aggregate_text_bytes += len(normalized_row[field].encode("utf-8"))
         timestamp = int(time.time() * 1000)
         normalized_row["createdAt"] = timestamp if model_output else row["createdAt"]
         normalized_row["updatedAt"] = timestamp if model_output else row["updatedAt"]
@@ -1290,6 +1314,8 @@ def _normalize_storyboard_sequence(value: Any, *, model_output: bool) -> dict[st
                 return None
             normalized_row["imageUrl"] = row["imageUrl"]
         normalized_rows.append(normalized_row)
+    if aggregate_text_bytes > _MAX_STORYBOARD_AGGREGATE_TEXT_BYTES:
+        return None
     timestamp = int(time.time() * 1000)
     return {
         "id": unicodedata.normalize("NFC", sequence_id),
@@ -1323,9 +1349,92 @@ def _valid_storyboard_source(value: Any) -> bool:
         and _valid_sha256_digest(value.get("documentDigest"))
         and isinstance(value.get("documentResourceDigests"), list) and len(value["documentResourceDigests"]) <= 5
         and all(_valid_sha256_digest(item) for item in value["documentResourceDigests"])
-        and isinstance(model, dict) and all(isinstance(model.get(key), str) and model[key] for key in ("connectionId", "providerId", "modelId"))
-        and isinstance(skills, list) and all(isinstance(skill, dict) and isinstance(skill.get("skillId"), str) and isinstance(skill.get("revision"), int) and _valid_sha256_digest(skill.get("digest")) for skill in skills)
+        and isinstance(model, dict) and set(model) == {"connectionId", "providerId", "modelId"}
+        and all(isinstance(model.get(key), str) and model[key] for key in ("connectionId", "providerId", "modelId"))
+        and isinstance(skills, list)
+        and len({skill.get("skillId") for skill in skills if isinstance(skill, dict)}) == len(skills)
+        and all(
+            isinstance(skill, dict) and set(skill) == {"skillId", "revision", "digest"}
+            and isinstance(skill.get("skillId"), str) and bool(skill["skillId"])
+            and isinstance(skill.get("revision"), int) and not isinstance(skill["revision"], bool) and skill["revision"] >= 0
+            and _valid_sha256_digest(skill.get("digest"))
+            for skill in skills
+        )
     )
+
+
+def _expected_storyboard_source(
+    conversation: dict[str, Any],
+    current_turn: dict[str, Any],
+    edit: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if edit.get("kind") == "storyboard_create":
+        payload = edit.get("payload")
+        return (payload.get("source") if isinstance(payload, dict) else None), current_turn
+    node_id = edit.get("nodeId")
+    turns = conversation.get("turns")
+    if not isinstance(turns, list):
+        return None, None
+    for candidate_turn in turns:
+        if not isinstance(candidate_turn, dict):
+            continue
+        messages = candidate_turn.get("messages")
+        if not isinstance(messages, list):
+            continue
+        for message in messages:
+            edits = message.get("canvasEdits") if isinstance(message, dict) else None
+            if not isinstance(edits, list):
+                continue
+            for candidate in edits:
+                if (
+                    isinstance(candidate, dict)
+                    and candidate.get("kind") == "storyboard_create"
+                    and candidate.get("nodeId") == node_id
+                    and isinstance(candidate.get("payload"), dict)
+                ):
+                    return candidate["payload"].get("source"), candidate_turn
+    return None, None
+
+
+async def _storyboard_source_matches_storage(
+    project_id: str,
+    project: dict[str, Any],
+    conversation: dict[str, Any],
+    current_turn: dict[str, Any],
+    edit: dict[str, Any],
+    storyboard_node: dict[str, Any],
+) -> bool:
+    saved_source = storyboard_node.get("source")
+    expected_source, source_turn = _expected_storyboard_source(conversation, current_turn, edit)
+    if (
+        not _valid_storyboard_source(saved_source)
+        or not _valid_storyboard_source(expected_source)
+        or saved_source != expected_source
+        or not isinstance(source_turn, dict)
+        or source_turn.get("modelSnapshot") != expected_source["model"]
+        or source_turn.get("skillSnapshots") != expected_source["skills"]
+    ):
+        return False
+    document_node = _project_canvas_node(project, expected_source["documentNodeId"])
+    if not isinstance(document_node, dict) or document_node.get("kind") != "document":
+        return False
+    document = _normalize_persisted_document(document_node.get("document"))
+    resource_ids = document_node.get("linkedDocumentResourceIds")
+    if (
+        document is None
+        or document["revision"] != expected_source["documentRevision"]
+        or document["digest"] != expected_source["documentDigest"]
+        or not isinstance(resource_ids, list)
+        or len(resource_ids) > MAX_DOCUMENT_ATTACHMENTS
+        or not all(isinstance(item, str) and item for item in resource_ids)
+    ):
+        return False
+    try:
+        resources = await _load_document_resources(project_id, resource_ids)
+    except HTTPException:
+        return False
+    resource_digests = ["sha256:" + hashlib.sha256(resource.content).hexdigest() for resource in resources]
+    return resource_digests == expected_source["documentResourceDigests"]
 
 
 def _normalize_storyboard_pending_changes(value: Any) -> list[dict[str, Any]] | None:
@@ -1356,28 +1465,33 @@ def _normalize_storyboard_change_operations(value: Any, sequence: dict[str, Any]
     row_ids = {row["id"] for row in sequence["rows"]}
     identities: set[str] = set()
     result: list[dict[str, str]] = []
+    aggregate_text_bytes = 0
     for change in value:
         if not isinstance(change, dict) or change.get("scope") not in {"sequence", "row"} or not isinstance(change.get("value"), str):
             return None
         scope = change["scope"]
         field = change.get("field")
-        if len(change["value"].encode("utf-8")) > 10_000:
+        normalized_value = unicodedata.normalize("NFC", change["value"])
+        if len(normalized_value.encode("utf-8")) > 10_000:
             return None
         if scope == "sequence":
             if set(change) != {"scope", "field", "value"} or field not in _STORYBOARD_SEQUENCE_FIELDS:
                 return None
             identity = f"sequence:{field}"
-            normalized = {"scope": "sequence", "field": field, "value": unicodedata.normalize("NFC", change["value"])}
+            normalized = {"scope": "sequence", "field": field, "value": normalized_value}
         else:
             row_id = change.get("rowId")
             if set(change) != {"scope", "rowId", "field", "value"} or row_id not in row_ids or field not in _STORYBOARD_ROW_FIELDS:
                 return None
             identity = f"row:{row_id}:{field}"
-            normalized = {"scope": "row", "rowId": row_id, "field": field, "value": unicodedata.normalize("NFC", change["value"])}
+            normalized = {"scope": "row", "rowId": row_id, "field": field, "value": normalized_value}
         if identity in identities:
             return None
         identities.add(identity)
         result.append(normalized)
+        aggregate_text_bytes += len(normalized["value"].encode("utf-8"))
+    if aggregate_text_bytes > _MAX_STORYBOARD_AGGREGATE_TEXT_BYTES:
+        return None
     return result
 
 

@@ -29,7 +29,7 @@ import type {
 import type { ImageRegion } from '@/domain/image-generation/image-generation'
 import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 import { createPlanningDocumentV1, parsePlanningDocumentV1 } from '@/domain/documents/planning-document'
-import { storyboardDigest } from '@/domain/storyboard/canvas-storyboard'
+import { MAX_STORYBOARD_AGGREGATE_TEXT_BYTES, storyboardDigest } from '@/domain/storyboard/canvas-storyboard'
 
 const DEFAULT_USER_COLOR = '#111827'
 const DEFAULT_PRESET_COLOR = '#ef4423'
@@ -1118,37 +1118,193 @@ const normalizeStoryboardNode = (
   node: Partial<IFreeCanvasStoryboardNode>,
   timestamp: number
 ): IFreeCanvasStoryboardNode | IFreeCanvasUnsupportedNode => {
-  const sequence = cloneStructuredValue(node.sequence || {
-    id: `sequence-${timestamp}`, name: 'Storyboard', description: '', style: '', constraints: '', rows: [],
-    createdAt: timestamp, updatedAt: timestamp, meta: {}
+  const unsupported = () => normalizeUnsupportedNode({
+    id: node.id, kind: 'unsupported', title: node.title, position: node.position, width: node.width, height: node.height,
+    originalKind: 'storyboard', originalNode: cloneFrozenRecord({ ...(node as unknown as Record<string, unknown>) }),
+    meta: isPlainRecordValue(node.meta) ? node.meta : {}
+  }, timestamp)
+  try {
+    if (!isValidPersistedStoryboardNode(node)) return unsupported()
+    const sequence = cloneStructuredValue(node.sequence)
+    const pendingFieldChanges = cloneStructuredValue(node.pendingFieldChanges)
+    const agentAppliedEdit = normalizeAgentAppliedEditMarker(node.agentAppliedEdit)
+    const digest = storyboardDigest(sequence, pendingFieldChanges)
+    if ((node.digest !== undefined && node.digest !== digest) || (node.agentAppliedEdit !== undefined && !agentAppliedEdit)) {
+      return unsupported()
+    }
+    return {
+      id: node.id || `free-storyboard-${timestamp}`,
+      kind: 'storyboard',
+      title: node.title || 'Storyboard',
+      position: normalizePosition(node.position),
+      width: Number(node.width || 640),
+      height: Number(node.height || 480),
+      sequence,
+      source: cloneStructuredValue(node.source),
+      pendingFieldChanges,
+      ...(node.revision !== undefined ? { revision: node.revision } : {}),
+      ...(node.digest !== undefined ? { digest } : {}),
+      ...(agentAppliedEdit ? { agentAppliedEdit } : {}),
+      meta: node.meta
+    }
+  } catch {
+    return unsupported()
+  }
+}
+
+const STORYBOARD_SEQUENCE_TEXT_FIELDS = ['name', 'description', 'style', 'constraints'] as const
+const STORYBOARD_ROW_TEXT_FIELDS = ['cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration'] as const
+const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u
+const MAX_STORYBOARD_FIELD_BYTES = 10_000
+
+const isPlainRecordValue = (value: unknown): value is Record<string, unknown> => (
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+)
+
+const hasExactRecordKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => (
+  Object.keys(value).length === keys.length && keys.every(key => Object.prototype.hasOwnProperty.call(value, key))
+)
+
+const isNonNegativeSafeInteger = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0
+
+const isWellFormedStoryboardText = (value: string): boolean => {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false
+      index += 1
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false
+  }
+  return true
+}
+
+const isValidStoryboardText = (value: unknown): value is string => (
+  typeof value === 'string'
+  && isWellFormedStoryboardText(value)
+  && value === value.normalize('NFC')
+  && new TextEncoder().encode(value).length <= MAX_STORYBOARD_FIELD_BYTES
+)
+
+const isValidStoryboardSource = (value: unknown): boolean => {
+  if (!isPlainRecordValue(value) || !hasExactRecordKeys(value, [
+    'documentNodeId', 'documentRevision', 'documentDigest', 'documentResourceDigests', 'model', 'skills'
+  ])) return false
+  const model = value.model
+  if (
+    typeof value.documentNodeId !== 'string' || !value.documentNodeId
+    || !isNonNegativeSafeInteger(value.documentRevision)
+    || typeof value.documentDigest !== 'string' || !SHA256_DIGEST_PATTERN.test(value.documentDigest)
+    || !Array.isArray(value.documentResourceDigests) || value.documentResourceDigests.length > 5
+    || value.documentResourceDigests.some(item => typeof item !== 'string' || !SHA256_DIGEST_PATTERN.test(item))
+    || !isPlainRecordValue(model)
+    || !hasExactRecordKeys(model, ['connectionId', 'providerId', 'modelId'])
+    || ['connectionId', 'providerId', 'modelId'].some(key => typeof model[key] !== 'string' || !model[key])
+    || !Array.isArray(value.skills)
+  ) return false
+  const skillIds = new Set<string>()
+  return value.skills.every(skill => {
+    if (!isPlainRecordValue(skill) || !hasExactRecordKeys(skill, ['skillId', 'revision', 'digest'])) return false
+    if (
+      typeof skill.skillId !== 'string' || !skill.skillId || skillIds.has(skill.skillId)
+      || !isNonNegativeSafeInteger(skill.revision)
+      || typeof skill.digest !== 'string' || !SHA256_DIGEST_PATTERN.test(skill.digest)
+    ) return false
+    skillIds.add(skill.skillId)
+    return true
   })
-  const pendingFieldChanges = Array.isArray(node.pendingFieldChanges) ? cloneStructuredValue(node.pendingFieldChanges) : []
-  const agentAppliedEdit = normalizeAgentAppliedEditMarker(node.agentAppliedEdit)
-  const digest = storyboardDigest(sequence, pendingFieldChanges)
-  if ((node.digest !== undefined && node.digest !== digest) || (node.agentAppliedEdit !== undefined && !agentAppliedEdit)) {
-    return normalizeUnsupportedNode({
-      id: node.id, kind: 'unsupported', title: node.title, position: node.position, width: node.width, height: node.height,
-      originalKind: 'storyboard', originalNode: cloneFrozenRecord({ ...(node as unknown as Record<string, unknown>) }), meta: node.meta
-    }, timestamp)
-  }
-  return {
-    id: node.id || `free-storyboard-${timestamp}`,
-    kind: 'storyboard',
-    title: node.title || 'Storyboard',
-    position: normalizePosition(node.position),
-    width: Number(node.width || 640),
-    height: Number(node.height || 480),
-    sequence,
-    source: cloneStructuredValue(node.source || {
-      documentNodeId: '', documentRevision: 0, documentDigest: '', documentResourceDigests: [],
-      model: { connectionId: '', providerId: '', modelId: '' }, skills: []
-    }),
-    pendingFieldChanges,
-    ...(node.revision !== undefined ? { revision: Number(node.revision) } : {}),
-    ...(node.digest !== undefined ? { digest } : {}),
-    ...(agentAppliedEdit ? { agentAppliedEdit } : {}),
-    meta: node.meta || {}
-  }
+}
+
+const isValidStoryboardSequence = (value: unknown): value is IFreeCanvasStoryboardNode['sequence'] => {
+  if (!isPlainRecordValue(value) || !hasExactRecordKeys(value, [
+    'id', 'name', 'description', 'style', 'constraints', 'rows', 'createdAt', 'updatedAt', 'meta'
+  ])) return false
+  if (
+    typeof value.id !== 'string' || !value.id
+    || STORYBOARD_SEQUENCE_TEXT_FIELDS.some(field => !isValidStoryboardText(value[field]))
+    || !Array.isArray(value.rows) || value.rows.length > 200
+    || !isNonNegativeSafeInteger(value.createdAt) || !isNonNegativeSafeInteger(value.updatedAt)
+    || !isPlainRecordValue(value.meta)
+  ) return false
+  const rowIds = new Set<string>()
+  let aggregateTextBytes = STORYBOARD_SEQUENCE_TEXT_FIELDS.reduce(
+    (total, field) => total + new TextEncoder().encode(String(value[field])).length,
+    0
+  )
+  const validRows = value.rows.every(row => {
+    if (!isPlainRecordValue(row)) return false
+    const keys = ['id', ...STORYBOARD_ROW_TEXT_FIELDS, 'createdAt', 'updatedAt', ...(row.imageUrl === undefined ? [] : ['imageUrl'])]
+    if (
+      !hasExactRecordKeys(row, keys)
+      || typeof row.id !== 'string' || !row.id || rowIds.has(row.id)
+      || STORYBOARD_ROW_TEXT_FIELDS.some(field => !isValidStoryboardText(row[field]))
+      || !isNonNegativeSafeInteger(row.createdAt) || !isNonNegativeSafeInteger(row.updatedAt)
+      || (row.imageUrl !== undefined && typeof row.imageUrl !== 'string')
+    ) return false
+    rowIds.add(row.id)
+    aggregateTextBytes += STORYBOARD_ROW_TEXT_FIELDS.reduce(
+      (total, field) => total + new TextEncoder().encode(String(row[field])).length,
+      0
+    )
+    return true
+  })
+  return validRows && aggregateTextBytes <= MAX_STORYBOARD_AGGREGATE_TEXT_BYTES
+}
+
+const isValidStoryboardPendingChanges = (
+  value: unknown,
+  sequence: IFreeCanvasStoryboardNode['sequence']
+): value is IFreeCanvasStoryboardNode['pendingFieldChanges'] => {
+  if (!Array.isArray(value) || value.length > 32) return false
+  const rowIds = new Set(sequence.rows.map(row => row.id))
+  const rows = new Map(sequence.rows.map(row => [row.id, row]))
+  const changeIds = new Set<string>()
+  const identities = new Set<string>()
+  let aggregateNewValueBytes = 0
+  const valid = value.every(change => {
+    if (!isPlainRecordValue(change) || (change.scope !== 'sequence' && change.scope !== 'row')) return false
+    const keys = ['id', 'editId', 'scope', ...(change.scope === 'row' ? ['rowId'] : []), 'field', 'previousValue', 'newValue']
+    if (
+      !hasExactRecordKeys(change, keys)
+      || typeof change.id !== 'string' || !change.id || changeIds.has(change.id)
+      || typeof change.editId !== 'string' || !change.editId
+      || !isValidStoryboardText(change.previousValue) || !isValidStoryboardText(change.newValue)
+    ) return false
+    const identity = change.scope === 'sequence'
+      ? `sequence:${String(change.field)}`
+      : `row:${String(change.rowId)}:${String(change.field)}`
+    if (
+      identities.has(identity)
+      || (change.scope === 'sequence' && !STORYBOARD_SEQUENCE_TEXT_FIELDS.includes(change.field as never))
+      || (change.scope === 'row' && (
+        typeof change.rowId !== 'string' || !rowIds.has(change.rowId)
+        || !STORYBOARD_ROW_TEXT_FIELDS.includes(change.field as never)
+      ))
+    ) return false
+    const expectedPrevious = change.scope === 'sequence'
+      ? sequence[change.field as typeof STORYBOARD_SEQUENCE_TEXT_FIELDS[number]]
+      : rows.get(String(change.rowId))?.[change.field as typeof STORYBOARD_ROW_TEXT_FIELDS[number]]
+    if (change.previousValue !== expectedPrevious) return false
+    changeIds.add(change.id)
+    identities.add(identity)
+    aggregateNewValueBytes += new TextEncoder().encode(change.newValue).length
+    return true
+  })
+  return valid && aggregateNewValueBytes <= MAX_STORYBOARD_AGGREGATE_TEXT_BYTES
+}
+
+const isValidPersistedStoryboardNode = (
+  node: Partial<IFreeCanvasStoryboardNode>
+): node is IFreeCanvasStoryboardNode => {
+  if (
+    !isValidStoryboardSequence(node.sequence)
+    || !isValidStoryboardSource(node.source)
+    || !isValidStoryboardPendingChanges(node.pendingFieldChanges, node.sequence)
+    || (node.revision !== undefined && !isNonNegativeSafeInteger(node.revision))
+    || (node.digest !== undefined && (typeof node.digest !== 'string' || !SHA256_DIGEST_PATTERN.test(node.digest)))
+    || !isPlainRecordValue(node.meta)
+  ) return false
+  return node.agentAppliedEdit === undefined || normalizeAgentAppliedEditMarker(node.agentAppliedEdit) !== null
 }
 
 const normalizeUnsupportedNode = (

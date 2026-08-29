@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
 from app.gateway import promptcard_runtime
-from app.gateway.promptcard_runtime import PromptCardRuntimeMessageRequest
+from app.gateway.promptcard_runtime import PromptCardAgentEditAckRequest, PromptCardRuntimeMessageRequest
 
 
 def sha(value: object) -> str:
@@ -30,6 +32,8 @@ def conversation_with_edit(edit: dict) -> dict:
         "turns": [{
             "requestId": edit["requestId"],
             "messages": [{"role": "assistant", "text": "ok", "canvasEdits": [edit]}],
+            "modelSnapshot": deepcopy(edit["payload"].get("source", {}).get("model", {})),
+            "skillSnapshots": deepcopy(edit["payload"].get("source", {}).get("skills", [])),
             "applyEdit": {
                 "status": "pending_apply", "conversationId": "conversation-1",
                 "requestId": edit["requestId"], "editId": edit["editId"],
@@ -50,6 +54,38 @@ def storyboard_sequence(camera: str = "wide") -> dict:
         }],
         "createdAt": 1, "updatedAt": 1, "meta": {},
     }
+
+
+def storyboard_source() -> dict:
+    return {
+        "documentNodeId": "document-1", "documentRevision": 7,
+        "documentDigest": document()["digest"],
+        "documentResourceDigests": ["sha256:" + hashlib.sha256(b"resource body").hexdigest()],
+        "model": {"connectionId": "connection-1", "providerId": "provider-1", "modelId": "model-1"},
+        "skills": [{"skillId": "skill-1", "revision": 4, "digest": "sha256:" + "c" * 64}],
+    }
+
+
+def aggregate_storyboard_sequence(total_bytes: int) -> dict:
+    rows = [{
+        "id": f"row-{index + 1}", "cutLabel": "", "timeRange": "", "subject": "", "action": "",
+        "scene": "", "camera": "", "lighting": "", "audio": "", "duration": "",
+    } for index in range(3)]
+    sequence = {
+        "id": "sequence-budget", "name": "", "description": "", "style": "", "constraints": "", "rows": rows,
+    }
+    targets = [(sequence, field) for field in ("name", "description", "style", "constraints")]
+    targets.extend((row, field) for row in rows for field in (
+        "cutLabel", "timeRange", "subject", "action", "scene", "camera", "lighting", "audio", "duration"
+    ))
+    remaining = total_bytes
+    for target, field in targets:
+        size = min(10_000, remaining)
+        target[field] = "a" * size
+        remaining -= size
+    if remaining:
+        raise AssertionError("aggregate fixture too large")
+    return sequence
 
 
 def test_storyboard_create_context_is_resolved_from_authoritative_effective_document():
@@ -131,6 +167,27 @@ def test_storyboard_changes_are_bound_to_strict_revision_digest_and_allowed_fiel
     assert invalid == []
 
 
+@pytest.mark.parametrize(("total_bytes", "accepted_count"), [(256_000, 1), (256_001, 0)])
+def test_storyboard_create_enforces_the_frozen_aggregate_byte_boundary(total_bytes, accepted_count):
+    authority = {
+        "operationKind": "storyboard_create", "documentNodeId": "document-1", "documentRevision": 7,
+        "documentDigest": "sha256:" + "a" * 64, "effectiveText": "Effective",
+        "documentResourceDigests": [],
+    }
+    accepted = promptcard_runtime.validate_agent_document_edits(
+        [{
+            "kind": "storyboard_create",
+            "payload": {"title": "Boundary", "sequence": aggregate_storyboard_sequence(total_bytes)},
+            "rationale": "Boundary",
+        }],
+        conversation_id="conversation-1", request_id=f"request-{total_bytes}", project=project([]),
+        expected_write_context=authority,
+        run_provenance={"model": {"connectionId": "c", "providerId": "p", "modelId": "m"}, "skills": []},
+    )
+
+    assert len(accepted) == accepted_count
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("saved", [False, True])
 async def test_storyboard_create_reconcile_replays_absent_and_recovers_saved_before_ack(monkeypatch, saved):
@@ -143,17 +200,21 @@ async def test_storyboard_create_reconcile_replays_absent_and_recovers_saved_bef
         "kind": "storyboard_create", "id": edit_id, "editId": edit_id,
         "conversationId": "conversation-1", "requestId": "request-create", "nodeId": node_id,
         "base": {"projectRevision": 12}, "expectedResultDigest": expected,
-        "payload": {"title": "Opening", "sequence": sequence, "source": {}}, "rationale": "Create",
+        "payload": {"title": "Opening", "sequence": sequence, "source": storyboard_source()}, "rationale": "Create",
     }
     nodes = [{"id": "other", "kind": "text"}]
     if saved:
         nodes = [{
             "id": node_id, "kind": "storyboard", "sequence": sequence,
             "pendingFieldChanges": [], "revision": 0, "digest": expected,
+            "source": storyboard_source(),
             "agentAppliedEdit": {
                 "conversationId": "conversation-1", "requestId": "request-create",
                 "editId": edit_id, "resultDigest": expected,
             },
+        }, {
+            "id": "document-1", "kind": "document", "document": document(),
+            "linkedDocumentResourceIds": ["resource-1"],
         }]
     patches: list[dict] = []
 
@@ -168,6 +229,9 @@ async def test_storyboard_create_reconcile_replays_absent_and_recovers_saved_bef
         raise AssertionError((method, path, kwargs))
 
     monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_load_document_resources", lambda *_: __import__("asyncio").sleep(
+        0, result=[SimpleNamespace(content=b"resource body")]
+    ))
     result = await promptcard_runtime.runtime_service.reconcile_document_edits("project-1", "conversation-1")
 
     if saved:
@@ -180,6 +244,79 @@ async def test_storyboard_create_reconcile_replays_absent_and_recovers_saved_bef
         assert result["status"] == "pending_apply"
         assert result["canvasEdits"] == [edit]
         assert patches == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("tamper", ["missing", "document", "resources", "model", "skills"])
+@pytest.mark.parametrize("entrypoint", ["ack", "reconcile"])
+async def test_storyboard_saved_before_ack_rejects_any_tampered_canonical_source(monkeypatch, tamper, entrypoint):
+    sequence = storyboard_sequence()
+    expected = promptcard_runtime._storyboard_digest(sequence, [])
+    edit_id, node_id = promptcard_runtime._deterministic_document_edit_ids(
+        "conversation-1", "request-tamper", "storyboard_create", None
+    )
+    expected_source = storyboard_source()
+    edit = {
+        "kind": "storyboard_create", "id": edit_id, "editId": edit_id,
+        "conversationId": "conversation-1", "requestId": "request-tamper", "nodeId": node_id,
+        "base": {"projectRevision": 12}, "expectedResultDigest": expected,
+        "payload": {"title": "Opening", "sequence": sequence, "source": expected_source}, "rationale": "Create",
+    }
+    saved_source = deepcopy(expected_source)
+    if tamper == "missing":
+        saved_source = None
+    elif tamper == "document":
+        saved_source["documentDigest"] = "sha256:" + "d" * 64
+    elif tamper == "resources":
+        saved_source["documentResourceDigests"] = []
+    elif tamper == "model":
+        saved_source["model"]["modelId"] = "forged"
+    else:
+        saved_source["skills"] = []
+    storyboard = {
+        "id": node_id, "kind": "storyboard", "sequence": sequence,
+        "pendingFieldChanges": [], "revision": 0, "digest": expected,
+        "agentAppliedEdit": {
+            "conversationId": "conversation-1", "requestId": "request-tamper",
+            "editId": edit_id, "resultDigest": expected,
+        },
+    }
+    if saved_source is not None:
+        storyboard["source"] = saved_source
+    patches: list[dict] = []
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return conversation_with_edit(edit)
+        if method == "GET" and path == "/api/projects/project-1":
+            return project([storyboard, {
+                "id": "document-1", "kind": "document", "document": document(),
+                "linkedDocumentResourceIds": ["resource-1"],
+            }])
+        if method == "PATCH" and path.endswith("/apply-edit"):
+            patches.append(kwargs["json"])
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_load_document_resources", lambda *_: __import__("asyncio").sleep(
+        0, result=[SimpleNamespace(content=b"resource body")]
+    ))
+    result = (
+        await promptcard_runtime.runtime_service.ack_document_edit(
+            "project-1", "conversation-1", edit_id,
+            PromptCardAgentEditAckRequest(requestId="request-tamper", status="applied"),
+        )
+        if entrypoint == "ack"
+        else await promptcard_runtime.runtime_service.reconcile_document_edits("project-1", "conversation-1")
+    )
+
+    assert result["status"] == "failed_integrity"
+    if entrypoint == "reconcile":
+        assert result["canvasEdits"] == []
+    else:
+        assert "canvasEdits" not in result
+    assert patches[0]["evidence"]["code"] == "storyboard_source_mismatch"
 
 
 @pytest.mark.anyio
@@ -198,25 +335,43 @@ async def test_storyboard_changes_reconcile_replays_only_the_strict_persisted_ba
         "payload": {"changes": [{"scope": "row", "rowId": "row-1", "field": "camera", "value": "close-up"}]},
         "rationale": "Refine",
     }
+    create_source = storyboard_source()
+    create_edit = {
+        "kind": "storyboard_create", "id": "create-edit", "editId": "create-edit",
+        "conversationId": "conversation-1", "requestId": "request-create-prior", "nodeId": node_id,
+        "base": {"projectRevision": 11}, "expectedResultDigest": base_digest,
+        "payload": {"title": "Opening", "sequence": base_sequence, "source": create_source}, "rationale": "Create",
+    }
     persisted_sequence = storyboard_sequence("medium" if changed else "wide")
     persisted_digest = promptcard_runtime._storyboard_digest(persisted_sequence, [])
     node = {
         "id": node_id, "kind": "storyboard", "sequence": persisted_sequence,
         "pendingFieldChanges": [], "revision": 4 if changed else 3, "digest": persisted_digest,
+        "source": create_source,
     }
     patches: list[dict] = []
 
     async def fake_storage(method, path, **kwargs):
         if method == "GET" and path.endswith("/conversation-1"):
-            return conversation_with_edit(edit)
+            detail = conversation_with_edit(edit)
+            create_turn = conversation_with_edit(create_edit)["turns"][0]
+            create_turn["applyEdit"]["status"] = "applied"
+            detail["turns"].insert(0, create_turn)
+            return detail
         if method == "GET" and path == "/api/projects/project-1":
-            return project([node])
+            return project([node, {
+                "id": "document-1", "kind": "document", "document": document(),
+                "linkedDocumentResourceIds": ["resource-1"],
+            }])
         if method == "PATCH" and path.endswith("/apply-edit"):
             patches.append(kwargs["json"])
             return kwargs["json"]
         raise AssertionError((method, path, kwargs))
 
     monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_load_document_resources", lambda *_: __import__("asyncio").sleep(
+        0, result=[SimpleNamespace(content=b"resource body")]
+    ))
     result = await promptcard_runtime.runtime_service.reconcile_document_edits("project-1", "conversation-1")
 
     assert result["status"] == expected_status

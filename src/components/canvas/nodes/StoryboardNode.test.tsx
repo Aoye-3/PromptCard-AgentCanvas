@@ -14,7 +14,8 @@ const node: IFreeCanvasStoryboardNode = {
 describe('StoryboardNode', () => {
   it('renders provenance and per-field old/new review controls', () => {
     const onResolve = vi.fn()
-    const renderer = create(<StoryboardNode node={node} selected onResolve={onResolve} />)
+    const onRequestRevision = vi.fn()
+    const renderer = create(<StoryboardNode node={node} selected onResolve={onResolve} onRequestRevision={onRequestRevision} />)
     const text = JSON.stringify(renderer.toJSON())
     expect(text).toContain('wide')
     expect(text).toContain('close-up')
@@ -24,6 +25,8 @@ describe('StoryboardNode', () => {
     expect(onResolve).toHaveBeenCalledWith(['change-1'], 'accept')
     act(() => renderer.root.findByProps({ 'aria-label': '拒绝全部分镜修改' }).props.onClick())
     expect(onResolve).toHaveBeenCalledWith('all', 'reject')
+    act(() => renderer.root.findByProps({ 'aria-label': '让 Agent 修订分镜表 Opening shots' }).props.onClick())
+    expect(onRequestRevision).toHaveBeenCalledOnce()
   })
 
   it('disables review controls while saved-edit reconciliation owns the node', () => {

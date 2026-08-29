@@ -331,6 +331,26 @@ describe('pi text-agent system boundary', () => {
     expect(JSON.stringify(rejected)).toContain('storyboard_')
   })
 
+  it('enforces the frozen Storyboard aggregate byte boundary', async () => {
+    const exactEdits: Record<string, unknown>[] = []
+    const exactTool = buildAgentTools(storyboardCreateInvocation().policy, [], [], exactEdits)
+      .find(candidate => candidate.name === 'emit_storyboard_create')
+    const exact = await exactTool?.execute('storyboard-boundary', {
+      title: 'Boundary', sequence: aggregateStoryboardSequence(256_000), rationale: 'Exact boundary'
+    })
+    const overEdits: Record<string, unknown>[] = []
+    const overTool = buildAgentTools(storyboardCreateInvocation().policy, [], [], overEdits)
+      .find(candidate => candidate.name === 'emit_storyboard_create')
+    const over = await overTool?.execute('storyboard-over', {
+      title: 'Over', sequence: aggregateStoryboardSequence(256_001), rationale: 'Over boundary'
+    })
+
+    expect(exact?.terminate).toBe(true)
+    expect(exactEdits).toHaveLength(1)
+    expect(JSON.stringify(over)).toContain('storyboard_sequence_budget_exceeded')
+    expect(overEdits).toEqual([])
+  })
+
   it.each([
     ['Tiptap JSON', {
       title: 'Bad', blocks: [{ type: 'doc', content: [{ type: 'paragraph' }] }], rationale: 'No'
@@ -622,6 +642,28 @@ const documentChangesInvocation = () => buildInvocation({
     wrapperBlockIds: ['list-wrapper']
   }
 })
+
+const aggregateStoryboardSequence = (totalBytes: number) => {
+  const rows = Array.from({ length: 3 }, (_, index) => ({
+    id: `row-${index + 1}`, cutLabel: '', timeRange: '', subject: '', action: '', scene: '', camera: '', lighting: '', audio: '', duration: ''
+  }))
+  const sequence: Record<string, unknown> = {
+    id: 'sequence-budget', name: '', description: '', style: '', constraints: '', rows
+  }
+  const targets: Array<[Record<string, unknown>, string]> = [
+    ...['name', 'description', 'style', 'constraints'].map(field => [sequence, field] as [Record<string, unknown>, string]),
+    ...rows.flatMap(row => ['cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration']
+      .map(field => [row, field] as [Record<string, unknown>, string]))
+  ]
+  let remaining = totalBytes
+  targets.forEach(([target, field]) => {
+    const size = Math.min(10_000, remaining)
+    target[field] = 'a'.repeat(size)
+    remaining -= size
+  })
+  if (remaining !== 0) throw new Error('aggregate fixture too large')
+  return sequence
+}
 
 const storyboardCreateInvocation = () => buildInvocation({
   content: 'Create a storyboard', permissionScope: 'workspace-chatbot-agent', interactionMode: 'chat-experimental',

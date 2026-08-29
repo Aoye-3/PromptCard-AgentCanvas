@@ -16,6 +16,8 @@ export const STORYBOARD_SEQUENCE_FIELDS: readonly StoryboardSequenceField[] = [
 export const STORYBOARD_ROW_FIELDS: readonly StoryboardRowField[] = [
   'cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration'
 ]
+export const MAX_STORYBOARD_AGGREGATE_TEXT_BYTES = 256_000
+const MAX_STORYBOARD_FIELD_BYTES = 10_000
 
 const canonicalJson = (value: unknown): string => {
   if (typeof value === 'string') return JSON.stringify(value.normalize('NFC'))
@@ -64,8 +66,12 @@ const assertSequence = (sequence: IStoryboardSequence) => {
     rowIds.add(row.id)
     values.push(row.cutLabel, row.timeRange, row.subject, row.action, row.scene, row.camera, row.lighting || '', row.audio || '', row.duration)
   })
-  if (values.some(value => typeof value !== 'string' || value.length > 10_000)) throw new Error('storyboard_sequence_invalid')
-  if (new TextEncoder().encode(values.join('')).length > 256_000) throw new Error('storyboard_sequence_invalid')
+  if (values.some(value => typeof value !== 'string' || new TextEncoder().encode(value.normalize('NFC')).length > MAX_STORYBOARD_FIELD_BYTES)) {
+    throw new Error('storyboard_sequence_invalid')
+  }
+  if (new TextEncoder().encode(values.map(value => value.normalize('NFC')).join('')).length > MAX_STORYBOARD_AGGREGATE_TEXT_BYTES) {
+    throw new Error('storyboard_sequence_invalid')
+  }
 }
 
 export const createStoryboardNode = (
@@ -108,6 +114,12 @@ export const applyStoryboardChanges = (
     throw new Error('storyboard_edit_stale')
   }
   if (node.pendingFieldChanges.length) throw new Error('storyboard_review_pending')
+  if (
+    edit.payload.changes.reduce(
+      (total, change) => total + new TextEncoder().encode(change.value.normalize('NFC')).length,
+      0
+    ) > MAX_STORYBOARD_AGGREGATE_TEXT_BYTES
+  ) throw new Error('storyboard_changes_invalid')
   const pendingFieldChanges = edit.payload.changes.map((change, index): StoryboardFieldChange => {
     const id = `sbf-${edit.editId}-${index}`
     const newValue = normalizedFieldValue(change.value)
@@ -167,7 +179,7 @@ export const resolveStoryboardFieldChanges = (
 const normalizedFieldValue = (value: string): string => {
   if (typeof value !== 'string') throw new Error('storyboard_field_invalid')
   const normalized = value.normalize('NFC')
-  if (normalized.length > 10_000 || new TextEncoder().encode(normalized).length > 32_000) throw new Error('storyboard_field_invalid')
+  if (new TextEncoder().encode(normalized).length > MAX_STORYBOARD_FIELD_BYTES) throw new Error('storyboard_field_invalid')
   return normalized
 }
 

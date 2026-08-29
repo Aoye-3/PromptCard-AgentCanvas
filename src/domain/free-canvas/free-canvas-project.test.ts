@@ -661,9 +661,9 @@ describe('free canvas project domain', () => {
         documentNodeId: 'document-1',
         documentRevision: 3,
         documentDigest: planningDocument.digest,
-        documentResourceDigests: ['resource-digest'],
+        documentResourceDigests: [`sha256:${'a'.repeat(64)}`],
         model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1' },
-        skills: [{ skillId: 'skill-1', revision: 2, digest: 'skill-digest' }]
+        skills: [{ skillId: 'skill-1', revision: 2, digest: `sha256:${'b'.repeat(64)}` }]
       },
       pendingFieldChanges: [],
       meta: {}
@@ -714,6 +714,31 @@ describe('free canvas project domain', () => {
     expect(corrupt.nodes[0]).toMatchObject({
       kind: 'unsupported', originalKind: 'storyboard',
       originalNode: expect.objectContaining({ id: 'storyboard-strict', digest: `sha256:${'f'.repeat(64)}` })
+    })
+
+    const malformed = [
+      { label: 'sequence', node: { ...strictNode, sequence: { ...sequence, rows: 'not-rows' } } },
+      { label: 'pending change', node: {
+        ...strictNode,
+        pendingFieldChanges: [{
+          id: 'bad', editId: 'edit-bad', scope: 'row', rowId: 'missing', field: 'imageUrl',
+          previousValue: '', newValue: 'forged'
+        }]
+      } },
+      { label: 'source', node: {
+        ...strictNode, source: { ...strictNode.source, documentDigest: 'not-a-digest' }
+      } },
+      { label: 'revision', node: { ...strictNode, revision: -1 } },
+      { label: 'metadata', node: { ...strictNode, meta: [] } }
+    ]
+    malformed.forEach(({ label, node }) => {
+      let normalized!: ReturnType<typeof normalizeFreeCanvasProject>
+      expect(() => {
+        normalized = normalizeFreeCanvasProject({ nodes: [node] as never, edges: [], meta: {} }, 100)
+      }, label).not.toThrow()
+      expect(normalized.nodes[0], label).toMatchObject({
+        kind: 'unsupported', originalKind: 'storyboard', originalNode: node
+      })
     })
   })
 

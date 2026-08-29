@@ -23,6 +23,26 @@ const createEdit = (): AgentStoryboardCreateEdit => ({
   rationale: 'Explicit transform'
 })
 
+const aggregateSequence = (totalBytes: number): IStoryboardSequence => {
+  const value = sequence()
+  value.rows = Array.from({ length: 3 }, (_, index) => ({
+    ...value.rows[0], id: `row-${index + 1}`, createdAt: index + 1, updatedAt: index + 1
+  }))
+  const targets: Array<[Record<string, unknown>, string]> = [
+    ...(['name', 'description', 'style', 'constraints'] as const).map(field => [value as unknown as Record<string, unknown>, field] as [Record<string, unknown>, string]),
+    ...value.rows.flatMap(row => (['cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration'] as const)
+      .map(field => [row as unknown as Record<string, unknown>, field] as [Record<string, unknown>, string]))
+  ]
+  let remaining = totalBytes
+  targets.forEach(([target, field]) => {
+    const size = Math.min(10_000, remaining)
+    target[field] = 'a'.repeat(size)
+    remaining -= size
+  })
+  if (remaining !== 0) throw new Error('aggregate fixture too large')
+  return value
+}
+
 describe('Canvas Storyboard direct edits', () => {
   it('creates the deterministic Storyboard with exact authoritative source provenance', () => {
     const edit = createEdit()
@@ -77,5 +97,17 @@ describe('Canvas Storyboard direct edits', () => {
     } as unknown as AgentStoryboardChangesEdit
 
     expect(() => applyStoryboardChanges(node, invalid)).toThrow('storyboard_field_invalid')
+  })
+
+  it('accepts the frozen aggregate byte boundary and rejects one byte over it', () => {
+    const exactSequence = aggregateSequence(256_000)
+    const exact = { ...createEdit(), expectedResultDigest: storyboardDigest(exactSequence, []) }
+    exact.payload = { ...exact.payload, sequence: exactSequence }
+    const overSequence = aggregateSequence(256_001)
+    const over = { ...createEdit(), expectedResultDigest: storyboardDigest(overSequence, []) }
+    over.payload = { ...over.payload, sequence: overSequence }
+
+    expect(createStoryboardNode(exact, { x: 0, y: 0 }).digest).toBe(exact.expectedResultDigest)
+    expect(() => createStoryboardNode(over, { x: 0, y: 0 })).toThrow('storyboard_sequence_invalid')
   })
 })

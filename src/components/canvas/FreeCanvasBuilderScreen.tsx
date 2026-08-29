@@ -210,6 +210,7 @@ type FreeCanvasFlowNodeData = {
   onDocumentDelete: (nodeId: string) => void
   onDocumentToStoryboard: (nodeId: string) => void
   onStoryboardResolve: (nodeId: string, ids: readonly string[] | 'all', action: 'accept' | 'reject') => void
+  onStoryboardRevise: (nodeId: string) => void
   documentLocked: boolean
   storyboardLocked: boolean
   onImageResize: (nodeId: string, frame: { position?: { x: number; y: number }; width: number; height: number }) => void
@@ -2191,6 +2192,22 @@ const FreeCanvasBuilderInner = ({
     })
   }, [])
 
+  const requestStoryboardRevision = useCallback((nodeId: string) => {
+    const node = freeCanvasRef.current.nodes.find(candidate => candidate.id === nodeId)
+    if (
+      !node
+      || node.kind !== 'storyboard'
+      || node.pendingFieldChanges.length > 0
+      || documentReconcileLockedNodeIdsRef.current.has(nodeId)
+    ) return
+    setRightPanelMode('agent')
+    setAgentDraftRequest({
+      id: `storyboard-changes:${nodeId}:${Date.now()}`,
+      content: `请修订分镜表“${node.title}”的字段，并以可逐项审阅的差异返回。`,
+      documentWriteContext: { operationKind: 'storyboard_changes', nodeId }
+    })
+  }, [])
+
   const resolveStoryboardReview = useCallback((
     nodeId: string,
     ids: readonly string[] | 'all',
@@ -2843,6 +2860,7 @@ const FreeCanvasBuilderInner = ({
       onDocumentDelete: deleteCanvasNodes,
       onDocumentToStoryboard: requestDocumentStoryboard,
       onStoryboardResolve: resolveStoryboardReview,
+      onStoryboardRevise: requestStoryboardRevision,
       documentLocked: node.kind === 'document' && documentReconcileLockedNodeIds.includes(node.id),
       storyboardLocked: node.kind === 'storyboard' && documentReconcileLockedNodeIds.includes(node.id),
       onImageResize: resizeImageNode,
@@ -2864,7 +2882,7 @@ const FreeCanvasBuilderInner = ({
         referenceCount: freeCanvas.edges.filter(edge => edge.target === node.id && edge.targetHandle === 'reference-image').length
       } : undefined
     }
-  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, deleteCanvasNodes, documentReconcileLockedNodeIds, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, requestDocumentStoryboard, resizeImageNode, resolveStoryboardReview, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateDocumentCollapsed, updateDocumentNode, updateTextStyle])
+  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, deleteCanvasNodes, documentReconcileLockedNodeIds, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, requestDocumentStoryboard, requestStoryboardRevision, resizeImageNode, resolveStoryboardReview, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateDocumentCollapsed, updateDocumentNode, updateTextStyle])
 
   const [flowNodes, setFlowNodes] = useState<FreeCanvasFlowNode[]>(nodes)
   useEffect(() => {
@@ -4098,6 +4116,7 @@ const FreeCanvasNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
         node={node}
         selected={selected}
         locked={data.storyboardLocked}
+        onRequestRevision={() => data.onStoryboardRevise(node.id)}
         onResolve={(ids, action) => data.onStoryboardResolve(node.id, ids, action)}
       />
     )

@@ -170,11 +170,12 @@ vi.mock('@/components/AgentCollaborationPanel', () => ({
       pending: boolean
       nodeId?: string
     }) => Promise<void> | void
-    draftRequest?: { documentWriteContext?: { operationKind: string; documentNodeId?: string } }
+    draftRequest?: { documentWriteContext?: { operationKind: string; documentNodeId?: string; nodeId?: string } }
   }) => (
     <div
       data-agent-draft-operation={draftRequest?.documentWriteContext?.operationKind}
       data-agent-draft-document={draftRequest?.documentWriteContext?.documentNodeId}
+      data-agent-draft-node={draftRequest?.documentWriteContext?.nodeId}
     >
       <button
         type="button"
@@ -510,6 +511,50 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
 
     expect(renderer.root.findByProps({ 'data-agent-draft-operation': 'storyboard_create' }).props)
       .toMatchObject({ 'data-agent-draft-document': 'document-1' })
+  })
+
+  it('uses the production Storyboard revision action to request and directly apply storyboard_changes', async () => {
+    const clean = pendingStoryboardNode()
+    clean.pendingFieldChanges = []
+    clean.digest = storyboardDigest(clean.sequence, [])
+    const expectedChanges = [{
+      id: 'sbf-edit-storyboard-change-0', editId: 'edit-storyboard-change', scope: 'row' as const,
+      rowId: 'row-1', field: 'camera' as const, previousValue: 'wide', newValue: 'close-up'
+    }]
+    mocks.agentCanvasEdit = {
+      kind: 'storyboard_changes', id: 'edit-storyboard-change', editId: 'edit-storyboard-change',
+      conversationId: 'conversation-1', requestId: 'request-storyboard-change', nodeId: clean.id,
+      expectedResultDigest: storyboardDigest(clean.sequence, expectedChanges),
+      base: { projectRevision: 1, nodeRevision: clean.revision!, nodeDigest: clean.digest },
+      payload: { changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }] },
+      rationale: 'Revise camera'
+    }
+    const canvas = { ...initialCanvas(), nodes: [clean] }
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>(canvas)
+      return <FreeCanvasBuilderScreen
+        activeProject={project(current)} freeCanvas={current}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+      />
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    expect(renderer.root.findByProps({ 'data-agent-draft-operation': undefined })).toBeTruthy()
+    act(() => renderer.root.findByProps({ 'aria-label': '让 Agent 修订分镜表 Review shots' }).props.onClick())
+
+    expect(renderer.root.findByProps({ 'data-agent-draft-operation': 'storyboard_changes' }).props)
+      .toMatchObject({ 'data-agent-draft-document': undefined, 'data-agent-draft-node': 'storyboard-review' })
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+    })
+    const saved = onPersistCanvas.mock.calls[0][0] as IFreeCanvasProject
+    expect(saved.nodes[0]).toMatchObject({
+      kind: 'storyboard', pendingFieldChanges: expectedChanges,
+      agentAppliedEdit: expect.objectContaining({ editId: 'edit-storyboard-change' })
+    })
   })
 
   it('persists an idempotent Storyboard create marker before ACK and reconciles a lost ACK', async () => {

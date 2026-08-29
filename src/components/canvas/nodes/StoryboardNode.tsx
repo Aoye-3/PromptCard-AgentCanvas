@@ -4,11 +4,13 @@ export function StoryboardNode({
   node,
   selected,
   locked = false,
+  onRequestRevision,
   onResolve
 }: {
   node: IFreeCanvasStoryboardNode
   selected: boolean
   locked?: boolean
+  onRequestRevision?: () => void
   onResolve: (ids: readonly string[] | 'all', action: 'accept' | 'reject') => void
 }) {
   return (
@@ -21,6 +23,16 @@ export function StoryboardNode({
         <span className="text-[10px] font-black uppercase tracking-widest text-sky-700">Storyboard</span>
         <strong className="block text-sm text-gray-900">{node.title}</strong>
         <span className="text-[10px] text-gray-500">{`Document r${node.source.documentRevision} · ${node.source.model.modelId}`}</span>
+        {onRequestRevision ? (
+          <button
+            type="button"
+            disabled={locked || node.pendingFieldChanges.length > 0}
+            aria-label={`让 Agent 修订分镜表 ${node.title}`}
+            onClick={onRequestRevision}
+          >
+            让 Agent 修订
+          </button>
+        ) : null}
       </header>
       <div className="grid gap-2 p-3">
         <div className="text-xs font-semibold text-gray-800">{node.sequence.name}</div>
