@@ -427,7 +427,9 @@ def create_app(
     def append_agent_conversation_turn(
         conversation_id: str,
         payload: AgentConversationTurnPayload,
+        request: Request,
     ) -> dict[str, Any]:
+        _require_internal_auth(request)
         return _handle(lambda: storage.append_agent_conversation_turn(
             conversation_id, payload.projectId, payload.model_dump(exclude={"projectId"})
         ))
@@ -439,7 +441,9 @@ def create_app(
         conversation_id: str,
         request_id: str,
         payload: AgentApplyEditPayload,
+        request: Request,
     ) -> dict[str, Any]:
+        _require_internal_auth(request)
         return _handle(
             lambda: storage.update_agent_apply_edit(
                 conversation_id,

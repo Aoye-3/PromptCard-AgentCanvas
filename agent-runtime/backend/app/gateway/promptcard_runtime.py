@@ -3441,7 +3441,13 @@ async def _storage_request(
     base_url = os.getenv("PROMPTCARD_STORAGE_URL", "http://127.0.0.1:8002").rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.request(method, f"{base_url}{path}", params=params, json=json)
+            response = await client.request(
+                method,
+                f"{base_url}{path}",
+                params=params,
+                json=json,
+                headers=create_internal_auth_headers(),
+            )
     except httpx.HTTPError:
         raise HTTPException(status_code=503, detail="storage_unavailable") from None
     if response.status_code == 404:

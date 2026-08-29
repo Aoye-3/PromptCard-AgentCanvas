@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import tempfile
+import shutil
 import threading
 import unittest
-import shutil
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -13,7 +13,7 @@ from promptcard_storage.app import create_app
 from promptcard_storage.store import AgentApplyEditConflict, JsonCollectionStore
 
 
-TEST_ROOT = Path(__file__).resolve().parents[2] / ".test-tmp" / "task15-9-agent-apply"
+TEST_ROOT = Path(__file__).resolve().parents[2] / ".test-tmp" / "task-15-10-ledger-auth"
 TEST_ROOT.mkdir(parents=True, exist_ok=True)
 
 
@@ -55,8 +55,9 @@ def pending_turn(request_id: str = "request-1", edit_id: str = "edit-1") -> dict
 
 class AgentApplyEditStorageTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory(dir=TEST_ROOT)
-        self.store = JsonCollectionStore(Path(self.temp_dir.name, "data"))
+        self.data_root = TEST_ROOT / uuid.uuid4().hex
+        self.data_root.mkdir(parents=True)
+        self.store = JsonCollectionStore(self.data_root / "data")
         self.store.create_project(project())
         self.store.create_agent_conversation({
             "id": "conversation-1",
@@ -66,7 +67,7 @@ class AgentApplyEditStorageTests(unittest.TestCase):
         })
 
     def tearDown(self) -> None:
-        self.temp_dir.cleanup()
+        shutil.rmtree(self.data_root)
 
     def test_append_persists_one_top_level_pending_ledger_and_replays_it(self) -> None:
         first = self.store.append_agent_conversation_turn(
@@ -162,23 +163,78 @@ class AgentApplyEditStorageTests(unittest.TestCase):
         )
         client = TestClient(create_app(self.store))
 
-        response = client.patch(
-            "/api/agent-conversations/conversation-1/turns/request-1/apply-edit",
-            json={
-                "editId": "edit-1",
-                "status": "failed_conflict",
-                "evidence": {"code": "base_changed"},
-            },
-        )
+        with patch.dict("os.environ", {"PROMPTCARD_INTERNAL_TOKEN": "storage-test-token"}):
+            response = client.patch(
+                "/api/agent-conversations/conversation-1/turns/request-1/apply-edit",
+                headers={"X-PromptCard-Internal-Token": "storage-test-token"},
+                json={
+                    "editId": "edit-1",
+                    "status": "failed_conflict",
+                    "evidence": {"code": "base_changed"},
+                },
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "failed_conflict")
-        conflict = client.patch(
-            "/api/agent-conversations/conversation-1/turns/request-1/apply-edit",
-            json={"editId": "edit-1", "status": "applied", "evidence": {}},
-        )
+        with patch.dict("os.environ", {"PROMPTCARD_INTERNAL_TOKEN": "storage-test-token"}):
+            conflict = client.patch(
+                "/api/agent-conversations/conversation-1/turns/request-1/apply-edit",
+                headers={"X-PromptCard-Internal-Token": "storage-test-token"},
+                json={"editId": "edit-1", "status": "applied", "evidence": {}},
+            )
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(conflict.json()["detail"]["code"], "agent_apply_edit_terminal")
+
+    def test_ledger_mutation_endpoints_require_internal_auth_without_blocking_reads(self) -> None:
+        client = TestClient(create_app(self.store))
+        append_path = "/api/agent-conversations/conversation-1/turns"
+        apply_path = "/api/agent-conversations/conversation-1/turns/request-1/apply-edit"
+        turn_payload = {"projectId": "project-1", **pending_turn()}
+        apply_payload = {
+            "editId": "edit-1",
+            "status": "failed_conflict",
+            "evidence": {"code": "base_changed"},
+        }
+
+        with patch.dict("os.environ", {"PROMPTCARD_INTERNAL_TOKEN": "storage-test-token"}):
+            for headers in ({}, {"X-PromptCard-Internal-Token": "wrong-token"}):
+                response = client.post(append_path, headers=headers, json=turn_payload)
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(response.json()["detail"]["code"], "internal_auth_required")
+                self.assertEqual(
+                    self.store.get_agent_conversation("conversation-1", "project-1")["turns"],
+                    [],
+                )
+
+            appended = client.post(
+                append_path,
+                headers={"X-PromptCard-Internal-Token": "storage-test-token"},
+                json=turn_payload,
+            )
+            self.assertEqual(appended.status_code, 200)
+            self.assertEqual(appended.json()["applyEdit"]["status"], "pending_apply")
+
+            for headers in ({}, {"X-PromptCard-Internal-Token": "wrong-token"}):
+                response = client.patch(apply_path, headers=headers, json=apply_payload)
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(response.json()["detail"]["code"], "internal_auth_required")
+                persisted = self.store.get_agent_conversation("conversation-1", "project-1")
+                self.assertEqual(persisted["turns"][0]["applyEdit"]["status"], "pending_apply")
+
+            readable = client.get(
+                "/api/agent-conversations/conversation-1",
+                params={"projectId": "project-1"},
+            )
+            self.assertEqual(readable.status_code, 200)
+            self.assertEqual(readable.json()["turns"][0]["applyEdit"]["status"], "pending_apply")
+
+            applied = client.patch(
+                apply_path,
+                headers={"X-PromptCard-Internal-Token": "storage-test-token"},
+                json=apply_payload,
+            )
+            self.assertEqual(applied.status_code, 200)
+            self.assertEqual(applied.json()["status"], "failed_conflict")
 
     def test_concurrent_append_transaction_allows_only_one_pending_edit(self) -> None:
         barrier = threading.Barrier(2)

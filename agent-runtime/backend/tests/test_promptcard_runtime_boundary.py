@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -15,10 +16,45 @@ from app.gateway.promptcard_runtime import (
     _allowed_tool_names,
     _resolve_canvas_node_context,
     _resolve_skill_snapshots,
+    _storage_request,
     validate_agent_canvas_edits,
     validate_agent_proposals,
 )
 from app.gateway.routers import promptcard_runtime
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/agent-conversations/conversation-1/turns"),
+        (
+            "PATCH",
+            "/api/agent-conversations/conversation-1/turns/request-1/apply-edit",
+        ),
+    ],
+)
+async def test_storage_ledger_mutations_include_internal_auth(
+    monkeypatch,
+    method,
+    path,
+):
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"status": "ok"})
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setenv("PROMPTCARD_INTERNAL_TOKEN", "gateway-test-token")
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime.httpx.AsyncClient",
+        lambda **kwargs: real_async_client(transport=transport, **kwargs),
+    )
+
+    assert await _storage_request(method, path, json={}) == {"status": "ok"}
+    assert requests[0].headers["X-PromptCard-Internal-Token"] == "gateway-test-token"
 
 
 @pytest.mark.anyio

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     from fastapi.testclient import TestClient
@@ -274,12 +275,17 @@ class StorageAppContractTest(unittest.TestCase):
             "entrypoint": "workspace-chatbot-agent", "mode": "free-canvas",
             "modelBinding": {"connectionId": "connection-a", "providerId": "ark", "modelId": "model-a"},
         })
-        turn = self.client.post("/api/agent-conversations/conversation-1/turns", json={
-            "projectId": "project-agent", "requestId": "request-1",
-            "userMessage": {"role": "user", "text": "Hello"},
-            "assistantMessage": {"role": "assistant", "text": "Hi"},
-            "modelSnapshot": {"connectionId": "connection-a", "providerId": "ark", "modelId": "model-a"},
-        })
+        with patch.dict("os.environ", {"PROMPTCARD_INTERNAL_TOKEN": "storage-test-token"}):
+            turn = self.client.post(
+                "/api/agent-conversations/conversation-1/turns",
+                headers={"X-PromptCard-Internal-Token": "storage-test-token"},
+                json={
+                    "projectId": "project-agent", "requestId": "request-1",
+                    "userMessage": {"role": "user", "text": "Hello"},
+                    "assistantMessage": {"role": "assistant", "text": "Hi"},
+                    "modelSnapshot": {"connectionId": "connection-a", "providerId": "ark", "modelId": "model-a"},
+                },
+            )
         listed = self.client.get("/api/agent-conversations", params={"projectId": "project-agent"})
         detail = self.client.get("/api/agent-conversations/conversation-1", params={"projectId": "project-agent"})
         skills = self.client.get("/api/skills")
