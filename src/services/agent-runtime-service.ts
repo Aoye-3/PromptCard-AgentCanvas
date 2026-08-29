@@ -241,7 +241,8 @@ const isEnrichedDocumentEdit = (value: unknown): value is AgentCanvasEdit => {
   ]
   if (!hasOnlyKeys(value, identityKeys)) return false
   if (value.kind === 'document_create') {
-    return hasOnlyKeys(value.base, ['projectRevision']) && Number.isSafeInteger(value.base.projectRevision) &&
+    return Boolean(normalizeAgentRunProvenance(value.provenance)) &&
+      hasOnlyKeys(value.base, ['projectRevision']) && Number.isSafeInteger(value.base.projectRevision) &&
       Number(value.base.projectRevision) >= 0 &&
       hasOnlyKeys(value.payload, ['title', 'blocks', 'linkedDocumentResourceIds']) &&
       typeof value.payload.title === 'string' && Array.isArray(value.payload.blocks) &&
@@ -249,7 +250,8 @@ const isEnrichedDocumentEdit = (value: unknown): value is AgentCanvasEdit => {
       value.payload.linkedDocumentResourceIds.every(item => typeof item === 'string')
   }
   if (value.kind === 'document_changes') {
-    return hasOnlyKeys(value.base, ['projectRevision', 'nodeRevision', 'nodeDigest']) &&
+    return Boolean(normalizeAgentRunProvenance(value.provenance)) &&
+      hasOnlyKeys(value.base, ['projectRevision', 'nodeRevision', 'nodeDigest']) &&
       Number.isSafeInteger(value.base.projectRevision) && Number(value.base.projectRevision) >= 0 &&
       Number.isSafeInteger(value.base.nodeRevision) && Number(value.base.nodeRevision) >= 0 &&
       typeof value.base.nodeDigest === 'string' && SHA256_PATTERN.test(value.base.nodeDigest) &&
@@ -916,6 +918,7 @@ function normalizeAgentRunProvenance(value: unknown): AgentRunProvenance | null 
     || !isStrictNfcText(model.providerId, 512, true)
     || !isStrictNfcText(model.modelId, 512, true)
     || !isStrictNfcText(model.displayName, 1024, true)
+    || !isRecord(model.capabilities)
     || !isStrictNfcJson(model.capabilities)
     || !Array.isArray(skills)
     || skills.length > 8

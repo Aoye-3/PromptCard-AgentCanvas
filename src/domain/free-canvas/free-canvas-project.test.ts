@@ -38,6 +38,14 @@ import {
 import type { IPromptProject, PlanningDocumentBlockV1 } from '@/models/PromptHistory.model'
 import { createPlanningDocumentV1, planningDocumentDigest } from '@/domain/documents/planning-document'
 
+const DOCUMENT_AGENT_PROVENANCE = {
+  model: {
+    connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1',
+    displayName: 'Production Model', capabilities: { input: ['text'], toolCalling: true }
+  },
+  skills: [{ skillId: 'SKL-tone', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
+}
+
 describe('free canvas project domain', () => {
   test('previews interleaved insertions without changing the anchored segments', () => {
     const node = {
@@ -1010,7 +1018,7 @@ describe('free canvas project domain', () => {
     expect(project.edges).toEqual([])
   })
 
-  test('preserves a strict top-level Agent edit marker while normalizing and cloning a Document node', () => {
+  test('preserves and deeply clones strict Agent edit provenance with its Document marker', () => {
     const node = createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100)
     const agentAppliedEdit = {
       conversationId: 'conversation-1',
@@ -1019,14 +1027,87 @@ describe('free canvas project domain', () => {
       resultDigest: node.document.digest
     }
     const normalized = normalizeFreeCanvasProject({
-      nodes: [{ ...node, agentAppliedEdit }], edges: [], meta: {}
+      nodes: [{ ...node, provenance: DOCUMENT_AGENT_PROVENANCE, agentAppliedEdit }], edges: [], meta: {}
     }, 101)
 
-    expect(normalized.nodes[0]).toMatchObject({ kind: 'document', agentAppliedEdit })
+    expect(normalized.nodes[0]).toMatchObject({
+      kind: 'document', provenance: DOCUMENT_AGENT_PROVENANCE, agentAppliedEdit
+    })
     if (normalized.nodes[0].kind !== 'document') throw new Error('Expected Document node')
     expect(normalized.nodes[0].agentAppliedEdit).toEqual(agentAppliedEdit)
     expect(normalized.nodes[0].agentAppliedEdit).not.toBe(agentAppliedEdit)
+    expect(normalized.nodes[0].provenance).toEqual(DOCUMENT_AGENT_PROVENANCE)
+    expect(normalized.nodes[0].provenance).not.toBe(DOCUMENT_AGENT_PROVENANCE)
+    expect(normalized.nodes[0].provenance?.model.capabilities).not.toBe(DOCUMENT_AGENT_PROVENANCE.model.capabilities)
     expect(normalized.nodes[0].document.digest).toBe(node.document.digest)
+  })
+
+  test('keeps an ordinary user Document valid without Agent marker or provenance', () => {
+    const node = createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100)
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [node], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({ kind: 'document', id: node.id })
+    expect(normalized.nodes[0]).not.toHaveProperty('agentAppliedEdit')
+    expect(normalized.nodes[0]).not.toHaveProperty('provenance')
+  })
+
+  test.each([
+    ['marker without provenance', (node: Record<string, unknown>) => { delete node.provenance }],
+    ['provenance without marker', (node: Record<string, unknown>) => { delete node.agentAppliedEdit }],
+    ['null provenance model', (node: Record<string, unknown>) => {
+      node.provenance = { model: null, skills: [] }
+    }],
+    ['provenance model extra key', (node: Record<string, unknown>) => {
+      node.provenance = {
+        ...structuredClone(DOCUMENT_AGENT_PROVENANCE),
+        model: { ...DOCUMENT_AGENT_PROVENANCE.model, trusted: true }
+      }
+    }],
+    ['non-NFC provenance model id', (node: Record<string, unknown>) => {
+      node.provenance = {
+        ...structuredClone(DOCUMENT_AGENT_PROVENANCE),
+        model: { ...DOCUMENT_AGENT_PROVENANCE.model, modelId: 'e\u0301' }
+      }
+    }],
+    ['bad provenance Skill digest', (node: Record<string, unknown>) => {
+      node.provenance = {
+        ...structuredClone(DOCUMENT_AGENT_PROVENANCE),
+        skills: [{ ...DOCUMENT_AGENT_PROVENANCE.skills[0], digest: 'sha256:nope' }]
+      }
+    }],
+    ['duplicate provenance Skills', (node: Record<string, unknown>) => {
+      node.provenance = {
+        ...structuredClone(DOCUMENT_AGENT_PROVENANCE),
+        skills: [DOCUMENT_AGENT_PROVENANCE.skills[0], DOCUMENT_AGENT_PROVENANCE.skills[0]]
+      }
+    }],
+    ['nine provenance Skills', (node: Record<string, unknown>) => {
+      node.provenance = {
+        ...structuredClone(DOCUMENT_AGENT_PROVENANCE),
+        skills: Array.from({ length: 9 }, (_, index) => ({
+          skillId: `SKL-${index}`, revision: index, digest: `sha256:${index.toString(16).repeat(64)}`
+        }))
+      }
+    }]
+  ])('freezes Agent-authority Document with invalid provenance as lossless unsupported data: %s', (_label, mutate) => {
+    const documentNode = createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100)
+    const originalNode: Record<string, unknown> = {
+      ...documentNode,
+      provenance: structuredClone(DOCUMENT_AGENT_PROVENANCE),
+      agentAppliedEdit: {
+        conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1',
+        resultDigest: documentNode.document.digest
+      }
+    }
+    mutate(originalNode)
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [originalNode as never], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({ kind: 'unsupported', originalKind: 'document', originalNode })
+    if (normalized.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported Document node')
+    expect(Object.isFrozen(normalized.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(normalized.nodes[0].originalNode.document)).toBe(true)
   })
 
   test.each([

@@ -58,6 +58,36 @@ const storyboardChangesResponseEdit = (payload: Record<string, unknown>) => ({
   rationale: 'Refine shots'
 })
 
+const documentResponseEdit = (
+  kind: 'document_create' | 'document_changes',
+  provenance: unknown = HANDOFF_PROVENANCE
+) => ({
+  kind,
+  id: `edit-${kind}`,
+  editId: `edit-${kind}`,
+  conversationId: 'conversation-1',
+  requestId: 'request-1',
+  nodeId: 'document-1',
+  expectedResultDigest: `sha256:${'a'.repeat(64)}`,
+  base: kind === 'document_create'
+    ? { projectRevision: 7 }
+    : { projectRevision: 7, nodeRevision: 2, nodeDigest: `sha256:${'b'.repeat(64)}` },
+  payload: kind === 'document_create'
+    ? {
+        title: 'Plan',
+        blocks: [{ id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Hello' }] }],
+        linkedDocumentResourceIds: []
+      }
+    : {
+        operations: [{
+          kind: 'insert', blockId: 'paragraph-1', utf8Offset: 5,
+          text: ' world', expectedTextDigest: `sha256:${'c'.repeat(64)}`
+        }]
+      },
+  rationale: kind === 'document_create' ? 'Create a tracked planning document.' : 'Revise it.',
+  ...(provenance !== undefined ? { provenance } : {})
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -170,23 +200,7 @@ describe('agent runtime message contract', () => {
   })
 
   it('accepts one closed enriched Document create edit from Gateway', async () => {
-    const edit = {
-      kind: 'document_create',
-      id: '2c16cf56-20c8-5eb7-b1b0-a9d32e986025',
-      editId: '2c16cf56-20c8-5eb7-b1b0-a9d32e986025',
-      conversationId: 'conversation-1',
-      requestId: 'request-1',
-      nodeId: 'document-1',
-      expectedResultDigest: `sha256:${'a'.repeat(64)}`,
-      base: { projectRevision: 7 },
-      payload: {
-        title: 'Plan',
-        blocks: [{ id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Hello' }] }],
-        linkedDocumentResourceIds: []
-      },
-      rationale: 'Create a tracked planning document.',
-      provenance: { model: null, skills: [] }
-    }
+    const edit = documentResponseEdit('document_create')
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       threadId: 'thread-1', conversationId: 'conversation-1', requestId: 'request-1',
       text: 'ok', proposals: [], canvasEdits: [edit]
@@ -196,6 +210,50 @@ describe('agent runtime message contract', () => {
     const result = await agentRuntimeService.sendMessage({ content: 'Create it', projectId: 'project-1' })
 
     expect(result.canvasEdits).toEqual([edit])
+  })
+
+  it.each(['document_create', 'document_changes'] as const)(
+    'preserves exact Agent provenance on an enriched %s response',
+    async kind => {
+      const edit = documentResponseEdit(kind)
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        threadId: 'thread-1', conversationId: 'conversation-1', requestId: 'request-1',
+        text: 'ok', proposals: [], canvasEdits: [edit]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+      const result = await agentRuntimeService.sendMessage({ content: 'Apply it', projectId: 'project-1' })
+
+      expect(result.canvasEdits).toEqual([expect.objectContaining({ kind, provenance: HANDOFF_PROVENANCE })])
+    }
+  )
+
+  it.each([
+    ['missing model', { skills: [] }],
+    ['null model', { model: null, skills: [] }],
+    ['model extra key', { ...HANDOFF_PROVENANCE, model: { ...HANDOFF_PROVENANCE.model, trusted: true } }],
+    ['non-NFC model id', { ...HANDOFF_PROVENANCE, model: { ...HANDOFF_PROVENANCE.model, modelId: 'e\u0301' } }],
+    ['bad Skill digest', { ...HANDOFF_PROVENANCE, skills: [{ ...HANDOFF_PROVENANCE.skills[0], digest: 'sha256:nope' }] }],
+    ['duplicate Skills', { ...HANDOFF_PROVENANCE, skills: [HANDOFF_PROVENANCE.skills[0], HANDOFF_PROVENANCE.skills[0]] }],
+    ['nine Skills', {
+      ...HANDOFF_PROVENANCE,
+      skills: Array.from({ length: 9 }, (_, index) => ({
+        skillId: `SKL-${index}`, revision: index, digest: `sha256:${index.toString(16).repeat(64)}`
+      }))
+    }]
+  ])('rejects enriched Document create/change provenance with %s', async (_label, provenance) => {
+    const fetchMock = vi.fn()
+    for (const kind of ['document_create', 'document_changes'] as const) {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+        threadId: 'thread-1', conversationId: 'conversation-1', requestId: 'request-1',
+        text: 'ok', proposals: [], canvasEdits: [documentResponseEdit(kind, provenance)]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    }
+    vi.stubGlobal('fetch', fetchMock)
+
+    for (const kind of ['document_create', 'document_changes'] as const) {
+      await expect(agentRuntimeService.sendMessage({ content: kind, projectId: 'project-1' }))
+        .rejects.toThrow('Invalid agent canvas edits.')
+    }
   })
 
   it('serializes only the explicit Storyboard transform selector and accepts an enriched create edit', async () => {

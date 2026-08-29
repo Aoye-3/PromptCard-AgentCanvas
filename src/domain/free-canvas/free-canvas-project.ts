@@ -1031,7 +1031,7 @@ const normalizeNode = (node: Partial<IFreeCanvasNode>, timestamp: number): IFree
     }
   }
   if (node.kind === 'text') {
-    const provenance = normalizeTextAgentRunProvenance(node.provenance)
+    const provenance = normalizeAgentRunProvenance(node.provenance)
     const agentPromptHandoff = normalizeAgentPromptHandoffMarker(node.agentPromptHandoff)
     const hasHandoffState = node.provenance !== undefined || node.agentPromptHandoff !== undefined
     if (hasHandoffState && (!provenance || !agentPromptHandoff)) {
@@ -1089,7 +1089,9 @@ const normalizeDocumentNode = (
 ): IFreeCanvasDocumentNode | IFreeCanvasUnsupportedNode => {
   const parsed = parsePlanningDocumentV1(node.document)
   const agentAppliedEdit = normalizeAgentAppliedEditMarker(node.agentAppliedEdit)
-  if (!parsed.ok || (node.agentAppliedEdit !== undefined && !agentAppliedEdit)) {
+  const provenance = normalizeAgentRunProvenance(node.provenance)
+  const hasAgentAuthority = node.agentAppliedEdit !== undefined || node.provenance !== undefined
+  if (!parsed.ok || (hasAgentAuthority && (!agentAppliedEdit || !provenance))) {
     return normalizeUnsupportedNode({
       id: node.id,
       kind: 'unsupported',
@@ -1113,7 +1115,7 @@ const normalizeDocumentNode = (
     linkedDocumentResourceIds: Array.isArray(node.linkedDocumentResourceIds)
       ? node.linkedDocumentResourceIds.filter((resourceId): resourceId is string => typeof resourceId === 'string')
       : [],
-    ...(node.provenance ? { provenance: cloneStructuredValue(node.provenance) } : {}),
+    ...(provenance ? { provenance } : {}),
     ...(agentAppliedEdit ? { agentAppliedEdit } : {}),
     meta: node.meta || {}
   }
@@ -1160,7 +1162,7 @@ const normalizeAgentPromptHandoffMarker = (value: unknown): AgentPromptHandoffMa
   }
 }
 
-const normalizeTextAgentRunProvenance = (value: unknown): AgentRunProvenance | null => {
+const normalizeAgentRunProvenance = (value: unknown): AgentRunProvenance | null => {
   if (!isPlainRecordValue(value)
     || Object.keys(value).length !== 2
     || !Object.prototype.hasOwnProperty.call(value, 'model')
