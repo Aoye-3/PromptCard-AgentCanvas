@@ -10,7 +10,7 @@ const DOCUMENT_RESOURCE_B = 'b'.repeat(32)
 const settleConversationSelection = async (renderer: ReactTestRenderer, ariaLabel = '加载实验会话') => {
   await act(async () => {
     renderer.root.findByProps({ 'aria-label': ariaLabel }).props.onClick()
-    for (let index = 0; index < 4; index += 1) await Promise.resolve()
+    for (let index = 0; index < 8; index += 1) await Promise.resolve()
   })
 }
 
@@ -295,9 +295,10 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
       await Promise.resolve()
     })
 
-    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
-      conversationId: 'conversation-experimental', pending: true
-    })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: true
+    }))
     expect(renderer.root.findByType(CanvasAgentComposer).props.disabled).toBe(true)
     expect(onApplyCanvasEdit).not.toHaveBeenCalled()
 
@@ -306,15 +307,17 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
       await pendingReconcile.promise
       await Promise.resolve()
     })
-    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
-      conversationId: 'conversation-experimental', pending: true, nodeId: 'document-reconcile'
-    })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: true, nodeId: 'document-reconcile'
+    }))
     expect(onApplyCanvasEdit).toHaveBeenCalledWith(edit)
 
     await act(async () => { pendingApply.resolve(true); await pendingApply.promise })
-    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
-      conversationId: 'conversation-experimental', pending: false
-    })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: false
+    }))
   })
 
   it('awaits the unique pending Document ledger target barrier before reconciliation starts', async () => {
@@ -338,7 +341,9 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
       }
     ]
     const onDocumentReconcileStateChange = vi.fn((state: {
+      projectId: string
       conversationId: string
+      leaseId: string
       pending: boolean
       nodeId?: string
     }) => state.pending ? barrier.promise : Promise.resolve())
@@ -358,9 +363,10 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
       await Promise.resolve()
     })
 
-    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
-      conversationId: 'conversation-experimental', pending: true, nodeId: 'document-ledger-target'
-    })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: true, nodeId: 'document-ledger-target'
+    }))
     expect(mocks.reconcileDocumentEdits).not.toHaveBeenCalled()
 
     await act(async () => {
@@ -392,9 +398,10 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
       renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick()
       await Promise.resolve()
     })
-    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
-      conversationId: 'conversation-experimental', pending: true
-    })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: true
+    }))
 
     await act(async () => {
       renderer.root.findByProps({ 'aria-label': '加载会话 B' }).props.onClick()
@@ -402,15 +409,18 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
       await Promise.resolve()
     })
 
-    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith({
-      conversationId: 'conversation-experimental', pending: false
-    })
-    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith({
-      conversationId: 'conversation-b', pending: true
-    })
-    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
-      conversationId: 'conversation-b', pending: false
-    })
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: false
+    }))
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-b',
+      leaseId: expect.any(String), pending: true
+    }))
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-b',
+      leaseId: expect.any(String), pending: false
+    }))
   })
 
   it('keeps the old target locked when conversation switches after recovered apply starts', async () => {
@@ -439,9 +449,10 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
 
     await settleConversationSelection(renderer)
-    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith({
-      conversationId: 'conversation-experimental', pending: true, nodeId: 'document-reconcile'
-    })
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: true, nodeId: 'document-reconcile'
+    }))
 
     await act(async () => {
       renderer.root.findByProps({ 'aria-label': '加载会话 B' }).props.onClick()
@@ -449,18 +460,185 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
       await Promise.resolve()
     })
 
-    expect(onDocumentReconcileStateChange).not.toHaveBeenCalledWith({
-      conversationId: 'conversation-experimental', pending: false
-    })
+    expect(onDocumentReconcileStateChange).not.toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental', pending: false
+    }))
 
     await act(async () => {
       pendingApply.resolve(true)
       await pendingApply.promise
       await Promise.resolve()
     })
-    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith({
-      conversationId: 'conversation-experimental', pending: false
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: false
+    }))
+  })
+
+  it('keeps a reselected conversation generation leased until that generation finishes', async () => {
+    const firstApply = deferred<boolean>()
+    const secondApply = deferred<boolean>()
+    const edit = {
+      kind: 'document_changes' as const,
+      id: 'edit-reselected', editId: 'edit-reselected',
+      conversationId: 'conversation-experimental', requestId: 'request-reselected',
+      nodeId: 'document-reconcile', expectedResultDigest: `sha256:${'b'.repeat(64)}`,
+      base: { projectRevision: 1, nodeRevision: 2, nodeDigest: `sha256:${'a'.repeat(64)}` },
+      payload: { operations: [] }, rationale: 'Recover each selected generation safely.'
+    }
+    mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'pending_apply', canvasEdits: [edit] })
+    const onApplyCanvasEdit = vi.fn()
+      .mockReturnValueOnce(firstApply.promise)
+      .mockReturnValueOnce(secondApply.promise)
+    const activeLeases = new Set<string>()
+    const states: Array<Record<string, unknown>> = []
+    const onDocumentReconcileStateChange = vi.fn((state: Record<string, unknown>) => {
+      states.push(state)
+      if (state.pending) activeLeases.add(String(state.leaseId))
+      else activeLeases.delete(String(state.leaseId))
     })
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={onApplyCanvasEdit}
+          onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+        />
+      )
+    })
+
+    await settleConversationSelection(renderer)
+    await settleConversationSelection(renderer)
+
+    expect(mocks.reconcileDocumentEdits).toHaveBeenCalledTimes(2)
+    const targetLeases = states.filter(state => state.pending && state.nodeId === 'document-reconcile')
+    expect(targetLeases).toHaveLength(2)
+    expect(targetLeases[0].leaseId).not.toBe(targetLeases[1].leaseId)
+    expect(targetLeases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ projectId: 'project-a', conversationId: 'conversation-experimental' })
+    ]))
+
+    await act(async () => { firstApply.resolve(true); await firstApply.promise; await Promise.resolve() })
+    expect(activeLeases).toEqual(new Set([targetLeases[1].leaseId as string]))
+
+    await act(async () => { secondApply.resolve(true); await secondApply.promise; await Promise.resolve() })
+    expect(activeLeases).toEqual(new Set())
+  })
+
+  it('never reconciles an active conversation against a different project and resumes its project lease on return', async () => {
+    const pendingProjectAApply = deferred<boolean>()
+    mocks.storedTurns = [{
+      requestId: 'request-project-a',
+      applyEdit: {
+        status: 'pending_apply', kind: 'document_changes', nodeId: 'document-reconcile',
+        conversationId: 'conversation-experimental', requestId: 'request-project-a',
+        editId: 'edit-project-a', expectedResultDigest: `sha256:${'b'.repeat(64)}`
+      }
+    }]
+    const edit = {
+      kind: 'document_changes' as const,
+      id: 'edit-project-a', editId: 'edit-project-a',
+      conversationId: 'conversation-experimental', requestId: 'request-project-a',
+      nodeId: 'document-reconcile', expectedResultDigest: `sha256:${'b'.repeat(64)}`,
+      base: { projectRevision: 1, nodeRevision: 2, nodeDigest: `sha256:${'a'.repeat(64)}` },
+      payload: { operations: [] }, rationale: 'Keep this edit scoped to project A.'
+    }
+    mocks.reconcileDocumentEdits
+      .mockResolvedValueOnce({ status: 'pending_apply', canvasEdits: [edit] })
+      .mockResolvedValueOnce({ status: 'idle', canvasEdits: [] })
+    const states: Array<Record<string, unknown>> = []
+    const onDocumentReconcileStateChange = vi.fn((state: Record<string, unknown>) => { states.push(state) })
+    const renderPanel = (context: AgentWorkspaceContext) => (
+      <AgentCollaborationPanel
+        title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={context}
+        onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={() => pendingProjectAApply.promise}
+        onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+      />
+    )
+    let renderer!: ReactTestRenderer
+    act(() => { renderer = create(renderPanel(workspaceContext)) })
+    await settleConversationSelection(renderer)
+
+    const projectBContext = { ...workspaceContext, projectId: 'project-b', projectTitle: 'Project B' }
+    await act(async () => {
+      renderer.update(renderPanel(projectBContext))
+      for (let index = 0; index < 4; index += 1) await Promise.resolve()
+    })
+    expect(mocks.reconcileDocumentEdits).not.toHaveBeenCalledWith('project-b', 'conversation-experimental')
+
+    await act(async () => {
+      renderer.update(renderPanel(workspaceContext))
+      for (let index = 0; index < 4; index += 1) await Promise.resolve()
+    })
+    expect(mocks.reconcileDocumentEdits.mock.calls).toEqual([
+      ['project-a', 'conversation-experimental'],
+      ['project-a', 'conversation-experimental']
+    ])
+    expect(states.filter(state => state.pending)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ projectId: 'project-a', conversationId: 'conversation-experimental' })
+    ]))
+    const projectATargetLeases = states.filter(state => (
+      state.pending && state.projectId === 'project-a' && state.nodeId === 'document-reconcile'
+    ))
+    expect(new Set(projectATargetLeases.map(state => state.leaseId)).size).toBe(2)
+
+    await act(async () => {
+      pendingProjectAApply.resolve(true)
+      await pendingProjectAApply.promise
+      await Promise.resolve()
+    })
+  })
+
+  it('keeps reconcile lease tokens unique across Panel remounts', async () => {
+    const firstApply = deferred<boolean>()
+    const secondApply = deferred<boolean>()
+    const edit = {
+      kind: 'document_changes' as const,
+      id: 'edit-remount', editId: 'edit-remount',
+      conversationId: 'conversation-experimental', requestId: 'request-remount',
+      nodeId: 'document-reconcile', expectedResultDigest: `sha256:${'b'.repeat(64)}`,
+      base: { projectRevision: 1, nodeRevision: 2, nodeDigest: `sha256:${'a'.repeat(64)}` },
+      payload: { operations: [] }, rationale: 'Keep remounted Panel generations independent.'
+    }
+    mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'pending_apply', canvasEdits: [edit] })
+    const onApplyCanvasEdit = vi.fn()
+      .mockReturnValueOnce(firstApply.promise)
+      .mockReturnValueOnce(secondApply.promise)
+    const activeLeases = new Set<string>()
+    const targetLeaseIds: string[] = []
+    const onDocumentReconcileStateChange = vi.fn((state: Record<string, unknown>) => {
+      const leaseId = String(state.leaseId)
+      if (state.pending) activeLeases.add(leaseId)
+      else activeLeases.delete(leaseId)
+      if (state.pending && state.nodeId === 'document-reconcile' && !targetLeaseIds.includes(leaseId)) {
+        targetLeaseIds.push(leaseId)
+      }
+    })
+    const panel = (
+      <AgentCollaborationPanel
+        title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+        onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={onApplyCanvasEdit}
+        onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+      />
+    )
+    let firstRenderer!: ReactTestRenderer
+    act(() => { firstRenderer = create(panel) })
+    await settleConversationSelection(firstRenderer)
+    act(() => firstRenderer.unmount())
+
+    let secondRenderer!: ReactTestRenderer
+    act(() => { secondRenderer = create(panel) })
+    await settleConversationSelection(secondRenderer)
+
+    expect(targetLeaseIds).toHaveLength(2)
+    expect(targetLeaseIds[0]).not.toBe(targetLeaseIds[1])
+    await act(async () => { firstApply.resolve(true); await firstApply.promise; await Promise.resolve() })
+    expect(activeLeases).toEqual(new Set([targetLeaseIds[1]]))
+
+    await act(async () => { secondApply.resolve(true); await secondApply.promise; await Promise.resolve() })
+    expect(activeLeases).toEqual(new Set())
+    act(() => secondRenderer.unmount())
   })
 
   it('does not expose a failed conversation retry after switching conversations', () => {

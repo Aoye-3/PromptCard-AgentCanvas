@@ -162,23 +162,47 @@ vi.mock('@/components/canvas/nodes/DocumentNode', async importOriginal => {
 vi.mock('@/components/AgentCollaborationPanel', () => ({
   AIChatbotBox: ({ onApplyCanvasEdit, onDocumentReconcileStateChange }: {
     onApplyCanvasEdit?: (edit: AgentCanvasEdit) => Promise<boolean | void> | boolean | void
-    onDocumentReconcileStateChange?: (state: { conversationId: string; pending: boolean; nodeId?: string }) => Promise<void> | void
+    onDocumentReconcileStateChange?: (state: {
+      projectId: string
+      conversationId: string
+      leaseId: string
+      pending: boolean
+      nodeId?: string
+    }) => Promise<void> | void
   }) => (
     <div>
       <button
         type="button"
         aria-label="测试开始 Document reconcile"
         onClick={() => onDocumentReconcileStateChange?.({
-          conversationId: 'conversation-restart', pending: true, nodeId: 'document-1'
+          projectId: 'project-1', conversationId: 'conversation-restart',
+          leaseId: 'lease-a-1', pending: true, nodeId: 'document-1'
         })}
       >Start reconcile</button>
       <button
         type="button"
         aria-label="测试结束 Document reconcile"
         onClick={() => onDocumentReconcileStateChange?.({
-          conversationId: 'conversation-restart', pending: false
+          projectId: 'project-1', conversationId: 'conversation-restart',
+          leaseId: 'lease-a-1', pending: false
         })}
       >Finish reconcile</button>
+      <button
+        type="button"
+        aria-label="测试开始第二代 Document reconcile"
+        onClick={() => onDocumentReconcileStateChange?.({
+          projectId: 'project-1', conversationId: 'conversation-restart',
+          leaseId: 'lease-a-2', pending: true, nodeId: 'document-1'
+        })}
+      >Start second reconcile</button>
+      <button
+        type="button"
+        aria-label="测试结束第二代 Document reconcile"
+        onClick={() => onDocumentReconcileStateChange?.({
+          projectId: 'project-1', conversationId: 'conversation-restart',
+          leaseId: 'lease-a-2', pending: false
+        })}
+      >Finish second reconcile</button>
       {mocks.agentCanvasEdit && (
         <button
           type="button"
@@ -1883,5 +1907,69 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
       await Promise.all([pendingEdit, barrier])
     })
     expect(barrierSettled).toBe(true)
+  })
+
+  it('does not let an older reconcile generation release a newer target lease', async () => {
+    const Harness = () => {
+      const [current, setCurrent] = useState(twoDocumentCanvas())
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(current)} freeCanvas={current} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCurrent} onPersistCanvas={vi.fn().mockResolvedValue(true)}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试开始 Document reconcile' }).props.onClick())
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试开始 Document reconcile' }).props.onClick())
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试开始第二代 Document reconcile' }).props.onClick())
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试结束 Document reconcile' }).props.onClick())
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试结束 Document reconcile' }).props.onClick())
+
+    expect(renderedDocument(renderer, 'document-1').props['data-document-locked']).toBe(true)
+    expect(renderedDocument(renderer, 'document-2').props['data-document-locked']).toBe(false)
+
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试结束第二代 Document reconcile' }).props.onClick())
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试结束第二代 Document reconcile' }).props.onClick())
+    expect(renderedDocument(renderer, 'document-1').props['data-document-locked']).toBe(false)
+  })
+
+  it('restores a project target lease after switching away and back before its apply finishes', async () => {
+    const canvases = {
+      'project-1': twoDocumentCanvas(),
+      'project-2': twoDocumentCanvas()
+    }
+    const Harness = () => {
+      const [activeProjectId, setActiveProjectId] = useState<'project-1' | 'project-2'>('project-1')
+      const [currentByProject, setCurrentByProject] = useState(canvases)
+      const current = currentByProject[activeProjectId]
+      return (
+        <>
+          <button type="button" aria-label="切换 reconcile 项目 P1" onClick={() => setActiveProjectId('project-1')}>P1</button>
+          <button type="button" aria-label="切换 reconcile 项目 P2" onClick={() => setActiveProjectId('project-2')}>P2</button>
+          <FreeCanvasBuilderScreen
+            activeProject={project(current, activeProjectId)} freeCanvas={current}
+            onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+            onChange={next => setCurrentByProject(value => ({ ...value, [activeProjectId]: next }))}
+            onPersistCanvas={vi.fn().mockResolvedValue(true)}
+          />
+        </>
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试开始 Document reconcile' }).props.onClick())
+    expect(renderedDocument(renderer, 'document-1').props['data-document-locked']).toBe(true)
+
+    act(() => renderer.root.findByProps({ 'aria-label': '切换 reconcile 项目 P2' }).props.onClick())
+    expect(renderedDocument(renderer, 'document-1').props['data-document-locked']).toBe(false)
+
+    act(() => renderer.root.findByProps({ 'aria-label': '切换 reconcile 项目 P1' }).props.onClick())
+    expect(renderedDocument(renderer, 'document-1').props['data-document-locked']).toBe(true)
+
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试结束 Document reconcile' }).props.onClick())
+    expect(renderedDocument(renderer, 'document-1').props['data-document-locked']).toBe(false)
   })
 })

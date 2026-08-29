@@ -37,7 +37,9 @@ interface AgentCollaborationPanelProps {
   onApplyWorkspaceProposal: (proposal: AgentWorkspaceProposal) => Promise<boolean | void> | boolean | void
   onApplyCanvasEdit?: (edit: AgentCanvasEdit) => Promise<boolean | void> | boolean | void
   onDocumentReconcileStateChange?: (state: {
+    projectId: string
     conversationId: string
+    leaseId: string
     pending: boolean
     nodeId?: string
   }) => Promise<void> | void
@@ -74,6 +76,11 @@ const agentQuickPrompts = [
 
 const POST_SEND_APPLY_ERROR = '消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。'
 const useCommitLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect
+let documentReconcileLeaseSequence = 0
+
+const nextDocumentReconcileLeaseId = (projectId: string, conversationId: string): string => (
+  `${projectId}:${conversationId}:${++documentReconcileLeaseSequence}`
+)
 
 export function AgentCollaborationPanel({
   title,
@@ -112,7 +119,10 @@ export function AgentCollaborationPanel({
   const [draft, setDraft] = useState(embedded ? '' : '告诉 Agent 你想怎么修改当前选中的提示词卡片。')
   const [appliedMessages, setAppliedMessages] = useState<AgentMessage[]>([])
   const [conversationId, setConversationId] = useState<string>()
+  const [conversationProjectId, setConversationProjectId] = useState<string>()
+  const [conversationSelectionGeneration, setConversationSelectionGeneration] = useState(0)
   const [pendingDocumentLedgerTarget, setPendingDocumentLedgerTarget] = useState<{
+    projectId: string
     conversationId: string
     nodeId: string
   }>()
@@ -216,7 +226,6 @@ export function AgentCollaborationPanel({
     setCanvasAttachments([])
     setDocumentAttachments([])
     setDocumentUploadingCount(0)
-    setPendingDocumentLedgerTarget(undefined)
     setPostSendApplyError(undefined)
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
@@ -224,10 +233,16 @@ export function AgentCollaborationPanel({
   }, [sessionKey, workspaceContext.projectId])
 
   useEffect(() => {
-    if (!conversationId || !onApplyCanvasEditRef.current) {
+    if (
+      !conversationId
+      || conversationProjectId !== workspaceContext.projectId
+      || !onApplyCanvasEditRef.current
+    ) {
       setDocumentEditReconciling(false)
       return
     }
+    const projectId = workspaceContext.projectId
+    const leaseId = nextDocumentReconcileLeaseId(projectId, conversationId)
     let cancelled = false
     let barrierReleased = false
     let applyStarted = false
@@ -236,7 +251,9 @@ export function AgentCollaborationPanel({
       if (barrierReleased) return
       barrierReleased = true
       try {
-        await onDocumentReconcileStateChangeRef.current?.({ conversationId, pending: false })
+        await onDocumentReconcileStateChangeRef.current?.({
+          projectId, conversationId, leaseId, pending: false
+        })
       } catch {
         // Releasing a local edit barrier is best-effort during identity changes.
       }
@@ -244,17 +261,20 @@ export function AgentCollaborationPanel({
     setDocumentEditReconciling(true)
     void (async () => {
       try {
-        const ledgerNodeId = pendingDocumentLedgerTarget?.conversationId === conversationId
+        const ledgerNodeId = pendingDocumentLedgerTarget?.projectId === projectId
+          && pendingDocumentLedgerTarget.conversationId === conversationId
           ? pendingDocumentLedgerTarget.nodeId
           : undefined
         await onDocumentReconcileStateChangeRef.current?.({
+          projectId,
           conversationId,
+          leaseId,
           pending: true,
           ...(ledgerNodeId ? { nodeId: ledgerNodeId } : {})
         })
         if (cancelled || postSendApplyIdentityRef.current !== identity) return
         const reconciliation = await agentRuntimeService.reconcileDocumentEdits(
-          workspaceContext.projectId,
+          projectId,
           conversationId
         )
         if (cancelled || postSendApplyIdentityRef.current !== identity) return
@@ -262,7 +282,9 @@ export function AgentCollaborationPanel({
           const edit = reconciliation.canvasEdits[0]
           if (edit.kind === 'document_create' || edit.kind === 'document_changes') {
             await onDocumentReconcileStateChangeRef.current?.({
+              projectId,
               conversationId,
+              leaseId,
               pending: true,
               nodeId: edit.nodeId
             })
@@ -289,7 +311,14 @@ export function AgentCollaborationPanel({
       cancelled = true
       if (!applyStarted) void releaseBarrier()
     }
-  }, [conversationId, pendingDocumentLedgerTarget, sessionKey, workspaceContext.projectId])
+  }, [
+    conversationId,
+    conversationProjectId,
+    conversationSelectionGeneration,
+    pendingDocumentLedgerTarget,
+    sessionKey,
+    workspaceContext.projectId
+  ])
 
   const conversationMessages = useMemo(
     () => [...messages, ...appliedMessages].sort((a, b) => a.createdAt - b.createdAt),
@@ -367,6 +396,8 @@ export function AgentCollaborationPanel({
     ) {
       applyIdentity = `${sessionKey}:${workspaceContext.projectId}:${updatedConversationId}`
       postSendApplyIdentityRef.current = applyIdentity
+      setConversationProjectId(workspaceContext.projectId)
+      setConversationSelectionGeneration(generation => generation + 1)
       setConversationId(updatedConversationId)
     }
     if (interactionMode === 'prompt-edit') setSelectedSkillIds([])
@@ -820,10 +851,12 @@ export function AgentCollaborationPanel({
       postSendApplyAttemptRef.current += 1
     }
     setPostSendApplyError(undefined)
+    setConversationProjectId(conversation.projectId)
+    setConversationSelectionGeneration(generation => generation + 1)
     setConversationId(conversation.id)
     const pendingDocumentNodeId = readUniquePendingDocumentLedgerNodeId(conversation)
     setPendingDocumentLedgerTarget(pendingDocumentNodeId
-      ? { conversationId: conversation.id, nodeId: pendingDocumentNodeId }
+      ? { projectId: conversation.projectId, conversationId: conversation.id, nodeId: pendingDocumentNodeId }
       : undefined)
     setInteractionMode(conversation.interactionMode || 'prompt-edit')
     setBoundSkillIds(conversation.boundSkillIds || [])

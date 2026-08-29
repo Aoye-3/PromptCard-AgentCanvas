@@ -256,6 +256,12 @@ interface ProjectMutationScope {
   epoch: number
 }
 
+interface DocumentReconcileLease {
+  projectId: string
+  conversationId: string
+  nodeIds: Set<string>
+}
+
 const documentMutationQueueKey = (scope: ProjectMutationScope): string => (
   `${scope.projectId}:${scope.epoch}`
 )
@@ -477,7 +483,7 @@ const FreeCanvasBuilderInner = ({
   const copiedImageNodeRef = useRef<IFreeCanvasImageNode | null>(null)
   const canvasCommandHistoryRef = useRef(createCanvasCommandHistory())
   const documentMutationQueuesRef = useRef(new Map<string, Promise<void>>())
-  const documentReconcileLocksRef = useRef(new Map<string, Set<string>>())
+  const documentReconcileLocksRef = useRef(new Map<string, DocumentReconcileLease>())
   const documentReconcileLockedNodeIdsRef = useRef(new Set<string>())
   const fileDragDepthRef = useRef(0)
   const composerFileDragDepthRef = useRef(0)
@@ -583,9 +589,13 @@ const FreeCanvasBuilderInner = ({
         epoch: projectEpochRef.current
       }
       canvasCommandHistoryRef.current = createCanvasCommandHistory()
-      documentReconcileLocksRef.current.clear()
-      documentReconcileLockedNodeIdsRef.current = new Set()
-      setDocumentReconcileLockedNodeIds([])
+      const activeProjectNodeIds = new Set(
+        [...documentReconcileLocksRef.current.values()]
+          .filter(lease => lease.projectId === activeProject.id)
+          .flatMap(lease => [...lease.nodeIds])
+      )
+      documentReconcileLockedNodeIdsRef.current = activeProjectNodeIds
+      setDocumentReconcileLockedNodeIds([...activeProjectNodeIds])
     }
     activeProjectIdRef.current = activeProject.id
     freeCanvasRef.current = freeCanvas
@@ -1973,28 +1983,46 @@ const FreeCanvasBuilderInner = ({
   }, [commitCanvasSelection])
 
   const handleDocumentReconcileStateChange = useCallback(async (state: {
+    projectId: string
     conversationId: string
+    leaseId: string
     pending: boolean
     nodeId?: string
   }) => {
     if (!state.pending) {
-      documentReconcileLocksRef.current.delete(state.conversationId)
+      documentReconcileLocksRef.current.delete(state.leaseId)
     } else {
-      const locked = new Set<string>()
+      const existing = documentReconcileLocksRef.current.get(state.leaseId)
+      const locked = existing?.projectId === state.projectId
+        && existing.conversationId === state.conversationId
+        ? new Set(existing.nodeIds)
+        : new Set<string>()
       if (state.nodeId) {
-        const target = freeCanvasRef.current.nodes.find(node => node.id === state.nodeId)
-        if (target?.kind === 'document') locked.add(target.id)
+        const target = state.projectId === activeProjectIdRef.current
+          ? freeCanvasRef.current.nodes.find(node => node.id === state.nodeId)
+          : undefined
+        if (state.projectId !== activeProjectIdRef.current || target?.kind === 'document') {
+          locked.add(state.nodeId)
+        }
       }
-      documentReconcileLocksRef.current.set(state.conversationId, locked)
+      documentReconcileLocksRef.current.set(state.leaseId, {
+        projectId: state.projectId,
+        conversationId: state.conversationId,
+        nodeIds: locked
+      })
     }
     const next = new Set(
-      [...documentReconcileLocksRef.current.values()].flatMap(nodeIds => [...nodeIds])
+      [...documentReconcileLocksRef.current.values()]
+        .filter(lease => lease.projectId === activeProjectIdRef.current)
+        .flatMap(lease => [...lease.nodeIds])
     )
     documentReconcileLockedNodeIdsRef.current = next
     setDocumentReconcileLockedNodeIds([...next])
     if (state.pending) {
       const scope = activeProjectScopeRef.current
-      const currentTail = documentMutationQueuesRef.current.get(documentMutationQueueKey(scope))
+      const currentTail = scope.projectId === state.projectId
+        ? documentMutationQueuesRef.current.get(documentMutationQueueKey(scope))
+        : undefined
       if (currentTail) await currentTail
     }
   }, [])
