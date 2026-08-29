@@ -118,19 +118,33 @@ export const storyboardDigest = (
 
 const cloneSequence = (sequence: IStoryboardSequence): IStoryboardSequence => structuredClone(sequence)
 
+const storyboardSequenceTextValues = (sequence: IStoryboardSequence): string[] => [
+  sequence.name, sequence.description, sequence.style, sequence.constraints,
+  ...sequence.rows.flatMap(row => [
+    row.cutLabel, row.timeRange, row.subject, row.action, row.scene, row.camera,
+    row.lighting || '', row.audio || '', row.duration
+  ])
+]
+
+const storyboardSequenceTextBytes = (sequence: IStoryboardSequence): number => (
+  storyboardSequenceTextValues(sequence).reduce(
+    (total, value) => total + new TextEncoder().encode(value.normalize('NFC')).length,
+    0
+  )
+)
+
 const assertSequence = (sequence: IStoryboardSequence) => {
   if (!sequence || !sequence.id || sequence.rows.length > 200) throw new Error('storyboard_sequence_invalid')
-  const values = [sequence.name, sequence.description, sequence.style, sequence.constraints]
+  const values = storyboardSequenceTextValues(sequence)
   const rowIds = new Set<string>()
   sequence.rows.forEach(row => {
     if (!row.id || rowIds.has(row.id)) throw new Error('storyboard_sequence_invalid')
     rowIds.add(row.id)
-    values.push(row.cutLabel, row.timeRange, row.subject, row.action, row.scene, row.camera, row.lighting || '', row.audio || '', row.duration)
   })
   if (values.some(value => typeof value !== 'string' || new TextEncoder().encode(value.normalize('NFC')).length > MAX_STORYBOARD_FIELD_BYTES)) {
     throw new Error('storyboard_sequence_invalid')
   }
-  if (new TextEncoder().encode(values.map(value => value.normalize('NFC')).join('')).length > MAX_STORYBOARD_AGGREGATE_TEXT_BYTES) {
+  if (storyboardSequenceTextBytes(sequence) > MAX_STORYBOARD_AGGREGATE_TEXT_BYTES) {
     throw new Error('storyboard_sequence_invalid')
   }
 }
@@ -170,18 +184,16 @@ export const applyStoryboardChanges = (
   node: IFreeCanvasStoryboardNode,
   edit: AgentStoryboardChangesEdit
 ): IFreeCanvasStoryboardNode => {
+  if (
+    !isValidStoryboardSourceProvenance(edit.payload.source)
+    || canonicalJson(edit.payload.source) !== canonicalJson(node.source)
+  ) throw new Error('storyboard_source_mismatch')
   const revision = node.revision ?? 0
   const digest = node.digest ?? storyboardDigest(node.sequence, node.pendingFieldChanges)
   if (edit.nodeId !== node.id || edit.base.nodeRevision !== revision || edit.base.nodeDigest !== digest) {
     throw new Error('storyboard_edit_stale')
   }
   if (node.pendingFieldChanges.length) throw new Error('storyboard_review_pending')
-  if (
-    edit.payload.changes.reduce(
-      (total, change) => total + new TextEncoder().encode(change.value.normalize('NFC')).length,
-      0
-    ) > MAX_STORYBOARD_AGGREGATE_TEXT_BYTES
-  ) throw new Error('storyboard_changes_invalid')
   const pendingFieldChanges = edit.payload.changes.map((change, index): StoryboardFieldChange => {
     const id = `sbf-${edit.editId}-${index}`
     const newValue = normalizedFieldValue(change.value)
@@ -195,6 +207,20 @@ export const applyStoryboardChanges = (
     return { id, editId: edit.editId, scope: 'row', rowId: row.id, field: change.field, previousValue: row[change.field] || '', newValue }
   })
   if (!pendingFieldChanges.length || new Set(pendingFieldChanges.map(change => `${change.scope}:${change.scope === 'row' ? change.rowId : ''}:${change.field}`)).size !== pendingFieldChanges.length) {
+    throw new Error('storyboard_changes_invalid')
+  }
+  const prospectiveSequence = cloneSequence(node.sequence)
+  pendingFieldChanges.forEach(change => {
+    if (change.scope === 'sequence') prospectiveSequence[change.field] = change.newValue
+    else {
+      const row = prospectiveSequence.rows.find(candidate => candidate.id === change.rowId)
+      if (!row) throw new Error('storyboard_row_missing')
+      setRowField(row, change.field, change.newValue)
+    }
+  })
+  try {
+    assertSequence(prospectiveSequence)
+  } catch {
     throw new Error('storyboard_changes_invalid')
   }
   const resultDigest = storyboardDigest(node.sequence, pendingFieldChanges)
@@ -232,6 +258,11 @@ export const resolveStoryboardFieldChanges = (
         setRowField(row, change.field, change.newValue)
       }
     })
+    try {
+      assertSequence(sequence)
+    } catch {
+      throw new Error('storyboard_changes_invalid')
+    }
   }
   const pendingFieldChanges = node.pendingFieldChanges.filter(change => !selected.has(change.id))
   const revision = (node.revision ?? 0) + 1

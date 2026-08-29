@@ -534,7 +534,7 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
       conversationId: 'conversation-1', requestId: 'request-storyboard-change', nodeId: clean.id,
       expectedResultDigest: storyboardDigest(clean.sequence, expectedChanges),
       base: { projectRevision: 1, nodeRevision: clean.revision!, nodeDigest: clean.digest },
-      payload: { changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }] },
+      payload: { source: storyboardSource(), changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }] },
       rationale: 'Revise camera'
     }
     const canvas = { ...initialCanvas(), nodes: [clean] }
@@ -704,7 +704,7 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
       conversationId: 'conversation-1', requestId: 'request-storyboard-pending', nodeId: clean.id,
       expectedResultDigest: storyboardDigest(clean.sequence, changes),
       base: { projectRevision: 1, nodeRevision: clean.revision!, nodeDigest: clean.digest },
-      payload: { changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }] },
+      payload: { source: storyboardSource(), changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }] },
       rationale: 'Refine camera'
     }
     const recovery = deferred<{
@@ -767,7 +767,7 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
       conversationId: 'conversation-1', requestId: 'request-storyboard-lock', nodeId: clean.id,
       expectedResultDigest: storyboardDigest(clean.sequence, changes),
       base: { projectRevision: 1, nodeRevision: clean.revision!, nodeDigest: clean.digest },
-      payload: { changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }] },
+      payload: { source: storyboardSource(), changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }] },
       rationale: 'Refine camera'
     }
     mocks.acknowledgeDocumentEdit

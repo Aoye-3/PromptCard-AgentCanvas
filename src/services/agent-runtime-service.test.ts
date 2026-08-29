@@ -40,6 +40,14 @@ const storyboardResponseEdit = (source: unknown = storyboardResponseSource()) =>
   rationale: 'Explicit transform'
 })
 
+const storyboardChangesResponseEdit = (payload: Record<string, unknown>) => ({
+  kind: 'storyboard_changes', id: 'edit-2', editId: 'edit-2', conversationId: 'conversation-2',
+  requestId: 'request-2', nodeId: 'storyboard-1', expectedResultDigest: `sha256:${'e'.repeat(64)}`,
+  base: { projectRevision: 8, nodeRevision: 3, nodeDigest: `sha256:${'f'.repeat(64)}` },
+  payload,
+  rationale: 'Refine shots'
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -228,6 +236,29 @@ describe('agent runtime message contract', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(agentRuntimeService.sendMessage({ content: 'Create it', projectId: 'project-1' }))
+      .rejects.toThrow('Invalid agent canvas edits.')
+  })
+
+  it('requires exact authoritative source provenance on enriched Storyboard changes', async () => {
+    const valid = storyboardChangesResponseEdit({
+      changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }],
+      source: storyboardResponseSource()
+    })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        threadId: 'thread-2', conversationId: 'conversation-2', text: 'ok', proposals: [], canvasEdits: [valid]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        threadId: 'thread-2', conversationId: 'conversation-2', text: 'ok', proposals: [],
+        canvasEdits: [storyboardChangesResponseEdit({
+          changes: [{ scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }]
+        })]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(agentRuntimeService.sendMessage({ content: 'Refine it', projectId: 'project-1' }))
+      .resolves.toMatchObject({ canvasEdits: [valid] })
+    await expect(agentRuntimeService.sendMessage({ content: 'Refine it', projectId: 'project-1' }))
       .rejects.toThrow('Invalid agent canvas edits.')
   })
 

@@ -839,14 +839,7 @@ class PromptCardRuntimeService:
         edit_kind = str(ledger.get("kind") or "")
         storyboard_edit = edit_kind in {"storyboard_create", "storyboard_changes"}
         expected_node_kind = "storyboard" if storyboard_edit else "document"
-        if (
-            edit_kind == "storyboard_create"
-            or (
-                edit_kind == "storyboard_changes"
-                and isinstance(node, dict)
-                and node.get("kind") == "storyboard"
-            )
-        ):
+        if edit_kind == "storyboard_create" or edit_kind == "storyboard_changes":
             expected_storyboard_source = _expected_storyboard_source_from_turn(
                 conversation, turn, edit
             )
@@ -910,14 +903,7 @@ class PromptCardRuntimeService:
                 {"nodeId": node_id, "kind": expected_node_kind, "code": "marker_or_digest_mismatch"},
                 include_canvas_edits=include_canvas_edits,
             )
-        if (
-            edit_kind == "storyboard_create"
-            or (
-                edit_kind == "storyboard_changes"
-                and isinstance(node, dict)
-                and node.get("kind") == "storyboard"
-            )
-        ) and await _authoritative_storyboard_source(
+        if edit_kind == "storyboard_create" and await _authoritative_storyboard_source(
             project_id, project, conversation, turn, edit
         ) is None:
             return await _terminal_agent_edit(
@@ -1459,6 +1445,8 @@ def _expected_storyboard_source_from_turn(
     edit: dict[str, Any],
 ) -> dict[str, Any] | None:
     expected_source, source_turn = _expected_storyboard_source(conversation, current_turn, edit)
+    if edit.get("kind") == "storyboard_changes":
+        return deepcopy(expected_source) if _valid_storyboard_source(expected_source) else None
     if (
         not _valid_storyboard_source(expected_source)
         or not isinstance(source_turn, dict)
@@ -1477,29 +1465,8 @@ def _expected_storyboard_source(
     if edit.get("kind") == "storyboard_create":
         payload = edit.get("payload")
         return (payload.get("source") if isinstance(payload, dict) else None), current_turn
-    node_id = edit.get("nodeId")
-    turns = conversation.get("turns")
-    if not isinstance(turns, list):
-        return None, None
-    for candidate_turn in turns:
-        if not isinstance(candidate_turn, dict):
-            continue
-        messages = candidate_turn.get("messages")
-        if not isinstance(messages, list):
-            continue
-        for message in messages:
-            edits = message.get("canvasEdits") if isinstance(message, dict) else None
-            if not isinstance(edits, list):
-                continue
-            for candidate in edits:
-                if (
-                    isinstance(candidate, dict)
-                    and candidate.get("kind") == "storyboard_create"
-                    and candidate.get("nodeId") == node_id
-                    and isinstance(candidate.get("payload"), dict)
-                ):
-                    return candidate["payload"].get("source"), candidate_turn
-    return None, None
+    payload = edit.get("payload")
+    return (payload.get("source") if isinstance(payload, dict) else None), current_turn
 
 
 async def _authoritative_storyboard_source(
@@ -1537,6 +1504,16 @@ async def _authoritative_storyboard_source(
     return deepcopy(expected_source) if resource_digests == expected_source["documentResourceDigests"] else None
 
 
+def _storyboard_sequence_text_bytes(sequence: dict[str, Any]) -> int:
+    values = [sequence[field] for field in _STORYBOARD_SEQUENCE_FIELDS]
+    values.extend(
+        row[field]
+        for row in sequence["rows"]
+        for field in _STORYBOARD_ROW_FIELDS
+    )
+    return sum(len(value.encode("utf-8")) for value in values)
+
+
 def _normalize_storyboard_pending_changes(
     value: Any,
     sequence: dict[str, Any] | None = None,
@@ -1548,7 +1525,7 @@ def _normalize_storyboard_pending_changes(
     } if isinstance(sequence, dict) else {}
     change_ids: set[str] = set()
     identities: set[str] = set()
-    aggregate_text_bytes = 0
+    aggregate_text_bytes = _storyboard_sequence_text_bytes(sequence) if sequence is not None else 0
     result: list[dict[str, Any]] = []
     for change in value:
         if not isinstance(change, dict) or change.get("scope") not in {"sequence", "row"}:
@@ -1596,7 +1573,7 @@ def _normalize_storyboard_pending_changes(
             return None
         change_ids.add(change_id)
         identities.add(identity)
-        aggregate_text_bytes += len(new_value.encode("utf-8"))
+        aggregate_text_bytes += len(new_value.encode("utf-8")) - len(previous_value.encode("utf-8"))
         result.append(normalized_change)
     if aggregate_text_bytes > _MAX_STORYBOARD_AGGREGATE_TEXT_BYTES:
         return None
@@ -1609,7 +1586,7 @@ def _normalize_storyboard_change_operations(value: Any, sequence: dict[str, Any]
     row_ids = {row["id"] for row in sequence["rows"]}
     identities: set[str] = set()
     result: list[dict[str, str]] = []
-    aggregate_text_bytes = 0
+    aggregate_text_bytes = _storyboard_sequence_text_bytes(sequence)
     for change in value:
         if not isinstance(change, dict) or change.get("scope") not in {"sequence", "row"} or not isinstance(change.get("value"), str):
             return None
@@ -1623,17 +1600,19 @@ def _normalize_storyboard_change_operations(value: Any, sequence: dict[str, Any]
                 return None
             identity = f"sequence:{field}"
             normalized = {"scope": "sequence", "field": field, "value": normalized_value}
+            previous_value = sequence[field]
         else:
             row_id = change.get("rowId")
             if set(change) != {"scope", "rowId", "field", "value"} or row_id not in row_ids or field not in _STORYBOARD_ROW_FIELDS:
                 return None
             identity = f"row:{row_id}:{field}"
             normalized = {"scope": "row", "rowId": row_id, "field": field, "value": normalized_value}
+            previous_value = next(row[field] for row in sequence["rows"] if row["id"] == row_id)
         if identity in identities:
             return None
         identities.add(identity)
         result.append(normalized)
-        aggregate_text_bytes += len(normalized["value"].encode("utf-8"))
+        aggregate_text_bytes += len(normalized["value"].encode("utf-8")) - len(previous_value.encode("utf-8"))
     if aggregate_text_bytes > _MAX_STORYBOARD_AGGREGATE_TEXT_BYTES:
         return None
     return result
@@ -1747,7 +1726,13 @@ def validate_agent_document_edits(
         payload_source = edit.get("payload") if isinstance(edit.get("payload"), dict) else edit
         target_node_id = str(payload_source.get("nodeId") or "").strip()
         target = _project_canvas_node(project, target_node_id)
-        if target_node_id != expected_write_context.get("nodeId") or not isinstance(target, dict) or target.get("kind") != "storyboard":
+        target_source = target.get("source") if isinstance(target, dict) else None
+        if (
+            target_node_id != expected_write_context.get("nodeId")
+            or not isinstance(target, dict)
+            or target.get("kind") != "storyboard"
+            or not _valid_storyboard_source(target_source)
+        ):
             return []
         sequence = _normalize_storyboard_sequence(target.get("sequence"), model_output=False)
         pending = _normalize_storyboard_pending_changes(target.get("pendingFieldChanges"), sequence)
@@ -1770,7 +1755,7 @@ def validate_agent_document_edits(
         supplied_digest = edit.get("expectedResultDigest")
         if supplied_digest is not None and supplied_digest != expected_result_digest:
             return []
-        payload = {"changes": changes}
+        payload = {"changes": changes, "source": deepcopy(target_source)}
         base = {"projectRevision": project_revision, "nodeRevision": revision, "nodeDigest": digest}
     elif kind == "document_create":
         payload_source = edit.get("payload") if isinstance(edit.get("payload"), dict) else edit

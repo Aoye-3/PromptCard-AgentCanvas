@@ -260,7 +260,8 @@ const isEnrichedDocumentEdit = (value: unknown): value is AgentCanvasEdit => {
     return hasOnlyKeys(value.base, ['projectRevision', 'nodeRevision', 'nodeDigest']) &&
       Number.isSafeInteger(value.base.projectRevision) && Number.isSafeInteger(value.base.nodeRevision) &&
       typeof value.base.nodeDigest === 'string' && SHA256_PATTERN.test(value.base.nodeDigest) &&
-      hasOnlyKeys(value.payload, ['changes']) && Array.isArray(value.payload.changes) && value.payload.changes.length > 0
+      hasOnlyKeys(value.payload, ['changes', 'source']) && Array.isArray(value.payload.changes) &&
+      value.payload.changes.length > 0 && isValidStoryboardSourceProvenance(value.payload.source)
   }
   return false
 }

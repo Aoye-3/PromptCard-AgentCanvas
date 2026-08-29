@@ -371,7 +371,10 @@ export interface AgentStoryboardChangesEdit extends AgentDocumentEditIdentity {
     nodeRevision: number
     nodeDigest: string
   }
-  payload: { changes: AgentStoryboardFieldChangeOperation[] }
+  payload: {
+    changes: AgentStoryboardFieldChangeOperation[]
+    source: StoryboardSourceProvenance
+  }
 }
 
 export interface AgentDocumentCreateEdit extends AgentDocumentEditIdentity {

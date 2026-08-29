@@ -87,7 +87,7 @@ describe('Canvas Storyboard direct edits', () => {
       kind: 'storyboard_changes', id: 'edit-2', editId: 'edit-2', conversationId: 'conversation-1',
       requestId: 'request-2', nodeId: initial.id, expectedResultDigest: '',
       base: { projectRevision: 13, nodeRevision: initial.revision!, nodeDigest: initial.digest! },
-      payload: { changes: [
+      payload: { source: provenance, changes: [
         { scope: 'sequence', field: 'style', value: 'watercolour' },
         { scope: 'row', rowId: 'row-1', field: 'camera', value: 'close-up' }
       ] }, rationale: 'Refine the shots'
@@ -118,10 +118,26 @@ describe('Canvas Storyboard direct edits', () => {
       kind: 'storyboard_changes', id: 'edit-2', editId: 'edit-2', conversationId: 'conversation-1',
       requestId: 'request-2', nodeId: node.id, expectedResultDigest: `sha256:${'d'.repeat(64)}`,
       base: { projectRevision: 2, nodeRevision: node.revision, nodeDigest: node.digest },
-      payload: { changes: [{ scope: 'row', rowId: 'row-1', field: 'imageUrl', value: 'secret' }] }, rationale: ''
+      payload: { source: provenance, changes: [{ scope: 'row', rowId: 'row-1', field: 'imageUrl', value: 'secret' }] }, rationale: ''
     } as unknown as AgentStoryboardChangesEdit
 
     expect(() => applyStoryboardChanges(node, invalid)).toThrow('storyboard_field_invalid')
+  })
+
+  it('rejects Storyboard changes whose frozen source differs from the target node', () => {
+    const node = createStoryboardNode(createEdit(), { x: 0, y: 0 })
+    const invalid = {
+      kind: 'storyboard_changes', id: 'edit-source', editId: 'edit-source', conversationId: 'conversation-2',
+      requestId: 'request-source', nodeId: node.id, expectedResultDigest: `sha256:${'d'.repeat(64)}`,
+      base: { projectRevision: 13, nodeRevision: node.revision, nodeDigest: node.digest },
+      payload: {
+        changes: [{ scope: 'sequence', field: 'style', value: 'watercolour' }],
+        source: { ...provenance, documentDigest: `sha256:${'e'.repeat(64)}` }
+      },
+      rationale: 'Forged source'
+    } as unknown as AgentStoryboardChangesEdit
+
+    expect(() => applyStoryboardChanges(node, invalid)).toThrow('storyboard_source_mismatch')
   })
 
   it('accepts the frozen aggregate byte boundary and rejects one byte over it', () => {
@@ -134,5 +150,36 @@ describe('Canvas Storyboard direct edits', () => {
 
     expect(createStoryboardNode(exact, { x: 0, y: 0 }).digest).toBe(exact.expectedResultDigest)
     expect(() => createStoryboardNode(over, { x: 0, y: 0 })).toThrow('storyboard_sequence_invalid')
+  })
+
+  it.each([
+    [246_000, false],
+    [246_001, true]
+  ])('validates Storyboard changes against the complete prospective %i-byte base', (baseBytes, rejected) => {
+    const baseSequence = aggregateSequence(baseBytes)
+    const create = createEdit()
+    create.payload = { ...create.payload, sequence: baseSequence }
+    create.expectedResultDigest = storyboardDigest(baseSequence, [])
+    const node = createStoryboardNode(create, { x: 0, y: 0 })
+    const newValue = 'b'.repeat(10_000)
+    const changes: AgentStoryboardChangesEdit = {
+      kind: 'storyboard_changes', id: 'edit-budget', editId: 'edit-budget',
+      conversationId: 'conversation-2', requestId: 'request-budget', nodeId: node.id,
+      base: { projectRevision: 13, nodeRevision: node.revision!, nodeDigest: node.digest! },
+      payload: { source: provenance, changes: [{ scope: 'row', rowId: 'row-3', field: 'duration', value: newValue }] },
+      expectedResultDigest: storyboardDigest(node.sequence, [{
+        id: 'sbf-edit-budget-0', editId: 'edit-budget', scope: 'row', rowId: 'row-3',
+        field: 'duration', previousValue: '', newValue
+      }]),
+      rationale: 'Fill the final field'
+    }
+    const before = structuredClone(node)
+
+    if (rejected) {
+      expect(() => applyStoryboardChanges(node, changes)).toThrow('storyboard_changes_invalid')
+      expect(node).toEqual(before)
+    } else {
+      expect(applyStoryboardChanges(node, changes).pendingFieldChanges).toHaveLength(1)
+    }
   })
 })

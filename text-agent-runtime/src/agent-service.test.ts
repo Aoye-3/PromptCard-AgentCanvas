@@ -352,6 +352,27 @@ describe('pi text-agent system boundary', () => {
   })
 
   it.each([
+    [246_000, true],
+    [246_001, false]
+  ])('validates Storyboard changes against the complete prospective %i-byte base', async (baseBytes, accepted) => {
+    const edits: Record<string, unknown>[] = []
+    const tool = buildAgentTools(storyboardChangesInvocation(aggregateStoryboardSequence(baseBytes)).policy, [], [], edits)
+      .find(candidate => candidate.name === 'emit_storyboard_changes')
+    const result = await tool?.execute('storyboard-prospective-budget', {
+      changes: [{ scope: 'row', rowId: 'row-3', field: 'duration', value: 'b'.repeat(10_000) }],
+      rationale: 'Fill the final field'
+    })
+
+    if (accepted) {
+      expect(result?.terminate).toBe(true)
+      expect(edits).toHaveLength(1)
+    } else {
+      expect(JSON.stringify(result)).toContain('storyboard_changes_budget_exceeded')
+      expect(edits).toEqual([])
+    }
+  })
+
+  it.each([
     ['Tiptap JSON', {
       title: 'Bad', blocks: [{ type: 'doc', content: [{ type: 'paragraph' }] }], rationale: 'No'
     }],
@@ -675,11 +696,11 @@ const storyboardCreateInvocation = () => buildInvocation({
   }
 })
 
-const storyboardChangesInvocation = () => buildInvocation({
+const storyboardChangesInvocation = (sequence: Record<string, unknown> = aggregateStoryboardSequence(0)) => buildInvocation({
   content: 'Revise storyboard fields', permissionScope: 'workspace-chatbot-agent', interactionMode: 'chat-experimental',
   workspaceContext: null, promptLibrary: [],
   documentWriteContext: {
     operationKind: 'storyboard_changes', nodeId: 'storyboard-1', baseRevision: 3,
-    baseDigest: `sha256:${'d'.repeat(64)}`, sequence: { id: 'sequence-1', rows: [{ id: 'row-1' }] }
+    baseDigest: `sha256:${'d'.repeat(64)}`, sequence
   }
 })

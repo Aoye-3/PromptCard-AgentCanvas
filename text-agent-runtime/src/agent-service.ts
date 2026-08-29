@@ -379,10 +379,12 @@ function parseStoryboardChangesParams(
   const sequenceFields = new Set(['name', 'description', 'style', 'constraints'])
   const rowFields = new Set(['cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration'])
   const rows = Array.isArray(context.sequence.rows) ? context.sequence.rows : []
-  const rowIds = new Set(rows.flatMap(row => isRecord(row) && typeof row.id === 'string' ? [row.id] : []))
+  const rowById = new Map(rows.flatMap(row => isRecord(row) && typeof row.id === 'string' ? [[row.id, row] as const] : []))
+  const baseAggregateTextBytes = storyboardSequenceAggregateTextBytes(context.sequence)
+  if (baseAggregateTextBytes === null) return { ok: false, error: 'storyboard_changes_arguments_invalid' }
   const identities = new Set<string>()
   const changes: Record<string, string>[] = []
-  let aggregateTextBytes = 0
+  let prospectiveAggregateTextBytes = baseAggregateTextBytes
   for (const candidate of value.changes) {
     if (!isRecord(candidate) || typeof candidate.scope !== 'string' || typeof candidate.field !== 'string') return { ok: false, error: 'storyboard_field_invalid' }
     const text = normalizedStoryboardText(candidate.value, 10_000)
@@ -392,23 +394,37 @@ function parseStoryboardChangesParams(
       if (identities.has(identity)) return { ok: false, error: 'storyboard_field_duplicate' }
       identities.add(identity)
       changes.push({ scope: 'sequence', field: candidate.field, value: text })
-      aggregateTextBytes += utf8Length(text)
+      prospectiveAggregateTextBytes += utf8Length(text) - utf8Length(String(context.sequence[candidate.field]))
       continue
     }
-    if (candidate.scope === 'row' && hasExactKeys(candidate, ['scope', 'rowId', 'field', 'value']) && typeof candidate.rowId === 'string' && rowIds.has(candidate.rowId) && rowFields.has(candidate.field)) {
+    if (candidate.scope === 'row' && hasExactKeys(candidate, ['scope', 'rowId', 'field', 'value']) && typeof candidate.rowId === 'string' && rowById.has(candidate.rowId) && rowFields.has(candidate.field)) {
       const identity = `row:${candidate.rowId}:${candidate.field}`
       if (identities.has(identity)) return { ok: false, error: 'storyboard_field_duplicate' }
       identities.add(identity)
       changes.push({ scope: 'row', rowId: candidate.rowId, field: candidate.field, value: text })
-      aggregateTextBytes += utf8Length(text)
+      prospectiveAggregateTextBytes += utf8Length(text) - utf8Length(String(rowById.get(candidate.rowId)?.[candidate.field]))
       continue
     }
     return { ok: false, error: 'storyboard_field_invalid' }
   }
-  if (aggregateTextBytes > MAX_STORYBOARD_AGGREGATE_TEXT_BYTES) {
+  if (prospectiveAggregateTextBytes > MAX_STORYBOARD_AGGREGATE_TEXT_BYTES) {
     return { ok: false, error: 'storyboard_changes_budget_exceeded' }
   }
   return { ok: true, changes, rationale }
+}
+
+function storyboardSequenceAggregateTextBytes(sequence: Record<string, unknown>): number | null {
+  const sequenceFields = ['name', 'description', 'style', 'constraints']
+  const rowFields = ['cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration']
+  const rows = sequence.rows
+  if (!Array.isArray(rows)) return null
+  const values: unknown[] = sequenceFields.map(field => sequence[field])
+  for (const row of rows) {
+    if (!isRecord(row)) return null
+    values.push(...rowFields.map(field => row[field]))
+  }
+  if (values.some(value => typeof value !== 'string')) return null
+  return values.reduce<number>((total, value) => total + utf8Length(String(value)), 0)
 }
 
 function normalizedStoryboardText(value: unknown, maxBytes: number): string | null {

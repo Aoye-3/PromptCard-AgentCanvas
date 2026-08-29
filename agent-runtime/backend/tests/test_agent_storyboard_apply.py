@@ -95,6 +95,14 @@ def aggregate_storyboard_sequence(total_bytes: int) -> dict:
     return sequence
 
 
+def persisted_aggregate_storyboard_sequence(total_bytes: int) -> dict:
+    sequence = aggregate_storyboard_sequence(total_bytes)
+    sequence.update({"createdAt": 1, "updatedAt": 1, "meta": {}})
+    for row in sequence["rows"]:
+        row.update({"createdAt": 1, "updatedAt": 1})
+    return sequence
+
+
 def test_storyboard_create_context_is_resolved_from_authoritative_effective_document():
     request = PromptCardRuntimeMessageRequest.model_validate({
         "conversationId": "conversation-1", "requestId": "request-1", "content": "transform",
@@ -224,7 +232,10 @@ def test_storyboard_changes_are_bound_to_strict_revision_digest_and_allowed_fiel
         "createdAt": 1, "updatedAt": 1, "meta": {},
     }
     node_digest = promptcard_runtime._storyboard_digest(sequence, [])
-    node = {"id": "storyboard-1", "kind": "storyboard", "sequence": sequence, "pendingFieldChanges": [], "revision": 3, "digest": node_digest}
+    node = {
+        "id": "storyboard-1", "kind": "storyboard", "sequence": sequence,
+        "pendingFieldChanges": [], "revision": 3, "digest": node_digest, "source": storyboard_source(),
+    }
     context = {"operationKind": "storyboard_changes", "nodeId": "storyboard-1", "baseRevision": 3, "baseDigest": node_digest, "sequence": sequence}
     valid = promptcard_runtime.validate_agent_document_edits(
         [{"kind": "storyboard_changes", "payload": {"nodeId": "storyboard-1", "baseRevision": 3, "baseDigest": node_digest, "changes": [{"scope": "row", "rowId": "row-1", "field": "camera", "value": "close-up"}]}, "rationale": "Refine"}],
@@ -244,6 +255,42 @@ def test_storyboard_changes_are_bound_to_strict_revision_digest_and_allowed_fiel
     assert expected_pending[0]["previousValue"] == "wide"
     assert valid[0]["expectedResultDigest"] == promptcard_runtime._storyboard_digest(sequence, expected_pending)
     assert invalid == []
+
+
+@pytest.mark.parametrize(("base_bytes", "accepted_count"), [(246_000, 1), (246_001, 0)])
+def test_storyboard_changes_validate_the_complete_prospective_aggregate(base_bytes, accepted_count):
+    sequence = persisted_aggregate_storyboard_sequence(base_bytes)
+    node_digest = promptcard_runtime._storyboard_digest(sequence, [])
+    source = storyboard_source()
+    node = {
+        "id": "storyboard-1", "kind": "storyboard", "sequence": sequence,
+        "pendingFieldChanges": [], "revision": 3, "digest": node_digest, "source": source,
+    }
+    context = {
+        "operationKind": "storyboard_changes", "nodeId": "storyboard-1",
+        "baseRevision": 3, "baseDigest": node_digest, "sequence": sequence,
+    }
+
+    accepted = promptcard_runtime.validate_agent_document_edits(
+        [{
+            "kind": "storyboard_changes",
+            "payload": {
+                "nodeId": "storyboard-1", "baseRevision": 3, "baseDigest": node_digest,
+                "changes": [{
+                    "scope": "row", "rowId": "row-3", "field": "duration", "value": "b" * 10_000,
+                }],
+                "source": {"documentDigest": "model-forged"},
+            },
+            "rationale": "Fill the final field",
+        }],
+        conversation_id="conversation-budget", request_id=f"request-{base_bytes}",
+        project=project([node]), expected_write_context=context,
+        run_provenance={"model": model_snapshot(), "skills": []},
+    )
+
+    assert len(accepted) == accepted_count
+    if accepted:
+        assert accepted[0]["payload"]["source"] == source
 
 
 @pytest.mark.parametrize(("total_bytes", "accepted_count"), [(256_000, 1), (256_001, 0)])
@@ -708,20 +755,17 @@ async def test_storyboard_changes_reconcile_replays_only_the_strict_persisted_ba
     edit_id, node_id = promptcard_runtime._deterministic_document_edit_ids(
         "conversation-1", "request-change", "storyboard_changes", "storyboard-1"
     )
+    create_source = storyboard_source()
     edit = {
         "kind": "storyboard_changes", "id": edit_id, "editId": edit_id,
         "conversationId": "conversation-1", "requestId": "request-change", "nodeId": node_id,
         "base": {"projectRevision": 12, "nodeRevision": 3, "nodeDigest": base_digest},
         "expectedResultDigest": "sha256:" + "f" * 64,
-        "payload": {"changes": [{"scope": "row", "rowId": "row-1", "field": "camera", "value": "close-up"}]},
+        "payload": {
+            "changes": [{"scope": "row", "rowId": "row-1", "field": "camera", "value": "close-up"}],
+            "source": deepcopy(create_source),
+        },
         "rationale": "Refine",
-    }
-    create_source = storyboard_source()
-    create_edit = {
-        "kind": "storyboard_create", "id": "create-edit", "editId": "create-edit",
-        "conversationId": "conversation-1", "requestId": "request-create-prior", "nodeId": node_id,
-        "base": {"projectRevision": 11}, "expectedResultDigest": base_digest,
-        "payload": {"title": "Opening", "sequence": base_sequence, "source": create_source}, "rationale": "Create",
     }
     persisted_sequence = storyboard_sequence("medium" if changed else "wide")
     persisted_digest = promptcard_runtime._storyboard_digest(persisted_sequence, [])
@@ -734,11 +778,7 @@ async def test_storyboard_changes_reconcile_replays_only_the_strict_persisted_ba
 
     async def fake_storage(method, path, **kwargs):
         if method == "GET" and path.endswith("/conversation-1"):
-            detail = conversation_with_edit(edit)
-            create_turn = conversation_with_edit(create_edit)["turns"][0]
-            create_turn["applyEdit"]["status"] = "applied"
-            detail["turns"].insert(0, create_turn)
-            return detail
+            return conversation_with_edit(edit)
         if method == "GET" and path == "/api/projects/project-1":
             return project([node, {
                 "id": "document-1", "kind": "document", "document": document(),
@@ -762,3 +802,91 @@ async def test_storyboard_changes_reconcile_replays_only_the_strict_persisted_ba
     else:
         assert result["canvasEdits"] == [edit]
         assert patches == []
+
+
+@pytest.mark.anyio
+async def test_storyboard_changes_reconcile_uses_frozen_target_source_after_document_advances(monkeypatch):
+    sequence = storyboard_sequence()
+    source = storyboard_source()
+    digest = promptcard_runtime._storyboard_digest(sequence, [])
+    edit_id, node_id = promptcard_runtime._deterministic_document_edit_ids(
+        "conversation-1", "request-change", "storyboard_changes", "storyboard-1"
+    )
+    edit = {
+        "kind": "storyboard_changes", "id": edit_id, "editId": edit_id,
+        "conversationId": "conversation-1", "requestId": "request-change", "nodeId": node_id,
+        "base": {"projectRevision": 12, "nodeRevision": 3, "nodeDigest": digest},
+        "expectedResultDigest": "sha256:" + "f" * 64,
+        "payload": {
+            "changes": [{"scope": "row", "rowId": "row-1", "field": "camera", "value": "close-up"}],
+            "source": deepcopy(source),
+        },
+        "rationale": "Refine",
+    }
+    node = {
+        "id": node_id, "kind": "storyboard", "sequence": sequence,
+        "pendingFieldChanges": [], "revision": 3, "digest": digest, "source": deepcopy(source),
+    }
+    advanced_document = document()
+    advanced_document["revision"] = 8
+    advanced_document["blocks"][0]["content"][0]["text"] = "A newer effective draft"
+    advanced_document["digest"] = sha({
+        "version": advanced_document["version"], "blocks": advanced_document["blocks"], "suggestions": [],
+    })
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return conversation_with_edit(edit)
+        if method == "GET" and path == "/api/projects/project-1":
+            return project([node, {
+                "id": "document-1", "kind": "document", "document": advanced_document,
+                "linkedDocumentResourceIds": ["resource-1"],
+            }])
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    result = await promptcard_runtime.runtime_service.reconcile_document_edits("project-1", "conversation-1")
+
+    assert result["status"] == "pending_apply"
+    assert result["canvasEdits"] == [edit]
+
+
+@pytest.mark.anyio
+async def test_storyboard_changes_reconcile_cross_conversation_without_a_create_turn(monkeypatch):
+    sequence = storyboard_sequence()
+    source = storyboard_source()
+    digest = promptcard_runtime._storyboard_digest(sequence, [])
+    edit_id, node_id = promptcard_runtime._deterministic_document_edit_ids(
+        "conversation-2", "request-change", "storyboard_changes", "storyboard-1"
+    )
+    edit = {
+        "kind": "storyboard_changes", "id": edit_id, "editId": edit_id,
+        "conversationId": "conversation-2", "requestId": "request-change", "nodeId": node_id,
+        "base": {"projectRevision": 12, "nodeRevision": 3, "nodeDigest": digest},
+        "expectedResultDigest": "sha256:" + "f" * 64,
+        "payload": {
+            "changes": [{"scope": "row", "rowId": "row-1", "field": "camera", "value": "close-up"}],
+            "source": deepcopy(source),
+        },
+        "rationale": "Refine in another conversation",
+    }
+    node = {
+        "id": node_id, "kind": "storyboard", "sequence": sequence,
+        "pendingFieldChanges": [], "revision": 3, "digest": digest, "source": deepcopy(source),
+    }
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-2"):
+            detail = conversation_with_edit(edit)
+            detail["id"] = "conversation-2"
+            detail["turns"][0]["applyEdit"]["conversationId"] = "conversation-2"
+            return detail
+        if method == "GET" and path == "/api/projects/project-1":
+            return project([node])
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    result = await promptcard_runtime.runtime_service.reconcile_document_edits("project-1", "conversation-2")
+
+    assert result["status"] == "pending_apply"
+    assert result["canvasEdits"] == [edit]
