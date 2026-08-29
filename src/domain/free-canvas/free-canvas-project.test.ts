@@ -1125,6 +1125,31 @@ describe('free canvas project domain', () => {
     expect(Object.isFrozen(normalized.nodes[0].originalNode.agentAppliedEdit)).toBe(true)
   })
 
+  test.each([
+    ['non-NFC identity', 'e\u0301'],
+    ['lone-surrogate identity', 'bad\ud800']
+  ])('freezes a valid-provenance Document with %s in its Agent marker losslessly', (_label, conversationId) => {
+    const node = createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100)
+    const originalNode = {
+      ...node,
+      provenance: structuredClone(DOCUMENT_AGENT_PROVENANCE),
+      agentAppliedEdit: {
+        conversationId,
+        requestId: 'request-1',
+        editId: 'edit-1',
+        resultDigest: node.document.digest
+      }
+    }
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [originalNode], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({ kind: 'unsupported', originalKind: 'document', originalNode })
+    if (normalized.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported Document node')
+    expect(normalized.nodes[0].originalNode).toEqual(originalNode)
+    expect(Object.isFrozen(normalized.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(normalized.nodes[0].originalNode.agentAppliedEdit)).toBe(true)
+  })
+
   test('preserves a strict Prompt handoff marker and provenance through real Canvas normalization', () => {
     const node = {
       ...createFreeCanvasTextNode('Cinematic portrait', { x: 80, y: 100 }, 100),

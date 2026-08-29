@@ -163,6 +163,55 @@ describe('pi text-agent system boundary', () => {
     }
   })
 
+  it('places each authoritative handoff basis text exactly once across provider-bound system and user messages', () => {
+    const cases = [
+      {
+        authoritativeText: '权威文档选区 ONLY_ONCE',
+        content: 'Create a new Prompt proposal from the bound authoritative Document selection.',
+        documentWriteContext: {
+          operationKind: 'prompt_handoff' as const,
+          basis: {
+            kind: 'document-selection' as const,
+            nodeId: 'document-1', documentRevision: 4,
+            documentDigest: `sha256:${'a'.repeat(64)}`, blockId: 'paragraph-1',
+            utf8Start: 0, utf8End: 34,
+            selectedText: '权威文档选区 ONLY_ONCE', selectedTextDigest: `sha256:${'b'.repeat(64)}`
+          }
+        }
+      },
+      {
+        authoritativeText: '权威镜头 ONLY_ONCE',
+        content: 'Create a new Prompt proposal from the bound authoritative Storyboard shot.',
+        documentWriteContext: {
+          operationKind: 'prompt_handoff' as const,
+          basis: {
+            kind: 'storyboard-shot' as const,
+            nodeId: 'storyboard-1', storyboardRevision: 7,
+            storyboardDigest: `sha256:${'c'.repeat(64)}`, rowId: 'shot-7',
+            shotDigest: `sha256:${'d'.repeat(64)}`, shotText: '权威镜头 ONLY_ONCE'
+          }
+        }
+      }
+    ]
+
+    for (const testCase of cases) {
+      const invocation = buildInvocation({
+        content: testCase.content,
+        permissionScope: 'workspace-chatbot-agent',
+        interactionMode: 'chat-experimental',
+        workspaceContext: null,
+        promptLibrary: [],
+        documentWriteContext: testCase.documentWriteContext
+      })
+      const providerMessages = [
+        { role: 'system', content: buildAgentSystemPrompt(invocation) },
+        { role: 'user', content: invocation.content }
+      ]
+
+      expect(JSON.stringify(providerMessages).split(testCase.authoritativeText)).toHaveLength(2)
+    }
+  })
+
   it('places skill instructions below immutable runtime policy', () => {
     const prompt = buildAgentSystemPrompt(buildInvocation({
       content: 'Edit', permissionScope: 'workspace-chatbot-agent',

@@ -7,6 +7,7 @@ import type { RecentCaptureItem } from '@/storage/storage-service-client'
 
 const mocks = vi.hoisted(() => ({
   project: null as IPromptProject | null,
+  projectB: null as IPromptProject | null,
   capture: null as RecentCaptureItem | null,
   projectUpdate: vi.fn(),
   captureUpdate: vi.fn(),
@@ -27,7 +28,16 @@ vi.mock('./components/app/ProjectHome', () => ({
   ProjectHome: ({ projects, onOpenProject }: {
     projects: IPromptProject[]
     onOpenProject: (project: IPromptProject) => void
-  }) => <button type="button" data-open-project onClick={() => onOpenProject(projects[0])}>Open project</button>
+  }) => <>
+    <button type="button" data-open-project onClick={() => onOpenProject(projects[0])}>Open project</button>
+    {projects.find(project => project.id === 'project-2') && (
+      <button
+        type="button"
+        data-open-project-b
+        onClick={() => onOpenProject(projects.find(project => project.id === 'project-2')!)}
+      >Open project B</button>
+    )}
+  </>
 }))
 vi.mock('./components/canvas/FreeCanvasBuilderScreen', () => ({
   default: ({ activeProject, onBack, onRenameProject, onChange, onPersistCanvas, freeCanvas }: {
@@ -142,7 +152,7 @@ vi.mock('./utils/storage', () => ({
   storage: {
     health: vi.fn(async () => true),
     projects: {
-      getAll: vi.fn(async () => mocks.project ? [mocks.project] : []),
+      getAll: vi.fn(async () => [mocks.project, mocks.projectB].filter(Boolean) as IPromptProject[]),
       getTrash: vi.fn(async () => []),
       persistCreated: vi.fn(async (project: IPromptProject) => project),
       update: mocks.projectUpdate,
@@ -268,6 +278,7 @@ describe('App generated result media placement', () => {
       setTimeout, clearTimeout, addEventListener: vi.fn(), removeEventListener: vi.fn(), confirm: vi.fn(() => true)
     })
     mocks.capture = generatedCapture()
+    mocks.projectB = null
     mocks.projectUpdate.mockImplementation(async (_id, updates) => ({ ...mocks.project!, ...updates, revision: 2 }))
     mocks.captureUpdate.mockResolvedValue(mocks.capture)
     mocks.refreshCaptures.mockResolvedValue(undefined)
@@ -387,6 +398,63 @@ describe('App generated result media placement', () => {
       .toBe('Renamed while saving')
     expect(renderer.root.findByProps({ 'data-free-canvas-builder': true }).props['data-builder-handoff-marker-count'])
       .toBe(1)
+  })
+
+  it('waits for a non-active project handoff before applying its delayed Rename confirmation', async () => {
+    mocks.project = canvasProject()
+    mocks.projectB = { ...canvasProject(), id: 'project-2', title: 'Canvas B' }
+    const handoffSave = deferred<IPromptProject>()
+    let storageA = mocks.project
+    let storageB = mocks.projectB
+    let aUpdateCount = 0
+    let renderer!: ReactTestRenderer
+    await act(async () => { renderer = create(<App />); await settle() })
+    await act(async () => {
+      renderer.root.findByProps({ 'data-open-project': true }).props.onClick()
+      await settle()
+    })
+    mocks.projectUpdate.mockClear()
+    mocks.projectUpdate.mockImplementation(async (id, updates) => {
+      if (id === 'project-1') {
+        aUpdateCount += 1
+        if (aUpdateCount === 1) {
+          storageA = await handoffSave.promise
+          return storageA
+        }
+        storageA = { ...storageA!, ...updates, revision: (storageA?.revision || 0) + 1 }
+        return storageA
+      }
+      storageB = { ...storageB!, ...updates, revision: (storageB?.revision || 0) + 1 }
+      return storageB
+    })
+
+    let handoff!: Promise<void>
+    await act(async () => {
+      handoff = renderer.root.findByProps({ 'data-builder-persist-authoritative': true }).props.onClick()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(aUpdateCount).toBe(1))
+    act(() => { void renderer.root.findByProps({ 'data-builder-rename': true }).props.onClick() })
+    act(() => renderer.root.findByProps({ 'data-change-rename': true }).props.onClick())
+    act(() => renderer.root.findByProps({ 'data-builder-back': true }).props.onClick())
+    await act(async () => {
+      renderer.root.findByProps({ 'data-open-project-b': true }).props.onClick()
+      await settle()
+    })
+
+    let rename!: Promise<void>
+    act(() => { rename = renderer.root.findByProps({ 'data-confirm-rename': true }).props.onClick() })
+    await Promise.resolve()
+    expect(aUpdateCount).toBe(1)
+
+    const handoffRequest = mocks.projectUpdate.mock.calls.find(([id]) => id === 'project-1')![1] as Partial<IPromptProject>
+    handoffSave.resolve({ ...mocks.project, ...handoffRequest, revision: 2 })
+    await act(async () => { await Promise.all([handoff, rename]) })
+
+    expect(storageA?.title).toBe('Renamed while saving')
+    expect(storageA?.freeCanvas?.meta.handoffApproved).toBe(true)
+    expect(storageA?.freeCanvas?.meta.handoffMarkerIds).toEqual(['handoff-marker-1'])
+    expect(storageB?.title).toBe('Canvas B')
   })
 
   it('returns the authoritative Storage canvas rather than treating a superseding save as boolean success', async () => {

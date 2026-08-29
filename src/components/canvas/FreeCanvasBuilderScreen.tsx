@@ -2304,7 +2304,7 @@ const FreeCanvasBuilderInner = ({
     setRightPanelMode('agent')
     setAgentDraftRequest({
       id: `prompt-handoff-document:${basis.nodeId}:${Date.now()}`,
-      content: `请将选中的文档文字整理为一个新的 Prompt 提案：${basis.selectedText}`,
+      content: '请根据已绑定的权威文档选区创建一个新的 Prompt 提案。',
       documentWriteContext: { operationKind: 'prompt_handoff', basis }
     })
   }, [])
@@ -2322,7 +2322,7 @@ const FreeCanvasBuilderInner = ({
     setRightPanelMode('agent')
     setAgentDraftRequest({
       id: `prompt-handoff-shot:${nodeId}:${rowId}:${Date.now()}`,
-      content: `请将镜头“${row.cutLabel}”整理为一个新的 Prompt 提案。`,
+      content: '请根据已绑定的权威分镜镜头创建一个新的 Prompt 提案。',
       documentWriteContext: { operationKind: 'prompt_handoff', basis }
     })
   }, [])

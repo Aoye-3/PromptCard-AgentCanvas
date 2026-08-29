@@ -180,10 +180,14 @@ vi.mock('@/components/AgentCollaborationPanel', () => ({
       pending: boolean
       nodeId?: string
     }) => Promise<void> | void
-    draftRequest?: { documentWriteContext?: { operationKind: string; documentNodeId?: string; nodeId?: string; basis?: AgentPromptHandoffBasis } }
+    draftRequest?: {
+      content?: string
+      documentWriteContext?: { operationKind: string; documentNodeId?: string; nodeId?: string; basis?: AgentPromptHandoffBasis }
+    }
   }) => (
     <div
       data-agent-draft-operation={draftRequest?.documentWriteContext?.operationKind}
+      data-agent-draft-content={draftRequest?.content}
       data-agent-draft-document={draftRequest?.documentWriteContext?.documentNodeId}
       data-agent-draft-node={draftRequest?.documentWriteContext?.nodeId}
       data-agent-draft-basis-kind={draftRequest?.documentWriteContext?.basis?.kind}
@@ -567,6 +571,8 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     act(() => renderer.root.findByProps({ 'aria-label': '选中文本转为 Prompt 提案' }).props.onClick())
     expect(renderer.root.findByProps({ 'data-agent-draft-operation': 'prompt_handoff' }).props)
       .toMatchObject({ 'data-agent-draft-basis-kind': 'document-selection' })
+    expect(renderer.root.findByProps({ 'data-agent-draft-operation': 'prompt_handoff' }).props['data-agent-draft-content'])
+      .not.toContain('Before')
   })
 
   it('approves a fresh Document handoff as a new all-user Prompt node without rewriting its source', async () => {
@@ -835,6 +841,8 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     act(() => renderer.root.findByProps({ children: '镜头转为 Prompt 提案' }).props.onClick())
     expect(renderer.root.findByProps({ 'data-agent-draft-operation': 'prompt_handoff' }).props)
       .toMatchObject({ 'data-agent-draft-basis-kind': 'storyboard-shot', 'data-agent-draft-basis-row': 'row-1' })
+    expect(renderer.root.findByProps({ 'data-agent-draft-operation': 'prompt_handoff' }).props['data-agent-draft-content'])
+      .not.toContain(storyboard.sequence.rows[0].cutLabel)
   })
 
   it('uses the production Storyboard revision action to request and directly apply storyboard_changes', async () => {

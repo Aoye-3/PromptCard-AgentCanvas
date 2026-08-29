@@ -811,32 +811,45 @@ function App() {
 
   const handleConfirmRenameProject = async () => {
     if (!renameProject) return
+    const projectToRename = renameProject
     const nextTitle = renameProjectTitle.trim()
-    if (!nextTitle || nextTitle === renameProject.title) {
+    if (!nextTitle || nextTitle === projectToRename.title) {
       setRenameProject(null)
       setRenameProjectTitle('')
       return
     }
 
-    const currentProject = activeProjectRef.current?.id === renameProject.id
+    let currentProject = activeProjectRef.current?.id === projectToRename.id
       ? activeProjectRef.current
-      : projects.find(project => project.id === renameProject.id) || renameProject
+      : null
+    if (!currentProject) {
+      const idleResult = await projectSaveCoordinator.waitForIdle(projectToRename.id)
+      if (idleResult.status === 'failed') {
+        handleProjectSaveError(projectToRename.id, idleResult.error, 'Failed to rename project:')
+        setRenameProject(null)
+        setRenameProjectTitle('')
+        return
+      }
+      currentProject = idleResult.status === 'saved' && idleResult.project?.id === projectToRename.id
+        ? idleResult.project
+        : projects.find(project => project.id === projectToRename.id) || projectToRename
+    }
     const optimisticProject = { ...currentProject, title: nextTitle, updatedAt: Date.now() }
-    markProjectEdited(renameProject.id)
-    const editSeq = getProjectEditSeq(renameProject.id)
+    markProjectEdited(projectToRename.id)
+    const editSeq = getProjectEditSeq(projectToRename.id)
     upsertProject(optimisticProject)
-    setProjectSaveStatus(renameProject.id, 'saving')
+    setProjectSaveStatus(projectToRename.id, 'saving')
     const result = await projectSaveCoordinator.enqueue({
       project: optimisticProject,
       editSeq
     })
     if (result.status === 'saved' && result.project) {
       confirmStoredProjectMetadata(result.project, { includeTitle: true })
-      if (canConfirmProjectSaved(renameProject.id, editSeq)) {
-        setProjectSaveStatus(renameProject.id, 'saved', optimisticProject.updatedAt)
+      if (canConfirmProjectSaved(projectToRename.id, editSeq)) {
+        setProjectSaveStatus(projectToRename.id, 'saved', optimisticProject.updatedAt)
       }
     } else if (result.status === 'failed') {
-      handleProjectSaveError(renameProject.id, result.error, 'Failed to rename project:')
+      handleProjectSaveError(projectToRename.id, result.error, 'Failed to rename project:')
     }
     setRenameProject(null)
     setRenameProjectTitle('')
