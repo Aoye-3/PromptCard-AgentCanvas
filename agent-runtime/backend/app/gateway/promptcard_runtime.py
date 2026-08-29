@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -18,7 +19,7 @@ from urllib.parse import quote, unquote, urlparse
 
 import httpx
 from fastapi import HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from app.gateway.ark_responses import ResolvedDocumentAsset
@@ -62,6 +63,7 @@ _STORYBOARD_ROW_FIELDS = {
 _MAX_STORYBOARD_AGGREGATE_TEXT_BYTES = 256_000
 _DOCUMENT_EDIT_MAX_OPERATIONS = 16
 _DOCUMENT_EDIT_MAX_TEXT_BYTES = 64 * 1024
+_CANVAS_NODE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
 
 
 @dataclass(frozen=True)
@@ -175,6 +177,17 @@ class PromptCardRuntimeMessageRequest(BaseModel):
         default=None,
         alias="documentWriteContext",
     )
+
+    @field_validator("explicit_document_node_ids")
+    @classmethod
+    def validate_explicit_document_node_ids(cls, value: list[str]) -> list[str]:
+        if any(
+            not isinstance(node_id, str)
+            or _CANVAS_NODE_ID_PATTERN.fullmatch(node_id) is None
+            for node_id in value
+        ):
+            raise ValueError("explicit_document_node_id_invalid")
+        return value
 
 
 class PromptCardMediaAnalysisRequest(BaseModel):
@@ -373,6 +386,14 @@ class PromptCardRuntimeService:
                     status_code=502,
                     detail="agent_conversation_skill_bindings_invalid",
                 )
+            if (
+                body.explicit_document_node_ids
+                and interaction_mode != "chat-experimental"
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="explicit_document_context_scope_invalid",
+                )
             if interaction_mode == "chat-experimental":
                 payload["selectedSkillIds"] = []
             model_binding = conversation.get("modelBinding")
@@ -388,6 +409,7 @@ class PromptCardRuntimeService:
             skill_snapshots = await _resolve_skill_snapshots(skill_request)
             payload["skillSnapshots"] = skill_snapshots
         _validate_document_resource_ids(body.project_id, body.document_resource_ids)
+        explicit_document_context: list[dict[str, Any]] = []
         if body.explicit_document_node_ids:
             if len(set(body.explicit_document_node_ids)) != len(
                 body.explicit_document_node_ids
@@ -396,9 +418,19 @@ class PromptCardRuntimeService:
                     status_code=422,
                     detail="explicit_document_node_ids_duplicate",
                 )
-            raise HTTPException(
-                status_code=422,
-                detail="document_context_unavailable",
+            if interaction_mode != "chat-experimental" or not body.project_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="explicit_document_context_scope_invalid",
+                )
+            authoritative_document_project = await _storage_request(
+                "GET",
+                f"/api/projects/{quote(body.project_id, safe='')}",
+            )
+            explicit_document_context = _resolve_explicit_document_context(
+                body.project_id,
+                authoritative_document_project,
+                body.explicit_document_node_ids,
             )
         document_assets = await _load_document_resources(
             body.project_id,
@@ -413,14 +445,19 @@ class PromptCardRuntimeService:
             body.content,
             document_assets,
         )
+        payload["content"] = _content_with_explicit_document_text(
+            payload["content"],
+            explicit_document_context,
+        )
         document_write_context = None
         if body.document_write_context is not None:
             if interaction_mode != "chat-experimental" or not body.project_id:
                 raise HTTPException(status_code=422, detail="document_write_context_scope_invalid")
-            authoritative_document_project = await _storage_request(
-                "GET",
-                f"/api/projects/{quote(body.project_id, safe='')}",
-            )
+            if authoritative_document_project is None:
+                authoritative_document_project = await _storage_request(
+                    "GET",
+                    f"/api/projects/{quote(body.project_id, safe='')}",
+                )
             document_write_context = _resolve_document_write_context(
                 body,
                 authoritative_document_project,
@@ -1927,6 +1964,51 @@ def validate_agent_document_edits(
     }]
 
 
+def _resolve_explicit_document_context(
+    project_id: str,
+    project: dict[str, Any],
+    node_ids: list[str],
+) -> list[dict[str, Any]]:
+    if project.get("id") != project_id or project.get("type") != "free-canvas":
+        raise HTTPException(status_code=422, detail="document_context_unavailable")
+    canvas = project.get("freeCanvas")
+    nodes = canvas.get("nodes") if isinstance(canvas, dict) else None
+    if not isinstance(nodes, list):
+        raise HTTPException(status_code=422, detail="document_context_unavailable")
+
+    resolved: list[dict[str, Any]] = []
+    total_bytes = 0
+    for node_id in node_ids:
+        matches = [
+            node
+            for node in nodes
+            if isinstance(node, dict) and node.get("id") == node_id
+        ]
+        if len(matches) > 1:
+            raise HTTPException(status_code=409, detail="document_integrity_failed")
+        if len(matches) != 1 or matches[0].get("kind") != "document":
+            raise HTTPException(status_code=422, detail="document_context_unavailable")
+        raw_document = matches[0].get("document")
+        document = _normalize_persisted_document(raw_document)
+        if document is None or document != raw_document:
+            raise HTTPException(status_code=409, detail="document_integrity_failed")
+        effective_text = "\n".join(
+            text for _, text in _planning_document_leaf_texts(document["blocks"])
+        )
+        if not effective_text:
+            raise HTTPException(status_code=409, detail="document_integrity_failed")
+        total_bytes += len(effective_text.encode("utf-8"))
+        if total_bytes > MAX_DOCUMENT_MODEL_TEXT_CHARS:
+            raise HTTPException(status_code=413, detail="document_context_too_large")
+        resolved.append({
+            "nodeId": node_id,
+            "revision": document["revision"],
+            "digest": document["digest"],
+            "effectiveText": effective_text,
+        })
+    return resolved
+
+
 def _resolve_document_write_context(
     body: PromptCardRuntimeMessageRequest,
     project: dict[str, Any],
@@ -3285,6 +3367,22 @@ def _content_with_document_text(
         remaining -= len(text)
         sections.append(
             f"[Attached document: {asset.filename}]\n{text}"
+        )
+    return "\n\n".join(sections)
+
+
+def _content_with_explicit_document_text(
+    content: str,
+    documents: list[dict[str, Any]],
+) -> str:
+    sections = [content]
+    for document in documents:
+        sections.append(
+            "[Explicit Document: "
+            f"nodeId={document['nodeId']} "
+            f"revision={document['revision']} "
+            f"digest={document['digest']}]\n"
+            f"{document['effectiveText']}"
         )
     return "\n\n".join(sections)
 
