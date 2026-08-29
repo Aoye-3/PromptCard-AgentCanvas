@@ -3539,6 +3539,29 @@ const FreeCanvasBuilderInner = ({
           window.alert('规划来源已发生变化，请重新生成 Prompt 提案。')
           return false
         }
+        const scope = activeProjectScopeRef.current
+        const node = createFreeCanvasTextNode(
+          proposal.userText,
+          nextNodePosition(reactFlow, currentCanvas.nodes.length)
+        )
+        const nextCanvas = {
+          ...currentCanvas,
+          selectedNodeId: node.id,
+          nodes: [
+            ...currentCanvas.nodes,
+            { ...node, title: proposal.title?.trim() || node.title }
+          ]
+        }
+        if (!onPersistCanvas || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
+        let saved = false
+        try {
+          saved = Boolean(await onPersistCanvas(nextCanvas))
+        } catch {
+          saved = false
+        }
+        if (!saved || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
+        commitCanvasSelection(nextCanvas, node.id)
+        return true
       }
       if (proposal.sourceNodeId) {
         const source = currentCanvas.nodes.find((node): node is IFreeCanvasTextNode => (

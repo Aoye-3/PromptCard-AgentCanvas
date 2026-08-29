@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Bot, Check, FileText, Loader2, MoreHorizontal, Puzzle, RefreshCw, Send, Wand2, X } from 'lucide-react'
 import { useAgentStore } from '@/stores/agent.store'
 import { usePresetStore } from '@/stores/preset.store'
-import { agentRuntimeService } from '@/services/agent-runtime-service'
+import { agentRuntimeService, normalizeAgentWorkspaceProposals } from '@/services/agent-runtime-service'
 import type {
   AgentMessage,
   AgentCanvasEdit,
@@ -153,6 +153,9 @@ export function AgentCollaborationPanel({
   const [modelSwitchError, setModelSwitchError] = useState<string>()
   const [postSendApplyError, setPostSendApplyError] = useState<string>()
   const [documentEditReconciling, setDocumentEditReconciling] = useState(false)
+  const [applyingProposalKeys, setApplyingProposalKeys] = useState<Set<string>>(() => new Set())
+  const applyingProposalKeysRef = useRef(new Set<string>())
+  const appliedProposalKeysRef = useRef(new Set<string>())
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const onApplyCanvasEditRef = useRef(onApplyCanvasEdit)
   onApplyCanvasEditRef.current = onApplyCanvasEdit
@@ -497,16 +500,52 @@ export function AgentCollaborationPanel({
     setDraft(content)
   }
 
-  const setProposalStatus = async (proposalId: string, status: 'approved' | 'rejected') => {
-    if (conversationId) {
+  const setProposalStatus = async (
+    proposalId: string,
+    status: 'approved' | 'rejected',
+    targetConversationId = conversationId,
+    targetProjectId = workspaceContext.projectId
+  ) => {
+    if (targetConversationId) {
       await storageServiceClient.agentConversations.updateProposal(
-        conversationId,
+        targetConversationId,
         proposalId,
-        workspaceContext.projectId,
+        targetProjectId,
         status
       )
     }
     markProposalStatus(proposalId, status, sessionKey)
+  }
+
+  const applyPendingProposal = async (proposal: AgentWorkspaceProposal) => {
+    const applyIdentity = postSendApplyIdentityRef.current
+    const applyConversationId = conversationId
+    const applyProjectId = workspaceContext.projectId
+    const key = `${applyIdentity}:${proposal.id}`
+    if (applyingProposalKeysRef.current.has(key)) return
+    applyingProposalKeysRef.current.add(key)
+    setApplyingProposalKeys(current => new Set(current).add(key))
+    try {
+      if (!appliedProposalKeysRef.current.has(key)) {
+        const applied = await onApplyWorkspaceProposal(proposal)
+        if (applied === false) return
+        appliedProposalKeysRef.current.add(key)
+      }
+      if (postSendApplyIdentityRef.current !== applyIdentity) return
+      await setProposalStatus(proposal.id, 'approved', applyConversationId, applyProjectId)
+      appliedProposalKeysRef.current.delete(key)
+    } catch {
+      if (postSendApplyIdentityRef.current === applyIdentity) {
+        setPostSendApplyError('应用提案失败，请检查工作区状态后重试。')
+      }
+    } finally {
+      applyingProposalKeysRef.current.delete(key)
+      setApplyingProposalKeys(current => {
+        const next = new Set(current)
+        next.delete(key)
+        return next
+      })
+    }
   }
 
   return (
@@ -668,7 +707,10 @@ export function AgentCollaborationPanel({
 
       {pendingProposals.length > 0 && (
         <div className="shrink-0 space-y-2 border-t border-gray-100 p-3">
-          {pendingProposals.slice(-3).map(proposal => (
+          {pendingProposals.slice(-3).map(proposal => {
+            const applyKey = `${postSendApplyIdentity}:${proposal.id}`
+            const applying = applyingProposalKeys.has(applyKey)
+            return (
             <div key={proposal.id} className="rounded-xl border border-amber-200 bg-amber-50 p-3">
               <div className="text-xs font-black text-amber-900">{proposalTitle(proposal)}</div>
               {proposal.kind === 'free_canvas_text_update' ? (
@@ -686,18 +728,16 @@ export function AgentCollaborationPanel({
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 rounded-full bg-gray-950 px-3 py-1.5 text-xs font-black text-white"
-                  onClick={async () => {
-                    const applied = await onApplyWorkspaceProposal(proposal)
-                    if (applied === false) return
-                    await setProposalStatus(proposal.id, 'approved')
-                  }}
+                  disabled={applying}
+                  onClick={() => applyPendingProposal(proposal)}
                 >
-                  <Check className="h-3.5 w-3.5" />
+                  {applying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                   Apply
                 </button>
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 rounded-full border border-amber-300 px-3 py-1.5 text-xs font-black text-amber-900"
+                  disabled={applying}
                   onClick={() => void setProposalStatus(proposal.id, 'rejected')}
                 >
                   <X className="h-3.5 w-3.5" />
@@ -705,7 +745,8 @@ export function AgentCollaborationPanel({
                 </button>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
@@ -913,7 +954,10 @@ export function AgentCollaborationPanel({
           }))
         } : {})
       })),
-      proposals: conversation.proposals as unknown as AgentWorkspaceProposal[],
+      proposals: normalizeAgentWorkspaceProposals(conversation.proposals, {
+        permissionScope: 'workspace-chatbot-agent',
+        interactionMode: conversation.interactionMode || 'prompt-edit'
+      }),
       updatedAt: conversation.updatedAt
     })
     setCanvasAttachments([])

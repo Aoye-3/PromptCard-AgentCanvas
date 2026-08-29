@@ -571,16 +571,26 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
       handoffBasis: basis, rationale: 'Explicit handoff', createdAt: 1
     }
     const onChange = vi.fn()
+    const persisted = deferred<boolean>()
+    const onPersistCanvas = vi.fn(() => persisted.promise)
     const renderer = create(
       <FreeCanvasBuilderScreen
         activeProject={project(canvas)} freeCanvas={canvas}
         onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
-        onChange={onChange} onPersistCanvas={vi.fn().mockResolvedValue(true)}
+        onChange={onChange} onPersistCanvas={onPersistCanvas}
       />
     )
 
+    let approval!: Promise<void>
     await act(async () => {
-      await renderer.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick()
+      approval = renderer.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(onPersistCanvas).toHaveBeenCalledOnce()
+    expect(onChange).not.toHaveBeenCalled()
+    await act(async () => {
+      persisted.resolve(true)
+      await approval
     })
 
     const updated = onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] as IFreeCanvasProject
@@ -592,6 +602,89 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     ])
     expect(created.meta).not.toHaveProperty('provenance.sourceNodeId')
     expect(mocks.applyResults).toEqual([true])
+    expect(onChange.mock.invocationCallOrder[0]).toBeGreaterThan(onPersistCanvas.mock.invocationCallOrder[0])
+  })
+
+  it.each([
+    ['false', () => Promise.resolve(false)],
+    ['throw', () => Promise.reject(new Error('save failed'))]
+  ])('keeps a handoff pending without committing when persistence returns %s', async (_case, persist) => {
+    const canvas = initialCanvas()
+    const source = canvas.nodes[0] as IFreeCanvasDocumentNode
+    mocks.agentProposal = {
+      kind: 'free_canvas_text_create', id: 'prompt-handoff-failed', status: 'pending',
+      agentName: 'PromptCard Agent', title: 'Prompt proposal', userText: 'Cinematic portrait',
+      handoffBasis: {
+        kind: 'document-selection', nodeId: source.id, documentRevision: source.document.revision,
+        documentDigest: source.document.digest, blockId: `${source.id}-paragraph`,
+        utf8Start: 0, utf8End: 6, selectedText: 'Before',
+        selectedTextDigest: `sha256:${sha256Utf8('Before')}`
+      },
+      rationale: 'Explicit handoff', createdAt: 1
+    }
+    const onChange = vi.fn()
+    const renderer = create(
+      <FreeCanvasBuilderScreen
+        activeProject={project(canvas)} freeCanvas={canvas}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={onChange} onPersistCanvas={vi.fn(persist)}
+      />
+    )
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick()
+    })
+    expect(onChange).not.toHaveBeenCalled()
+    expect(mocks.applyResults).toEqual([false])
+  })
+
+  it('does not commit or approve a persisted handoff after the active project scope changes', async () => {
+    const canvas = initialCanvas()
+    const source = canvas.nodes[0] as IFreeCanvasDocumentNode
+    mocks.agentProposal = {
+      kind: 'free_canvas_text_create', id: 'prompt-handoff-late', status: 'pending',
+      agentName: 'PromptCard Agent', title: 'Prompt proposal', userText: 'Cinematic portrait',
+      handoffBasis: {
+        kind: 'document-selection', nodeId: source.id, documentRevision: source.document.revision,
+        documentDigest: source.document.digest, blockId: `${source.id}-paragraph`,
+        utf8Start: 0, utf8End: 6, selectedText: 'Before',
+        selectedTextDigest: `sha256:${sha256Utf8('Before')}`
+      },
+      rationale: 'Explicit handoff', createdAt: 1
+    }
+    const persisted = deferred<boolean>()
+    const committed = vi.fn()
+    const Harness = () => {
+      const [projectId, setProjectId] = useState('project-1')
+      const [current, setCurrent] = useState(canvas)
+      return <>
+        <button type="button" aria-label="切换 Prompt handoff 项目" onClick={() => {
+          setProjectId('project-2')
+          setCurrent(initialCanvas())
+        }}>Switch project</button>
+        <FreeCanvasBuilderScreen
+          activeProject={project(current, projectId)} freeCanvas={current}
+          onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+          onChange={next => { committed(next); setCurrent(next) }}
+          onPersistCanvas={vi.fn(() => persisted.promise)}
+        />
+      </>
+    }
+    let renderer!: ReturnType<typeof create>
+    act(() => { renderer = create(<Harness />) })
+    let approval!: Promise<void>
+    await act(async () => {
+      approval = renderer.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick()
+      await Promise.resolve()
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '切换 Prompt handoff 项目' }).props.onClick())
+    await act(async () => {
+      persisted.resolve(true)
+      await approval
+    })
+
+    expect(committed).not.toHaveBeenCalled()
+    expect(mocks.applyResults).toEqual([false])
   })
 
   it('binds one explicit current Storyboard row to a one-shot Prompt handoff draft', () => {

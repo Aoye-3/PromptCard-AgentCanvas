@@ -133,3 +133,27 @@ def test_gateway_rejects_model_reported_prompt_create_without_explicit_experimen
         workspace_context=None, permission_scope="workspace-chatbot-agent",
         interaction_mode="chat-experimental", expected_write_context=None,
     ) == []
+
+
+def test_gateway_enforces_exact_utf8_prompt_handoff_output_budget():
+    handoff = {
+        "operationKind": "prompt_handoff",
+        "basis": {
+            "kind": "storyboard-shot", "nodeId": "storyboard-1", "storyboardRevision": 3,
+            "storyboardDigest": "sha256:" + "a" * 64, "rowId": "shot-1",
+            "shotDigest": "sha256:" + "b" * 64, "shotText": "authoritative shot",
+        },
+    }
+    accepted = promptcard_runtime.validate_agent_proposals(
+        [{"kind": "free_canvas_text_create", "userText": "a" * 100_000}],
+        workspace_context=None, permission_scope="chat-experimental",
+        interaction_mode="chat-experimental", expected_write_context=handoff,
+    )
+    rejected = promptcard_runtime.validate_agent_proposals(
+        [{"kind": "free_canvas_text_create", "userText": "a" * 100_001}],
+        workspace_context=None, permission_scope="chat-experimental",
+        interaction_mode="chat-experimental", expected_write_context=handoff,
+    )
+    assert len(accepted) == 1
+    assert len(accepted[0]["userText"].encode()) == 100_000
+    assert rejected == []

@@ -20,6 +20,7 @@ import {
   isValidStoryboardChangeOperations,
   isValidStoryboardSourceProvenance
 } from '@/domain/storyboard/canvas-storyboard'
+import { sha256Utf8 } from '@/domain/documents/planning-document'
 
 export type PromptLanguageMode = 'zh' | 'en' | 'mixed'
 
@@ -337,7 +338,10 @@ export const agentRuntimeService = {
     })
     return {
       ...response,
-      proposals: filterProposalsForPermissionScope(response.proposals, body.permissionScope),
+      proposals: normalizeAgentWorkspaceProposals(response.proposals, {
+        permissionScope: body.permissionScope,
+        interactionMode: body.interactionMode
+      }),
       canvasEdits: validateAgentCanvasEdits(response.canvasEdits)
     }
   },
@@ -763,6 +767,52 @@ function normalizeProposal(value: unknown, index: number): AgentWorkspaceProposa
   return null
 }
 
+export function normalizeAgentWorkspaceProposals(
+  value: unknown,
+  options: { permissionScope?: AgentPermissionScope; interactionMode?: AgentInteractionMode } = {}
+): AgentWorkspaceProposal[] {
+  if (!Array.isArray(value)) return []
+  const seenIds = new Set<string>()
+  return value.flatMap((candidate, index) => {
+    const normalized = options.interactionMode === 'chat-experimental'
+      && isRecord(candidate) && candidate.kind === 'free_canvas_text_create'
+      ? normalizeExperimentalPromptHandoffProposal(candidate, index)
+      : normalizeProposal(candidate, index)
+    if (!normalized
+      || seenIds.has(normalized.id)
+      || !isProposalAllowedForPermissionScope(normalized, options.permissionScope)) return []
+    seenIds.add(normalized.id)
+    return [normalized]
+  })
+}
+
+function normalizeExperimentalPromptHandoffProposal(
+  proposal: Record<string, unknown>,
+  index: number
+): AgentWorkspaceProposal | null {
+  if (!hasOnlyKeys(proposal, [
+    'kind', 'id', 'contextId', 'threadId', 'runId', 'agentName', 'title', 'userText',
+    'handoffBasis', 'provenance', 'rationale', 'status', 'createdAt'
+  ])
+    || !isStrictNfcText(proposal.id, 192, true)
+    || !isStrictNfcText(proposal.agentName, 512, true)
+    || proposal.status !== 'pending'
+    || !Number.isSafeInteger(proposal.createdAt) || Number(proposal.createdAt) < 0
+    || !isStrictNfcText(proposal.title, 1024, true)
+    || !isStrictNfcText(proposal.rationale, 8_000, false)
+    || (proposal.contextId !== undefined && typeof proposal.contextId !== 'string')
+    || (proposal.threadId !== undefined && proposal.threadId !== null && typeof proposal.threadId !== 'string')
+    || (proposal.runId !== undefined && proposal.runId !== null && typeof proposal.runId !== 'string')
+    || (proposal.provenance !== undefined && !normalizeAgentRunProvenance(proposal.provenance))
+    || !isStrictNfcText(proposal.userText, 100_000, true)) return null
+  const handoffBasis = normalizePromptHandoffBasis(proposal.handoffBasis, true)
+  if (!handoffBasis) return null
+  const normalized = normalizeProposal(proposal, index)
+  return normalized?.kind === 'free_canvas_text_create' && normalized.handoffBasis
+    ? normalized
+    : null
+}
+
 function normalizePromptHandoffBasis(value: unknown, allowShotText: boolean): AgentPromptHandoffBasis | null {
   if (!isRecord(value) || typeof value.kind !== 'string') return null
   if (value.kind === 'document-selection') {
@@ -777,9 +827,12 @@ function normalizePromptHandoffBasis(value: unknown, allowShotText: boolean): Ag
       || !Number.isSafeInteger(value.utf8Start) || !Number.isSafeInteger(value.utf8End)
       || Number(value.utf8Start) < 0 || Number(value.utf8End) <= Number(value.utf8Start)
       || typeof value.selectedText !== 'string' || !value.selectedText
+      || !isWellFormedText(value.selectedText)
       || value.selectedText !== value.selectedText.normalize('NFC')
       || new TextEncoder().encode(value.selectedText).length > 100_000
-      || typeof value.selectedTextDigest !== 'string' || !SHA256_PATTERN.test(value.selectedTextDigest)) return null
+      || Number(value.utf8End) - Number(value.utf8Start) !== new TextEncoder().encode(value.selectedText).length
+      || typeof value.selectedTextDigest !== 'string' || !SHA256_PATTERN.test(value.selectedTextDigest)
+      || value.selectedTextDigest !== `sha256:${sha256Utf8(value.selectedText)}`) return null
     return {
       kind: 'document-selection', nodeId: value.nodeId,
       documentRevision: Number(value.documentRevision), documentDigest: value.documentDigest,
@@ -797,9 +850,9 @@ function normalizePromptHandoffBasis(value: unknown, allowShotText: boolean): Ag
       || !Number.isSafeInteger(value.storyboardRevision) || Number(value.storyboardRevision) < 0
       || typeof value.storyboardDigest !== 'string' || !SHA256_PATTERN.test(value.storyboardDigest)
       || typeof value.shotDigest !== 'string' || !SHA256_PATTERN.test(value.shotDigest)
-      || (value.shotText !== undefined && (typeof value.shotText !== 'string'
-        || value.shotText !== value.shotText.normalize('NFC')
-        || new TextEncoder().encode(value.shotText).length > 100_000))) return null
+      || (allowShotText && typeof value.shotText !== 'string')
+      || (value.shotText !== undefined && (!isStrictNfcText(value.shotText, 100_000, true)
+        || value.shotDigest !== `sha256:${sha256Utf8(value.shotText)}`))) return null
     return {
       kind: 'storyboard-shot', nodeId: value.nodeId,
       storyboardRevision: Number(value.storyboardRevision), storyboardDigest: value.storyboardDigest,
@@ -808,6 +861,26 @@ function normalizePromptHandoffBasis(value: unknown, allowShotText: boolean): Ag
     }
   }
   return null
+}
+
+function isStrictNfcText(value: unknown, maxBytes: number, nonempty: boolean): value is string {
+  return typeof value === 'string'
+    && isWellFormedText(value)
+    && value === value.normalize('NFC')
+    && (!nonempty || value.length > 0)
+    && new TextEncoder().encode(value).length <= maxBytes
+}
+
+function isWellFormedText(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false
+      index += 1
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false
+  }
+  return true
 }
 
 function normalizeFreeCanvasTextProposalBasis(value: unknown): AgentFreeCanvasTextProposalBasis | null {
@@ -896,13 +969,6 @@ function isPromptLibraryProposal(proposal: AgentWorkspaceProposal): proposal is 
 
 function isKnownCardType(value: unknown) {
   return ['subject', 'action', 'scene', 'style', 'camera', 'lighting', 'timing', 'audio', 'constraint', 'custom'].includes(String(value))
-}
-
-function filterProposalsForPermissionScope(
-  proposals: AgentWorkspaceProposal[],
-  permissionScope?: AgentPermissionScope
-) {
-  return proposals.filter(proposal => isProposalAllowedForPermissionScope(proposal, permissionScope))
 }
 
 function isProposalAllowedForPermissionScope(

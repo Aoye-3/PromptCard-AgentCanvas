@@ -31,6 +31,31 @@ describe('pi text-agent system boundary', () => {
     expect(proposals[0]).not.toHaveProperty('sourceNodeId')
     expect(proposals[0]).not.toHaveProperty('segments')
   })
+  it('visibly rejects malformed or over-budget Prompt handoff text without consuming the turn guard', async () => {
+    const invocation = buildInvocation({
+      content: 'Create a prompt', permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'prompt_handoff',
+        basis: {
+          kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 3,
+          storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1',
+          shotDigest: `sha256:${'b'.repeat(64)}`, shotText: 'Wide shot'
+        }
+      }
+    })
+    const proposals: Record<string, unknown>[] = []
+    const emit = buildAgentTools(invocation.policy, [], proposals, [])
+      .find(tool => tool.name === 'emit_prompt_handoff')!
+
+    for (const userText of ['😀'.repeat(30_000), 'e\u0301', 'bad\ud800']) {
+      const rejected = await emit.execute('invalid', { userText, rationale: 'invalid' } as never)
+      expect(rejected).toMatchObject({ terminate: false, details: { error: 'prompt_handoff_text_invalid' } })
+    }
+    const accepted = await emit.execute('valid', { userText: 'a'.repeat(100_000), rationale: 'valid' } as never)
+    expect(accepted).toMatchObject({ terminate: true })
+    expect(proposals).toEqual([expect.objectContaining({ userText: 'a'.repeat(100_000) })])
+  })
   it('places skill instructions below immutable runtime policy', () => {
     const prompt = buildAgentSystemPrompt(buildInvocation({
       content: 'Edit', permissionScope: 'workspace-chatbot-agent',

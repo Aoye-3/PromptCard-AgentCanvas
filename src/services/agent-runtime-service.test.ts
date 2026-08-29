@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { agentRuntimeService, parseAgentWorkspaceProposals } from './agent-runtime-service'
+import { sha256Utf8 } from '@/domain/documents/planning-document'
 
 const DOCUMENT_RESOURCE_ID = 'a'.repeat(32)
 const DOCUMENT_NODE_ID = 'free-text-1700000000000-abc123'
+const HANDOFF_SHOT_TEXT = '{"id":"shot-1"}'
+const HANDOFF_SHOT_DIGEST = `sha256:${sha256Utf8(HANDOFF_SHOT_TEXT)}`
 
 const successfulMessageResponse = () => new Response(JSON.stringify({
   threadId: 'thread-1',
@@ -214,7 +217,7 @@ describe('agent runtime message contract', () => {
     const basis = {
       kind: 'document-selection' as const, nodeId: 'document-1', documentRevision: 4,
       documentDigest: `sha256:${'a'.repeat(64)}`, blockId: 'paragraph-1',
-      utf8Start: 0, utf8End: 5, selectedText: 'Café', selectedTextDigest: `sha256:${'b'.repeat(64)}`
+      utf8Start: 0, utf8End: 5, selectedText: 'Café', selectedTextDigest: `sha256:${sha256Utf8('Café')}`
     }
     await agentRuntimeService.sendMessage({
       content: '转为 Prompt 提案', projectId: 'project-1', interactionMode: 'chat-experimental',
@@ -222,6 +225,74 @@ describe('agent runtime message contract', () => {
     })
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).documentWriteContext)
       .toEqual({ operationKind: 'prompt_handoff', basis })
+  })
+
+  it('accepts only a closed pending Prompt handoff proposal at experimental live ingress', async () => {
+    const handoffBasis = {
+      kind: 'storyboard-shot' as const, nodeId: 'storyboard-1', storyboardRevision: 3,
+      storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1',
+      shotDigest: HANDOFF_SHOT_DIGEST, shotText: HANDOFF_SHOT_TEXT
+    }
+    const valid = {
+      kind: 'free_canvas_text_create', id: 'handoff-valid', agentName: 'PromptCard Agent',
+      status: 'pending', createdAt: 1, title: 'Agent Prompt', userText: 'cinematic portrait',
+      handoffBasis, rationale: 'explicit handoff'
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-1', conversationId: 'conversation-1', text: 'ok', canvasEdits: [],
+      proposals: [
+        valid,
+        { ...valid, id: 'handoff-extra', browserTrusted: true },
+        { ...valid, id: 'handoff-missing', handoffBasis: undefined },
+        { ...valid, id: 'handoff-basis-extra', handoffBasis: { ...handoffBasis, browserTrusted: true } },
+        { ...valid, id: 'handoff-shot-text-missing', handoffBasis: { ...handoffBasis, shotText: undefined } },
+        {
+          ...valid, id: 'handoff-shot-non-nfc',
+          handoffBasis: {
+            ...handoffBasis, shotText: 'e\u0301', shotDigest: `sha256:${sha256Utf8('e\u0301')}`
+          }
+        },
+        {
+          ...valid, id: 'handoff-document-offset',
+          handoffBasis: {
+            kind: 'document-selection', nodeId: 'document-1', documentRevision: 1,
+            documentDigest: `sha256:${'e'.repeat(64)}`, blockId: 'paragraph-1',
+            utf8Start: 0, utf8End: 4, selectedText: 'Café',
+            selectedTextDigest: `sha256:${sha256Utf8('Café')}`
+          }
+        },
+        {
+          ...valid, id: 'handoff-rewrite', handoffBasis: undefined, sourceNodeId: 'text-1',
+          basis: { baseNodeRevision: 1, templateDigest: `sha256:${'c'.repeat(64)}`, baseSegmentsDigest: `sha256:${'d'.repeat(64)}` }
+        }
+      ]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await agentRuntimeService.sendMessage({
+      content: 'create proposal', projectId: 'project-1', interactionMode: 'chat-experimental',
+      permissionScope: 'workspace-chatbot-agent'
+    })
+
+    expect(result.proposals).toEqual([expect.objectContaining({ id: 'handoff-valid', handoffBasis })])
+  })
+
+  it('keeps the legacy source-bound Prompt create valid at prompt-edit live ingress', async () => {
+    const rewrite = {
+      kind: 'free_canvas_text_create', id: 'rewrite-valid', agentName: 'PromptCard Agent',
+      status: 'pending', createdAt: 1, userText: 'rewritten', sourceNodeId: 'text-1',
+      basis: { baseNodeRevision: 1, templateDigest: `sha256:${'c'.repeat(64)}`, baseSegmentsDigest: `sha256:${'d'.repeat(64)}` },
+      rationale: 'rewrite'
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-1', text: 'ok', canvasEdits: [], proposals: [rewrite]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+    const result = await agentRuntimeService.sendMessage({
+      content: 'rewrite', projectId: 'project-1', interactionMode: 'prompt-edit',
+      permissionScope: 'workspace-chatbot-agent'
+    })
+    expect(result.proposals).toEqual([expect.objectContaining({ id: 'rewrite-valid', sourceNodeId: 'text-1' })])
   })
 
   it.each([
@@ -569,7 +640,7 @@ describe('agent runtime proposal parsing', () => {
       handoffBasis: {
         kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 3,
         storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1',
-        shotDigest: `sha256:${'b'.repeat(64)}`, shotText: '{"id":"shot-1"}'
+        shotDigest: HANDOFF_SHOT_DIGEST, shotText: HANDOFF_SHOT_TEXT
       }
     }))[0]
     expect(proposal).toMatchObject({
@@ -591,7 +662,7 @@ describe('agent runtime proposal parsing', () => {
       handoffBasis: {
         kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 3,
         storyboardDigest: 'sha256:not-a-digest', rowId: 'shot-1',
-        shotDigest: `sha256:${'b'.repeat(64)}`, shotText: '{"id":"shot-1"}'
+        shotDigest: HANDOFF_SHOT_DIGEST, shotText: HANDOFF_SHOT_TEXT
       }
     }))).toEqual([])
   })

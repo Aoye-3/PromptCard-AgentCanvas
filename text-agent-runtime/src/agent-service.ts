@@ -243,7 +243,13 @@ export function buildAgentTools(
         rationale: params.rationale
       }),
       proposals,
-      writeGuard
+      writeGuard,
+      params => {
+        const userText = normalizedBoundedText(params.userText, MAX_DOCUMENT_TEXT_BYTES, false)
+        return userText !== null && userText === params.userText
+          ? null
+          : 'prompt_handoff_text_invalid'
+      }
     ))
   }
 

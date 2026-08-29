@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentCanvasEdit, AgentDocumentAttachment, AgentMessage, AgentWorkspaceContext, AgentWorkspaceProposal } from '@/models/Agent.model'
+import { sha256Utf8 } from '@/domain/documents/planning-document'
 
 const DOCUMENT_RESOURCE_A = 'a'.repeat(32)
 const DOCUMENT_RESOURCE_B = 'b'.repeat(32)
@@ -13,6 +14,10 @@ const settleConversationSelection = async (renderer: ReactTestRenderer, ariaLabe
     for (let index = 0; index < 8; index += 1) await Promise.resolve()
   })
 }
+
+const proposalApplyButton = (renderer: ReactTestRenderer) => (
+  renderer.root.findAllByType('button').find(button => button.children.includes('Apply'))!
+)
 
 const mocks = vi.hoisted(() => ({
   checkRuntime: vi.fn(),
@@ -32,9 +37,11 @@ const mocks = vi.hoisted(() => ({
   messages: [] as AgentMessage[],
   proposals: [] as AgentWorkspaceProposal[],
   storedMessages: [] as Array<Record<string, unknown>>,
+  storedProposals: [] as unknown[],
   storedTurns: [] as Array<Record<string, unknown>>,
   hydrateSession: vi.fn(),
   updateInteraction: vi.fn(),
+  updateProposal: vi.fn(),
   reconcileDocumentEdits: vi.fn(),
   updateConversationModel: vi.fn()
 }))
@@ -95,7 +102,7 @@ vi.mock('@/components/agent/AgentConversationMenu', () => ({
               connectionId: 'connection-chat', providerId: 'volcengine-ark', modelId: 'doubao-seed-2-0-lite-260215'
             },
             interactionMode: 'chat-experimental', boundSkillIds: ['SKL-tone'], revision: 4,
-            messages: mocks.storedMessages, proposals: [], turns: mocks.storedTurns
+            messages: mocks.storedMessages, proposals: mocks.storedProposals, turns: mocks.storedTurns
           })}
         >{label}</button>
       ))}
@@ -106,13 +113,14 @@ vi.mock('@/components/agent/AgentConversationMenu', () => ({
 vi.mock('@/storage/storage-service-client', () => ({
   storageServiceClient: {
     agentConversations: {
-      updateProposal: vi.fn(),
+      updateProposal: mocks.updateProposal,
       updateInteraction: mocks.updateInteraction
     }
   }
 }))
 
-vi.mock('@/services/agent-runtime-service', () => ({
+vi.mock('@/services/agent-runtime-service', async importOriginal => ({
+  ...await importOriginal<typeof import('@/services/agent-runtime-service')>(),
   agentRuntimeService: {
     reconcileDocumentEdits: mocks.reconcileDocumentEdits,
     updateConversationModel: mocks.updateConversationModel
@@ -144,6 +152,18 @@ const workspaceContext: AgentWorkspaceContext = {
   }
 }
 
+const promptHandoffProposal = (
+  id = 'handoff-1'
+): Extract<AgentWorkspaceProposal, { kind: 'free_canvas_text_create' }> => ({
+  kind: 'free_canvas_text_create', id, agentName: 'PromptCard Agent', status: 'pending',
+  createdAt: 1, title: 'Agent Prompt', userText: 'cinematic portrait', rationale: 'explicit handoff',
+  handoffBasis: {
+    kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 3,
+    storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1',
+    shotDigest: `sha256:${sha256Utf8('{"id":"shot-1"}')}`, shotText: '{"id":"shot-1"}'
+  }
+})
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
   let reject!: (reason?: unknown) => void
@@ -163,11 +183,13 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     mocks.messages = []
     mocks.proposals = []
     mocks.storedMessages = []
+    mocks.storedProposals = []
     mocks.storedTurns = []
     mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'idle', canvasEdits: [] })
     mocks.updateConversationModel.mockResolvedValue({})
     mocks.hydrateSession.mockImplementation((_sessionKey, session) => {
       if (session.messages) mocks.messages = session.messages
+      if (session.proposals) mocks.proposals = session.proposals
     })
   })
 
@@ -224,6 +246,127 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         interactionMode: 'chat-experimental', boundSkillIds: ['SKL-tone'], revision: 4
       })
     )
+  })
+
+  it('filters malformed or legacy Prompt creates during experimental Storage hydration', async () => {
+    const valid = promptHandoffProposal('handoff-valid')
+    mocks.storedProposals = [
+      valid,
+      { ...valid, id: 'handoff-extra', browserTrusted: true },
+      { ...valid, id: 'handoff-missing', handoffBasis: undefined },
+      {
+        ...valid, id: 'handoff-basis-extra',
+        handoffBasis: { ...valid.handoffBasis!, browserTrusted: true }
+      },
+      {
+        ...valid, id: 'handoff-rewrite', handoffBasis: undefined, sourceNodeId: 'text-1',
+        basis: { baseNodeRevision: 1, templateDigest: `sha256:${'c'.repeat(64)}`, baseSegmentsDigest: `sha256:${'d'.repeat(64)}` }
+      }
+    ]
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    const calls = mocks.hydrateSession.mock.calls
+    expect(calls[calls.length - 1]?.[1].proposals)
+      .toEqual([expect.objectContaining({ id: 'handoff-valid' })])
+    expect(renderer.root.findAllByType('button').filter(button => button.children.includes('Apply'))).toHaveLength(1)
+  })
+
+  it('allows only one in-flight approval per conversation proposal and disables its button', async () => {
+    const pending = deferred<boolean | void>()
+    mocks.storedProposals = [promptHandoffProposal()]
+    const apply = vi.fn(() => pending.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={apply} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    const button = proposalApplyButton(renderer)
+    let first!: Promise<void>
+    await act(async () => {
+      first = button.props.onClick()
+      button.props.onClick()
+      await Promise.resolve()
+    })
+    expect(apply).toHaveBeenCalledOnce()
+    expect(proposalApplyButton(renderer).props.disabled).toBe(true)
+
+    await act(async () => {
+      pending.resolve(true)
+      await first
+    })
+    expect(mocks.updateProposal).toHaveBeenCalledOnce()
+  })
+
+  it('releases a failed approval guard for retry without leaking it to another conversation', async () => {
+    const first = deferred<boolean | void>()
+    mocks.storedProposals = [promptHandoffProposal('same-id')]
+    const apply = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={apply} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    const firstAttempt = proposalApplyButton(renderer).props.onClick()
+    await act(async () => {
+      first.reject(new Error('persist failed'))
+      await firstAttempt
+    })
+    expect(proposalApplyButton(renderer).props.disabled).toBe(false)
+    await act(async () => proposalApplyButton(renderer).props.onClick())
+    expect(apply).toHaveBeenCalledTimes(2)
+
+    await settleConversationSelection(renderer, '加载会话 B')
+    expect(proposalApplyButton(renderer).props.disabled).toBe(false)
+    await act(async () => proposalApplyButton(renderer).props.onClick())
+    expect(apply).toHaveBeenCalledTimes(3)
+  })
+
+  it('retries only the approval PATCH after Canvas persistence already succeeded', async () => {
+    mocks.storedProposals = [promptHandoffProposal('patch-retry')]
+    mocks.updateProposal
+      .mockRejectedValueOnce(new Error('PATCH failed'))
+      .mockResolvedValueOnce(undefined)
+    const apply = vi.fn().mockResolvedValue(true)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={apply} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    await act(async () => proposalApplyButton(renderer).props.onClick())
+    expect(proposalApplyButton(renderer).props.disabled).toBe(false)
+    await act(async () => proposalApplyButton(renderer).props.onClick())
+
+    expect(apply).toHaveBeenCalledOnce()
+    expect(mocks.updateProposal).toHaveBeenCalledTimes(2)
+    expect(mocks.markProposalStatus).toHaveBeenCalledOnce()
   })
 
   it('forwards the explicit Storyboard transform selector only with the submitted experimental turn', async () => {
