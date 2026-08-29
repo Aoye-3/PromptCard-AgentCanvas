@@ -127,9 +127,17 @@ Codex files remain derived filesystem state rather than SQLite rows. Cross-insta
 
 Schema v15 adds `skill_revision_reviews` with primary key `(skill_id, revision)`. Each row stores the canonical revision digest, `trusted | untrusted` decision, and review time. A composite foreign key ties the review to an immutable revision, while insert/update triggers reject a digest that does not equal the canonical `skill_revisions.digest`.
 
-Schema v16 adds `project_document_resources` and `provider_file_cleanup`. Document resources are project-bound and separated from image `project_resources`; cleanup rows persist failed remote-file deletions for bounded retry and do not alter project image lifecycle rules.
-
 Migration seeds reviews only for revisions whose Skill was already `first-party` or `trusted`; first-party trust is normalized to the review state `trusted`. New external revisions do not inherit another revision's review. Host enablement and Codex repair require the exact `(skill_id, revision, digest)` to remain trusted as well as the Skill's global trust state to permit use. Marking a review untrusted blocks future snapshot execution and repair, but explicit disable/unpublish remains available so revoked or archived content can be removed safely.
+
+## Project Document Resources And Provider Cleanup
+
+Schema v16 adds both `project_document_resources` and `provider_file_cleanup` in one migration.
+
+`project_document_resources` stores the project owner, opaque resource ID, repository-relative local path, original filename, validated content type and size, byte digest, extraction kind/status, normalized text and its digest when applicable, optimistic revision, lifecycle state, and timestamps. It is separate from image `project_resources`, Prompt media, provider identities, and Canvas nodes. Project Trash preserves rows; permanent project deletion cascades their metadata and locally owned document bytes through the document-store cleanup path.
+
+`provider_file_cleanup` stores the minimum durable state required to retry a failed ephemeral provider-file deletion: cleanup/provider/connection identity, remote file identity, attempt timestamps/count, next-attempt time, and one redacted error code. Internal reads may supply the remote identity to the authenticated Gateway worker, but health diagnostics, browser APIs, logs, and public error responses expose only bounded counts or safe codes.
+
+Gateway uploads each PDF for one invocation and attempts deletion in `finally`. A failed deletion is idempotently enqueued; Gateway startup drains due rows with bounded retry/backoff and deletes the row only after provider deletion succeeds or is already complete. Schema v16 does not authorize OCR, permanent provider storage, or a second document authority.
 
 ## Recent Capture Shape
 

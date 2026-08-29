@@ -46,7 +46,7 @@ Quick-message UI drafts contain only `name` and `body`; reference media remains 
 
 - runtime, catalog, and model-assignment status
 - active project conversation identity and the currently rendered message page
-- temporary composer draft, running state, and one-shot external Skill selection
+- temporary composer draft, running state, one-shot Prompt-edit Skill selection, and durable experimental-conversation Skill binding
 - parsed pending Canvas text proposals
 - pending Prompt Library create proposals
 
@@ -63,7 +63,7 @@ Project Agent history is durable and project-scoped. Every turn uses `conversati
 
 Media analysis is intentionally different: `MediaAnalysisDialog` owns its bounded conversation and editable Prompt preview in component memory, includes that history on each request, and discards it when closed. It never creates a project Agent conversation.
 
-Built-in Skills are bound deterministically by feature entrypoint. External Skill selection is composer state for the next project message only and clears after send. The UI may display Skill availability, but Gateway is responsible for rejecting a Skill whose declared tools are outside the current permission scope.
+Built-in Skills are bound deterministically by feature entrypoint. In `prompt-edit`, external Skill selection is composer state for the next project message only and clears after send. In `chat-experimental`, `interactionMode` and `boundSkillIds` are conversation metadata persisted through an optimistic-revision Storage update and hydrated after reload. The UI may display Skill availability, but Gateway re-resolves the current local-Agent pin every turn and rejects trust/lifecycle/tool incompatibility before invocation.
 
 ## Storage Model
 
@@ -169,12 +169,16 @@ Three-stage fields are stored as sparse string maps. Empty fields remain absent 
 
 `IFreeCanvasProject` contains:
 
-- standalone `nodes` for text, image, and arrow content
+- standalone `nodes` for text, image, arrow, legacy image-generator, Document, Storyboard, and read-only unsupported content
 - user-created `edges`
 - optional viewport and selected node IDs
 - `meta`
 
 Text nodes split visible text into `preset` and `user` segments. Prompt/template text remains a red preset segment, while user-authored text defaults to black. Agent updates may only mutate user segments.
+
+Document nodes store the editor-neutral `PlanningDocumentV1` block AST, linked project document-resource IDs, optional run provenance, and an optional `AgentAppliedEditMarker`. Storyboard nodes store a structured `IStoryboardSequence`, exact source provenance, pending field changes, revision/digest, and the same receipt type. Tiptap editor JSON and provider file identities are never part of project state.
+
+Unknown node kinds normalize to `unsupported` with immutable `originalKind` and untouched `originalNode`; saving must serialize the original JSON rather than projecting it through a known node shape.
 
 Image nodes may contain `annotations`, an array of image-local annotation records. These records are part of the image node payload rather than standalone canvas nodes:
 
@@ -213,6 +217,8 @@ All three remain pending until explicit Apply/Reject. Prompt Library proposals a
 
 The TypeScript union and parser retain older `workspace_card_*`, `storyboard_update`, and `three_stage_field_update` shapes for compatibility. The focused pi runtime has no tools that emit them.
 
+Experimental creative-document writes are returned separately as `AgentCanvasEdit`, not as a legacy workspace proposal. The closed kinds are `document_create`, `document_changes`, `storyboard_create`, and `storyboard_changes`; each carries deterministic conversation/request/edit identity, authoritative base state, expected result digest, and provenance. Prompt handoff remains a pending `free_canvas_text_create` proposal because it requires explicit approval before creating the new all-user Prompt node.
+
 The Prompt Library page owns batch proposal approval. Selected pending create proposals are converted into `IPreset` drafts through `preset.store.addPreset()`, then marked approved. Batch rejection only marks proposals rejected; it does not mutate Prompt Library records.
 
 ### Durable Agent Conversation Records
@@ -223,6 +229,7 @@ Project Agent conversations are stored separately from image-generation conversa
 - `AgentConversationMessage` preserves ordered visible content, normalized blocks, and tool summaries.
 - `AgentConversationProposal` preserves the proposal payload and approval state across reloads.
 - A completed turn is indexed by its request ID for idempotent retries.
+- `interactionMode`, `boundSkillIds`, and conversation `revision` preserve experimental mode/binding independently from message records.
 
 Conversation history, rename, Trash, restore, and permanent-delete operations all go through the Storage-backed Gateway contract. Prompt Library assistant sessions and Media analysis sessions are excluded from this list.
 
@@ -242,7 +249,7 @@ Free Canvas loading normalizes missing project data by creating an empty `freeCa
 
 ## Roadmap / Not Yet Implemented
 
-- There is no production server-side project database in the current frontend app.
-- There is no schema migration framework beyond current normalization helpers.
-- Skill script execution, hooks/installers, automatic semantic matching, the Task 16 bridge router, and MCP server remain unimplemented. The completed Skill Hub management workflow is documented in [Skill Host Pins And Projections](../architecture/skill-host-projections.md) and the [Task 15.5 acceptance package](../reviews/2026-08-24-task-15-5-technical-acceptance.md).
-- Script/storyboard decomposition proposal types are not part of the current pi tool surface.
+- There is no production multi-user server database; the local Storage service and SQLite schema v16 are the durable authority.
+- SQLite migrations are owned by Storage. Frontend normalization remains responsible only for versioned project JSON and legacy browser-data compatibility.
+- Skill script execution, hooks/installers, automatic semantic matching, general Canvas update/delete tools, local OCR, asset-card/plugin nodes, the Task 16 bridge router, CLI, and MCP server remain unimplemented. Document/Storyboard tools exist only behind an explicit `chat-experimental` planning-write context.
+- The completed Skill Hub management workflow is documented in [Skill Host Pins And Projections](../architecture/skill-host-projections.md) and the [Task 15.5 acceptance package](../reviews/2026-08-24-task-15-5-technical-acceptance.md).

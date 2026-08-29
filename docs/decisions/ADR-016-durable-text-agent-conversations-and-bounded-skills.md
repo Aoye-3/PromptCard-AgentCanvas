@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; Canvas edit semantics and conversation model binding are superseded by [ADR-017](./ADR-017-session-model-binding-and-anchored-canvas-edits.md).
+Accepted; Canvas edit semantics and conversation model binding are superseded by [ADR-017](./ADR-017-session-model-binding-and-anchored-canvas-edits.md). Experimental conversation Skill binding and creative-document context extend this decision through [ADR-020](./ADR-020-separate-planning-documents-from-prompt-execution.md) and [ADR-021](./ADR-021-project-document-resources-and-ephemeral-provider-files.md).
 
 ## Date
 
@@ -24,7 +24,7 @@ Use PromptCard Storage as the sole durable authority for project text-Agent conv
 - Messages, proposal status, and the `SKL + revision + digest` values used by a turn are stored for reload and audit.
 - Project conversations have their own project-scoped list and Trash lifecycle. Prompt Library diagnostics and media analysis do not create project conversations.
 - Media analysis is intentionally ephemeral. The browser sends at most 40 temporary messages on each request, the Gateway reloads the one selected image, and closing the dialog discards the discussion.
-- Built-in Skills are bound deterministically by capability. External Skills are explicitly selected for one message and cleared after send.
+- Built-in Skills are bound deterministically by capability. Prompt-edit external Skills are explicitly selected for one message and cleared after send; `chat-experimental` may persist an explicit conversation-scoped binding under ADR-020 while revalidating the current exact host pin every turn.
 - A Skill snapshot contains instructions and bounded references only. Scripts are not executed. Declared tool dependencies must already be permitted by the request's `permissionScope`; the Gateway rejects mismatches.
 - Canvas requests explicitly distinguish one writable target from up to nine read-only references. Atomic `@` mentions describe relationships but never grant write access.
 - Canvas text-update proposals bind an edit mode, target-node revision, template digest, and user-content digest. Completion appends a new user segment; rewrite replaces either a validated selection or the entire user part. The frontend reapplies all freshness checks before writing, and template segments remain immutable.
@@ -57,6 +57,6 @@ Use PromptCard Storage as the sole durable authority for project text-Agent conv
 - Storage schema v8 owns Agent conversations and the minimal canonical Skill registry.
 - Persistent Agent calls now depend on Storage availability; failure is explicit rather than falling back to a stale local transcript.
 - The Gateway performs more coordination and validation but gains one auditable request boundary.
-- External Skill selection is one-shot and cannot silently affect later turns.
+- Prompt-edit external Skill selection is one-shot. Experimental conversation binding is explicit, visible, durable, and revalidated every turn; it cannot silently widen tools or permission scope.
 - Media discussions disappear on dialog close by design; only an explicitly registered Prompt and its source-asset relationship become durable.
-- Full Skill package import, archive, Codex publication, scripts, and MCP publication remain future Plan 008 work.
+- Skill package inspection/import, archive/restore, exact-revision review, and Codex publication are now implemented. Skill script execution, automatic matching, the Task 16 Bridge, CLI, and MCP publication remain future Plan 008 work.

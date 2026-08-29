@@ -40,8 +40,8 @@ flowchart TD
 
 ## Ownership
 
-- Frontend: interaction state, Canvas selection, pending proposal UI, explicit Apply/Reject actions, and existing Canvas/image-generation components.
-- PromptCard Storage: projects, Prompt Library, media assets, captures, image conversations, immutable runs, placements, and derivatives.
+- Frontend: interaction state, Canvas selection, pending proposal/field/suggestion review UI, atomic project save plus apply marker, and existing Canvas/image-generation components.
+- PromptCard Storage: projects, Prompt Library, media assets, captures, image conversations, immutable runs, placements, derivatives, project document resources, Agent apply-ledger evidence, and provider-file cleanup retries.
 - Python Gateway: browser session and CSRF boundary, model catalog/connections/assignments, keyring access, secure PI-native forwarding, SDK-backed text adapters, media loading, and the independent image-generation lifecycle.
 - pi text runtime: request-scoped normalized history, PI provider collection, prompt orchestration, Prompt Library search, and proposal-only tools. It does not own durable conversation state.
 
@@ -69,12 +69,12 @@ flowchart LR
 1. A Canvas, Prompt Library, or Media Library surface sends a bounded request through `agent-runtime-service.ts`.
 2. Vite proxies `/agent-api` to the Python Gateway.
 3. For a project conversation, Gateway validates the project, entrypoint, mode, permission scope, `conversationId`, and idempotent `requestId`, then loads bounded SQLite history. Media requests instead carry bounded component-memory history and are never persisted.
-4. Gateway binds the feature Skill and any one-shot external Skill, rejects unavailable tool dependencies, and forwards normalized history, current workspace context, Skill snapshots, and the permitted tool catalog to the stateless pi Runtime using an internal token.
+4. Gateway binds the feature Skill plus either one-shot Prompt-edit Skills or the experimental conversation's persisted Skill IDs, resolves every current exact local-Agent pin, rejects unavailable tool dependencies, and forwards normalized history, current workspace context, Skill snapshots, and the permitted tool catalog to the stateless pi Runtime using an internal token.
 5. pi can search Prompt Library only in the explicit `prompt-library` mode and can emit only tools allowed by the request policy.
 6. For persistent project chat, Gateway resolves the conversation's whitelisted model binding and sends its non-secret descriptor to pi. `chat.primary` initializes a conversation but is not reselected on every turn.
 7. PI-native models stream through the credential-injecting Gateway proxy; SDK-backed models use the separate Gateway text-adapter registry.
 8. Gateway validates the result again and durably records project messages, tool summaries, proposal state, and the exact Skill revision/digest used.
-9. The frontend displays Apply/Reject. No response mutates Canvas or Prompt Library data automatically.
+9. Pending Prompt/Prompt Library proposals remain Apply/Reject operations. An explicit planning action may return one enriched Document/Storyboard Canvas edit; the frontend saves its reviewable state and marker atomically, then Gateway verifies Storage before recording `applied`.
 
 ## Canvas Proposal Rules
 
@@ -84,6 +84,7 @@ flowchart LR
 - Proposals record the target node revision, template digest, and segment digest. The apply path fails closed when any baseline or anchor changes. Explicit Canvas context without a target is discussion-only.
 - Prompt Library: additive preset creation only.
 - Media analysis: ordinary chat or a non-mutating Prompt preview for one selected image. Prompt Library registration always requires a separate explicit user action.
+- Creative documents: explicit Document create/change, Document -> Storyboard, Storyboard field change, and selection/shot -> Prompt handoff only. Ambient context carries bounded Document metadata/excerpts, never implicit full bodies or Prompt/image inputs.
 
 ## Image-Generation Isolation
 
@@ -103,6 +104,6 @@ Browser code continues to use `/agent-api` and `/storage-api`; only launch/proxy
 ## Deferred
 
 - video media analysis;
-- full Skill package import, Codex publication, and MCP exposure;
+- MCP/Bridge exposure and the Codex delivery runtime;
 - production multi-user authentication;
-- broader script/storyboard proposal tools.
+- general Canvas write tools, automatic Skill matching, local OCR, and asset/plugin node types.

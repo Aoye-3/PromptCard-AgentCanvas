@@ -1,10 +1,10 @@
 # Storage Service API
 
-The local storage service is the durable source of truth for projects, Prompt Library presets, asset metadata/bytes, Recent Capture metadata, image-generation conversations/runs, canvas placements, public references, context packs, canonical Skill packages, and Skill host pins. The frontend reaches it through the Vite proxy prefix `/storage-api/*`; the service itself exposes `/api/*` on port `8002`.
+The local storage service is the durable source of truth for projects, Prompt Library presets, asset metadata/bytes, Recent Capture metadata, image-generation conversations/runs, canvas placements, project document resources, provider-file cleanup retries, public references, context packs, canonical Skill packages, and Skill host pins. The frontend reaches it through the Vite proxy prefix `/storage-api/*`; the service itself exposes `/api/*` on the runtime-selected Storage port (the legacy default is `8002`).
 
 ## Health
 
-`GET /health` returns `serviceVersion`, `schemaVersion`, `storage`, `database`, `pid`, and capabilities including `sqlite`, `assets`, `presetBatch`, `browserImportIdempotency`, `backup`, `recentCaptures`, `projectResources`, `agentConversations`, `skillHub`, and `contextPacks`. The current service reports schema version `15`. Versions 10–15 add public reference codes, immutable Canvas context packs, canonical Skill packages, independent Skill host pins, and exact-revision trust reviews; see [Schema Notes](../database/schema-notes.md).
+`GET /health` returns `serviceVersion`, `schemaVersion`, `storage`, `database`, `pid`, and capabilities including `sqlite`, `assets`, `presetBatch`, `browserImportIdempotency`, `backup`, `recentCaptures`, `projectResources`, `projectDocumentResources`, `agentConversations`, `skillHub`, and `contextPacks`. The current service reports schema version `16`. Versions 10–16 add public reference codes, immutable Canvas context packs, canonical Skill packages, independent Skill host pins, exact-revision trust reviews, project document resources, and durable remote-file cleanup retries; see [Schema Notes](../database/schema-notes.md).
 
 - `GET /health`
 
@@ -168,13 +168,14 @@ Registration returns `400` for invalid modes, empty/blank Prompt fields, or alre
 - `GET /api/agent-conversations/{id}?projectId=...&includeTrash=false`
 - `PATCH /api/agent-conversations/{id}`
 - `PATCH /api/projects/{projectId}/agent-conversations/{id}/model`
+- `PATCH /api/projects/{projectId}/conversations/{id}/interaction`
 - `POST /api/agent-conversations/{id}/turns`
 - `PATCH /api/agent-conversations/{id}/proposals/{proposalId}`
 - `POST /api/agent-conversations/{id}/trash`
 - `POST /api/agent-conversations/{id}/restore`
 - `DELETE /api/agent-conversations/{id}`
 
-Conversations are always owned by one active project and record `entrypoint`, `mode`, title, lifecycle status, timestamps, and an optional `modelBinding` containing `connectionId`, `providerId`, and `modelId`. The project-scoped model route updates or clears that binding. Active and Trash lists are separate, ordered by `updatedAt DESC, id DESC`, and return `{ "conversations": [...], "nextCursor": "..." }`. The detail projection adds ordered `messages`, durable `proposals`, and stored turn results.
+Conversations are always owned by one active project and record `entrypoint`, `mode`, title, lifecycle status, timestamps, optimistic `revision`, `interactionMode`, `boundSkillIds`, and an optional `modelBinding` containing `connectionId`, `providerId`, and `modelId`. The project-scoped model route updates or clears that binding. The interaction route requires `{ "interactionMode": "prompt-edit" | "chat-experimental", "boundSkillIds": [], "expectedRevision": 1 }`; it atomically replaces the conversation-scoped binding and rejects stale revisions. Active and Trash lists are separate, ordered by `updatedAt DESC, id DESC`, and return `{ "conversations": [...], "nextCursor": "..." }`. The detail projection adds ordered `messages`, durable `proposals`, and stored turn results.
 
 Creating a turn requires:
 
@@ -319,6 +320,30 @@ Names are trimmed and must contain 1-80 characters. A folder cannot become its o
 `resource-layout` receives folder/resource identities, destinations, orders, and current revisions. The service validates the complete proposal before writing it. One stale record returns `409 revision_conflict` and leaves every row unchanged.
 
 Every endpoint verifies that the path project is active and owns the requested IDs. Missing, cross-project, and Trash-project requests all return `404`. Moving a project to Trash preserves its resources but makes them unavailable for editing; restore reveals them unchanged. Permanent project deletion cascades resource metadata without deleting shared image files.
+
+## Project Document Resources And Provider Cleanup
+
+- `POST /api/projects/{projectId}/document-resources`
+- `GET /api/projects/{projectId}/document-resources`
+- `GET /api/projects/{projectId}/document-resources/{resourceId}`
+- `DELETE /api/projects/{projectId}/document-resources/{resourceId}`
+- `POST /api/projects/{projectId}/document-resources/{resourceId}/restore`
+
+Uploads send bytes in the request body, the exact supported MIME type in `Content-Type`, and the URL-encoded original filename in `X-File-Name`. Supported pairs are `.txt`/`text/plain`, `.md`/`text/markdown`, `.pdf`/`application/pdf`, and `.docx`/the Office Open XML document MIME type. Storage validates the extension, MIME type, signature/container, project state, and per-format size before writing. Limits are 5 MiB for TXT/Markdown, 20 MiB for DOCX, and 50 MiB for PDF.
+
+The response contains the opaque resource ID, project ID, original filename, content type, size, SHA-256 digest, extraction kind/status, normalized-text digest when applicable, optimistic revision, lifecycle state, and timestamps. It never returns an absolute path, normalized document body, provider file ID, or credential. TXT/Markdown are strict UTF-8; DOCX extraction uses the pinned `python-docx==1.2.0`; PDF bytes remain canonical local input and have no local OCR fallback.
+
+Document resources are separate from image `project_resources`, Prompt media, and Prompt Library records. Delete moves one resource to its own Trash lifecycle and restore reactivates it. Cross-project access and access through a trashed project fail closed. A turn may attach at most five resource IDs and at most 100 MiB in aggregate; Gateway re-resolves ownership and lifecycle before every invocation.
+
+The following routes are internal-token-only Gateway/Storage coordination and are not browser APIs:
+
+- `GET /api/internal/projects/{projectId}/document-resources/{resourceId}/content`
+- `POST /api/internal/provider-file-cleanup`
+- `GET /api/internal/provider-file-cleanup/due?now=&limit=`
+- `POST /api/internal/provider-file-cleanup/succeeded`
+- `POST /api/internal/provider-file-cleanup/retry`
+
+For Ark PDF input, Gateway uploads a remote file for one invocation and deletes it in `finally`. A failed remote deletion is stored as a redacted cleanup row and retried on Gateway startup with bounded backoff. Public responses and diagnostics expose counts/safe error codes only; remote file IDs are never returned to the browser.
 
 ## Prompt Library
 

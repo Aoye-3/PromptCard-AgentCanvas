@@ -55,6 +55,17 @@ The text Agent supports the third step without becoming a general-purpose autono
 - Prompt Library content is not included in ordinary Canvas discussion or edit calls. It is available only in the explicit `prompt-library` mode, which exposes search but no Canvas mutation tool.
 - The frontend must show Apply and Reject controls. No Agent response writes to Canvas automatically.
 
+## Experimental Conversation And Creative-Document Contract
+
+- `chat-experimental` is a top-level interaction mode, not a `CanvasAgentEditMode`. It needs no Prompt target and cannot inherit Prompt edit or Prompt Library authority.
+- The conversation persists `interactionMode`, `boundSkillIds`, model binding, and optimistic revision in Storage. Each turn still resolves the current exact local-Agent pin and revalidates trust, lifecycle, digest, budgets, and tool dependencies; a bound Skill never grants a tool.
+- Project document resources accept only validated TXT, Markdown, DOCX, and PDF. Local bytes remain canonical. TXT/Markdown are strict UTF-8, DOCX uses pinned `python-docx==1.2.0`, and PDF uses an isolated Ark Files/Responses invocation with `finally` deletion plus durable redacted cleanup retry.
+- Document is an editor-neutral versioned block AST. Tiptap `3.30.3` is a frontend adapter only. Agent changes use NFC UTF-8 byte offsets inside one leaf block and become tracked insert/delete/replace suggestions with an effective-draft projection.
+- Document -> Storyboard, Document/Storyboard revision, and selection/shot -> Prompt handoff all require explicit user actions. Storyboard reuses the standalone field definitions but has a separate Canvas mutation path and per-field review state.
+- Document and Storyboard are never Prompt segments, Prompt Library/RAG records, Prompt compiler input, image-generation attachments, media references, or ambient full-body context. Prompt handoff may only create a pending new all-`user` text node; it cannot update an existing Prompt.
+- Document/Storyboard writes use a durable apply ledger. Gateway assigns deterministic edit/node identity and expected result digest; the frontend saves the node with `AgentAppliedEditMarker`, then ACKs. Gateway reloads Storage and requires one unique target and marker before recording `applied`.
+- Saved-before-ACK, response loss, duplicate request, stale base, missing target, marker/digest mismatch, and restart recovery fail closed or replay the identical edit. Browser ACK, node order, and the first matching node are never authority.
+
 ## Prompt Library Contract
 
 The Prompt Library Agent may search the provided snapshot and emit only additive `prompt_library_write_proposal` records with `operation: "create"`. Update, overwrite, archive, and delete are outside the Agent tool surface.
@@ -80,7 +91,7 @@ The Media Library's temporary collaboration dialog calls `POST /api/promptcard/r
 - Every first execution records the actual connection, provider, model, display name, and capability snapshot. An idempotent retry returns that stored turn even if the conversation's selected model later changes.
 - Conversation list, rename, Trash, restore, and permanent deletion are project-scoped. Permanent deletion cascades its messages, turns, and proposals.
 - The current `localStorage` entry remembers only the selected conversation ID. Composer drafts are component state; browser storage is never a message-history authority.
-- Built-in Skills are selected by stable capability ID. External Skills are chosen explicitly and apply to one message only.
+- Built-in Skills are selected by stable capability ID. In `prompt-edit`, external Skills are chosen explicitly for one message only. In `chat-experimental`, the conversation persists up to eight explicitly bound external Skill IDs across turns and restarts.
 - Every injected snapshot resolves the enabled local-Agent host pin and records its exact `skillId`, immutable revision, and digest. It never falls back to the Skill's mutable current revision.
 - Storage rechecks active lifecycle, trust, content budget, and declared capabilities on every snapshot read. Instructions and bounded text references are allowed; scripts/assets are never sent to the model or executed.
 - Gateway independently validates the returned shape, public `SKL`, digest, UTF-8 budgets, reference paths/content types, and capabilities. Declared tools must be a subset of tools already allowed by `permissionScope`; any non-tool capability, missing pin, unavailable snapshot, or privilege expansion fails before model invocation.

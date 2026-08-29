@@ -2,7 +2,7 @@
 
 ## Project Data
 
-Project data is represented by `IPromptProject`. Card projects mainly use `pages`; storyboard projects use the normalized `storyboard` shape; three-stage projects use the `threeStage` shape.
+Project data is represented by `IPromptProject`. Card projects mainly use `pages`; storyboard projects use the normalized `storyboard` shape; three-stage projects use the `threeStage` shape; Free Canvas projects use `freeCanvas` with closed node-kind dispatch for Prompt text, images, arrows, legacy generators, Documents, Storyboards, and read-only unsupported nodes.
 
 Three-stage projects use a page-based form model under `threeStage.pages`. Each page contains ordered independent `form` items for character, storyboard, video-prompt, and optional object boards. The legacy top-level `threeStage.character`, `threeStage.storyboard`, `threeStage.videoPrompt`, `selectedStage`, and `selectedFieldId` fields remain compatibility mirrors and are synchronized from the selected page/form during normalization and UI updates.
 
@@ -56,14 +56,22 @@ Source updates must treat durable data and local runtime state as out of scope. 
 
 The frontend sends user-visible text plus bounded node identities and roles through the Python Gateway. Gateway resolves authoritative Canvas content by ID. Prompt Library items are loaded only for the explicit `prompt-library` mode, not for ordinary project conversation or Canvas editing.
 
-The maintained pi runtime may return only these proposal kinds:
+The maintained pi runtime may return these pending proposal kinds:
 
 - `free_canvas_text_insertions`: insert black user segments at exact anchors inside the one attached target while preserving all existing segments;
 - `free_canvas_text_create`: create a complete derived text node for `rewrite` while preserving the source node;
+- `free_canvas_text_create` with a validated `handoffBasis`: create one new all-user Prompt node only after explicit Document-selection/Storyboard-shot approval;
 - `prompt_library_write_proposal`: add one new Prompt Library preset.
+
+An explicit `chat-experimental` planning action may instead return at most one durable Canvas edit envelope:
+
+- `document_create` or `document_changes` against an editor-neutral Document AST;
+- `storyboard_create` or `storyboard_changes` against a structured Canvas Storyboard.
+
+Gateway enriches these envelopes with authoritative project/node bases, deterministic identities, expected result digests, and exact model/Skill provenance. The frontend persists the node plus `AgentAppliedEditMarker` before ACK; Gateway reloads Storage before marking the edit applied. Document changes remain reviewable as tracked suggestions, and Storyboard changes remain reviewable as per-field differences.
 
 Historical `free_canvas_text_update` proposals remain readable and approvable for compatibility, but revision 3 Canvas runs do not emit them.
 
-Media analysis is read-only and returns no mutation proposal. Every maintained proposal remains pending until the user explicitly selects Apply or Reject; no Canvas or Prompt Library change is auto-applied.
+Media analysis is read-only and returns no mutation proposal. Every maintained proposal remains pending until the user explicitly selects Apply or Reject. Planning Canvas edits are not legacy proposals: they exist only after an explicit user action and pass the Storage-backed save/ACK protocol above.
 
-The frontend parser still recognizes older card, storyboard, and three-stage proposal shapes for compatibility with existing tests and historical responses. Those shapes are not emitted by the maintained pi tool surface and must not be treated as current Agent capability.
+The frontend parser still recognizes older card, standalone-storyboard, and three-stage proposal shapes for compatibility with existing tests and historical responses. Those shapes are not the Canvas Storyboard mutation path and must not be treated as current Agent capability.

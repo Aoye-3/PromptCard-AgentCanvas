@@ -31,7 +31,7 @@ Creates the process-local PromptCard browser session and sets the HttpOnly runti
 
 ### `GET /agent-api/promptcard/runtime/catalog`
 
-Returns the focused text-Agent catalog. The current tool surface contains Prompt Library search, Canvas/Prompt proposal emitters, and the media Prompt preview emitter. `skills` is populated from the Storage Skill registry with revision, digest, source, trust state, capability, and tool dependencies. Subagents remain disabled.
+Returns the focused text-Agent catalog. The catalog advertises the four stable surface capabilities: Prompt Library search, Canvas Prompt edit, Prompt Library create proposal, and media Prompt preview. Document/Storyboard/Prompt-handoff emitters are operation-scoped runtime tools supplied only after Gateway validates an explicit `chat-experimental` write context; they are not general catalog grants. `skills` is populated from the Storage Skill registry with revision, digest, source, trust state, capability, and tool dependencies. Subagents remain disabled.
 
 ```json
 {
@@ -407,6 +407,7 @@ Response:
       "status": "pending"
     }
   ],
+  "canvasEdits": [],
   "diagnostics": { "proposalCount": 0 }
 }
 ```
@@ -423,11 +424,40 @@ Current proposal behavior:
 - Preset/template segments, every existing target segment, and all reference nodes are read-only through the revision 3 tool schema.
 - Gateway resolves node bodies from the current project snapshot and attaches the current node revision, template digest, and canonical segment digest. The frontend rechecks all three and every anchor before applying a proposal.
 
+`canvasEdits` is separate from the legacy proposal array. It contains at most one Gateway-enriched `document_create`, `document_changes`, `storyboard_create`, or `storyboard_changes` edit for an explicitly authorized experimental-chat operation. The edit carries deterministic request/edit/node identity, authoritative base revision/digest, expected result digest, and exact model/Skill provenance. Browser-supplied identity, Tiptap JSON, arbitrary JSON Patch, and more than one successful write tool are rejected.
+
 Persistent project calls use `conversationId + requestId`. Gateway loads up to 40 normalized messages from PromptCard Storage, validates the conversation's project, entrypoint, mode, and saved model binding, invokes the stateless Node runtime, and stores the new turn plus its model snapshot. Retrying the same `requestId` returns the first stored result and model snapshot instead of appending duplicates or switching models.
 
-`selectedSkillIds` accepts at most eight external Skill IDs. These selections affect only this request. The Gateway also binds the built-in Canvas Skill by capability, resolves the exact enabled local-Agent host pin, and records `skillId + revision + digest`; it never falls back to the package's current revision. Storage and Gateway independently reject disabled, archived, untrusted, malformed, over-budget, non-tool-capability, or out-of-scope-tool snapshots before model invocation.
+In `prompt-edit`, `selectedSkillIds` accepts at most eight external Skill IDs and affects only that request. In `chat-experimental`, the authoritative Skill IDs come from the conversation's persisted `boundSkillIds`; the browser cannot replace them in the message body. Gateway resolves the exact enabled local-Agent host pin for every turn and records `skillId + revision + digest`; it never falls back to the package's current revision. Storage and Gateway independently reject disabled, archived, untrusted, malformed, over-budget, non-tool-capability, or out-of-scope-tool snapshots before model invocation.
 
 The Python Gateway validates the browser request and returned proposals. The pi runtime owns prompt orchestration, the PI provider collection, and proposal tools. Gateway resolves the conversation's non-secret model descriptor for each request; PI-native models use PI's API implementation through the credential-injecting Gateway proxy, and SDK-backed models use the Gateway text-SDK registry. Provider credentials never enter the Node process.
+
+#### Experimental conversation and planning writes
+
+An ordinary experimental turn adds `"interactionMode": "chat-experimental"`. It may attach up to five project document resource IDs and explicitly referenced Document nodes:
+
+```json
+{
+  "conversationId": "persistent-project-conversation",
+  "requestId": "client-generated-idempotency-key",
+  "content": "Use these references to plan the character.",
+  "mode": "free-canvas-workspace",
+  "permissionScope": "workspace-chatbot-agent",
+  "projectId": "project",
+  "interactionMode": "chat-experimental",
+  "documentResourceIds": ["0123456789abcdef0123456789abcdef"],
+  "explicitDocumentNodeIds": ["document-node-1"],
+  "documentWriteContext": { "operationKind": "document_create" },
+  "workspaceContext": null,
+  "promptLibrary": []
+}
+```
+
+`documentWriteContext` is a closed explicit action union: `document_create`, `document_changes` with one node ID, `storyboard_create` with one Document node ID, `storyboard_changes` with one Storyboard node ID, or `prompt_handoff` with a Document-selection/Storyboard-shot basis. Gateway discards browser-authored authority and rebuilds the full write context from Storage and the current Canvas. Without that explicit context, experimental chat is discussion-only.
+
+TXT/Markdown/DOCX normalized text and ephemeral PDF provider input are resolved only for the current invocation. Ambient workspace context contains Document identity/title/revision/digest plus a bounded excerpt, never an implicit full body. Document/Storyboard content is not added to Prompt Library, Prompt search, Prompt compilation, image-generation input, or media reference codes.
+
+Prompt handoff is the only planning action returned in `proposals`: it creates one pending `free_canvas_text_create` proposal whose `handoffBasis` binds the exact Document selection or Storyboard shot. Approval may create one new all-`user` Prompt node; it cannot update an existing Prompt or read/write Prompt Library.
 
 ### `PATCH /agent-api/promptcard/runtime/projects/{projectId}/conversations/{conversationId}/model`
 
@@ -444,6 +474,15 @@ Persists a conversation model selection immediately:
 ```
 
 Gateway—not the browser—checks that the conversation belongs to the project and is active, the model belongs to the connection's current `agentChatModelIds`, and the connection is enabled, credentialed, and most recently tested successfully. The route then forwards the validated binding to Storage. Passing `null` is supported by the storage contract, while the project UI normally selects another available model instead.
+
+### Document/Storyboard apply acknowledgement and reconciliation
+
+- `POST /agent-api/promptcard/runtime/projects/{projectId}/conversations/{conversationId}/edits/{editId}/ack`
+- `POST /agent-api/promptcard/runtime/projects/{projectId}/conversations/{conversationId}/edits/reconcile`
+
+The frontend persists the changed node and its `AgentAppliedEditMarker` in one project save before acknowledging `applied`. ACK carries the originating `requestId` plus `status: "applied" | "failed"`; a failed ACK is advisory until Gateway reloads Storage.
+
+Gateway never trusts the browser receipt alone. It reloads the project, requires exactly one matching Canvas target and marker, and verifies project/node kind, deterministic identity, request/edit identity, and result digest. Reconciliation returns `pending_apply`, `applied`, `failed_conflict`, `failed_integrity`, `failed_target_missing`, or `idle`, with the identical replay edit only when the stored base is still revalidatable. This is the saved-before-ACK and restart-recovery boundary.
 
 #### Explicit Prompt Library lookup
 

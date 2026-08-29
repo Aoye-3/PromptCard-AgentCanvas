@@ -9,7 +9,7 @@ three-stage forms, Page constraints, or `threeStage.meta.freeCanvas` as its sour
 ## Data Model
 
 - Free Canvas content lives in `project.freeCanvas`.
-- `IFreeCanvasProject.nodes` stores text, image, arrow, and provider-neutral `image-generator` nodes.
+- `IFreeCanvasProject.nodes` stores text, image, arrow, provider-neutral legacy `image-generator`, planning `document`, structured `storyboard`, and read-only `unsupported` nodes.
 - `IFreeCanvasProject.edges` stores user-created React Flow connections.
 - The default project is empty: no nodes, no edges, no required Page/Form fallback.
 - Old projects with `type: "three-stage"` and `meta.builderTemplateId: "free-canvas"` are migrated on load:
@@ -194,6 +194,20 @@ The crop editor uses edge-pull behavior:
 
 The editor is an adapter around the legacy `FreeCanvasMediaNode` crop utility. Free Canvas project data still stores the resulting nodes as `IFreeCanvasImageNode`; no new image node schema is introduced.
 
+## Document And Storyboard Nodes
+
+Planning Documents and Prompt text nodes are different domains. A Document stores `PlanningDocumentV1`: an editor-neutral block AST with revision, deterministic digest, and tracked suggestions. Supported blocks are headings, paragraphs, bullet/ordered/check lists, block quotes, and basic tables; inline content supports text, bold, italic, and links. Tiptap `3.30.3` adapts that AST for editing but its JSON is never persisted or sent to Gateway.
+
+Document nodes provide one canonical state across inline, expanded, and collapsed views. Direct user edits update canonical content through the Canvas command/save coordinator. Agent insertions are shown as green effective text; Agent deletions remain visible as red strikethrough but are excluded from effective text. Linked replacements resolve atomically. Single/all accept/reject and undo/redo preserve deterministic content and digest.
+
+Agent Document operations are editor-neutral `insert`, `delete`, and `replace` records. Their coordinates are NFC-normalized UTF-8 byte offsets within one leaf block. Cross-block ranges, invalid code-point boundaries, stale block digests, Tiptap JSON, and arbitrary patch objects are rejected. A successful Canvas save writes the content and `AgentAppliedEditMarker` together before Gateway acknowledgement.
+
+Storyboard nodes reuse `IStoryboardSequence` and `IStoryboardRow` field definitions, but they do not use the standalone Storyboard proposal mutation path. Explicit Document -> Storyboard records source Document revision/digest, attached resource digests, model, and exact Skill provenance. Later Agent revisions appear as per-field old/new differences with single/all accept/reject and stale-base checks.
+
+Prompt handoff is also explicit. A non-empty Document selection or one Storyboard shot creates a pending `free_canvas_text_create` proposal. Approval creates exactly one new Prompt text node containing only `user` segments. The handoff never updates an existing Prompt or reads/writes Prompt Library.
+
+Unknown node kinds normalize to read-only `unsupported` projections and preserve the untouched original JSON. They never fall through to text/image behavior.
+
 ## Agent Context
 
 Free Canvas uses `free-canvas-workspace` Agent context. The snapshot includes selected node,
@@ -203,6 +217,8 @@ all bounded nodes, edges, and text fields split into:
 - `presetText`
 - `userText`
 - `segments`
+
+Document entries in ambient snapshots expose identity, title, revision, digest, and a bounded excerpt only. Full effective Document text is resolved by Gateway only for an explicit attachment, `@Document`, selected range, or Document -> Storyboard action. Storyboard and Document bodies never become implicit Prompt, Prompt Library, Prompt compiler, or image-generation context.
 
 Builder chatboxes remain workspace scoped and do not grant Prompt Library write permissions.
 
@@ -270,10 +286,12 @@ This differs from the project Image Generation Agent lifecycle in [ADR-013](../d
 
 ```powershell
 npm.cmd test -- --run src/domain/free-canvas/free-canvas-project.test.ts src/utils/agent-workspace.test.ts src/services/agent-runtime-service.test.ts src/utils/storage.test.ts
+npm.cmd test -- --run src/domain/documents/planning-document.test.ts src/domain/documents/document-suggestions.test.ts src/components/canvas/document/planning-document-tiptap.test.ts src/components/canvas/nodes/DocumentNode.test.tsx src/domain/storyboard/canvas-storyboard.test.ts
 npm.cmd test -- --run src/domain/project-resources/project-resource-drag.test.ts src/components/canvas/ProjectResourceLibrary.test.tsx src/components/canvas/FreeCanvasBuilderScreen.image-generation.test.tsx
 npm.cmd test -- --run src/components/AgentCollaborationPanel.test.tsx src/components/canvas/image-generation/ImageGenerationConversationPanel.test.tsx src/components/canvas/image-generation/ImageGenerationComposer.test.tsx
 npm.cmd run test:e2e -- free-canvas-image-crop.spec.ts
 npm.cmd run test:e2e -- free-canvas-text-node.spec.ts
+npm.cmd run test:e2e -- free-canvas-document.spec.ts
 npm.cmd run test:e2e -- tests/e2e/free-canvas-dense-right-panel.spec.ts --project=chromium
 npm.cmd run test:e2e -- tests/e2e/project-resource-library.spec.ts --project=chromium
 npm.cmd run test:e2e -- -c playwright.image-generation.config.ts
