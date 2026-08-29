@@ -1129,7 +1129,14 @@ export function buildAgentSystemPrompt(invocation: ReturnType<typeof buildInvoca
       ? 'Canvas rewrite must emit a complete derived text node. The original target and reference nodes are read-only and must remain unchanged. Any supplied legacy text selection does not limit or alter the derived-node request.'
       : ''
   const documentContext = invocation.documentWriteContext
-  const documentInstruction = documentContext?.operationKind === 'document_create'
+  const documentInstruction = documentContext?.operationKind === 'prompt_handoff'
+    ? [
+        'Create at most one pending Prompt Canvas proposal. Use emit_prompt_handoff exactly once after analysis; never edit an existing Prompt or write to Prompt Library.',
+        documentContext.basis.kind === 'document-selection'
+          ? `Authoritative selected Document text: ${JSON.stringify(documentContext.basis.selectedText)}.`
+          : `Authoritative Storyboard shot text: ${JSON.stringify(documentContext.basis.shotText)}.`
+      ].join('\n')
+    : documentContext?.operationKind === 'document_create'
     ? 'Create at most one planning Document. Use emit_document_create exactly once after analysis. Resource identity and all request/project identity are bound by Gateway policy and must not be supplied in tool arguments.'
     : documentContext?.operationKind === 'document_changes'
       ? [

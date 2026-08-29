@@ -56,6 +56,46 @@ describe('pi text-agent system boundary', () => {
     expect(accepted).toMatchObject({ terminate: true })
     expect(proposals).toEqual([expect.objectContaining({ userText: 'a'.repeat(100_000) })])
   })
+
+  it('places the authoritative Document selection in the model system prompt for a Prompt handoff', () => {
+    const selectedText = '权威选中文本 🎬'
+    const prompt = buildAgentSystemPrompt(buildInvocation({
+      content: 'Turn this selection into a Prompt', permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'prompt_handoff',
+        basis: {
+          kind: 'document-selection', nodeId: 'document-1', documentRevision: 4,
+          documentDigest: `sha256:${'a'.repeat(64)}`, blockId: 'paragraph-1',
+          utf8Start: 0, utf8End: new TextEncoder().encode(selectedText).length,
+          selectedText, selectedTextDigest: `sha256:${'b'.repeat(64)}`
+        }
+      }
+    }))
+
+    expect(prompt).toContain(`Authoritative selected Document text: ${JSON.stringify(selectedText)}.`)
+    expect(prompt.split(selectedText)).toHaveLength(2)
+  })
+
+  it('places the authoritative Storyboard shot text in the model system prompt for a Prompt handoff', () => {
+    const shotText = '权威镜头文本：广角推进 🎥'
+    const prompt = buildAgentSystemPrompt(buildInvocation({
+      content: 'Turn this shot into a Prompt', permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'prompt_handoff',
+        basis: {
+          kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 7,
+          storyboardDigest: `sha256:${'c'.repeat(64)}`, rowId: 'shot-7',
+          shotDigest: `sha256:${'d'.repeat(64)}`, shotText
+        }
+      }
+    }))
+
+    expect(prompt).toContain(`Authoritative Storyboard shot text: ${JSON.stringify(shotText)}.`)
+    expect(prompt.split(shotText)).toHaveLength(2)
+  })
+
   it('places skill instructions below immutable runtime policy', () => {
     const prompt = buildAgentSystemPrompt(buildInvocation({
       content: 'Edit', permissionScope: 'workspace-chatbot-agent',

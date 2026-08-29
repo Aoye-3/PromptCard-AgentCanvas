@@ -930,20 +930,21 @@ function App() {
 
   const handlePersistFreeCanvas = async (freeCanvas: IFreeCanvasProject) => {
     if (!activeProjectId) return false
+    const projectId = activeProjectId
     const project = activeProjectRef.current
-    if (!project || project.id !== activeProjectId || project.type !== 'free-canvas') return false
+    if (!project || project.id !== projectId || project.type !== 'free-canvas') return false
     const savedAt = Date.now()
-    setProjectSaveStatus(activeProjectId, 'saving')
-    let result = await persistProjectChanges(project, {
+    setProjectSaveStatus(projectId, 'saving')
+    await persistProjectChanges(project, {
       freeCanvas,
       updatedAt: savedAt,
       lastOpenedAt: savedAt
-    }, getProjectEditSeq(activeProjectId), savedAt, 'Place generated image on canvas failed:')
-    if (result.status === 'superseded') {
-      result = await projectSaveCoordinator.waitForIdle(activeProjectId)
-    }
-    if (result.status !== 'saved' || result.project?.type !== 'free-canvas' || !result.project.freeCanvas) return false
-    setProjectSaveStatus(activeProjectId, 'saved', savedAt)
+    }, getProjectEditSeq(projectId), savedAt, 'Place generated image on canvas failed:')
+    const result = await projectSaveCoordinator.waitForIdle(projectId)
+    const currentProject = activeProjectRef.current
+    if (!currentProject || currentProject.id !== projectId || currentProject.type !== 'free-canvas') return false
+    if (result.status !== 'saved' || result.project?.id !== projectId || result.project.type !== 'free-canvas' || !result.project.freeCanvas) return false
+    setProjectSaveStatus(projectId, 'saved', savedAt)
     return { saved: true as const, freeCanvas: result.project.freeCanvas, editSeq: result.editSeq }
   }
 
