@@ -200,7 +200,7 @@ export function AgentCollaborationPanel({
 
   useEffect(() => {
     if (!draftRequest || lastDraftRequestIdRef.current === draftRequest.id) return
-    if (draftRequest.documentWriteContext) setPendingWriteContext(draftRequest.documentWriteContext)
+    setPendingWriteContext(draftRequest.documentWriteContext)
     if (typeof draftRequest.content === 'string') {
       if (embedded) setComposerDraft({ id: draftRequest.id, content: draftRequest.content })
       else setDraft(draftRequest.content)
@@ -233,6 +233,7 @@ export function AgentCollaborationPanel({
     setPostSendApplyError(undefined)
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
+    setPendingWriteContext(undefined)
     setComposerResetKey(key => key + 1)
   }, [sessionKey, workspaceContext.projectId])
 
@@ -349,6 +350,10 @@ export function AgentCollaborationPanel({
     }
   ) => {
     if (!content.trim() || running || documentUploadingCount > 0 || documentEditReconciling) return
+    const writeContextForTurn = interactionMode === 'chat-experimental'
+      ? pendingWriteContext
+      : undefined
+    if (writeContextForTurn) setPendingWriteContext(undefined)
     const applyAttempt = postSendApplyAttemptRef.current + 1
     postSendApplyAttemptRef.current = applyAttempt
     let applyIdentity = postSendApplyIdentityRef.current
@@ -392,7 +397,7 @@ export function AgentCollaborationPanel({
         documentResourceIds,
         explicitDocumentNodeIds,
         documentAttachments: activeDocumentAttachments,
-        ...(pendingWriteContext ? { documentWriteContext: pendingWriteContext } : {})
+        ...(writeContextForTurn ? { documentWriteContext: writeContextForTurn } : {})
       } : {})
     })
     const succeeded = !getAgentSession(sessionKey).runtimeError
@@ -417,8 +422,8 @@ export function AgentCollaborationPanel({
     setDocumentAttachments([])
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
-    setComposerResetKey(key => key + 1)
     setPendingWriteContext(undefined)
+    setComposerResetKey(key => key + 1)
 
     try {
       const appliedCanvasEdits: AgentCanvasEdit[] = []
@@ -862,6 +867,7 @@ export function AgentCollaborationPanel({
       postSendApplyAttemptRef.current += 1
     }
     setPostSendApplyError(undefined)
+    setPendingWriteContext(undefined)
     setConversationProjectId(conversation.projectId)
     setConversationSelectionGeneration(generation => generation + 1)
     setConversationId(conversation.id)

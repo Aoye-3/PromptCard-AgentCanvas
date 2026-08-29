@@ -847,15 +847,15 @@ class PromptCardRuntimeService:
                 and node.get("kind") == "storyboard"
             )
         ):
-            authoritative_source = await _authoritative_storyboard_source(
-                project_id, project, conversation, turn, edit
+            expected_storyboard_source = _expected_storyboard_source_from_turn(
+                conversation, turn, edit
             )
             if (
-                authoritative_source is None
+                expected_storyboard_source is None
                 or (
                     isinstance(node, dict)
                     and node.get("kind") == "storyboard"
-                    and node.get("source") != authoritative_source
+                    and node.get("source") != expected_storyboard_source
                 )
             ):
                 return await _terminal_agent_edit(
@@ -908,6 +908,24 @@ class PromptCardRuntimeService:
                 edit_id,
                 "failed_integrity",
                 {"nodeId": node_id, "kind": expected_node_kind, "code": "marker_or_digest_mismatch"},
+                include_canvas_edits=include_canvas_edits,
+            )
+        if (
+            edit_kind == "storyboard_create"
+            or (
+                edit_kind == "storyboard_changes"
+                and isinstance(node, dict)
+                and node.get("kind") == "storyboard"
+            )
+        ) and await _authoritative_storyboard_source(
+            project_id, project, conversation, turn, edit
+        ) is None:
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_integrity",
+                {"nodeId": node_id, "kind": "storyboard", "code": "storyboard_source_mismatch"},
                 include_canvas_edits=include_canvas_edits,
             )
         if not isinstance(base, dict) or not isinstance(base.get("projectRevision"), int) or isinstance(base.get("projectRevision"), bool):
@@ -1395,29 +1413,59 @@ def _valid_storyboard_source(value: Any) -> bool:
         return False
     model = value.get("model")
     skills = value.get("skills")
-    return (
-        _normalize_storyboard_text(value.get("documentNodeId"), persisted=True, nonempty=True) is not None
-        and isinstance(value.get("documentRevision"), int) and not isinstance(value["documentRevision"], bool)
-        and 0 <= value["documentRevision"] <= 9_007_199_254_740_991
-        and _valid_sha256_digest(value.get("documentDigest"))
-        and isinstance(value.get("documentResourceDigests"), list) and len(value["documentResourceDigests"]) <= 5
-        and all(_valid_sha256_digest(item) for item in value["documentResourceDigests"])
-        and isinstance(model, dict) and set(model) == {"connectionId", "providerId", "modelId"}
-        and all(
-            _normalize_storyboard_text(model.get(key), persisted=True, nonempty=True) is not None
-            for key in ("connectionId", "providerId", "modelId")
+    resource_digests = value.get("documentResourceDigests")
+    if (
+        _normalize_storyboard_text(value.get("documentNodeId"), persisted=True, nonempty=True) is None
+        or not isinstance(value.get("documentRevision"), int)
+        or isinstance(value["documentRevision"], bool)
+        or not 0 <= value["documentRevision"] <= 9_007_199_254_740_991
+        or not _valid_sha256_digest(value.get("documentDigest"))
+        or not isinstance(resource_digests, list)
+        or len(resource_digests) > 5
+        or not all(_valid_sha256_digest(item) for item in resource_digests)
+        or not isinstance(model, dict)
+        or set(model) != {"connectionId", "providerId", "modelId", "displayName", "capabilities"}
+        or any(
+            _normalize_storyboard_text(model.get(key), persisted=True, nonempty=True) is None
+            for key in ("connectionId", "providerId", "modelId", "displayName")
         )
-        and isinstance(skills, list)
-        and len({skill.get("skillId") for skill in skills if isinstance(skill, dict)}) == len(skills)
-        and all(
-            isinstance(skill, dict) and set(skill) == {"skillId", "revision", "digest"}
-            and _normalize_storyboard_text(skill.get("skillId"), persisted=True, nonempty=True) is not None
-            and isinstance(skill.get("revision"), int) and not isinstance(skill["revision"], bool)
-            and 0 <= skill["revision"] <= 9_007_199_254_740_991
-            and _valid_sha256_digest(skill.get("digest"))
-            for skill in skills
-        )
-    )
+        or not isinstance(model.get("capabilities"), dict)
+        or not isinstance(skills, list)
+    ):
+        return False
+    skill_ids: set[str] = set()
+    for skill in skills:
+        if not isinstance(skill, dict) or set(skill) != {"skillId", "revision", "digest"}:
+            return False
+        skill_id = _normalize_storyboard_text(skill.get("skillId"), persisted=True, nonempty=True)
+        revision = skill.get("revision")
+        if (
+            skill_id is None
+            or skill_id in skill_ids
+            or not isinstance(revision, int)
+            or isinstance(revision, bool)
+            or not 0 <= revision <= 9_007_199_254_740_991
+            or not _valid_sha256_digest(skill.get("digest"))
+        ):
+            return False
+        skill_ids.add(skill_id)
+    return True
+
+
+def _expected_storyboard_source_from_turn(
+    conversation: dict[str, Any],
+    current_turn: dict[str, Any],
+    edit: dict[str, Any],
+) -> dict[str, Any] | None:
+    expected_source, source_turn = _expected_storyboard_source(conversation, current_turn, edit)
+    if (
+        not _valid_storyboard_source(expected_source)
+        or not isinstance(source_turn, dict)
+        or source_turn.get("modelSnapshot") != expected_source["model"]
+        or source_turn.get("skillSnapshots") != expected_source["skills"]
+    ):
+        return None
+    return deepcopy(expected_source)
 
 
 def _expected_storyboard_source(
@@ -1460,13 +1508,8 @@ async def _authoritative_storyboard_source(
     current_turn: dict[str, Any],
     edit: dict[str, Any],
 ) -> dict[str, Any] | None:
-    expected_source, source_turn = _expected_storyboard_source(conversation, current_turn, edit)
-    if (
-        not _valid_storyboard_source(expected_source)
-        or not isinstance(source_turn, dict)
-        or source_turn.get("modelSnapshot") != expected_source["model"]
-        or source_turn.get("skillSnapshots") != expected_source["skills"]
-    ):
+    expected_source = _expected_storyboard_source_from_turn(conversation, current_turn, edit)
+    if expected_source is None:
         return None
     document_node = _project_canvas_node(project, expected_source["documentNodeId"])
     if not isinstance(document_node, dict) or document_node.get("kind") != "document":

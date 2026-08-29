@@ -95,7 +95,13 @@ export interface StoryboardSourceProvenance {
   documentRevision: number
   documentDigest: string
   documentResourceDigests: string[]
-  model: AgentRunProvenance['model']
+  model: {
+    connectionId: string
+    providerId: string
+    modelId: string
+    displayName: string
+    capabilities: Record<string, unknown>
+  }
   skills: AgentRunProvenance['skills']
 }
 

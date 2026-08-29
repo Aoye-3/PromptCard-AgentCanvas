@@ -379,7 +379,7 @@ describe('agent workspace context', () => {
           source: {
             documentNodeId: 'document-1', documentRevision: 4, documentDigest: 'document-digest',
             documentResourceDigests: ['private-resource-digest'],
-            model: { connectionId: 'connection', providerId: 'provider', modelId: 'model' }, skills: []
+            model: { connectionId: 'connection', providerId: 'provider', modelId: 'model', displayName: 'Model', capabilities: {} }, skills: []
           },
           pendingFieldChanges: [], meta: {}
         },

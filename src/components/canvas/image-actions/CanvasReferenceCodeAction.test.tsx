@@ -116,7 +116,7 @@ describe('Canvas reference-code copy actions', () => {
         source: {
           documentNodeId: 'document', documentRevision: 1, documentDigest: 'document-digest',
           documentResourceDigests: [],
-          model: { connectionId: 'connection', providerId: 'provider', modelId: 'model' },
+          model: { connectionId: 'connection', providerId: 'provider', modelId: 'model', displayName: 'Model', capabilities: {} },
           skills: []
         },
         pendingFieldChanges: [], meta: {}

@@ -21,7 +21,8 @@ const mocks = vi.hoisted(() => ({
   getPendingPlacements: vi.fn(),
   acknowledgeDocumentEdit: vi.fn(),
   reconcileDocumentEdits: vi.fn(),
-  agentCanvasEdit: null as AgentCanvasEdit | null
+  agentCanvasEdit: null as AgentCanvasEdit | null,
+  applyResults: [] as Array<boolean | void>
 }))
 
 vi.mock('@/components/canvas/document/DocumentEditor', () => ({
@@ -213,7 +214,9 @@ vi.mock('@/components/AgentCollaborationPanel', () => ({
         <button
           type="button"
           aria-label="测试应用 Agent Document 编辑"
-          onClick={() => onApplyCanvasEdit?.(mocks.agentCanvasEdit as AgentCanvasEdit)}
+          onClick={async () => {
+            mocks.applyResults.push(await onApplyCanvasEdit?.(mocks.agentCanvasEdit as AgentCanvasEdit))
+          }}
         >Apply agent Document edit</button>
       )}
     </div>
@@ -350,7 +353,7 @@ const storyboardSequence = (): IStoryboardSequence => ({
 const storyboardSource = (): StoryboardSourceProvenance => ({
   documentNodeId: 'document-1', documentRevision: 0,
   documentDigest: `sha256:${'a'.repeat(64)}`, documentResourceDigests: [],
-  model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1' },
+  model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1', displayName: 'Model', capabilities: {} },
   skills: [{ skillId: 'skill-1', revision: 2, digest: `sha256:${'b'.repeat(64)}` }]
 })
 
@@ -420,6 +423,7 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     vi.clearAllMocks()
     mocks.useRealDocumentNode = false
     mocks.agentCanvasEdit = null
+    mocks.applyResults = []
     windowListeners.clear()
     vi.stubGlobal('window', {
       addEventListener: vi.fn((type: string, listener: (event: KeyboardEvent) => void) => {
@@ -590,6 +594,31 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
 
     await dispatchWindowKey('z')
     expect(renderer.root.findAllByProps({ 'aria-label': '分镜表：Opening shots' })).toHaveLength(0)
+  })
+
+  it('does not report a saved Storyboard apply as successful when ACK returns a terminal failure', async () => {
+    mocks.agentCanvasEdit = storyboardCreateEdit()
+    mocks.acknowledgeDocumentEdit.mockResolvedValue({
+      status: 'failed_integrity', editId: 'edit-storyboard', errorCode: 'failed_integrity'
+    })
+    const onPersistCanvas = vi.fn().mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState<IFreeCanvasProject>({ ...initialCanvas(), nodes: [] })
+      return <FreeCanvasBuilderScreen
+        activeProject={project(current)} freeCanvas={current}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+      />
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Agent Document 编辑' }).props.onClick()
+    })
+
+    expect(onPersistCanvas).toHaveBeenCalledTimes(1)
+    expect(mocks.applyResults).toEqual([false])
   })
 
   it('rolls back an unsaved Storyboard direct apply and sends a bounded failed ACK', async () => {

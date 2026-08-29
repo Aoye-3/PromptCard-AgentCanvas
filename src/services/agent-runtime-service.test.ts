@@ -154,7 +154,10 @@ describe('agent runtime message contract', () => {
 
   it('serializes only the explicit Storyboard transform selector and accepts an enriched create edit', async () => {
     const sequence = {
-      id: 'sequence-1', name: 'Opening', description: '', style: 'ink', constraints: '', rows: [],
+      id: 'sequence-1', name: 'Opening', description: '', style: 'ink', constraints: '', rows: [{
+        id: 'row-1', cutLabel: '1', timeRange: '0-1s', subject: '', action: '', scene: '', camera: '',
+        lighting: '', audio: '', duration: '1s', createdAt: 1, updatedAt: 1
+      }],
       createdAt: 1, updatedAt: 1, meta: {}
     }
     const edit = {
@@ -166,7 +169,7 @@ describe('agent runtime message contract', () => {
         source: {
           documentNodeId: 'document-1', documentRevision: 4, documentDigest: `sha256:${'b'.repeat(64)}`,
           documentResourceDigests: [`sha256:${'c'.repeat(64)}`],
-          model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1' },
+          model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1', displayName: 'Model', capabilities: {} },
           skills: [{ skillId: 'skill-1', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
         }
       }, rationale: 'Explicit transform'

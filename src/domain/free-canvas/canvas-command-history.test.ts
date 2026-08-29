@@ -59,7 +59,7 @@ const documentNode = (id: string, text = 'Before'): IFreeCanvasDocumentNode => (
 const storyboardNode = (style = 'ink'): IFreeCanvasStoryboardNode => ({
   id: 'storyboard-1', kind: 'storyboard', title: 'Shots', position: { x: 0, y: 0 }, width: 680, height: 440,
   sequence: { id: 'sequence-1', name: 'Opening', description: '', style, constraints: '', rows: [], createdAt: 1, updatedAt: 1, meta: {} },
-  source: { documentNodeId: 'document-1', documentRevision: 1, documentDigest: `sha256:${'a'.repeat(64)}`, documentResourceDigests: [], model: { connectionId: 'c', providerId: 'p', modelId: 'm' }, skills: [] },
+  source: { documentNodeId: 'document-1', documentRevision: 1, documentDigest: `sha256:${'a'.repeat(64)}`, documentResourceDigests: [], model: { connectionId: 'c', providerId: 'p', modelId: 'm', displayName: 'Model', capabilities: {} }, skills: [] },
   pendingFieldChanges: [], revision: 0, digest: `sha256:${'b'.repeat(64)}`, meta: {}
 })
 

@@ -228,20 +228,16 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
 
   it('forwards the explicit Storyboard transform selector only with the submitted experimental turn', async () => {
     let renderer!: ReactTestRenderer
-    act(() => {
-      renderer = create(
-        <AgentCollaborationPanel
-          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
-          onApplyWorkspaceProposal={vi.fn()} embedded
-          draftRequest={{
-            id: 'storyboard-create-document-1',
-            content: 'Create a storyboard',
-            documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
-          }}
-        />
-      )
-    })
+    const props = {
+      title: 'Free Canvas Agent', mode: 'free-canvas-workspace' as const, workspaceContext,
+      onApplyWorkspaceProposal: vi.fn(), embedded: true
+    }
+    act(() => { renderer = create(<AgentCollaborationPanel {...props} />) })
     await settleConversationSelection(renderer)
+    act(() => renderer.update(<AgentCollaborationPanel {...props} draftRequest={{
+      id: 'storyboard-create-document-1', content: 'Create a storyboard',
+      documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
+    }} />))
 
     await act(async () => {
       await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Create a storyboard', [])
@@ -254,6 +250,69 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
       })
     )
+  })
+
+  it('replaces a one-draft Storyboard authority with a newer external draft that has no write context', async () => {
+    const baseProps = {
+      title: 'Free Canvas Agent', mode: 'free-canvas-workspace' as const, workspaceContext,
+      onApplyWorkspaceProposal: vi.fn(), embedded: true
+    }
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(<AgentCollaborationPanel {...baseProps} draftRequest={{
+        id: 'draft-with-authority', content: 'Create storyboard',
+        documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
+      }} />)
+    })
+    await settleConversationSelection(renderer)
+    act(() => renderer.update(<AgentCollaborationPanel {...baseProps} draftRequest={{
+      id: 'newer-plain-draft', content: 'Plain follow-up'
+    }} />))
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Plain follow-up', [])
+    })
+
+    expect(mocks.sendMessage.mock.calls[mocks.sendMessage.mock.calls.length - 1]?.[2])
+      .not.toHaveProperty('documentWriteContext')
+  })
+
+  it('clears one-turn write authority on session identity changes and after a failed send', async () => {
+    const props = {
+      title: 'Free Canvas Agent', mode: 'free-canvas-workspace' as const, workspaceContext,
+      onApplyWorkspaceProposal: vi.fn(), embedded: true,
+      draftRequest: {
+        id: 'draft-session-authority', content: 'Create storyboard',
+        documentWriteContext: { operationKind: 'storyboard_create' as const, documentNodeId: 'document-1' }
+      }
+    }
+    let renderer!: ReactTestRenderer
+    act(() => { renderer = create(<AgentCollaborationPanel {...props} sessionKey="session-a" />) })
+    await settleConversationSelection(renderer)
+    act(() => renderer.update(<AgentCollaborationPanel {...props} sessionKey="session-b" />))
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('After session switch', [])
+    })
+    expect(mocks.sendMessage.mock.calls[mocks.sendMessage.mock.calls.length - 1]?.[2])
+      .not.toHaveProperty('documentWriteContext')
+
+    act(() => renderer.update(<AgentCollaborationPanel {...props} sessionKey="session-b" draftRequest={{
+      ...props.draftRequest, id: 'draft-failing-authority'
+    }} />))
+    mocks.sendMessage.mockRejectedValueOnce(new Error('runtime failed'))
+    await act(async () => {
+      try {
+        await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Fail once', [])
+      } catch {
+        // The one-turn authority must be consumed even when the runtime rejects.
+      }
+    })
+    mocks.sendMessage.mockResolvedValueOnce({ proposals: [], canvasEdits: [] })
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Retry without stale authority', [])
+    })
+    expect(mocks.sendMessage.mock.calls[mocks.sendMessage.mock.calls.length - 1]?.[2])
+      .not.toHaveProperty('documentWriteContext')
   })
 
   it('reconciles one pending Document edit on conversation hydration and locks send until apply settles', async () => {

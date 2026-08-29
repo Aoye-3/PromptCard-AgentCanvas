@@ -61,8 +61,15 @@ def storyboard_source() -> dict:
         "documentNodeId": "document-1", "documentRevision": 7,
         "documentDigest": document()["digest"],
         "documentResourceDigests": ["sha256:" + hashlib.sha256(b"resource body").hexdigest()],
-        "model": {"connectionId": "connection-1", "providerId": "provider-1", "modelId": "model-1"},
+        "model": model_snapshot(),
         "skills": [{"skillId": "skill-1", "revision": 4, "digest": "sha256:" + "c" * 64}],
+    }
+
+
+def model_snapshot() -> dict:
+    return {
+        "connectionId": "connection-1", "providerId": "provider-1", "modelId": "model-1",
+        "displayName": "Production model", "capabilities": {"input": ["text"], "toolCalling": True},
     }
 
 
@@ -118,7 +125,7 @@ def test_storyboard_create_validation_ignores_model_source_and_binds_exact_autho
         "documentResourceDigests": ["sha256:" + "b" * 64],
     }
     provenance = {
-        "model": {"connectionId": "connection-1", "providerId": "provider-1", "modelId": "model-1"},
+        "model": model_snapshot(),
         "skills": [{"skillId": "skill-1", "revision": 4, "digest": "sha256:" + "c" * 64}],
     }
     accepted = promptcard_runtime.validate_agent_document_edits(
@@ -138,6 +145,78 @@ def test_storyboard_create_validation_ignores_model_source_and_binds_exact_autho
     assert edit["expectedResultDigest"] == promptcard_runtime._storyboard_digest(edit["payload"]["sequence"], [])
 
 
+@pytest.mark.anyio
+async def test_production_storyboard_request_persists_the_real_five_key_model_snapshot(monkeypatch):
+    saved: dict = {}
+    descriptor = {
+        "connectionId": "connection-1", "providerId": "provider-1",
+        "model": {
+            "id": "model-1", "displayName": "Production model",
+            "capabilities": {"input": ["text"], "toolCalling": True},
+        },
+    }
+    detail = {
+        "id": "conversation-1", "projectId": "project-1", "messages": [], "turns": [],
+        "entrypoint": "workspace-chatbot-agent", "mode": "free-canvas-workspace",
+        "interactionMode": "chat-experimental", "boundSkillIds": ["skill-1"],
+        "modelBinding": {"connectionId": "connection-1", "providerId": "provider-1", "modelId": "model-1"},
+    }
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return detail
+        if method == "GET" and path == "/api/projects/project-1":
+            return project([{
+                "id": "document-1", "kind": "document", "document": document(),
+                "linkedDocumentResourceIds": ["resource-1"],
+            }])
+        if method == "POST" and path.endswith("/turns"):
+            saved.update(kwargs["json"])
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_invoke(_payload):
+        raw_sequence = storyboard_sequence()
+        raw_sequence["rows"] = [{
+            key: value for key, value in row.items() if key not in {"createdAt", "updatedAt"}
+        } for row in raw_sequence["rows"]]
+        return {
+            "threadId": "conversation-1", "text": "ok", "proposals": [],
+            "canvasEdits": [{
+                "kind": "storyboard_create",
+                "payload": {"title": "Shots", "sequence": {
+                    key: value for key, value in raw_sequence.items()
+                    if key not in {"createdAt", "updatedAt", "meta"}
+                }},
+                "rationale": "Explicit transform",
+            }],
+        }
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_invoke_text_agent", fake_invoke)
+    monkeypatch.setattr(promptcard_runtime, "resolve_text_model", lambda _: descriptor)
+    monkeypatch.setattr(promptcard_runtime, "_resolve_skill_snapshots", lambda _: __import__("asyncio").sleep(
+        0, result=[{"skillId": "skill-1", "revision": 4, "digest": "sha256:" + "c" * 64}]
+    ))
+    async def fake_resources(_project_id, resource_ids):
+        return [] if not resource_ids else [SimpleNamespace(
+            content=b"resource body", content_type="text/plain", filename="resource.txt", resource_id="resource-1"
+        )]
+
+    monkeypatch.setattr(promptcard_runtime, "_load_document_resources", fake_resources)
+    request = PromptCardRuntimeMessageRequest.model_validate({
+        "conversationId": "conversation-1", "requestId": "request-production", "content": "transform",
+        "projectId": "project-1", "mode": "free-canvas-workspace", "interactionMode": "chat-experimental",
+        "documentWriteContext": {"operationKind": "storyboard_create", "documentNodeId": "document-1"},
+        "workspaceContext": {"projectId": "project-1", "projectRevision": 12, "snapshot": {"nodes": []}},
+    })
+
+    result = await promptcard_runtime.runtime_service.send_message(request, None)
+
+    assert result["canvasEdits"][0]["payload"]["source"]["model"] == model_snapshot()
+    assert saved["modelSnapshot"] == model_snapshot()
+
+
 def test_storyboard_changes_are_bound_to_strict_revision_digest_and_allowed_fields():
     sequence = {
         "id": "sequence-1", "name": "Opening", "description": "", "style": "ink", "constraints": "",
@@ -150,12 +229,12 @@ def test_storyboard_changes_are_bound_to_strict_revision_digest_and_allowed_fiel
     valid = promptcard_runtime.validate_agent_document_edits(
         [{"kind": "storyboard_changes", "payload": {"nodeId": "storyboard-1", "baseRevision": 3, "baseDigest": node_digest, "changes": [{"scope": "row", "rowId": "row-1", "field": "camera", "value": "close-up"}]}, "rationale": "Refine"}],
         conversation_id="conversation-1", request_id="request-2", project=project([node]), expected_write_context=context,
-        run_provenance={"model": {"connectionId": "c", "providerId": "p", "modelId": "m"}, "skills": []},
+        run_provenance={"model": model_snapshot(), "skills": []},
     )
     invalid = promptcard_runtime.validate_agent_document_edits(
         [{"kind": "storyboard_changes", "payload": {"nodeId": "storyboard-1", "baseRevision": 3, "baseDigest": node_digest, "changes": [{"scope": "row", "rowId": "row-1", "field": "imageUrl", "value": "forged"}]}, "rationale": "No"}],
         conversation_id="conversation-1", request_id="request-3", project=project([node]), expected_write_context=context,
-        run_provenance={"model": {"connectionId": "c", "providerId": "p", "modelId": "m"}, "skills": []},
+        run_provenance={"model": model_snapshot(), "skills": []},
     )
 
     assert len(valid) == 1
@@ -182,7 +261,7 @@ def test_storyboard_create_enforces_the_frozen_aggregate_byte_boundary(total_byt
         }],
         conversation_id="conversation-1", request_id=f"request-{total_bytes}", project=project([]),
         expected_write_context=authority,
-        run_provenance={"model": {"connectionId": "c", "providerId": "p", "modelId": "m"}, "skills": []},
+        run_provenance={"model": model_snapshot(), "skills": []},
     )
 
     assert len(accepted) == accepted_count
@@ -312,6 +391,61 @@ async def test_storyboard_create_absent_target_never_replays_without_complete_au
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("invalid_skills", [
+    {}, [[]], [{"skillId": [], "revision": 4, "digest": "sha256:" + "c" * 64}],
+    [
+        {"skillId": "duplicate", "revision": 4, "digest": "sha256:" + "c" * 64},
+        {"skillId": "duplicate", "revision": 5, "digest": "sha256:" + "d" * 64},
+    ],
+    [{"skillId": "skill-1", "revision": "4", "digest": "sha256:" + "c" * 64}],
+    [{"skillId": "skill-1", "revision": 4, "digest": "bad"}],
+    [{"skillId": "x" * 10_001, "revision": 4, "digest": "sha256:" + "c" * 64}],
+])
+async def test_absent_storyboard_recovery_rejects_every_malformed_skill_snapshot_without_raising(monkeypatch, invalid_skills):
+    sequence = storyboard_sequence()
+    edit_id, node_id = promptcard_runtime._deterministic_document_edit_ids(
+        "conversation-1", "request-skills", "storyboard_create", None
+    )
+    source = storyboard_source()
+    source["skills"] = deepcopy(invalid_skills)
+    edit = {
+        "kind": "storyboard_create", "id": edit_id, "editId": edit_id,
+        "conversationId": "conversation-1", "requestId": "request-skills", "nodeId": node_id,
+        "base": {"projectRevision": 12}, "expectedResultDigest": promptcard_runtime._storyboard_digest(sequence, []),
+        "payload": {"title": "Opening", "sequence": sequence, "source": source}, "rationale": "Create",
+    }
+    detail = conversation_with_edit(edit)
+    detail["turns"][0]["skillSnapshots"] = deepcopy(invalid_skills)
+    patches: list[dict] = []
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return detail
+        if method == "GET" and path == "/api/projects/project-1":
+            return project([{
+                "id": "document-1", "kind": "document", "document": document(),
+                "linkedDocumentResourceIds": ["resource-1"],
+            }])
+        if method == "PATCH" and path.endswith("/apply-edit"):
+            patches.append(kwargs["json"])
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_load_document_resources", lambda *_: __import__("asyncio").sleep(
+        0, result=[SimpleNamespace(content=b"resource body")]
+    ))
+    try:
+        result = await promptcard_runtime.runtime_service.reconcile_document_edits("project-1", "conversation-1")
+    except Exception as exc:
+        pytest.fail(f"malformed Skill provenance raised {type(exc).__name__}: {exc}")
+
+    assert result["status"] == "failed_integrity"
+    assert result["canvasEdits"] == []
+    assert patches[0]["evidence"]["code"] == "storyboard_source_mismatch"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("tamper", ["missing", "document", "resources", "model", "skills"])
 @pytest.mark.parametrize("entrypoint", ["ack", "reconcile"])
 async def test_storyboard_saved_before_ack_rejects_any_tampered_canonical_source(monkeypatch, tamper, entrypoint):
@@ -382,6 +516,64 @@ async def test_storyboard_saved_before_ack_rejects_any_tampered_canonical_source
     else:
         assert "canvasEdits" not in result
     assert patches[0]["evidence"]["code"] == "storyboard_source_mismatch"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("entrypoint", ["ack", "reconcile"])
+async def test_saved_storyboard_marker_finalizes_after_its_source_document_and_resources_advance(monkeypatch, entrypoint):
+    sequence = storyboard_sequence()
+    expected = promptcard_runtime._storyboard_digest(sequence, [])
+    edit_id, node_id = promptcard_runtime._deterministic_document_edit_ids(
+        "conversation-1", "request-advanced", "storyboard_create", None
+    )
+    source = storyboard_source()
+    edit = {
+        "kind": "storyboard_create", "id": edit_id, "editId": edit_id,
+        "conversationId": "conversation-1", "requestId": "request-advanced", "nodeId": node_id,
+        "base": {"projectRevision": 12}, "expectedResultDigest": expected,
+        "payload": {"title": "Opening", "sequence": sequence, "source": deepcopy(source)}, "rationale": "Create",
+    }
+    advanced_document = document()
+    advanced_document["revision"] = 8
+    advanced_document["digest"] = "sha256:" + "e" * 64
+    storyboard = {
+        "id": node_id, "kind": "storyboard", "sequence": sequence, "source": deepcopy(source),
+        "pendingFieldChanges": [], "revision": 0, "digest": expected,
+        "agentAppliedEdit": {
+            "conversationId": "conversation-1", "requestId": "request-advanced",
+            "editId": edit_id, "resultDigest": expected,
+        },
+    }
+    patches: list[dict] = []
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return conversation_with_edit(edit)
+        if method == "GET" and path == "/api/projects/project-1":
+            return project([storyboard, {
+                "id": "document-1", "kind": "document", "document": advanced_document,
+                "linkedDocumentResourceIds": ["resource-2"],
+            }], revision=13)
+        if method == "PATCH" and path.endswith("/apply-edit"):
+            patches.append(kwargs["json"])
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_load_document_resources", lambda *_: __import__("asyncio").sleep(
+        0, result=[SimpleNamespace(content=b"advanced resource")]
+    ))
+    result = (
+        await promptcard_runtime.runtime_service.ack_document_edit(
+            "project-1", "conversation-1", edit_id,
+            PromptCardAgentEditAckRequest(requestId="request-advanced", status="applied"),
+        )
+        if entrypoint == "ack"
+        else await promptcard_runtime.runtime_service.reconcile_document_edits("project-1", "conversation-1")
+    )
+
+    assert result["status"] == "applied"
+    assert patches[0]["status"] == "applied"
 
 
 @pytest.mark.anyio

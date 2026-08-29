@@ -115,7 +115,7 @@ describe('project image generation conversations', () => {
         sequence: { id: 'sequence', name: 'Shots', description: 'PRIVATE SHOTS', style: '', constraints: '', rows: [], createdAt: 1, updatedAt: 1, meta: {} },
         source: {
           documentNodeId: 'document', documentRevision: 1, documentDigest: 'digest', documentResourceDigests: [],
-          model: { connectionId: 'c', providerId: 'p', modelId: 'm' }, skills: []
+          model: { connectionId: 'c', providerId: 'p', modelId: 'm', displayName: 'Model', capabilities: {} }, skills: []
         },
         pendingFieldChanges: [], meta: {}
       },

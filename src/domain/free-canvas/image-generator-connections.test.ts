@@ -98,7 +98,7 @@ describe('image generator canvas connections', () => {
       },
       source: {
         documentNodeId: 'document-source', documentRevision: 1, documentDigest: 'digest',
-        documentResourceDigests: [], model: { connectionId: 'c', providerId: 'p', modelId: 'm' }, skills: []
+        documentResourceDigests: [], model: { connectionId: 'c', providerId: 'p', modelId: 'm', displayName: 'Model', capabilities: {} }, skills: []
       },
       pendingFieldChanges: [], meta: {}
     }],

@@ -3119,14 +3119,25 @@ const FreeCanvasBuilderInner = ({
           }
           return false
         }
-        const reconcileLostAcknowledgement = async () => {
+        const confirmAppliedAcknowledgement = async () => {
           try {
-            await agentRuntimeService.reconcileDocumentEdits(
+            const acknowledgement = await agentRuntimeService.acknowledgeDocumentEdit(
               activeProject.id,
-              proposal.conversationId
+              proposal.conversationId,
+              proposal.editId,
+              { requestId: proposal.requestId, status: 'applied' }
             )
+            return acknowledgement.status === 'applied'
           } catch {
-            // Storage remains authoritative and the next hydration retries reconciliation.
+            try {
+              const reconciliation = await agentRuntimeService.reconcileDocumentEdits(
+                activeProject.id,
+                proposal.conversationId
+              )
+              return reconciliation.status === 'applied' || reconciliation.status === 'idle'
+            } catch {
+              return false
+            }
           }
         }
         if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
@@ -3143,17 +3154,7 @@ const FreeCanvasBuilderInner = ({
             ? existing.document.digest
             : existing.digest ?? storyboardDigest(existing.sequence, existing.pendingFieldChanges)) === proposal.expectedResultDigest
         ) {
-          try {
-            await agentRuntimeService.acknowledgeDocumentEdit(
-              activeProject.id,
-              proposal.conversationId,
-              proposal.editId,
-              { requestId: proposal.requestId, status: 'applied' }
-            )
-          } catch {
-            await reconcileLostAcknowledgement()
-          }
-          return true
+          return confirmAppliedAcknowledgement()
         }
         if (proposal.base.projectRevision !== activeProject.revision) {
           return acknowledgeFailure('failed_conflict')
@@ -3268,17 +3269,7 @@ const FreeCanvasBuilderInner = ({
           canvasCommandHistoryRef.current = executed.history
         }
 
-        try {
-          await agentRuntimeService.acknowledgeDocumentEdit(
-            activeProject.id,
-            proposal.conversationId,
-            proposal.editId,
-            { requestId: proposal.requestId, status: 'applied' }
-          )
-        } catch {
-          await reconcileLostAcknowledgement()
-        }
-        return true
+        return confirmAppliedAcknowledgement()
       })
     }
     if (proposal.kind === 'free_canvas_text_insertions') {

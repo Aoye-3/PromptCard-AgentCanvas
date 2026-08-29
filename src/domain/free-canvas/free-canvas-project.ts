@@ -1192,21 +1192,24 @@ const isValidStoryboardSource = (value: unknown): boolean => {
   ])) return false
   const model = value.model
   if (
-    typeof value.documentNodeId !== 'string' || !value.documentNodeId
+    !isValidStoryboardText(value.documentNodeId) || !value.documentNodeId
     || !isNonNegativeSafeInteger(value.documentRevision)
     || typeof value.documentDigest !== 'string' || !SHA256_DIGEST_PATTERN.test(value.documentDigest)
     || !Array.isArray(value.documentResourceDigests) || value.documentResourceDigests.length > 5
     || value.documentResourceDigests.some(item => typeof item !== 'string' || !SHA256_DIGEST_PATTERN.test(item))
     || !isPlainRecordValue(model)
-    || !hasExactRecordKeys(model, ['connectionId', 'providerId', 'modelId'])
-    || ['connectionId', 'providerId', 'modelId'].some(key => typeof model[key] !== 'string' || !model[key])
+    || !hasExactRecordKeys(model, ['connectionId', 'providerId', 'modelId', 'displayName', 'capabilities'])
+    || ['connectionId', 'providerId', 'modelId', 'displayName'].some(key => (
+      !isValidStoryboardText(model[key]) || !model[key]
+    ))
+    || !isPlainRecordValue(model.capabilities)
     || !Array.isArray(value.skills)
   ) return false
   const skillIds = new Set<string>()
   return value.skills.every(skill => {
     if (!isPlainRecordValue(skill) || !hasExactRecordKeys(skill, ['skillId', 'revision', 'digest'])) return false
     if (
-      typeof skill.skillId !== 'string' || !skill.skillId || skillIds.has(skill.skillId)
+      !isValidStoryboardText(skill.skillId) || !skill.skillId || skillIds.has(skill.skillId)
       || !isNonNegativeSafeInteger(skill.revision)
       || typeof skill.digest !== 'string' || !SHA256_DIGEST_PATTERN.test(skill.digest)
     ) return false
@@ -1220,9 +1223,9 @@ const isValidStoryboardSequence = (value: unknown): value is IFreeCanvasStoryboa
     'id', 'name', 'description', 'style', 'constraints', 'rows', 'createdAt', 'updatedAt', 'meta'
   ])) return false
   if (
-    typeof value.id !== 'string' || !value.id
+    !isValidStoryboardText(value.id) || !value.id
     || STORYBOARD_SEQUENCE_TEXT_FIELDS.some(field => !isValidStoryboardText(value[field]))
-    || !Array.isArray(value.rows) || value.rows.length > 200
+    || !Array.isArray(value.rows) || value.rows.length === 0 || value.rows.length > 200
     || !isNonNegativeSafeInteger(value.createdAt) || !isNonNegativeSafeInteger(value.updatedAt)
     || !isPlainRecordValue(value.meta)
   ) return false
@@ -1236,10 +1239,10 @@ const isValidStoryboardSequence = (value: unknown): value is IFreeCanvasStoryboa
     const keys = ['id', ...STORYBOARD_ROW_TEXT_FIELDS, 'createdAt', 'updatedAt', ...(row.imageUrl === undefined ? [] : ['imageUrl'])]
     if (
       !hasExactRecordKeys(row, keys)
-      || typeof row.id !== 'string' || !row.id || rowIds.has(row.id)
+      || !isValidStoryboardText(row.id) || !row.id || rowIds.has(row.id)
       || STORYBOARD_ROW_TEXT_FIELDS.some(field => !isValidStoryboardText(row[field]))
       || !isNonNegativeSafeInteger(row.createdAt) || !isNonNegativeSafeInteger(row.updatedAt)
-      || (row.imageUrl !== undefined && typeof row.imageUrl !== 'string')
+      || (row.imageUrl !== undefined && !isValidStoryboardText(row.imageUrl))
     ) return false
     rowIds.add(row.id)
     aggregateTextBytes += STORYBOARD_ROW_TEXT_FIELDS.reduce(
@@ -1266,8 +1269,8 @@ const isValidStoryboardPendingChanges = (
     const keys = ['id', 'editId', 'scope', ...(change.scope === 'row' ? ['rowId'] : []), 'field', 'previousValue', 'newValue']
     if (
       !hasExactRecordKeys(change, keys)
-      || typeof change.id !== 'string' || !change.id || changeIds.has(change.id)
-      || typeof change.editId !== 'string' || !change.editId
+      || !isValidStoryboardText(change.id) || !change.id || changeIds.has(change.id)
+      || !isValidStoryboardText(change.editId) || !change.editId
       || !isValidStoryboardText(change.previousValue) || !isValidStoryboardText(change.newValue)
     ) return false
     const identity = change.scope === 'sequence'
@@ -1277,7 +1280,7 @@ const isValidStoryboardPendingChanges = (
       identities.has(identity)
       || (change.scope === 'sequence' && !STORYBOARD_SEQUENCE_TEXT_FIELDS.includes(change.field as never))
       || (change.scope === 'row' && (
-        typeof change.rowId !== 'string' || !rowIds.has(change.rowId)
+        !isValidStoryboardText(change.rowId) || !rowIds.has(change.rowId)
         || !STORYBOARD_ROW_TEXT_FIELDS.includes(change.field as never)
       ))
     ) return false

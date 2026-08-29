@@ -652,7 +652,10 @@ describe('free canvas project domain', () => {
         description: 'Arrival',
         style: 'Cinematic',
         constraints: 'No dialogue',
-        rows: [],
+        rows: [{
+          id: 'row-isolation', cutLabel: '1', timeRange: '0-1s', subject: '', action: '', scene: '',
+          camera: '', lighting: '', audio: '', duration: '1s', createdAt: 1, updatedAt: 1
+        }],
         createdAt: 1,
         updatedAt: 2,
         meta: {}
@@ -662,7 +665,7 @@ describe('free canvas project domain', () => {
         documentRevision: 3,
         documentDigest: planningDocument.digest,
         documentResourceDigests: [`sha256:${'a'.repeat(64)}`],
-        model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1' },
+        model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1', displayName: 'Model', capabilities: {} },
         skills: [{ skillId: 'skill-1', revision: 2, digest: `sha256:${'b'.repeat(64)}` }]
       },
       pendingFieldChanges: [],
@@ -696,7 +699,10 @@ describe('free canvas project domain', () => {
       width: 680, height: 440, sequence,
       source: {
         documentNodeId: 'document-1', documentRevision: 4, documentDigest: `sha256:${'a'.repeat(64)}`,
-        documentResourceDigests: [], model: { connectionId: 'c', providerId: 'p', modelId: 'm' }, skills: []
+        documentResourceDigests: [], model: {
+          connectionId: 'c', providerId: 'p', modelId: 'm', displayName: 'Model',
+          capabilities: { input: ['text'], toolCalling: true }
+        }, skills: []
       },
       pendingFieldChanges: [], revision: 0, digest,
       agentAppliedEdit: {
@@ -718,6 +724,18 @@ describe('free canvas project domain', () => {
 
     const malformed = [
       { label: 'sequence', node: { ...strictNode, sequence: { ...sequence, rows: 'not-rows' } } },
+      { label: 'empty rows', node: { ...strictNode, sequence: { ...sequence, rows: [] } } },
+      { label: 'decomposed sequence id', node: { ...strictNode, sequence: { ...sequence, id: 'Cafe\u0301' } } },
+      { label: 'oversized sequence id', node: { ...strictNode, sequence: { ...sequence, id: 'x'.repeat(10_001) } } },
+      { label: 'surrogate row id', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], id: 'bad\ud800' }] }
+      } },
+      { label: 'decomposed image URL', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], imageUrl: 'https://example.test/Cafe\u0301' }] }
+      } },
+      { label: 'oversized image URL', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], imageUrl: 'x'.repeat(10_001) }] }
+      } },
       { label: 'pending change', node: {
         ...strictNode,
         pendingFieldChanges: [{
@@ -727,6 +745,25 @@ describe('free canvas project domain', () => {
       } },
       { label: 'source', node: {
         ...strictNode, source: { ...strictNode.source, documentDigest: 'not-a-digest' }
+      } },
+      { label: 'decomposed source id', node: {
+        ...strictNode, source: { ...strictNode.source, documentNodeId: 'Cafe\u0301' }
+      } },
+      { label: 'oversized source id', node: {
+        ...strictNode, source: { ...strictNode.source, documentNodeId: 'x'.repeat(10_001) }
+      } },
+      { label: 'legacy three-key model', node: {
+        ...strictNode, source: {
+          ...strictNode.source, model: { connectionId: 'c', providerId: 'p', modelId: 'm' }
+        }
+      } },
+      { label: 'surrogate model display name', node: {
+        ...strictNode, source: { ...strictNode.source, model: { ...strictNode.source.model, displayName: 'bad\ud800' } }
+      } },
+      { label: 'oversized Skill id', node: {
+        ...strictNode, source: {
+          ...strictNode.source, skills: [{ skillId: 'x'.repeat(10_001), revision: 1, digest: `sha256:${'c'.repeat(64)}` }]
+        }
       } },
       { label: 'revision', node: { ...strictNode, revision: -1 } },
       { label: 'metadata', node: { ...strictNode, meta: [] } },

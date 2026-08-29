@@ -12,7 +12,7 @@ const sequence = (): IStoryboardSequence => ({
 const provenance = {
   documentNodeId: 'document-1', documentRevision: 7, documentDigest: `sha256:${'a'.repeat(64)}`,
   documentResourceDigests: [`sha256:${'b'.repeat(64)}`],
-  model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1' },
+  model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1', displayName: 'Model', capabilities: {} },
   skills: [{ skillId: 'skill-1', revision: 4, digest: `sha256:${'c'.repeat(64)}` }]
 }
 
