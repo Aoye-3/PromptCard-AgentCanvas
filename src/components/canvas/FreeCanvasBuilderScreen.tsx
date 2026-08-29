@@ -190,7 +190,7 @@ interface FreeCanvasBuilderScreenProps {
   onRenameProject: () => void
   onSave: () => void
   onChange: (freeCanvas: IFreeCanvasProject) => void
-  onPersistCanvas?: (freeCanvas: IFreeCanvasProject) => Promise<boolean>
+  onPersistCanvas?: (freeCanvas: IFreeCanvasProject) => Promise<boolean | FreeCanvasPersistReceipt>
   previewMode?: boolean
   imageGenerationNodeV1?: boolean
   onConfigureImageModel?: (context: { projectId: string; nodeId?: string; returnTarget: 'free-canvas' }) => void
@@ -263,6 +263,12 @@ type DocumentAuthorityNode = Extract<IFreeCanvasNode, { kind: 'document' }>
 interface ProjectMutationScope {
   projectId: string
   epoch: number
+}
+
+export interface FreeCanvasPersistReceipt {
+  saved: true
+  freeCanvas: IFreeCanvasProject
+  editSeq: number
 }
 
 interface DocumentReconcileLease {
@@ -3527,41 +3533,67 @@ const FreeCanvasBuilderInner = ({
       const currentCanvas = freeCanvasRef.current
       if (proposal.handoffBasis) {
         const basis = proposal.handoffBasis
-        const source = currentCanvas.nodes.find(node => node.id === basis.nodeId)
-        const sourceIsCurrent = basis.kind === 'document-selection'
-          ? source?.kind === 'document' && matchesDocumentPromptHandoffBasis(source.document, basis)
-          : source?.kind === 'storyboard'
-            && (source.revision ?? 0) === basis.storyboardRevision
-            && (source.digest ?? storyboardDigest(source.sequence, source.pendingFieldChanges)) === basis.storyboardDigest
-            && source.pendingFieldChanges.length === 0
-            && source.sequence.rows.some(row => row.id === basis.rowId && storyboardShotDigest(row) === basis.shotDigest)
-        if (!sourceIsCurrent) {
+        if (!promptHandoffSourceIsCurrent(currentCanvas, basis)) {
           window.alert('规划来源已发生变化，请重新生成 Prompt 提案。')
           return false
         }
         const scope = activeProjectScopeRef.current
-        const node = createFreeCanvasTextNode(
-          proposal.userText,
-          nextNodePosition(reactFlow, currentCanvas.nodes.length)
-        )
-        const nextCanvas = {
-          ...currentCanvas,
-          selectedNodeId: node.id,
-          nodes: [
-            ...currentCanvas.nodes,
-            { ...node, title: proposal.title?.trim() || node.title }
-          ]
-        }
         if (!onPersistCanvas || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
-        let saved = false
-        try {
-          saved = Boolean(await onPersistCanvas(nextCanvas))
-        } catch {
-          saved = false
+        const application = await createPromptHandoffApplication(proposal)
+        if (!application) {
+          window.alert('Prompt 提案缺少可信的会话或运行来源，请重新生成。')
+          return false
         }
-        if (!saved || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
-        commitCanvasSelection(nextCanvas, node.id)
-        return true
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          const baseCanvas = freeCanvasRef.current
+          const existing = inspectPromptHandoffApplication(baseCanvas, application)
+          if (existing.status === 'exact') return true
+          if (existing.status === 'conflict') {
+            window.alert('已保存的 Prompt handoff 标记完整性校验失败，无法重复应用。')
+            return false
+          }
+          if (!promptHandoffSourceIsCurrent(baseCanvas, basis)) {
+            window.alert('规划来源已发生变化，请重新生成 Prompt 提案。')
+            return false
+          }
+          const node = createPromptHandoffNode(
+            proposal,
+            application,
+            nextNodePosition(reactFlow, baseCanvas.nodes.length)
+          )
+          const requestedCanvas = {
+            ...baseCanvas,
+            selectedNodeId: node.id,
+            nodes: [...baseCanvas.nodes, node]
+          }
+          let receipt: boolean | FreeCanvasPersistReceipt = false
+          try {
+            receipt = await onPersistCanvas(requestedCanvas)
+          } catch {
+            receipt = false
+          }
+          if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
+          const winningCanvas = authoritativePersistedCanvas(receipt)
+          if (!winningCanvas) return false
+          const winning = inspectPromptHandoffApplication(winningCanvas, application)
+          const liveCanvas = freeCanvasRef.current
+          const liveChanged = canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(baseCanvas)
+            && canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(winningCanvas)
+          if (winning.status === 'exact' && !liveChanged) {
+            commitCanvasSelection(winningCanvas, application.nodeId)
+            return true
+          }
+          if (winning.status === 'conflict') {
+            window.alert('持久化返回的 Prompt handoff 标记完整性校验失败。')
+            return false
+          }
+          // A superseding same-project save won, or the Canvas changed while this
+          // save was in flight. The next iteration rebases the same deterministic
+          // application identity onto the latest authoritative Canvas.
+          freeCanvasRef.current = liveChanged ? liveCanvas : winningCanvas
+        }
+        window.alert('Canvas 在保存期间持续变化，请重试 Prompt 提案。')
+        return false
       }
       if (proposal.sourceNodeId) {
         const source = currentCanvas.nodes.find((node): node is IFreeCanvasTextNode => (
@@ -6579,6 +6611,121 @@ const pythonCanonicalJson = (value: unknown): string => {
   }
   return JSON.stringify(value)
 }
+
+type PromptHandoffProposal = Extract<AgentWorkspaceProposal | AgentCanvasEdit, { kind: 'free_canvas_text_create' }>
+type PromptHandoffApplication = {
+  nodeId: string
+  marker: NonNullable<IFreeCanvasTextNode['agentPromptHandoff']>
+  title: string
+  userText: string
+  provenance: NonNullable<PromptHandoffProposal['provenance']>
+}
+
+const createPromptHandoffApplication = async (
+  proposal: PromptHandoffProposal
+): Promise<PromptHandoffApplication | null> => {
+  if (!proposal.handoffBasis || !proposal.threadId || !proposal.provenance) return null
+  const title = proposal.title?.trim() || 'Agent Prompt'
+  const basisDigest = await sha256Text(pythonCanonicalJson(proposal.handoffBasis))
+  const resultDigest = await sha256Text(pythonCanonicalJson({
+    provenance: proposal.provenance,
+    title,
+    userText: proposal.userText
+  }))
+  const applicationDigest = await sha256Text(pythonCanonicalJson({
+    basisDigest,
+    conversationId: proposal.threadId,
+    proposalId: proposal.id,
+    resultDigest
+  }))
+  return {
+    nodeId: `prompt-handoff-${applicationDigest.slice(7, 39)}`,
+    marker: {
+      version: 1,
+      conversationId: proposal.threadId,
+      proposalId: proposal.id,
+      basisDigest,
+      resultDigest
+    },
+    title,
+    userText: proposal.userText,
+    provenance: proposal.provenance
+  }
+}
+
+const promptHandoffSourceIsCurrent = (
+  canvas: IFreeCanvasProject,
+  basis: AgentPromptHandoffBasis
+): boolean => {
+  const source = canvas.nodes.find(node => node.id === basis.nodeId)
+  return basis.kind === 'document-selection'
+    ? source?.kind === 'document' && matchesDocumentPromptHandoffBasis(source.document, basis)
+    : source?.kind === 'storyboard'
+      && (source.revision ?? 0) === basis.storyboardRevision
+      && (source.digest ?? storyboardDigest(source.sequence, source.pendingFieldChanges)) === basis.storyboardDigest
+      && source.pendingFieldChanges.length === 0
+      && source.sequence.rows.some(row => row.id === basis.rowId && storyboardShotDigest(row) === basis.shotDigest)
+}
+
+const createPromptHandoffNode = (
+  proposal: PromptHandoffProposal,
+  application: PromptHandoffApplication,
+  position: { x: number; y: number }
+): IFreeCanvasTextNode => {
+  const created = createFreeCanvasTextNode(proposal.userText, position)
+  return {
+    ...created,
+    id: application.nodeId,
+    title: application.title,
+    segments: created.segments.map((segment, index) => ({
+      ...segment,
+      id: `${application.nodeId}-user-${index + 1}`,
+      source: 'user'
+    })),
+    provenance: application.provenance,
+    agentPromptHandoff: application.marker
+  }
+}
+
+const inspectPromptHandoffApplication = (
+  canvas: IFreeCanvasProject,
+  application: PromptHandoffApplication
+): { status: 'missing' | 'exact' | 'conflict' } => {
+  const identityMatches = canvas.nodes.filter((node): node is IFreeCanvasTextNode => (
+    node.kind === 'text'
+    && node.agentPromptHandoff?.conversationId === application.marker.conversationId
+    && node.agentPromptHandoff?.proposalId === application.marker.proposalId
+  ))
+  const deterministicNode = canvas.nodes.find(node => node.id === application.nodeId)
+  if (identityMatches.length === 0 && !deterministicNode) return { status: 'missing' }
+  if (identityMatches.length !== 1 || deterministicNode !== identityMatches[0]) return { status: 'conflict' }
+  const node = identityMatches[0]
+  const marker = node.agentPromptHandoff
+  if (!marker || Object.keys(marker).sort().join(',') !== 'basisDigest,conversationId,proposalId,resultDigest,version') {
+    return { status: 'conflict' }
+  }
+  const exact = marker.version === 1
+    && marker.conversationId === application.marker.conversationId
+    && marker.proposalId === application.marker.proposalId
+    && marker.basisDigest === application.marker.basisDigest
+    && marker.resultDigest === application.marker.resultDigest
+    && node.title === application.title
+    && pythonCanonicalJson(node.provenance) === pythonCanonicalJson(application.provenance)
+    && node.segments.length > 0
+    && node.segments.every(segment => segment.source === 'user')
+    && freeCanvasUserText(node) === application.userText
+  return { status: exact ? 'exact' : 'conflict' }
+}
+
+const authoritativePersistedCanvas = (
+  receipt: boolean | FreeCanvasPersistReceipt
+): IFreeCanvasProject | null => (
+  typeof receipt === 'object' && receipt.saved === true && receipt.freeCanvas
+    ? receipt.freeCanvas
+    : null
+)
+
+const canvasSnapshotIdentity = (canvas: IFreeCanvasProject): string => JSON.stringify(canvas)
 
 const freeCanvasTemplateDigest = (node: IFreeCanvasTextNode): Promise<string> => sha256Text(pythonCanonicalJson({
   presetText: freeCanvasPresetText(node),

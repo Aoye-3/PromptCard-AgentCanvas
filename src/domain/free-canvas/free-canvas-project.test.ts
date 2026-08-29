@@ -1044,6 +1044,81 @@ describe('free canvas project domain', () => {
     expect(Object.isFrozen(normalized.nodes[0].originalNode.agentAppliedEdit)).toBe(true)
   })
 
+  test('preserves a strict Prompt handoff marker and provenance through real Canvas normalization', () => {
+    const node = {
+      ...createFreeCanvasTextNode('Cinematic portrait', { x: 80, y: 100 }, 100),
+      id: 'prompt-handoff-node',
+      provenance: {
+        model: {
+          connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1',
+          displayName: 'Production Model', capabilities: { input: ['text'], toolCalling: true }
+        },
+        skills: [{ skillId: 'SKL-tone', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
+      },
+      agentPromptHandoff: {
+        version: 1 as const, conversationId: 'conversation-1', proposalId: 'proposal-1',
+        basisDigest: `sha256:${'a'.repeat(64)}`, resultDigest: `sha256:${'b'.repeat(64)}`
+      }
+    }
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [node], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({
+      kind: 'text', provenance: node.provenance, agentPromptHandoff: node.agentPromptHandoff
+    })
+    if (normalized.nodes[0].kind !== 'text') throw new Error('Expected Prompt text node')
+    expect(normalized.nodes[0].provenance).not.toBe(node.provenance)
+    expect(normalized.nodes[0].agentPromptHandoff).not.toBe(node.agentPromptHandoff)
+  })
+
+  test.each([
+    ['marker extra key', (node: Record<string, unknown>) => {
+      node.agentPromptHandoff = { ...(node.agentPromptHandoff as object), trusted: true }
+    }],
+    ['marker missing key', (node: Record<string, unknown>) => {
+      const marker = { ...(node.agentPromptHandoff as Record<string, unknown>) }
+      delete marker.resultDigest
+      node.agentPromptHandoff = marker
+    }],
+    ['marker invalid digest', (node: Record<string, unknown>) => {
+      node.agentPromptHandoff = { ...(node.agentPromptHandoff as object), basisDigest: 'sha256:nope' }
+    }],
+    ['provenance model extra key', (node: Record<string, unknown>) => {
+      const provenance = structuredClone(node.provenance as Record<string, unknown>)
+      provenance.model = { ...(provenance.model as object), secret: 'x' }
+      node.provenance = provenance
+    }],
+    ['provenance duplicate skills', (node: Record<string, unknown>) => {
+      const provenance = structuredClone(node.provenance as Record<string, unknown>)
+      provenance.skills = [...(provenance.skills as unknown[]), structuredClone((provenance.skills as unknown[])[0])]
+      node.provenance = provenance
+    }],
+    ['marker without provenance', (node: Record<string, unknown>) => { delete node.provenance }],
+    ['provenance without marker', (node: Record<string, unknown>) => { delete node.agentPromptHandoff }]
+  ])('freezes malformed Prompt handoff text as lossless unsupported data: %s', (_label, mutate) => {
+    const originalNode: Record<string, unknown> = {
+      ...createFreeCanvasTextNode('Cinematic portrait', { x: 80, y: 100 }, 100),
+      id: 'prompt-handoff-corrupt',
+      provenance: {
+        model: {
+          connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1',
+          displayName: 'Production Model', capabilities: {}
+        },
+        skills: [{ skillId: 'SKL-tone', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
+      },
+      agentPromptHandoff: {
+        version: 1, conversationId: 'conversation-1', proposalId: 'proposal-1',
+        basisDigest: `sha256:${'a'.repeat(64)}`, resultDigest: `sha256:${'b'.repeat(64)}`
+      }
+    }
+    mutate(originalNode)
+    const normalized = normalizeFreeCanvasProject({ nodes: [originalNode as never], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({ kind: 'unsupported', originalKind: 'text', originalNode })
+    if (normalized.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported text node')
+    expect(Object.isFrozen(normalized.nodes[0].originalNode)).toBe(true)
+  })
+
   test('projects unknown node kinds as detached read-only data and drops their connections', () => {
     const unknownNode = {
       id: 'future-1',

@@ -340,7 +340,8 @@ export const agentRuntimeService = {
       ...response,
       proposals: normalizeAgentWorkspaceProposals(response.proposals, {
         permissionScope: body.permissionScope,
-        interactionMode: body.interactionMode
+        interactionMode: body.interactionMode,
+        conversationId: response.conversationId || response.threadId
       }),
       canvasEdits: validateAgentCanvasEdits(response.canvasEdits)
     }
@@ -760,7 +761,8 @@ function normalizeProposal(value: unknown, index: number): AgentWorkspaceProposa
       kind: 'free_canvas_text_create',
       title: typeof proposal.title === 'string' ? proposal.title : 'Agent Prompt',
       userText: proposal.userText,
-      ...(handoffBasis ? { handoffBasis } : {})
+      ...(handoffBasis ? { handoffBasis } : {}),
+      ...(provenance ? { provenance } : {})
     }
   }
 
@@ -769,14 +771,18 @@ function normalizeProposal(value: unknown, index: number): AgentWorkspaceProposa
 
 export function normalizeAgentWorkspaceProposals(
   value: unknown,
-  options: { permissionScope?: AgentPermissionScope; interactionMode?: AgentInteractionMode } = {}
+  options: {
+    permissionScope?: AgentPermissionScope
+    interactionMode?: AgentInteractionMode
+    conversationId?: string
+  } = {}
 ): AgentWorkspaceProposal[] {
   if (!Array.isArray(value)) return []
   const seenIds = new Set<string>()
   return value.flatMap((candidate, index) => {
     const normalized = options.interactionMode === 'chat-experimental'
       && isRecord(candidate) && candidate.kind === 'free_canvas_text_create'
-      ? normalizeExperimentalPromptHandoffProposal(candidate, index)
+      ? normalizeExperimentalPromptHandoffProposal(candidate, index, options.conversationId)
       : normalizeProposal(candidate, index)
     if (!normalized
       || seenIds.has(normalized.id)
@@ -788,7 +794,8 @@ export function normalizeAgentWorkspaceProposals(
 
 function normalizeExperimentalPromptHandoffProposal(
   proposal: Record<string, unknown>,
-  index: number
+  index: number,
+  conversationId?: string
 ): AgentWorkspaceProposal | null {
   if (!hasOnlyKeys(proposal, [
     'kind', 'id', 'contextId', 'threadId', 'runId', 'agentName', 'title', 'userText',
@@ -800,16 +807,19 @@ function normalizeExperimentalPromptHandoffProposal(
     || !Number.isSafeInteger(proposal.createdAt) || Number(proposal.createdAt) < 0
     || !isStrictNfcText(proposal.title, 1024, true)
     || !isStrictNfcText(proposal.rationale, 8_000, false)
-    || (proposal.contextId !== undefined && typeof proposal.contextId !== 'string')
-    || (proposal.threadId !== undefined && proposal.threadId !== null && typeof proposal.threadId !== 'string')
-    || (proposal.runId !== undefined && proposal.runId !== null && typeof proposal.runId !== 'string')
-    || (proposal.provenance !== undefined && !normalizeAgentRunProvenance(proposal.provenance))
+    || (proposal.contextId !== undefined && !isStrictNfcText(proposal.contextId, 512, true))
+    || (proposal.threadId !== undefined && proposal.threadId !== null
+      && (!isStrictNfcText(proposal.threadId, 512, true) || proposal.threadId !== conversationId))
+    || (proposal.runId !== undefined && proposal.runId !== null && !isStrictNfcText(proposal.runId, 512, true))
+    || !conversationId
+    || !isStrictNfcText(conversationId, 512, true)
+    || !normalizeAgentRunProvenance(proposal.provenance)
     || !isStrictNfcText(proposal.userText, 100_000, true)) return null
   const handoffBasis = normalizePromptHandoffBasis(proposal.handoffBasis, true)
   if (!handoffBasis) return null
   const normalized = normalizeProposal(proposal, index)
-  return normalized?.kind === 'free_canvas_text_create' && normalized.handoffBasis
-    ? normalized
+  return normalized?.kind === 'free_canvas_text_create' && normalized.handoffBasis && normalized.provenance
+    ? { ...normalized, threadId: conversationId }
     : null
 }
 
@@ -894,25 +904,35 @@ function normalizeFreeCanvasTextProposalBasis(value: unknown): AgentFreeCanvasTe
 }
 
 function normalizeAgentRunProvenance(value: unknown): AgentRunProvenance | null {
-  if (!value || typeof value !== 'object') return null
+  if (!isRecord(value) || !hasOnlyKeys(value, ['model', 'skills']) || Object.keys(value).length !== 2) return null
   const source = value as Record<string, unknown>
-  const model = source.model as Record<string, unknown> | undefined
+  const model = isRecord(source.model) ? source.model : undefined
   const skills = source.skills
   if (
     !model
-    || typeof model.connectionId !== 'string'
-    || typeof model.providerId !== 'string'
-    || typeof model.modelId !== 'string'
+    || !hasOnlyKeys(model, ['connectionId', 'providerId', 'modelId', 'displayName', 'capabilities'])
+    || Object.keys(model).length !== 5
+    || !isStrictNfcText(model.connectionId, 512, true)
+    || !isStrictNfcText(model.providerId, 512, true)
+    || !isStrictNfcText(model.modelId, 512, true)
+    || !isStrictNfcText(model.displayName, 1024, true)
+    || !isStrictNfcJson(model.capabilities)
     || !Array.isArray(skills)
+    || skills.length > 8
   ) return null
+  const seenSkillIds = new Set<string>()
   const normalizedSkills = skills.flatMap(skill => {
-    if (!skill || typeof skill !== 'object') return []
+    if (!isRecord(skill) || !hasOnlyKeys(skill, ['skillId', 'revision', 'digest']) || Object.keys(skill).length !== 3) return []
     const item = skill as Record<string, unknown>
     if (
-      typeof item.skillId !== 'string'
-      || !Number.isInteger(item.revision)
+      !isStrictNfcText(item.skillId, 512, true)
+      || seenSkillIds.has(item.skillId)
+      || !Number.isSafeInteger(item.revision)
+      || Number(item.revision) < 0
       || typeof item.digest !== 'string'
+      || !SHA256_PATTERN.test(item.digest)
     ) return []
+    seenSkillIds.add(item.skillId)
     return [{ skillId: item.skillId, revision: Number(item.revision), digest: item.digest }]
   })
   if (normalizedSkills.length !== skills.length) return null
@@ -921,13 +941,22 @@ function normalizeAgentRunProvenance(value: unknown): AgentRunProvenance | null 
       connectionId: model.connectionId,
       providerId: model.providerId,
       modelId: model.modelId,
-      ...(typeof model.displayName === 'string' ? { displayName: model.displayName } : {}),
-      ...(model.capabilities && typeof model.capabilities === 'object'
-        ? { capabilities: model.capabilities as Record<string, unknown> }
-        : {})
+      displayName: model.displayName,
+      capabilities: model.capabilities as Record<string, unknown>
     },
     skills: normalizedSkills
   }
+}
+
+function isStrictNfcJson(value: unknown): boolean {
+  if (value === null || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (typeof value === 'string') return isWellFormedText(value) && value === value.normalize('NFC')
+  if (Array.isArray(value)) return value.every(isStrictNfcJson)
+  if (!isRecord(value)) return false
+  return Object.entries(value).every(([key, item]) => (
+    isWellFormedText(key) && key === key.normalize('NFC') && isStrictNfcJson(item)
+  ))
 }
 
 function normalizeFreeCanvasTextInsertions(value: unknown): AgentFreeCanvasTextInsertion[] | null {

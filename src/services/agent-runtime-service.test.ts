@@ -6,6 +6,13 @@ const DOCUMENT_RESOURCE_ID = 'a'.repeat(32)
 const DOCUMENT_NODE_ID = 'free-text-1700000000000-abc123'
 const HANDOFF_SHOT_TEXT = '{"id":"shot-1"}'
 const HANDOFF_SHOT_DIGEST = `sha256:${sha256Utf8(HANDOFF_SHOT_TEXT)}`
+const HANDOFF_PROVENANCE = {
+  model: {
+    connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1',
+    displayName: 'Production Model', capabilities: { input: ['text'], toolCalling: true }
+  },
+  skills: [{ skillId: 'SKL-tone', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
+}
 
 const successfulMessageResponse = () => new Response(JSON.stringify({
   threadId: 'thread-1',
@@ -236,7 +243,7 @@ describe('agent runtime message contract', () => {
     const valid = {
       kind: 'free_canvas_text_create', id: 'handoff-valid', agentName: 'PromptCard Agent',
       status: 'pending', createdAt: 1, title: 'Agent Prompt', userText: 'cinematic portrait',
-      handoffBasis, rationale: 'explicit handoff'
+      handoffBasis, rationale: 'explicit handoff', provenance: HANDOFF_PROVENANCE
     }
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       threadId: 'thread-1', conversationId: 'conversation-1', text: 'ok', canvasEdits: [],
@@ -274,7 +281,61 @@ describe('agent runtime message contract', () => {
       permissionScope: 'workspace-chatbot-agent'
     })
 
-    expect(result.proposals).toEqual([expect.objectContaining({ id: 'handoff-valid', handoffBasis })])
+    expect(result.proposals).toEqual([expect.objectContaining({
+      id: 'handoff-valid', handoffBasis, threadId: 'conversation-1', provenance: HANDOFF_PROVENANCE
+    })])
+  })
+
+  it.each([
+    ['model extra key', { ...HANDOFF_PROVENANCE, model: { ...HANDOFF_PROVENANCE.model, secret: 'x' } }],
+    ['missing model display name', { ...HANDOFF_PROVENANCE, model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1', capabilities: {} } }],
+    ['non-NFC model id', { ...HANDOFF_PROVENANCE, model: { ...HANDOFF_PROVENANCE.model, modelId: 'e\u0301' } }],
+    ['negative skill revision', { ...HANDOFF_PROVENANCE, skills: [{ ...HANDOFF_PROVENANCE.skills[0], revision: -1 }] }],
+    ['unsafe skill revision', { ...HANDOFF_PROVENANCE, skills: [{ ...HANDOFF_PROVENANCE.skills[0], revision: Number.MAX_SAFE_INTEGER + 1 }] }],
+    ['forged skill digest', { ...HANDOFF_PROVENANCE, skills: [{ ...HANDOFF_PROVENANCE.skills[0], digest: 'sha256:nope' }] }],
+    ['duplicate skills', { ...HANDOFF_PROVENANCE, skills: [HANDOFF_PROVENANCE.skills[0], HANDOFF_PROVENANCE.skills[0]] }],
+    ['nine skills', { ...HANDOFF_PROVENANCE, skills: Array.from({ length: 9 }, (_, index) => ({ skillId: `SKL-${index}`, revision: 1, digest: `sha256:${index.toString(16).repeat(64)}` })) }],
+    ['skill extra key', { ...HANDOFF_PROVENANCE, skills: [{ ...HANDOFF_PROVENANCE.skills[0], secret: 'x' }] }]
+  ])('rejects experimental handoff provenance with %s', async (_label, provenance) => {
+    const proposal = {
+      kind: 'free_canvas_text_create', id: 'handoff-invalid-provenance', agentName: 'PromptCard Agent',
+      status: 'pending', createdAt: 1, title: 'Agent Prompt', userText: 'cinematic portrait',
+      handoffBasis: {
+        kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 3,
+        storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1',
+        shotDigest: HANDOFF_SHOT_DIGEST, shotText: HANDOFF_SHOT_TEXT
+      }, rationale: 'explicit handoff', provenance
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-1', conversationId: 'conversation-1', text: 'ok', canvasEdits: [], proposals: [proposal]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+    const result = await agentRuntimeService.sendMessage({
+      content: 'create proposal', projectId: 'project-1', interactionMode: 'chat-experimental',
+      permissionScope: 'workspace-chatbot-agent'
+    })
+    expect(result.proposals).toEqual([])
+  })
+
+  it('rejects a model-reported conversation identity instead of trusting or preserving it', async () => {
+    const proposal = {
+      kind: 'free_canvas_text_create', id: 'handoff-forged-thread', agentName: 'PromptCard Agent',
+      status: 'pending', createdAt: 1, title: 'Agent Prompt', userText: 'cinematic portrait',
+      threadId: 'forged-conversation',
+      handoffBasis: {
+        kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 3,
+        storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1',
+        shotDigest: HANDOFF_SHOT_DIGEST, shotText: HANDOFF_SHOT_TEXT
+      }, rationale: 'explicit handoff', provenance: HANDOFF_PROVENANCE
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-1', conversationId: 'conversation-1', text: 'ok', canvasEdits: [], proposals: [proposal]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+    const result = await agentRuntimeService.sendMessage({
+      content: 'create proposal', projectId: 'project-1', interactionMode: 'chat-experimental'
+    })
+    expect(result.proposals).toEqual([])
   })
 
   it('keeps the legacy source-bound Prompt create valid at prompt-edit live ingress', async () => {

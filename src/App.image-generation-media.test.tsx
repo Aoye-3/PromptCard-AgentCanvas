@@ -10,7 +10,8 @@ const mocks = vi.hoisted(() => ({
   capture: null as RecentCaptureItem | null,
   projectUpdate: vi.fn(),
   captureUpdate: vi.fn(),
-  refreshCaptures: vi.fn()
+  refreshCaptures: vi.fn(),
+  persistResult: null as unknown
 }))
 
 vi.mock('./components/app/AppShell', () => ({
@@ -28,9 +29,16 @@ vi.mock('./components/app/ProjectHome', () => ({
   }) => <button type="button" data-open-project onClick={() => onOpenProject(projects[0])}>Open project</button>
 }))
 vi.mock('./components/canvas/FreeCanvasBuilderScreen', () => ({
-  default: ({ onBack }: { onBack: () => void }) => (
+  default: ({ onBack, onPersistCanvas, freeCanvas }: {
+    onBack: () => void
+    onPersistCanvas: (canvas: IFreeCanvasProject) => Promise<unknown>
+    freeCanvas: IFreeCanvasProject
+  }) => (
     <div data-free-canvas-builder>
       <button type="button" data-builder-back onClick={onBack}>Back</button>
+      <button type="button" data-builder-persist onClick={async () => {
+        mocks.persistResult = await onPersistCanvas({ ...freeCanvas, meta: { ...freeCanvas.meta, handoffRequested: true } })
+      }}>Persist</button>
     </div>
   )
 }))
@@ -206,6 +214,30 @@ describe('App generated result media placement', () => {
     mocks.projectUpdate.mockImplementation(async (_id, updates) => ({ ...mocks.project!, ...updates, revision: 2 }))
     mocks.captureUpdate.mockResolvedValue(mocks.capture)
     mocks.refreshCaptures.mockResolvedValue(undefined)
+    mocks.persistResult = null
+  })
+
+  it('returns the authoritative Storage canvas rather than treating a superseding save as boolean success', async () => {
+    mocks.project = canvasProject()
+    const winningCanvas = { ...mocks.project.freeCanvas!, meta: { winningConcurrentEdit: true } }
+    let renderer!: ReactTestRenderer
+    await act(async () => {
+      renderer = create(<App />)
+      await settle()
+    })
+    await act(async () => {
+      renderer.root.findByProps({ 'data-open-project': true }).props.onClick()
+      await settle()
+    })
+    mocks.projectUpdate.mockClear()
+    mocks.projectUpdate.mockResolvedValueOnce({ ...mocks.project, freeCanvas: winningCanvas, revision: 2 })
+    await act(async () => {
+      await renderer.root.findByProps({ 'data-builder-persist': true }).props.onClick()
+    })
+
+    expect(mocks.persistResult).toEqual({ saved: true, freeCanvas: winningCanvas, editSeq: 0 })
+    expect((mocks.projectUpdate.mock.calls[0][1] as { freeCanvas: IFreeCanvasProject }).freeCanvas.meta)
+      .toMatchObject({ handoffRequested: true })
   })
 
   it('writes an ordinary generated image through the mounted App and real MediaScreen action', async () => {

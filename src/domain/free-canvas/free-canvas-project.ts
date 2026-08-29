@@ -1031,6 +1031,22 @@ const normalizeNode = (node: Partial<IFreeCanvasNode>, timestamp: number): IFree
     }
   }
   if (node.kind === 'text') {
+    const provenance = normalizeTextAgentRunProvenance(node.provenance)
+    const agentPromptHandoff = normalizeAgentPromptHandoffMarker(node.agentPromptHandoff)
+    const hasHandoffState = node.provenance !== undefined || node.agentPromptHandoff !== undefined
+    if (hasHandoffState && (!provenance || !agentPromptHandoff)) {
+      return normalizeUnsupportedNode({
+        id: node.id,
+        kind: 'unsupported',
+        title: node.title,
+        position: node.position,
+        width: node.width,
+        height: node.height,
+        originalKind: 'text',
+        originalNode: cloneFrozenRecord({ ...(node as unknown as Record<string, unknown>) }),
+        meta: isPlainRecordValue(node.meta) ? node.meta : {}
+      }, timestamp)
+    }
     return {
       id: node.id || `free-text-${timestamp}`,
       kind: 'text',
@@ -1043,6 +1059,8 @@ const normalizeNode = (node: Partial<IFreeCanvasNode>, timestamp: number): IFree
       fontSize: node.fontSize || 'large',
       segments: Array.isArray(node.segments) ? node.segments.map(normalizeTextSegment) : [],
       ...(typeof node.referenceCode === 'string' ? { referenceCode: node.referenceCode } : {}),
+      ...(provenance ? { provenance } : {}),
+      ...(agentPromptHandoff ? { agentPromptHandoff } : {}),
       meta: node.meta || {}
     }
   }
@@ -1117,6 +1135,105 @@ const normalizeAgentAppliedEditMarker = (value: unknown): AgentAppliedEditMarker
     editId: (record.editId as string).normalize('NFC'),
     resultDigest
   }
+}
+
+type AgentPromptHandoffMarker = NonNullable<IFreeCanvasTextNode['agentPromptHandoff']>
+
+const normalizeAgentPromptHandoffMarker = (value: unknown): AgentPromptHandoffMarker | null => {
+  if (!isPlainRecordValue(value)) return null
+  const keys = ['version', 'conversationId', 'proposalId', 'basisDigest', 'resultDigest']
+  if (Object.keys(value).length !== keys.length || keys.some(key => !Object.prototype.hasOwnProperty.call(value, key))) {
+    return null
+  }
+  if (value.version !== 1
+    || !isStrictNfcText(value.conversationId)
+    || !isStrictNfcText(value.proposalId)
+    || typeof value.basisDigest !== 'string' || !SHA256_DIGEST_PATTERN.test(value.basisDigest)
+    || typeof value.resultDigest !== 'string' || !SHA256_DIGEST_PATTERN.test(value.resultDigest)
+  ) return null
+  return {
+    version: 1,
+    conversationId: value.conversationId,
+    proposalId: value.proposalId,
+    basisDigest: value.basisDigest,
+    resultDigest: value.resultDigest
+  }
+}
+
+const normalizeTextAgentRunProvenance = (value: unknown): AgentRunProvenance | null => {
+  if (!isPlainRecordValue(value)
+    || Object.keys(value).length !== 2
+    || !Object.prototype.hasOwnProperty.call(value, 'model')
+    || !Object.prototype.hasOwnProperty.call(value, 'skills')
+    || !isPlainRecordValue(value.model)
+    || !Array.isArray(value.skills)
+    || value.skills.length > 8
+  ) return null
+  const model = value.model
+  const modelKeys = ['connectionId', 'providerId', 'modelId', 'displayName', 'capabilities']
+  if (Object.keys(model).length !== modelKeys.length
+    || modelKeys.some(key => !Object.prototype.hasOwnProperty.call(model, key))
+    || !isStrictNfcText(model.connectionId)
+    || !isStrictNfcText(model.providerId)
+    || !isStrictNfcText(model.modelId)
+    || !isStrictNfcText(model.displayName)
+    || !isPlainRecordValue(model.capabilities)
+    || !isStrictNfcJson(model.capabilities)
+  ) return null
+  const seenSkillIds = new Set<string>()
+  const skills: AgentRunProvenance['skills'] = []
+  for (const skill of value.skills) {
+    if (!isPlainRecordValue(skill)
+      || Object.keys(skill).length !== 3
+      || !Object.prototype.hasOwnProperty.call(skill, 'skillId')
+      || !Object.prototype.hasOwnProperty.call(skill, 'revision')
+      || !Object.prototype.hasOwnProperty.call(skill, 'digest')
+      || !isStrictNfcText(skill.skillId)
+      || seenSkillIds.has(skill.skillId)
+      || !isNonNegativeSafeInteger(skill.revision)
+      || typeof skill.digest !== 'string'
+      || !SHA256_DIGEST_PATTERN.test(skill.digest)
+    ) return null
+    seenSkillIds.add(skill.skillId)
+    skills.push({ skillId: skill.skillId, revision: skill.revision, digest: skill.digest })
+  }
+  return {
+    model: {
+      connectionId: model.connectionId,
+      providerId: model.providerId,
+      modelId: model.modelId,
+      displayName: model.displayName,
+      capabilities: cloneStructuredValue(model.capabilities)
+    },
+    skills
+  }
+}
+
+const isStrictNfcText = (value: unknown): value is string => (
+  typeof value === 'string' && value.length > 0 && isWellFormedText(value) && value === value.normalize('NFC')
+)
+
+const isWellFormedText = (value: string): boolean => {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false
+      index += 1
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false
+  }
+  return true
+}
+
+const isStrictNfcJson = (value: unknown): boolean => {
+  if (value === null || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (typeof value === 'string') return isWellFormedText(value) && value === value.normalize('NFC')
+  if (Array.isArray(value)) return value.every(isStrictNfcJson)
+  if (!isPlainRecordValue(value)) return false
+  return Object.entries(value).every(([key, child]) => (
+    isWellFormedText(key) && key === key.normalize('NFC') && isStrictNfcJson(child)
+  ))
 }
 
 const normalizeStoryboardNode = (

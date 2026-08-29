@@ -154,8 +154,10 @@ export function AgentCollaborationPanel({
   const [postSendApplyError, setPostSendApplyError] = useState<string>()
   const [documentEditReconciling, setDocumentEditReconciling] = useState(false)
   const [applyingProposalKeys, setApplyingProposalKeys] = useState<Set<string>>(() => new Set())
+  const [persistedProposalKeys, setPersistedProposalKeys] = useState<Set<string>>(() => new Set())
   const applyingProposalKeysRef = useRef(new Set<string>())
   const appliedProposalKeysRef = useRef(new Set<string>())
+  const rejectedProposalKeysRef = useRef(new Set<string>())
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const onApplyCanvasEditRef = useRef(onApplyCanvasEdit)
   onApplyCanvasEditRef.current = onApplyCanvasEdit
@@ -522,7 +524,7 @@ export function AgentCollaborationPanel({
     const applyConversationId = conversationId
     const applyProjectId = workspaceContext.projectId
     const key = `${applyIdentity}:${proposal.id}`
-    if (applyingProposalKeysRef.current.has(key)) return
+    if (applyingProposalKeysRef.current.has(key) || rejectedProposalKeysRef.current.has(key)) return
     applyingProposalKeysRef.current.add(key)
     setApplyingProposalKeys(current => new Set(current).add(key))
     try {
@@ -530,13 +532,39 @@ export function AgentCollaborationPanel({
         const applied = await onApplyWorkspaceProposal(proposal)
         if (applied === false) return
         appliedProposalKeysRef.current.add(key)
+        setPersistedProposalKeys(current => new Set(current).add(key))
       }
       if (postSendApplyIdentityRef.current !== applyIdentity) return
       await setProposalStatus(proposal.id, 'approved', applyConversationId, applyProjectId)
-      appliedProposalKeysRef.current.delete(key)
     } catch {
       if (postSendApplyIdentityRef.current === applyIdentity) {
         setPostSendApplyError('应用提案失败，请检查工作区状态后重试。')
+      }
+    } finally {
+      applyingProposalKeysRef.current.delete(key)
+      setApplyingProposalKeys(current => {
+        const next = new Set(current)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+
+  const rejectPendingProposal = async (proposal: AgentWorkspaceProposal) => {
+    const rejectIdentity = postSendApplyIdentityRef.current
+    const rejectConversationId = conversationId
+    const rejectProjectId = workspaceContext.projectId
+    const key = `${rejectIdentity}:${proposal.id}`
+    if (applyingProposalKeysRef.current.has(key) || appliedProposalKeysRef.current.has(key)) return
+    applyingProposalKeysRef.current.add(key)
+    setApplyingProposalKeys(current => new Set(current).add(key))
+    try {
+      if (postSendApplyIdentityRef.current !== rejectIdentity) return
+      await setProposalStatus(proposal.id, 'rejected', rejectConversationId, rejectProjectId)
+      rejectedProposalKeysRef.current.add(key)
+    } catch {
+      if (postSendApplyIdentityRef.current === rejectIdentity) {
+        setPostSendApplyError('拒绝提案失败，请重试。')
       }
     } finally {
       applyingProposalKeysRef.current.delete(key)
@@ -710,6 +738,7 @@ export function AgentCollaborationPanel({
           {pendingProposals.slice(-3).map(proposal => {
             const applyKey = `${postSendApplyIdentity}:${proposal.id}`
             const applying = applyingProposalKeys.has(applyKey)
+            const persisted = persistedProposalKeys.has(applyKey)
             return (
             <div key={proposal.id} className="rounded-xl border border-amber-200 bg-amber-50 p-3">
               <div className="text-xs font-black text-amber-900">{proposalTitle(proposal)}</div>
@@ -737,8 +766,8 @@ export function AgentCollaborationPanel({
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 rounded-full border border-amber-300 px-3 py-1.5 text-xs font-black text-amber-900"
-                  disabled={applying}
-                  onClick={() => void setProposalStatus(proposal.id, 'rejected')}
+                  disabled={applying || persisted}
+                  onClick={() => rejectPendingProposal(proposal)}
                 >
                   <X className="h-3.5 w-3.5" />
                   Reject
@@ -956,7 +985,8 @@ export function AgentCollaborationPanel({
       })),
       proposals: normalizeAgentWorkspaceProposals(conversation.proposals, {
         permissionScope: 'workspace-chatbot-agent',
-        interactionMode: conversation.interactionMode || 'prompt-edit'
+        interactionMode: conversation.interactionMode || 'prompt-edit',
+        conversationId: conversation.id
       }),
       updatedAt: conversation.updatedAt
     })

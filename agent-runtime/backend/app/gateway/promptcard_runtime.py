@@ -526,14 +526,32 @@ class PromptCardRuntimeService:
             }
             if not response["canvasEdits"]:
                 response["text"] = "画布修改未通过校验，请重试。"
+        raw_proposals = response.get("proposals")
+        raw_proposals = raw_proposals if isinstance(raw_proposals, list) else []
         response["proposals"] = validate_agent_proposals(
-            response.get("proposals") or [],
+            raw_proposals,
             workspace_context=body.workspace_context,
             permission_scope=validation_permission_scope,
             canvas_node_context=resolved_canvas_context,
             expected_write_context=document_write_context,
             interaction_mode=interaction_mode,
         )
+        prompt_handoff_requested = (
+            interaction_mode == "chat-experimental"
+            and isinstance(document_write_context, dict)
+            and document_write_context.get("operationKind") == "prompt_handoff"
+        )
+        if prompt_handoff_requested and (len(raw_proposals) != 1 or len(response["proposals"]) != 1):
+            response["proposals"] = []
+            response["text"] = "Prompt 提案未通过校验，请重试。"
+            response["diagnostics"] = {
+                "promptHandoffValidation": {
+                    "status": "rejected",
+                    "received": len(raw_proposals),
+                    "accepted": 0,
+                    "reason": "invalid_output",
+                }
+            }
         response["proposals"] = [
             {
                 **proposal,
@@ -601,6 +619,15 @@ class PromptCardRuntimeService:
                         "role": "assistant",
                         "text": response.get("text", ""),
                         "canvasEdits": response["canvasEdits"],
+                        **(
+                            {
+                                "diagnostics": {
+                                    "promptHandoffValidation": response["diagnostics"]["promptHandoffValidation"]
+                                }
+                            }
+                            if isinstance((response.get("diagnostics") or {}).get("promptHandoffValidation"), dict)
+                            else {}
+                        ),
                     },
                     "proposals": response["proposals"],
                     "modelSnapshot": model_snapshot,
@@ -1134,6 +1161,10 @@ def validate_agent_proposals(
                 proposal.get("userText"), persisted=False,
                 max_bytes=MAX_PROMPT_HANDOFF_BYTES, nonempty=True,
             ) is not None
+            and _normalize_storyboard_text(
+                proposal.get("userText"), persisted=False,
+                max_bytes=MAX_PROMPT_HANDOFF_BYTES, nonempty=True,
+            ) == proposal.get("userText")
             and isinstance(expected_write_context.get("basis"), dict)
         ):
             base = _proposal_base(proposal, index)

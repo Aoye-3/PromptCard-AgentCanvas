@@ -18,6 +18,9 @@ const settleConversationSelection = async (renderer: ReactTestRenderer, ariaLabe
 const proposalApplyButton = (renderer: ReactTestRenderer) => (
   renderer.root.findAllByType('button').find(button => button.children.includes('Apply'))!
 )
+const proposalRejectButton = (renderer: ReactTestRenderer) => (
+  renderer.root.findAllByType('button').find(button => button.children.includes('Reject'))!
+)
 
 const mocks = vi.hoisted(() => ({
   checkRuntime: vi.fn(),
@@ -157,6 +160,13 @@ const promptHandoffProposal = (
 ): Extract<AgentWorkspaceProposal, { kind: 'free_canvas_text_create' }> => ({
   kind: 'free_canvas_text_create', id, agentName: 'PromptCard Agent', status: 'pending',
   createdAt: 1, title: 'Agent Prompt', userText: 'cinematic portrait', rationale: 'explicit handoff',
+  provenance: {
+    model: {
+      connectionId: 'connection-chat', providerId: 'volcengine-ark', modelId: 'doubao-seed-2-0-lite-260215',
+      displayName: 'Doubao Seed 2.0 Lite', capabilities: { input: ['text'], toolCalling: true }
+    },
+    skills: [{ skillId: 'SKL-tone', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
+  },
   handoffBasis: {
     kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 3,
     storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1',
@@ -367,6 +377,74 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     expect(apply).toHaveBeenCalledOnce()
     expect(mocks.updateProposal).toHaveBeenCalledTimes(2)
     expect(mocks.markProposalStatus).toHaveBeenCalledOnce()
+  })
+
+  it('blocks Apply synchronously while Reject is in flight, then releases the terminal guard after rejection PATCH fails', async () => {
+    const rejecting = deferred<void>()
+    mocks.storedProposals = [promptHandoffProposal('reject-mutex')]
+    mocks.updateProposal.mockImplementationOnce(() => rejecting.promise)
+    const apply = vi.fn().mockResolvedValue(true)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={apply} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    const rejectingAttempt = proposalRejectButton(renderer).props.onClick()
+    proposalApplyButton(renderer).props.onClick()
+    expect(apply).not.toHaveBeenCalled()
+    expect(proposalApplyButton(renderer).props.disabled).toBe(true)
+    await act(async () => {
+      rejecting.reject(new Error('PATCH failed'))
+      await rejectingAttempt
+    })
+    expect(proposalApplyButton(renderer).props.disabled).toBe(false)
+  })
+
+  it('keeps Reject terminally blocked after Canvas persistence when approval PATCH fails', async () => {
+    mocks.storedProposals = [promptHandoffProposal('apply-mutex')]
+    mocks.updateProposal.mockRejectedValueOnce(new Error('PATCH failed'))
+    const apply = vi.fn().mockResolvedValue(true)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={apply} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    const staleReject = proposalRejectButton(renderer).props.onClick
+    await act(async () => proposalApplyButton(renderer).props.onClick())
+    expect(proposalRejectButton(renderer).props.disabled).toBe(true)
+    await act(async () => staleReject())
+    expect(mocks.updateProposal).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not let a stale Apply handler reverse a completed rejection', async () => {
+    mocks.storedProposals = [promptHandoffProposal('rejected-terminal')]
+    mocks.updateProposal.mockResolvedValueOnce(undefined)
+    const apply = vi.fn().mockResolvedValue(true)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(<AgentCollaborationPanel
+        title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+        onApplyWorkspaceProposal={apply} embedded
+      />)
+    })
+    await settleConversationSelection(renderer)
+    const staleApply = proposalApplyButton(renderer).props.onClick
+    await act(async () => proposalRejectButton(renderer).props.onClick())
+    await act(async () => staleApply())
+    expect(apply).not.toHaveBeenCalled()
+    expect(mocks.updateProposal).toHaveBeenCalledOnce()
   })
 
   it('forwards the explicit Storyboard transform selector only with the submitted experimental turn', async () => {

@@ -157,3 +157,116 @@ def test_gateway_enforces_exact_utf8_prompt_handoff_output_budget():
     assert len(accepted) == 1
     assert len(accepted[0]["userText"].encode()) == 100_000
     assert rejected == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("invalid_text", ["a" * 100_001, "e\u0301"], ids=["over-budget", "non-nfc"])
+async def test_endpoint_visibly_persists_redacted_prompt_handoff_validation_failure(monkeypatch, invalid_text):
+    calls = []
+    node = _document_node()
+    context = {
+        "operationKind": "prompt_handoff",
+        "basis": {
+            "kind": "document-selection", "nodeId": "document-1", "documentRevision": 4,
+            "documentDigest": node["document"]["digest"], "blockId": "paragraph-1",
+            "utf8Start": 0, "utf8End": len("Café".encode()), "selectedText": "Café",
+            "selectedTextDigest": _digest("Café"),
+        },
+    }
+
+    async def fake_storage(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if method == "GET" and path == "/api/agent-conversations/conversation-1":
+            return {
+                "id": "conversation-1", "projectId": "project-1",
+                "entrypoint": "workspace-chatbot-agent", "mode": "free-canvas-workspace",
+                "interactionMode": "chat-experimental", "boundSkillIds": [], "messages": [],
+                "modelBinding": {"connectionId": "connection-1", "providerId": "deepseek", "modelId": "deepseek-chat"},
+            }
+        if method == "GET" and path == "/api/projects/project-1":
+            return _project([node])
+        if method == "POST" and path.endswith("/turns"):
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_invoke(_payload):
+        return {
+            "threadId": "conversation-1", "text": "Prompt proposal created successfully.",
+            "proposals": [{"kind": "free_canvas_text_create", "userText": invalid_text}],
+            "canvasEdits": [], "diagnostics": {"providerRequestId": "must-not-persist"},
+        }
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_invoke_text_agent", fake_invoke)
+    monkeypatch.setattr(promptcard_runtime, "_resolve_skill_snapshots", lambda _body: __import__("asyncio").sleep(0, result=[]))
+    monkeypatch.setattr(promptcard_runtime, "resolve_text_model", lambda _: {
+        "connectionId": "connection-1", "providerId": "deepseek",
+        "model": {"id": "deepseek-chat", "displayName": "DeepSeek", "capabilities": {"input": ["text"]}},
+    })
+    body = promptcard_runtime.PromptCardRuntimeMessageRequest.model_validate({
+        "conversationId": "conversation-1", "requestId": "request-1", "content": "Create Prompt",
+        "projectId": "project-1", "mode": "free-canvas-workspace", "interactionMode": "chat-experimental",
+        "documentWriteContext": context,
+    })
+
+    result = await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert result["proposals"] == []
+    assert result["text"] == "Prompt 提案未通过校验，请重试。"
+    assert result["diagnostics"]["promptHandoffValidation"] == {
+        "status": "rejected", "received": 1, "accepted": 0, "reason": "invalid_output"
+    }
+    saved = next(call[2]["json"] for call in calls if call[0] == "POST" and call[1].endswith("/turns"))
+    assert saved["assistantMessage"]["text"] == result["text"]
+    assert saved["assistantMessage"]["diagnostics"]["promptHandoffValidation"] == result["diagnostics"]["promptHandoffValidation"]
+    serialized = str(result["diagnostics"]) + str(saved["assistantMessage"]["diagnostics"])
+    assert invalid_text not in serialized
+    assert "must-not-persist" not in serialized
+
+
+@pytest.mark.anyio
+async def test_endpoint_accepts_exact_prompt_handoff_budget_without_validation_error(monkeypatch):
+    node = _document_node()
+    context = {
+        "operationKind": "prompt_handoff",
+        "basis": {
+            "kind": "document-selection", "nodeId": "document-1", "documentRevision": 4,
+            "documentDigest": node["document"]["digest"], "blockId": "paragraph-1",
+            "utf8Start": 0, "utf8End": len("Café".encode()), "selectedText": "Café",
+            "selectedTextDigest": _digest("Café"),
+        },
+    }
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path == "/api/agent-conversations/conversation-1":
+            return {
+                "id": "conversation-1", "projectId": "project-1", "entrypoint": "workspace-chatbot-agent",
+                "mode": "free-canvas-workspace", "interactionMode": "chat-experimental", "boundSkillIds": [],
+                "messages": [], "modelBinding": {"connectionId": "connection-1", "providerId": "deepseek", "modelId": "deepseek-chat"},
+            }
+        if method == "GET" and path == "/api/projects/project-1":
+            return _project([node])
+        if method == "POST" and path.endswith("/turns"):
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_invoke_text_agent", lambda _payload: __import__("asyncio").sleep(0, result={
+        "threadId": "conversation-1", "text": "Created.", "canvasEdits": [], "diagnostics": {},
+        "proposals": [{"kind": "free_canvas_text_create", "userText": "a" * 100_000}],
+    }))
+    monkeypatch.setattr(promptcard_runtime, "_resolve_skill_snapshots", lambda _body: __import__("asyncio").sleep(0, result=[]))
+    monkeypatch.setattr(promptcard_runtime, "resolve_text_model", lambda _: {
+        "connectionId": "connection-1", "providerId": "deepseek",
+        "model": {"id": "deepseek-chat", "displayName": "DeepSeek", "capabilities": {"input": ["text"]}},
+    })
+    body = promptcard_runtime.PromptCardRuntimeMessageRequest.model_validate({
+        "conversationId": "conversation-1", "requestId": "request-1", "content": "Create Prompt",
+        "projectId": "project-1", "mode": "free-canvas-workspace", "interactionMode": "chat-experimental",
+        "documentWriteContext": context,
+    })
+
+    result = await promptcard_runtime.runtime_service.send_message(body, None)
+    assert len(result["proposals"]) == 1
+    assert len(result["proposals"][0]["userText"].encode()) == 100_000
+    assert "promptHandoffValidation" not in result["diagnostics"]

@@ -942,9 +942,9 @@ function App() {
     if (result.status === 'superseded') {
       result = await projectSaveCoordinator.waitForIdle(activeProjectId)
     }
-    if (result.status !== 'saved') return false
+    if (result.status !== 'saved' || result.project?.type !== 'free-canvas' || !result.project.freeCanvas) return false
     setProjectSaveStatus(activeProjectId, 'saved', savedAt)
-    return true
+    return { saved: true as const, freeCanvas: result.project.freeCanvas, editSeq: result.editSeq }
   }
 
   const handleConfigureImageModel = (context: { projectId: string; nodeId?: string; returnTarget: 'free-canvas' }) => {

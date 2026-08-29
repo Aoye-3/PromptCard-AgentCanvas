@@ -196,6 +196,14 @@ export interface IFreeCanvasTextNode extends IFreeCanvasBaseNode {
   kind: 'text'
   fontSize: FreeCanvasTextSize
   segments: IFreeCanvasTextSegment[]
+  provenance?: AgentRunProvenance
+  agentPromptHandoff?: {
+    version: 1
+    conversationId: string
+    proposalId: string
+    basisDigest: string
+    resultDigest: string
+  }
 }
 
 export interface IFreeCanvasImageNode extends IFreeCanvasBaseNode {
