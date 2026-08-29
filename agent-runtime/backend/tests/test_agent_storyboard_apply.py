@@ -376,6 +376,63 @@ async def test_storyboard_create_reconcile_replays_absent_and_recovers_saved_bef
 
 
 @pytest.mark.anyio
+async def test_saved_storyboard_recovery_rejects_duplicate_target_identity(monkeypatch):
+    sequence = storyboard_sequence()
+    expected = promptcard_runtime._storyboard_digest(sequence, [])
+    edit_id, node_id = promptcard_runtime._deterministic_document_edit_ids(
+        "conversation-1", "request-create", "storyboard_create", None
+    )
+    edit = {
+        "kind": "storyboard_create", "id": edit_id, "editId": edit_id,
+        "conversationId": "conversation-1", "requestId": "request-create", "nodeId": node_id,
+        "base": {"projectRevision": 12}, "expectedResultDigest": expected,
+        "payload": {
+            "title": "Opening", "sequence": sequence, "source": storyboard_source(),
+        },
+        "rationale": "Create",
+    }
+    saved_node = {
+        "id": node_id, "kind": "storyboard", "sequence": sequence,
+        "pendingFieldChanges": [], "revision": 0, "digest": expected,
+        "source": storyboard_source(),
+        "agentAppliedEdit": {
+            "conversationId": "conversation-1", "requestId": "request-create",
+            "editId": edit_id, "resultDigest": expected,
+        },
+    }
+    other_sequence = storyboard_sequence("close-up")
+    duplicate_node = {
+        "id": node_id, "kind": "storyboard", "sequence": other_sequence,
+        "pendingFieldChanges": [], "revision": 1,
+        "digest": promptcard_runtime._storyboard_digest(other_sequence, []),
+        "source": storyboard_source(),
+    }
+    patches: list[dict] = []
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return conversation_with_edit(edit)
+        if method == "GET" and path == "/api/projects/project-1":
+            return project([saved_node, duplicate_node])
+        if method == "PATCH" and path.endswith("/apply-edit"):
+            patches.append(kwargs["json"])
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    result = await promptcard_runtime.runtime_service.ack_document_edit(
+        "project-1", "conversation-1", edit_id,
+        PromptCardAgentEditAckRequest(
+            requestId="request-create", status="failed", errorCode="browser_lost_state"
+        ),
+    )
+
+    assert result["status"] == "failed_integrity"
+    assert patches[0]["status"] == "failed_integrity"
+    assert all(update["status"] != "applied" for update in patches)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("tamper", [
     "missing_edit_source", "edit_source", "turn_model", "turn_skills",
     "missing_document", "stale_document", "missing_resource", "resource_digest",

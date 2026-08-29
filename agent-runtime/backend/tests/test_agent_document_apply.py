@@ -442,6 +442,61 @@ async def test_ack_reloads_project_and_marks_saved_before_ack_applied(monkeypatc
 
 
 @pytest.mark.anyio
+async def test_saved_document_recovery_rejects_duplicate_target_identity(monkeypatch):
+    edit_id, node_id = _deterministic_document_edit_ids(
+        "conversation-1", "request-1", "document_create", None
+    )
+    raw = create_edit()
+    edit = {**raw, "editId": edit_id, "id": edit_id, "nodeId": node_id}
+    saved_node = {
+        "id": node_id,
+        "kind": "document",
+        "document": document(raw["blocks"]),
+        "agentAppliedEdit": {
+            "conversationId": "conversation-1",
+            "requestId": "request-1",
+            "editId": edit_id,
+            "resultDigest": raw["expectedResultDigest"],
+        },
+    }
+    duplicate_node = {
+        "id": node_id,
+        "kind": "document",
+        "document": document([{
+            "id": "other-block", "type": "paragraph", "content": [{"text": "Other"}],
+        }]),
+    }
+    patched: list[dict] = []
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return conversation([saved_turn(edit)])
+        if method == "GET" and path == "/api/projects/project-1":
+            return {
+                "id": "project-1", "revision": 3,
+                "freeCanvas": {"nodes": [saved_node, duplicate_node], "edges": [], "meta": {}},
+            }
+        if method == "PATCH" and path.endswith("/apply-edit"):
+            patched.append(kwargs["json"])
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    result = await promptcard_runtime.runtime_service.ack_document_edit(
+        "project-1",
+        "conversation-1",
+        edit_id,
+        PromptCardAgentEditAckRequest(
+            requestId="request-1", status="failed", errorCode="browser_lost_state"
+        ),
+    )
+
+    assert result["status"] == "failed_integrity"
+    assert patched[0]["status"] == "failed_integrity"
+    assert all(update["status"] != "applied" for update in patched)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("node", "expected"),
     [

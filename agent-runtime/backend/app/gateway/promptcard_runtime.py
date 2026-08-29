@@ -66,6 +66,10 @@ _DOCUMENT_EDIT_MAX_TEXT_BYTES = 64 * 1024
 _CANVAS_NODE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
 
 
+class _CanvasNodeAuthorityError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class DocumentInvocation:
     assets: tuple[ResolvedDocumentAsset, ...]
@@ -901,11 +905,25 @@ class PromptCardRuntimeService:
                 include_canvas_edits=include_canvas_edits,
             )
         node_id = str(ledger.get("nodeId") or "")
-        node = _project_canvas_node(project, node_id)
-        base = edit.get("base")
         edit_kind = str(ledger.get("kind") or "")
         storyboard_edit = edit_kind in {"storyboard_create", "storyboard_changes"}
         expected_node_kind = "storyboard" if storyboard_edit else "document"
+        try:
+            node = _project_canvas_node(project, node_id)
+        except _CanvasNodeAuthorityError:
+            return await _terminal_agent_edit(
+                conversation_id,
+                request_id,
+                edit_id,
+                "failed_integrity",
+                {
+                    "nodeId": node_id,
+                    "kind": expected_node_kind,
+                    "code": "canvas_node_identity_ambiguous",
+                },
+                include_canvas_edits=include_canvas_edits,
+            )
+        base = edit.get("base")
         if edit_kind == "storyboard_create" or edit_kind == "storyboard_changes":
             expected_storyboard_source = _expected_storyboard_source_from_turn(
                 conversation, turn, edit
@@ -1590,7 +1608,10 @@ async def _authoritative_storyboard_source(
     expected_source = _expected_storyboard_source_from_turn(conversation, current_turn, edit)
     if expected_source is None:
         return None
-    document_node = _project_canvas_node(project, expected_source["documentNodeId"])
+    try:
+        document_node = _project_canvas_node(project, expected_source["documentNodeId"])
+    except _CanvasNodeAuthorityError:
+        return None
     if not isinstance(document_node, dict) or document_node.get("kind") != "document":
         return None
     document = _normalize_persisted_document(document_node.get("document"))
@@ -1836,7 +1857,10 @@ def validate_agent_document_edits(
     elif kind == "storyboard_changes":
         payload_source = edit.get("payload") if isinstance(edit.get("payload"), dict) else edit
         target_node_id = str(payload_source.get("nodeId") or "").strip()
-        target = _project_canvas_node(project, target_node_id)
+        try:
+            target = _project_canvas_node(project, target_node_id)
+        except _CanvasNodeAuthorityError:
+            return []
         target_source = target.get("source") if isinstance(target, dict) else None
         if (
             target_node_id != expected_write_context.get("nodeId")
@@ -1904,7 +1928,10 @@ def validate_agent_document_edits(
         target_node_id = str(payload_source.get("nodeId") or "").strip()
         if target_node_id != expected_write_context.get("nodeId"):
             return []
-        target = _project_canvas_node(project, target_node_id)
+        try:
+            target = _project_canvas_node(project, target_node_id)
+        except _CanvasNodeAuthorityError:
+            return []
         if not target_node_id or not isinstance(target, dict) or target.get("kind") != "document":
             return []
         document = _normalize_persisted_document(target.get("document"))
@@ -2030,7 +2057,13 @@ def _resolve_document_write_context(
         if set(value) != {"operationKind", "documentNodeId"}:
             raise HTTPException(status_code=422, detail="document_write_context_invalid")
         node_id = value.get("documentNodeId")
-        node = _project_canvas_node(project, str(node_id or "").strip())
+        try:
+            node = _project_canvas_node(project, str(node_id or "").strip())
+        except _CanvasNodeAuthorityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="document_write_target_invalid",
+            ) from exc
         if not isinstance(node, dict) or node.get("kind") != "document":
             raise HTTPException(status_code=422, detail="document_write_target_invalid")
         document = _normalize_persisted_document(node.get("document"))
@@ -2052,7 +2085,13 @@ def _resolve_document_write_context(
         if set(value) != {"operationKind", "nodeId"}:
             raise HTTPException(status_code=422, detail="document_write_context_invalid")
         node_id = value.get("nodeId")
-        node = _project_canvas_node(project, str(node_id or "").strip())
+        try:
+            node = _project_canvas_node(project, str(node_id or "").strip())
+        except _CanvasNodeAuthorityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="storyboard_write_target_invalid",
+            ) from exc
         if not isinstance(node, dict) or node.get("kind") != "storyboard":
             raise HTTPException(status_code=422, detail="document_write_target_invalid")
         sequence = _normalize_storyboard_sequence(node.get("sequence"), model_output=False)
@@ -2067,7 +2106,13 @@ def _resolve_document_write_context(
     node_id = value.get("nodeId")
     if not isinstance(node_id, str) or not node_id.strip():
         raise HTTPException(status_code=422, detail="document_write_context_invalid")
-    node = _project_canvas_node(project, node_id.strip())
+    try:
+        node = _project_canvas_node(project, node_id.strip())
+    except _CanvasNodeAuthorityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="document_write_target_invalid",
+        ) from exc
     if not isinstance(node, dict) or node.get("kind") != "document":
         raise HTTPException(status_code=422, detail="document_write_target_invalid")
     document = _normalize_persisted_document(node.get("document"))
@@ -2117,7 +2162,13 @@ def _resolve_prompt_handoff_context(
         }
         if set(basis) != required:
             raise HTTPException(status_code=422, detail="prompt_handoff_selection_invalid")
-        node = _project_canvas_node(project, str(basis.get("nodeId") or "").strip())
+        try:
+            node = _project_canvas_node(project, str(basis.get("nodeId") or "").strip())
+        except _CanvasNodeAuthorityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="prompt_handoff_source_invalid",
+            ) from exc
         if not isinstance(node, dict) or node.get("kind") != "document":
             raise HTTPException(status_code=422, detail="prompt_handoff_source_invalid")
         document = _normalize_persisted_document(node.get("document"))
@@ -2165,7 +2216,13 @@ def _resolve_prompt_handoff_context(
         }
         if set(basis) != required:
             raise HTTPException(status_code=422, detail="prompt_handoff_shot_invalid")
-        node = _project_canvas_node(project, str(basis.get("nodeId") or "").strip())
+        try:
+            node = _project_canvas_node(project, str(basis.get("nodeId") or "").strip())
+        except _CanvasNodeAuthorityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="prompt_handoff_source_invalid",
+            ) from exc
         if not isinstance(node, dict) or node.get("kind") != "storyboard":
             raise HTTPException(status_code=422, detail="prompt_handoff_source_invalid")
         sequence = _normalize_storyboard_sequence(node.get("sequence"), model_output=False)
@@ -2674,13 +2731,14 @@ def _project_canvas_node(project: dict[str, Any], node_id: str) -> dict[str, Any
     nodes = canvas.get("nodes") if isinstance(canvas, dict) else None
     if not isinstance(nodes, list):
         return None
-    return next(
-        (
-            node for node in nodes
-            if isinstance(node, dict) and node.get("id") == node_id
-        ),
-        None,
-    )
+    resolved = None
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("id") != node_id:
+            continue
+        if resolved is not None:
+            raise _CanvasNodeAuthorityError("canvas_node_identity_ambiguous")
+        resolved = node
+    return resolved
 
 
 def _turn_document_edit(turn: dict[str, Any], edit_id: str) -> dict[str, Any] | None:

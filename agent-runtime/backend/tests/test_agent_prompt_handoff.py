@@ -102,6 +102,89 @@ def test_gateway_rebuilds_storyboard_shot_basis_and_rejects_pending_or_wrong_kin
             )
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("basis_kind", ["document-selection", "storyboard-shot"])
+async def test_endpoint_rejects_duplicate_authority_before_model_invocation(
+    monkeypatch,
+    basis_kind,
+):
+    if basis_kind == "document-selection":
+        authoritative = _document_node()
+        duplicate = _document_node()
+        duplicate["document"] = {**duplicate["document"], "revision": 5}
+        basis = {
+            "kind": "document-selection", "nodeId": "document-1", "documentRevision": 4,
+            "documentDigest": authoritative["document"]["digest"], "blockId": "paragraph-1",
+            "utf8Start": 0, "utf8End": len("Café".encode()), "selectedText": "Café",
+            "selectedTextDigest": _digest("Café"),
+        }
+    else:
+        authoritative = _storyboard_node()
+        duplicate = _storyboard_node()
+        duplicate["revision"] = 4
+        shot_text = promptcard_runtime._canonical_nfc_json(
+            authoritative["sequence"]["rows"][0]
+        )
+        basis = {
+            "kind": "storyboard-shot", "nodeId": "storyboard-1", "storyboardRevision": 3,
+            "storyboardDigest": authoritative["digest"], "rowId": "shot-1",
+            "shotDigest": _digest(shot_text),
+        }
+    invocations = 0
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path == "/api/agent-conversations/conversation-1":
+            return {
+                "id": "conversation-1", "projectId": "project-1",
+                "entrypoint": "workspace-chatbot-agent", "mode": "free-canvas-workspace",
+                "interactionMode": "chat-experimental", "boundSkillIds": [], "messages": [],
+                "modelBinding": {
+                    "connectionId": "connection-1", "providerId": "deepseek",
+                    "modelId": "deepseek-chat",
+                },
+            }
+        if method == "GET" and path == "/api/projects/project-1":
+            return _project([authoritative, duplicate])
+        if method == "POST" and path.endswith("/turns"):
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_invoke(_payload):
+        nonlocal invocations
+        invocations += 1
+        return {
+            "threadId": "conversation-1", "text": "must not run", "proposals": [],
+            "canvasEdits": [], "diagnostics": {},
+        }
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_invoke_text_agent", fake_invoke)
+    monkeypatch.setattr(
+        promptcard_runtime,
+        "_resolve_skill_snapshots",
+        lambda _body: __import__("asyncio").sleep(0, result=[]),
+    )
+    monkeypatch.setattr(promptcard_runtime, "resolve_text_model", lambda _: {
+        "connectionId": "connection-1", "providerId": "deepseek",
+        "model": {
+            "id": "deepseek-chat", "displayName": "DeepSeek",
+            "capabilities": {"input": ["text"]},
+        },
+    })
+    body = promptcard_runtime.PromptCardRuntimeMessageRequest.model_validate({
+        "conversationId": "conversation-1", "requestId": "request-1",
+        "content": "Create Prompt", "projectId": "project-1",
+        "mode": "free-canvas-workspace", "interactionMode": "chat-experimental",
+        "documentWriteContext": {"operationKind": "prompt_handoff", "basis": basis},
+    })
+
+    with pytest.raises(HTTPException) as error:
+        await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert error.value.status_code == 409
+    assert invocations == 0
+
+
 def test_gateway_accepts_only_one_authority_bound_pending_prompt_create_proposal():
     handoff = {
         "operationKind": "prompt_handoff",
