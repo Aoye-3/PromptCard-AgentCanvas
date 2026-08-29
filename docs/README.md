@@ -16,6 +16,7 @@ This is the single entry point for the maintained project documentation. Histori
 - [Generic Local Agent Bridge Boundary](./decisions/ADR-019-generic-local-agent-bridge-boundary.md)
 - [Task 15.5 Technical Acceptance](./reviews/2026-08-24-task-15-5-technical-acceptance.md)
 - [Task 15.6-15.9 Progress Snapshot](./reviews/2026-08-29-task-15-6-through-15-9-progress.md)
+- [Task 15.10 / Checkpoint 3.5 Technical Acceptance](./reviews/2026-08-27-task-15-10-technical-acceptance.md)
 - [Backend](./backend/README.md)
 - [Database and Storage](./database/README.md)
 - [Operations](./operations/README.md)
@@ -38,7 +39,7 @@ Capture Bar also imports WeChat/QQ-style clipboard images. Recent Captures can e
 
 Free Canvas includes a provider-neutral project Image Generation Agent. The first adapter is Doubao Seedream 5.0 Pro; credentials stay in the operating-system keyring, and successful results become local assets and Recent Captures. The current Storage schema is v16: v10 introduced public references, v11-v12 immutable Canvas context packs, v13 canonical Skill packages, v14 independent exact host pins and Codex projection recovery, v15 exact-revision trust reviews and Skill management operations, and v16 adds document resources plus provider cleanup tracking for temporary Ark files. Earlier image, asset, resource, conversation, and model-binding migrations remain intact. Legacy generator nodes are read-only. See [Schema Notes](./database/schema-notes.md), [Image Generation And Model Management](./architecture/image-generation-and-model-management.md), [ADR-008](./decisions/ADR-008-provider-neutral-image-generation.md), [ADR-010](./decisions/ADR-010-project-image-generation-conversations.md), and the [current implementation status](./Plan/005-seedream-image-node-frontend-implementation-status.md).
 
-Plan 008 is currently paused at Task 15.10 checkpoint pre-acceptance. The host-neutral `promptcard-bridge/v2` contract and ADR-019 are complete; Task 15.6-15.9 are implemented; Task 15.10 is not yet fully accepted; Task 16 remains blocked.
+Plan 008 Tasks 15.6-15.10 are implemented and technically accepted with the documented baseline gate residuals. Execution is paused at Checkpoint 3.5 for user manual acceptance; Task 16 remains blocked and has not started.
 
 Contextual image actions and explicit multi-view groups are tracked by [Plan 007](./Plan/007-contextual-image-editing-and-multi-view-plan.md) and the maintained [Contextual Image Actions](./frontend/contextual-image-actions.md) contract. Recoverable placeholders, project-scoped resources, and explicit multi-view request groups are governed by [ADR-013](./decisions/ADR-013-recoverable-image-generation-placeholders.md), [ADR-014](./decisions/ADR-014-project-scoped-resource-library.md), and [ADR-015](./decisions/ADR-015-explicit-multi-view-request-groups.md). Plan 007 remains `Active`: zero-cost Fake Provider evidence is ready, unified human approval is pending, and paid live-provider gates have not been executed.
 

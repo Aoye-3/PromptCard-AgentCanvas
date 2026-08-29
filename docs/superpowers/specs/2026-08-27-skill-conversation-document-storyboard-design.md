@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved design; Task 15.6-15.9 implemented, Task 15.10 pending Checkpoint 3.5 acceptance activities.
+Approved design; Tasks 15.6-15.10 implemented and technically accepted with documented baseline gate residuals; paused at Checkpoint 3.5 for user manual acceptance. Task 16 has not started.
 
 ## Goal
 

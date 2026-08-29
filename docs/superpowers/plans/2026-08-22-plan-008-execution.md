@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Tasks 15.6-15.9 implemented; Task 15.10 implementation pending fresh read-only review and user acceptance; Task 16 blocked`
+- Status: `Tasks 15.6-15.10 implemented and technically accepted with documented baseline gate residuals; paused at Checkpoint 3.5 for user manual acceptance; Task 16 blocked and not started`
 - Date: `2026-08-29`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -565,11 +565,11 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Acceptance criteria:**
 
-- [ ] Storyboard node reuses `IStoryboardSequence`/`IStoryboardRow` field definitions while keeping Canvas mutation separate from standalone storyboard proposals.
-- [ ] Initial creation requires the explicit user action and records source Document revision/digest, resource digests, model, and exact Skill revision/digest; it is directly applied, persisted, idempotent, and undoable.
-- [ ] Later changes display per-field old/new values with single/all accept/reject and stale base rejection.
-- [ ] Document/Storyboard receive no automatic Prompt/Canvas media reference, Prompt Library/RAG record, Prompt compiler input, or image-generation attachment.
-- [ ] Only an explicit selected text/shot action creates a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node. It cannot update an existing Prompt node or read/write Prompt Library.
+- [x] Storyboard node reuses `IStoryboardSequence`/`IStoryboardRow` field definitions while keeping Canvas mutation separate from standalone storyboard proposals.
+- [x] Initial creation requires the explicit user action and records source Document revision/digest, resource digests, model, and exact Skill revision/digest; it is directly applied, persisted, idempotent, and undoable.
+- [x] Later changes display per-field old/new values with single/all accept/reject and stale base rejection.
+- [x] Document/Storyboard receive no automatic Prompt/Canvas media reference, Prompt Library/RAG record, Prompt compiler input, or image-generation attachment.
+- [x] Only an explicit selected text/shot action creates a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node. It cannot update an existing Prompt node or read/write Prompt Library.
 
 **Verification:** Focused transform/field-diff/reference/context/Prompt/image regression tests plus a full end-to-end browser flow.
 
@@ -581,15 +581,15 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 ### Task 15.10 Technical Acceptance Gate
 
-- [ ] A fresh independent reviewer passes the full Task 15.6-15.10 diff; Blocking/Important findings are fixed test-first and re-reviewed by a new reviewer.
-- [ ] Multi-turn Skill binding, current-pin provenance, disabled/untrusted/archived rejection, response-loss replay, and restart hydration pass.
-- [ ] TXT/MD/PDF/DOCX, scanned PDF, spoof/corrupt/encrypted/oversize/zip-bomb inputs, remote cleanup, retry/restart, redaction, and unsupported-provider behavior pass.
-- [ ] Document inline/expanded/collapsed editing, rich-text persistence, suggestion accept/reject/effective draft, conflict, undo/redo, apply ACK, rollback, and idempotent recovery pass.
-- [ ] Explicit Document -> Storyboard creation, Storyboard field review, and selected text/shot -> Prompt proposal pass with exact provenance.
-- [ ] Adversarial isolation proves Document/Storyboard never enter Prompt Library, Prompt RAG, Prompt compilation, image-generation inputs, or ambient full-body context.
-- [ ] Existing Prompt, image, Skill projection, standalone Storyboard, context pack, reference-code, Storage, Gateway/runtime, Ruff, TypeScript, and production-build gates pass.
-- [ ] The evidence package lists commits, test counts/skips/warnings, manual probes, cleanup/path/credential checks, residual risks, and unrelated startup-script changes left untouched.
-- [ ] Stop for user acceptance; do not begin Task 16.
+- [x] A fresh independent reviewer passes the full Task 15.6-15.10 diff; Blocking/Important findings are fixed test-first and re-reviewed by a new reviewer.
+- [x] Multi-turn Skill binding, current-pin provenance, disabled/untrusted/archived rejection, response-loss replay, and restart hydration pass.
+- [x] TXT/MD/PDF/DOCX, scanned PDF, spoof/corrupt/encrypted/oversize/zip-bomb inputs, remote cleanup, retry/restart, redaction, and unsupported-provider behavior pass.
+- [x] Document inline/expanded/collapsed editing, rich-text persistence, suggestion accept/reject/effective draft, conflict, undo/redo, apply ACK, rollback, and idempotent recovery pass.
+- [x] Explicit Document -> Storyboard creation, Storyboard field review, and selected text/shot -> Prompt proposal pass with exact provenance.
+- [x] Adversarial isolation proves Document/Storyboard never enter Prompt Library, Prompt RAG, Prompt compilation, image-generation inputs, or ambient full-body context.
+- [x] Existing Prompt, image, Skill projection, standalone Storyboard, context pack, reference-code, Storage, Gateway/runtime, Ruff, TypeScript, and production-build gates pass.
+- [x] The evidence package lists commits, test counts/skips/warnings, manual probes, cleanup/path/credential checks, residual risks, and unrelated startup-script changes left untouched.
+- [x] Stop for user acceptance; do not begin Task 16.
 
 ### Checkpoint 3.5: Skill Conversation And Creative Documents
 

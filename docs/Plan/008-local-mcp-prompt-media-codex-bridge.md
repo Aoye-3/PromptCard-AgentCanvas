@@ -2,7 +2,7 @@
 
 ## Status
 
-Task 15.5 technically accepted; Tasks 15.6-15.9 implemented; Task 15.10 pending technical/user acceptance at Checkpoint 3.5; Task 16 remains blocked
+Task 15.5 technically accepted; Tasks 15.6-15.10 implemented and technically accepted with documented baseline gate residuals; paused at Checkpoint 3.5 for user acceptance; Task 16 remains blocked and has not started
 
 ## Current Normative Boundary
 
@@ -10,7 +10,7 @@ This plan began with Codex-specific product language. That historical design rem
 
 [ADR-019](../decisions/ADR-019-generic-local-agent-bridge-boundary.md) and the [Plan 008 execution ledger](../superpowers/plans/2026-08-22-plan-008-execution.md) define the current `PromptCard Local Agent Bridge`: a host-neutral core with trusted profiles/scopes, v2 `promptcard-bridge` provenance, STDIO plus loopback Streamable HTTP, and Codex/TRAE as initial acceptance adapters. Codex `.agents/skills` and the local-Agent snapshot remain accurately named concrete Host Adapters. Doubao and MarsCode remain “待验证”.
 
-Task 15 and Task 15.5 are implemented and technically accepted; see the [acceptance package](../reviews/2026-08-24-task-15-5-technical-acceptance.md). Execution is paused for user acceptance before Task 16. The Bridge router, credential, CLI, MCP server, Prompt RAG backend, and delivery runtime are not implemented.
+Task 15, Task 15.5, and Tasks 15.6-15.10 are implemented and technically accepted; see the [Task 15.5 acceptance package](../reviews/2026-08-24-task-15-5-technical-acceptance.md) and [Checkpoint 3.5 acceptance package](../reviews/2026-08-27-task-15-10-technical-acceptance.md). Execution is paused for user acceptance before Task 16. The Bridge router, credential, CLI, MCP server, Prompt RAG backend, and delivery runtime are not implemented.
 
 ## Date
 
@@ -691,7 +691,7 @@ Additional rules:
 - [ ] Add isolated Document and Storyboard Canvas nodes, explicit kind dispatch, bounded context resolution, persistence, command history, and old-project compatibility.
 - [ ] Apply Agent Document suggestions and Storyboard field differences through typed operations, frontend persistence acknowledgement, rollback, and idempotent restart reconciliation.
 - [ ] Require explicit Document -> Storyboard and selected text/shot -> Prompt actions; prove Document/Storyboard never enter Prompt Library/RAG/compiler/image-generation implicitly.
-- [ ] Deliver Checkpoint 3.5 evidence and stop for user acceptance before Task 16.
+- [x] Deliver Checkpoint 3.5 evidence and stop for user acceptance before Task 16.
 
 ### Phase 4: Read-Only CLI and Local MCP
 

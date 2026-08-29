@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Implementation status: Task 15.8 implemented; checkpoint acceptance still pending Task 15.10 implementation and verification.
+Accepted. Implementation status: Task 15.8 and the dependent Task 15.10 flow are implemented and technically accepted with documented baseline gate residuals; Checkpoint 3.5 user acceptance remains pending. Task 16 has not started.
 
 ## Date
 

@@ -67,11 +67,11 @@ export interface IFreeCanvasUnsupportedNode extends IFreeCanvasBaseNode {
 }
 ```
 
-- [ ] Write RED tests proving legacy projects normalize unchanged, `document`/`storyboard` round-trip without becoming `text`, and an unknown kind becomes a read-only `unsupported` projection whose `originalNode` serializes back unchanged.
-- [ ] Add the two node kinds, editor-neutral block/suggestion types, and top-level interaction mode. Move the existing `AgentRunProvenance` type to the neutral domain module and import it from both model files to avoid a circular PromptHistory -> Agent dependency. Keep `CanvasAgentEditMode` unchanged.
-- [ ] Replace the current normalization fallthrough with explicit branches. Add the ADR-020 invariant comment at the closed dispatch point.
-- [ ] Audit compile errors from the expanded union. Add explicit unsupported branches only; do not cast or add a default text/image fallback.
-- [ ] Run focused tests and `npm run build`; commit `feat(canvas): define isolated document and storyboard nodes`.
+- [x] Write RED tests proving legacy projects normalize unchanged, `document`/`storyboard` round-trip without becoming `text`, and an unknown kind becomes a read-only `unsupported` projection whose `originalNode` serializes back unchanged.
+- [x] Add the two node kinds, editor-neutral block/suggestion types, and top-level interaction mode. Move the existing `AgentRunProvenance` type to the neutral domain module and import it from both model files to avoid a circular PromptHistory -> Agent dependency. Keep `CanvasAgentEditMode` unchanged.
+- [x] Replace the current normalization fallthrough with explicit branches. Add the ADR-020 invariant comment at the closed dispatch point.
+- [x] Audit compile errors from the expanded union. Add explicit unsupported branches only; do not cast or add a default text/image fallback.
+- [x] Run focused tests and `npm run build`; commit `feat(canvas): define isolated document and storyboard nodes`.
 
 ### Task 2: Add Schema v16 Project Document Resources
 
@@ -104,12 +104,12 @@ DELETE /api/projects/{projectId}/document-resources/{resourceId}
 POST   /api/projects/{projectId}/document-resources/{resourceId}/restore
 ```
 
-- [ ] Write RED migration/validation tests for one schema v15 -> v16 migration that creates both document-resource and provider-cleanup tables; cover backup/restore, health diagnostics, project isolation/lifecycle, and no change to image `project_resources`.
-- [ ] Write RED format tests: strict UTF-8 TXT/MD, `%PDF-` PDF, valid Office Open XML DOCX; reject MIME/extension mismatch, NUL/binary text, corrupt/encrypted DOCX, traversal/remote relationships, excessive ZIP entries/ratio/uncompressed bytes, and fixed size/count budgets.
-- [ ] Implement a dedicated document store under the repository data root using temp-file + fsync + replace and one compensating transaction. Do not expand the ordinary image/video upload endpoint.
-- [ ] Add exact `python-docx==1.2.0`; extract DOCX paragraphs and tables in document order after container validation. Ignore embedded objects/macros/remote relationships and never fetch them.
-- [ ] Add the provider-cleanup repository in this migration task, including idempotent enqueue/get-due/mark-succeeded/mark-retry operations and redacted diagnostics. Expose project-scoped document APIs and typed frontend client methods returning resource identity/metadata, never absolute paths.
-- [ ] Run focused Storage tests and full `npm run storage:test`; commit `feat(storage): add project document resources`.
+- [x] Write RED migration/validation tests for one schema v15 -> v16 migration that creates both document-resource and provider-cleanup tables; cover backup/restore, health diagnostics, project isolation/lifecycle, and no change to image `project_resources`.
+- [x] Write RED format tests: strict UTF-8 TXT/MD, `%PDF-` PDF, valid Office Open XML DOCX; reject MIME/extension mismatch, NUL/binary text, corrupt/encrypted DOCX, traversal/remote relationships, excessive ZIP entries/ratio/uncompressed bytes, and fixed size/count budgets.
+- [x] Implement a dedicated document store under the repository data root using temp-file + fsync + replace and one compensating transaction. Do not expand the ordinary image/video upload endpoint.
+- [x] Add exact `python-docx==1.2.0`; extract DOCX paragraphs and tables in document order after container validation. Ignore embedded objects/macros/remote relationships and never fetch them.
+- [x] Add the provider-cleanup repository in this migration task, including idempotent enqueue/get-due/mark-succeeded/mark-retry operations and redacted diagnostics. Expose project-scoped document APIs and typed frontend client methods returning resource identity/metadata, never absolute paths.
+- [x] Run focused Storage tests and full `npm run storage:test`; commit `feat(storage): add project document resources`.
 
 ### Task 3: Isolate Ark File-Backed Responses And Cleanup
 
@@ -131,12 +131,12 @@ def complete_ark_response(
 def retry_provider_file_cleanup(*, limit: int = 20) -> CleanupSummary: ...
 ```
 
-- [ ] Write RED adapter tests for Files create -> Responses create -> Files delete, tool-call normalization, mixed text/image/PDF input, and unchanged no-file Chat Completions dispatch.
-- [ ] Write RED failure tests for model error, client disconnect, delete failure, restart retry, repeated cleanup, unsupported provider/model, over-budget attachments, and redacted logs/errors.
-- [ ] Implement a file-bearing Ark Responses adapter without editing the current `complete_ark_chat` semantics. Upload each attached PDF per invocation and delete every remote file in `finally`.
-- [ ] Consume the Task 2 `provider_file_cleanup` repository. Retry on Gateway startup and bounded maintenance calls; never mutate schema v16 or expose file IDs, paths, credentials, raw provider bodies, or document text in ordinary logs.
-- [ ] Add `document_input_not_supported` and model capability checks before provider invocation. TXT/MD/DOCX use normalized bounded text; PDF has no silent local fallback.
-- [ ] Run focused Gateway/provider tests, configured Ruff, and full backend tests; commit `feat(gateway): add ephemeral Ark PDF responses`.
+- [x] Write RED adapter tests for Files create -> Responses create -> Files delete, tool-call normalization, mixed text/image/PDF input, and unchanged no-file Chat Completions dispatch.
+- [x] Write RED failure tests for model error, client disconnect, delete failure, restart retry, repeated cleanup, unsupported provider/model, over-budget attachments, and redacted logs/errors.
+- [x] Implement a file-bearing Ark Responses adapter without editing the current `complete_ark_chat` semantics. Upload each attached PDF per invocation and delete every remote file in `finally`.
+- [x] Consume the Task 2 `provider_file_cleanup` repository. Retry on Gateway startup and bounded maintenance calls; never mutate schema v16 or expose file IDs, paths, credentials, raw provider bodies, or document text in ordinary logs.
+- [x] Add `document_input_not_supported` and model capability checks before provider invocation. TXT/MD/DOCX use normalized bounded text; PDF has no silent local fallback.
+- [x] Run focused Gateway/provider tests, configured Ruff, and full backend tests; commit `feat(gateway): add ephemeral Ark PDF responses`.
 
 ### Task 4: Persist Experimental Conversation Mode And Skill Binding
 
@@ -159,12 +159,12 @@ PATCH /api/projects/{projectId}/conversations/{conversationId}/interaction
 { interactionMode: 'prompt-edit' | 'chat-experimental', boundSkillIds: string[] }
 ```
 
-- [ ] Write RED tests for two consecutive messages sharing one conversation, a lost-response retry reusing the same request ID/result, frontend/Gateway restart hydration, and legacy conversation defaults. These tests satisfy Task 19's durability prerequisite early.
-- [ ] Write RED Skill tests proving the experimental binding survives turns/reload, a pin move changes the next turn's exact provenance, and disabled/untrusted/archived/missing-tool Skills fail before model invocation.
-- [ ] Persist `interactionMode`/`boundSkillIds` with optimistic conversation revision. Keep existing one-shot `selectedSkillIds` and clearing behavior in Prompt workflows.
-- [ ] Add the user-facing `对话模式【测试中】` selector. In this mode no Prompt target is required, and the Skill menu says `本对话持续启用`; in Prompt mode current labels/behavior stay unchanged.
-- [ ] Make the runtime system prompt and tool allowlist depend on authoritative interaction mode. A Skill cannot add tools or broaden the permission scope.
-- [ ] Run focused frontend/Storage/Gateway/runtime tests; commit `feat(agent): persist experimental skill conversations`.
+- [x] Write RED tests for two consecutive messages sharing one conversation, a lost-response retry reusing the same request ID/result, frontend/Gateway restart hydration, and legacy conversation defaults. These tests satisfy Task 19's durability prerequisite early.
+- [x] Write RED Skill tests proving the experimental binding survives turns/reload, a pin move changes the next turn's exact provenance, and disabled/untrusted/archived/missing-tool Skills fail before model invocation.
+- [x] Persist `interactionMode`/`boundSkillIds` with optimistic conversation revision. Keep existing one-shot `selectedSkillIds` and clearing behavior in Prompt workflows.
+- [x] Add the user-facing `对话模式【测试中】` selector. In this mode no Prompt target is required, and the Skill menu says `本对话持续启用`; in Prompt mode current labels/behavior stay unchanged.
+- [x] Make the runtime system prompt and tool allowlist depend on authoritative interaction mode. A Skill cannot add tools or broaden the permission scope.
+- [x] Run focused frontend/Storage/Gateway/runtime tests; commit `feat(agent): persist experimental skill conversations`.
 
 ### Task 5: Add File Upload And Explicit Document Context
 
@@ -189,11 +189,11 @@ interface AgentDocumentAttachment {
 sendMessage({ documentResourceIds: string[], explicitDocumentNodeIds: string[] })
 ```
 
-- [ ] Write RED UI tests for button upload and drag/drop of all four types, local persistence before send, progress/error/removal, five-file/aggregate budgets, and request bodies containing IDs only.
-- [ ] Write RED context tests proving ambient workspace snapshots include only Document ID/title/revision/digest/bounded excerpt, while explicit `@Document`, selection, attachment, or transform can resolve bounded full effective text through Gateway.
-- [ ] Implement upload using the project document-resource API. Do not create browser object URLs or pass local paths/provider IDs to the Agent runtime.
-- [ ] Keep file chips and conversation attachment audit after reload; attachment selection for a message is explicit and clears after successful send unless the user reattaches it.
-- [ ] Run focused frontend tests and `npm run build`; commit `feat(agent): attach project documents safely`.
+- [x] Write RED UI tests for button upload and drag/drop of all four types, local persistence before send, progress/error/removal, five-file/aggregate budgets, and request bodies containing IDs only.
+- [x] Write RED context tests proving ambient workspace snapshots include only Document ID/title/revision/digest/bounded excerpt, while explicit `@Document`, selection, attachment, or transform can resolve bounded full effective text through Gateway.
+- [x] Implement upload using the project document-resource API. Do not create browser object URLs or pass local paths/provider IDs to the Agent runtime.
+- [x] Keep file chips and conversation attachment audit after reload; attachment selection for a message is explicit and clears after successful send unless the user reattaches it.
+- [x] Run focused frontend tests and `npm run build`; commit `feat(agent): attach project documents safely`.
 
 ### Task 6: Build The Document Node And Rich-Text Working Draft
 
@@ -217,12 +217,12 @@ interface PlanningDocumentV1 {
 }
 ```
 
-- [ ] Install exact `3.30.3` versions of `@tiptap/react`, `@tiptap/pm`, `@tiptap/starter-kit`, task-list/task-item, link, table/table-row/table-header/table-cell. Configure npm cache inside the workspace drive.
-- [ ] Write RED schema/domain tests for the editor-neutral block AST, deterministic derived effective text/digest, invalid content rejection, deep clone, Tiptap adapter round-trip, stable block IDs, and old-project normalization. `effectiveText` is recomputed on every read/write and is never a second authority.
-- [ ] Write RED component tests for complete inline editing, expanded editor, collapsed title/summary, one shared content state, keyboard/focus behavior, and no Canvas pan/drag while editing.
-- [ ] Implement the restricted Tiptap schema as an adapter over `PlanningDocumentBlockV1[]`, including a local stable-block-ID extension and persistent suggestion marks/decorations. Reject unsupported nodes/marks and pasted arbitrary HTML; never expose or persist Tiptap JSON as the runtime/Gateway contract.
-- [ ] Route user edits through a reversible Document update command and project save coordinator. Save failure restores the prior node and presents retry.
-- [ ] Run focused tests, TypeScript, and production build; commit `feat(canvas): add planning document node`.
+- [x] Install exact `3.30.3` versions of `@tiptap/react`, `@tiptap/pm`, `@tiptap/starter-kit`, task-list/task-item, link, table/table-row/table-header/table-cell. Configure npm cache inside the workspace drive.
+- [x] Write RED schema/domain tests for the editor-neutral block AST, deterministic derived effective text/digest, invalid content rejection, deep clone, Tiptap adapter round-trip, stable block IDs, and old-project normalization. `effectiveText` is recomputed on every read/write and is never a second authority.
+- [x] Write RED component tests for complete inline editing, expanded editor, collapsed title/summary, one shared content state, keyboard/focus behavior, and no Canvas pan/drag while editing.
+- [x] Implement the restricted Tiptap schema as an adapter over `PlanningDocumentBlockV1[]`, including a local stable-block-ID extension and persistent suggestion marks/decorations. Reject unsupported nodes/marks and pasted arbitrary HTML; never expose or persist Tiptap JSON as the runtime/Gateway contract.
+- [x] Route user edits through a reversible Document update command and project save coordinator. Save failure restores the prior node and presents retry.
+- [x] Run focused tests, TypeScript, and production build; commit `feat(canvas): add planning document node`.
 
 ### Task 7: Add Tracked Agent Document Changes And Apply ACK
 
@@ -253,14 +253,14 @@ POST /api/projects/{projectId}/conversations/{conversationId}/edits/{editId}/ack
 { requestId: string, status: 'applied' | 'failed', errorCode?: string }
 ```
 
-- [ ] Freeze text coordinates as UTF-8 byte offsets into NFC-normalized single-block plain text. Validate code-point boundaries in Python and TypeScript. Strictly interior insertions inherit the containing inline span's bold/italic/link marks; boundary insertions and replacements are unmarked; delete/replace preserves untouched marks.
-- [ ] Write RED tool-schema/policy tests for `emit_document_create` and `emit_document_changes`; tools emit editor-neutral blocks/operations and reject Tiptap JSON, arbitrary JSON patch, Prompt targets, multiple write tools in one turn, stale base, invalid UTF-8 anchors, cross-block edits, oversize operations, and unbound interaction mode.
-- [ ] Write RED suggestion tests for green insert, red strikethrough delete, linked replace, single/all accept/reject, effective draft semantics, and undo/redo.
-- [ ] Implement typed operations and deterministic suggestion IDs/groups. Later Agent turns read `effectiveText`; deleted visual text is never concatenated into model input.
-- [ ] Implement `pending_apply` with deterministic edit ID, deterministic create node ID, and expected result digest. Frontend applies one command and writes `AgentAppliedEditMarker` into the affected node in the same project save before sending ACK.
-- [ ] Make Gateway reload the Storage project before terminal acknowledgement. Matching kind/ID/marker/result -> `applied`; no marker plus revalidatable base -> replay the identical edit; conflicting base -> `failed_conflict`; marker/digest mismatch -> `failed_integrity`; missing/trashed project or target -> `failed_target_missing`. A frontend `failed` ACK is advisory until absence is verified.
-- [ ] Add retry/restart reconciliation tests at every crash point, especially project saved before ACK, proving `(conversationId, requestId, editId)` cannot duplicate nodes/changes and cannot report applied when the marker/result is absent.
-- [ ] Run focused/full Agent and frontend gates; commit `feat(agent): apply tracked document changes safely`.
+- [x] Freeze text coordinates as UTF-8 byte offsets into NFC-normalized single-block plain text. Validate code-point boundaries in Python and TypeScript. Strictly interior insertions inherit the containing inline span's bold/italic/link marks; boundary insertions and replacements are unmarked; delete/replace preserves untouched marks.
+- [x] Write RED tool-schema/policy tests for `emit_document_create` and `emit_document_changes`; tools emit editor-neutral blocks/operations and reject Tiptap JSON, arbitrary JSON patch, Prompt targets, multiple write tools in one turn, stale base, invalid UTF-8 anchors, cross-block edits, oversize operations, and unbound interaction mode.
+- [x] Write RED suggestion tests for green insert, red strikethrough delete, linked replace, single/all accept/reject, effective draft semantics, and undo/redo.
+- [x] Implement typed operations and deterministic suggestion IDs/groups. Later Agent turns read `effectiveText`; deleted visual text is never concatenated into model input.
+- [x] Implement `pending_apply` with deterministic edit ID, deterministic create node ID, and expected result digest. Frontend applies one command and writes `AgentAppliedEditMarker` into the affected node in the same project save before sending ACK.
+- [x] Make Gateway reload the Storage project before terminal acknowledgement. Matching kind/ID/marker/result -> `applied`; no marker plus revalidatable base -> replay the identical edit; conflicting base -> `failed_conflict`; marker/digest mismatch -> `failed_integrity`; missing/trashed project or target -> `failed_target_missing`. A frontend `failed` ACK is advisory until absence is verified.
+- [x] Add retry/restart reconciliation tests at every crash point, especially project saved before ACK, proving `(conversationId, requestId, editId)` cannot duplicate nodes/changes and cannot report applied when the marker/result is absent.
+- [x] Run focused/full Agent and frontend gates; commit `feat(agent): apply tracked document changes safely`.
 
 ### Task 8: Add Explicit Storyboard Node And Field Review
 
@@ -285,12 +285,12 @@ interface StoryboardSourceProvenance {
 }
 ```
 
-- [ ] Write RED tests requiring an explicit `Document -> Storyboard` action and proving the source uses effective Document text/revision/digest.
-- [ ] Add `emit_storyboard_create` validation using existing `IStoryboardSequence`/`IStoryboardRow` fields, fixed row/text budgets, and one undoable direct creation per turn.
-- [ ] Add `emit_storyboard_changes` for explicit allowed sequence/row fields. Render per-field old/new differences with single/all accept/reject and stale revision/digest rejection.
-- [ ] Keep this mutation path separate from standalone `AgentStoryboardUpdateProposal`; share only field definitions and pure validators.
-- [ ] Reuse the apply ACK/idempotency protocol from Task 7 and record exact source/resource/model/Skill provenance.
-- [ ] Run focused tests, TypeScript, and build; commit `feat(canvas): add explicit storyboard transform`.
+- [x] Write RED tests requiring an explicit `Document -> Storyboard` action and proving the source uses effective Document text/revision/digest.
+- [x] Add `emit_storyboard_create` validation using existing `IStoryboardSequence`/`IStoryboardRow` fields, fixed row/text budgets, and one undoable direct creation per turn.
+- [x] Add `emit_storyboard_changes` for explicit allowed sequence/row fields. Render per-field old/new differences with single/all accept/reject and stale revision/digest rejection.
+- [x] Keep this mutation path separate from standalone `AgentStoryboardUpdateProposal`; share only field definitions and pure validators.
+- [x] Reuse the apply ACK/idempotency protocol from Task 7 and record exact source/resource/model/Skill provenance.
+- [x] Run focused tests, TypeScript, and build; commit `feat(canvas): add explicit storyboard transform`.
 
 ### Task 9: Prove Prompt And Image Isolation, Then Add Explicit Prompt Handoff
 
@@ -301,10 +301,10 @@ interface StoryboardSourceProvenance {
 - Modify: explicit Canvas action/menu files
 - Test: focused Prompt compiler/context/reference/action tests
 
-- [ ] Write RED adversarial tests proving Document/Storyboard cannot become a Prompt reference, `CVT`/`CVM`, Prompt Library/RAG record, image Prompt connection/input, or ambient full-body context through any union fallback.
-- [ ] Add closed explicit kind checks and ADR-020 comments at the normalization, Prompt compiler, image conversation, reference-code, and compact-context boundaries.
-- [ ] Add **选中文本转为 Prompt 提案** and **镜头转为 Prompt 提案** actions. Each creates one pending `free_canvas_text_create` proposal for a new Prompt Canvas node made only of `user` segments. Approval creates that node; the action cannot update an existing Prompt node or read/write Prompt Library.
-- [ ] Run existing Prompt Library, Canvas Prompt editor, image-generation, context-pack, reference-code, and project normalization suites; commit `test(boundary): enforce document prompt isolation`.
+- [x] Write RED adversarial tests proving Document/Storyboard cannot become a Prompt reference, `CVT`/`CVM`, Prompt Library/RAG record, image Prompt connection/input, or ambient full-body context through any union fallback.
+- [x] Add closed explicit kind checks and ADR-020 comments at the normalization, Prompt compiler, image conversation, reference-code, and compact-context boundaries.
+- [x] Add **选中文本转为 Prompt 提案** and **镜头转为 Prompt 提案** actions. Each creates one pending `free_canvas_text_create` proposal for a new Prompt Canvas node made only of `user` segments. Approval creates that node; the action cannot update an existing Prompt node or read/write Prompt Library.
+- [x] Run existing Prompt Library, Canvas Prompt editor, image-generation, context-pack, reference-code, and project normalization suites; commit `test(boundary): enforce document prompt isolation`.
 
 ### Task 10: Technical Acceptance And Documentation Handoff
 
@@ -313,11 +313,11 @@ interface StoryboardSourceProvenance {
 - Update: `docs/superpowers/plans/2026-08-22-plan-008-execution.md`
 - Create: `docs/reviews/2026-08-27-task-15-10-technical-acceptance.md`
 
-- [ ] Dispatch a fresh read-only reviewer for the full Task 15.6-15.10 diff. Fix Blocking/Important findings test-first and use a new reviewer after every fix round.
-- [ ] Run focused Storage/Gateway/runtime/frontend/browser suites, full Storage and backend suites, configured Ruff, TypeScript, lint within the existing warning budget, production build, and startup regression tests.
-- [ ] Run adversarial probes for invalid files, scanned PDF, remote deletion/retry, Skill state changes, Document suggestions, Storyboard field review, explicit Prompt handoff, apply crash/replay, path/credential/provider-ID leakage, old projects, and no Prompt/image regressions.
-- [ ] Perform workspace hygiene checks for staged/untracked files, temp directories, orphan processes, generated secrets/paths, and the unrelated startup changes. Do not stage those unrelated files.
-- [ ] Update current-state docs, the execution ledger, and an evidence package containing commits, test counts/skips/warnings, manual probes, and residual risks. Mark Checkpoint 3.5 technically complete and stop before Task 16 for user acceptance.
+- [x] Dispatch a fresh read-only reviewer for the full Task 15.6-15.10 diff. Fix Blocking/Important findings test-first and use a new reviewer after every fix round.
+- [x] Run focused Storage/Gateway/runtime/frontend/browser suites, full Storage and backend suites, configured Ruff, TypeScript, lint within the existing warning budget, production build, and startup regression tests. The acceptance package records the pre-existing lint-warning budget failure, stale fixed-port startup probe, and E2E Storage startup flake instead of reporting them as green.
+- [x] Run adversarial probes for invalid files, scanned PDF, remote deletion/retry, Skill state changes, Document suggestions, Storyboard field review, explicit Prompt handoff, apply crash/replay, path/credential/provider-ID leakage, old projects, and no Prompt/image regressions.
+- [x] Perform workspace hygiene checks for staged/untracked files, temp directories, orphan processes, generated secrets/paths, and the unrelated startup changes. Do not stage those unrelated files.
+- [x] Update current-state docs, the execution ledger, and an evidence package containing commits, test counts/skips/warnings, manual probes, and residual risks. Mark Checkpoint 3.5 technically complete and stop before Task 16 for user acceptance.
 
 ## Checkpoint 3.5 Manual Acceptance Script
 
