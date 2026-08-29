@@ -982,12 +982,10 @@ const uniqueFreeCanvasRewriteTitle = (nodes: IFreeCanvasNode[], sourceTitle: str
     .filter((node): node is IFreeCanvasTextNode => node.kind === 'text')
     .map(node => node.title.trim().toLocaleLowerCase()))
   if (!existingTitles.has(base.toLocaleLowerCase())) return base
-  let suffix = 2
-  while (true) {
+  for (let suffix = 2; ; suffix += 1) {
     const numericSuffix = ` (${suffix})`
     const candidate = titleWithSuffix(numericSuffix)
     if (!existingTitles.has(candidate.toLocaleLowerCase())) return candidate
-    suffix += 1
   }
 }
 

@@ -2173,10 +2173,10 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         projectId: 'project-uncommitted',
         projectTitle: 'Uncommitted Project'
       }
-      function SuspendBeforeCommit(): never {
+      const SuspendBeforeCommit = (): never => {
         throw neverCommits
       }
-      function ConcurrentIdentityHarness({
+      const ConcurrentIdentityHarness = ({
         sessionKey,
         context,
         suspend
@@ -2184,22 +2184,20 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
         sessionKey: string
         context: AgentWorkspaceContext
         suspend: boolean
-      }) {
-        return (
-          <>
-            <AgentCollaborationPanel
-              title="Free Canvas Agent"
-              mode="free-canvas-workspace"
-              sessionKey={sessionKey}
-              workspaceContext={context}
-              onApplyWorkspaceProposal={vi.fn()}
-              onApplyCanvasEdit={applyCanvasEdit}
-              embedded
-            />
-            {suspend ? <SuspendBeforeCommit /> : null}
-          </>
-        )
-      }
+      }) => (
+        <>
+          <AgentCollaborationPanel
+            title="Free Canvas Agent"
+            mode="free-canvas-workspace"
+            sessionKey={sessionKey}
+            workspaceContext={context}
+            onApplyWorkspaceProposal={vi.fn()}
+            onApplyCanvasEdit={applyCanvasEdit}
+            embedded
+          />
+          {suspend ? <SuspendBeforeCommit /> : null}
+        </>
+      )
       let renderer!: ReactTestRenderer
       await act(async () => {
         renderer = create(

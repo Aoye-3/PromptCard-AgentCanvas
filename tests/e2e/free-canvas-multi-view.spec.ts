@@ -14,7 +14,7 @@ test.describe.serial('zero-cost multi-view generation', () => {
   let providerSessionToken = ''
   let providerSessionReady = false
 
-  test.beforeEach(({}, testInfo) => {
+  test.beforeEach((_fixtures, testInfo) => {
     providerSessionToken = `w${testInfo.workerIndex}-r${testInfo.retry}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     providerSessionReady = false
   })
