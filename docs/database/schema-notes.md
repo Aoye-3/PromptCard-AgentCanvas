@@ -25,7 +25,7 @@ Core frontend schemas:
 - `ImageGenerationCanvasPlacement`
 - `ImageAssetDerivation`
 
-Schema changes should be documented with migration or normalization behavior. The current PromptCard Storage schema is v15. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
+Schema changes should be documented with migration or normalization behavior. The current PromptCard Storage schema is v16. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
 
 ## Three-stage Project Shape
 
@@ -83,7 +83,7 @@ All three asset IDs are foreign-key and diagnostics references. Removing a resou
 
 ## Agent Conversation And Skill Tables
 
-PromptCard Storage schema v9 makes SQLite the durable authority for project Agent conversations and the minimal Skill registry. Schema v9 adds nullable `agent_conversations.model_binding_json`; all v8 conversation and Skill tables remain unchanged.
+PromptCard Storage schema v9 introduced SQLite as the durable authority for project Agent conversations and the minimal Skill registry. It added nullable `agent_conversations.model_binding_json`; all v8 conversation and Skill tables remain unchanged.
 
 Project conversation tables:
 
@@ -126,6 +126,8 @@ Codex files remain derived filesystem state rather than SQLite rows. Cross-insta
 ## Exact Revision Trust Reviews
 
 Schema v15 adds `skill_revision_reviews` with primary key `(skill_id, revision)`. Each row stores the canonical revision digest, `trusted | untrusted` decision, and review time. A composite foreign key ties the review to an immutable revision, while insert/update triggers reject a digest that does not equal the canonical `skill_revisions.digest`.
+
+Schema v16 adds `project_document_resources` and `provider_file_cleanup`. Document resources are project-bound and separated from image `project_resources`; cleanup rows persist failed remote-file deletions for bounded retry and do not alter project image lifecycle rules.
 
 Migration seeds reviews only for revisions whose Skill was already `first-party` or `trusted`; first-party trust is normalized to the review state `trusted`. New external revisions do not inherit another revision's review. Host enablement and Codex repair require the exact `(skill_id, revision, digest)` to remain trusted as well as the Skill's global trust state to permit use. Marking a review untrusted blocks future snapshot execution and repair, but explicit disable/unpublish remains available so revoked or archived content can be removed safely.
 

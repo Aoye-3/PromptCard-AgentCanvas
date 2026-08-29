@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved design; implementation not started.
+Approved design; Task 15.6-15.9 implemented, Task 15.10 pending Checkpoint 3.5 acceptance activities.
 
 ## Goal
 

@@ -13,7 +13,7 @@ Every Canvas or Prompt Library `emit_*` tool creates a pending proposal. The fro
 
 ## Skill snapshots
 
-PromptCard Storage schema v15 is the canonical source for canonical Skill packages, exact-revision trust reviews, and independent host pins. Each run receives the exact enabled local-Agent pin as a bounded snapshot rather than an editable package copy:
+PromptCard Storage schema v16 is the canonical source for canonical Skill packages, exact-revision trust reviews, and independent host pins. Each run receives the exact enabled local-Agent pin as a bounded snapshot rather than an editable package copy:
 
 ```json
 {

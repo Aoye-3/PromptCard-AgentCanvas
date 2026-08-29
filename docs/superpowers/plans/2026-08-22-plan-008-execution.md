@@ -4,9 +4,10 @@
 
 ## Status
 
-- Status: `Task 15.5 technically accepted; Tasks 15.6-15.10 planned and awaiting implementation; Task 16 blocked`
-- Date: `2026-08-22`
+- Status: `Tasks 15.6-15.9 implemented; Task 15.10 implementation pending fresh read-only review and user acceptance; Task 16 blocked`
+- Date: `2026-08-29`
 - Planning update branch: `docs/document-skill-loop-plan`
+- Active execution branch: `feat/skill-document-storyboard-loop`
 - Plan 007 prerequisite: manual acceptance confirmed by the user on `2026-08-22`
 - Paid live-provider evaluation remains independent and does not block this plan
 
@@ -484,10 +485,10 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Acceptance criteria:**
 
-- [ ] `chat-experimental` is a top-level interaction mode and is not added to `CanvasAgentEditMode`.
-- [ ] Document does not reuse Prompt segments; Storyboard Canvas state does not reuse the standalone storyboard mutation path.
-- [ ] Normalization, rendering, reference selection, context packing, Prompt compilation, and image inputs use explicit kind allowlists; unknown kinds become read-only `unsupported` projections that round-trip their untouched original JSON and never fall through to `text` or `image`.
-- [ ] Existing projects and Prompt workflows normalize and build unchanged.
+- [x] `chat-experimental` is a top-level interaction mode and is not added to `CanvasAgentEditMode`.
+- [x] Document does not reuse Prompt segments; Storyboard Canvas state does not reuse the standalone storyboard mutation path.
+- [x] Normalization, rendering, reference selection, context packing, Prompt compilation, and image inputs use explicit kind allowlists; unknown kinds become read-only `unsupported` projections that round-trip their untouched original JSON and never fall through to `text` or `image`.
+- [x] Existing projects and Prompt workflows normalize and build unchanged.
 
 **Verification:** Contract/normalization tests cover legacy, new, and unknown node kinds; TypeScript and production build pass.
 
@@ -503,10 +504,10 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Acceptance criteria:**
 
-- [ ] No Prompt target is required; the selected model, conversation, and bound Skill IDs survive reload/restart.
-- [ ] Every turn resolves the current local-Agent pin and records exact revision/digest provenance; a pin move affects the next turn only.
-- [ ] Disabled, untrusted, archived, over-budget, or tool-incompatible Skills fail before model invocation and cannot expand the allowed tool set.
-- [ ] Consecutive messages reuse one Storage conversation and response-loss replay with the same request ID returns the saved turn without duplication.
+- [x] No Prompt target is required; the selected model, conversation, and bound Skill IDs survive reload/restart.
+- [x] Every turn resolves the current local-Agent pin and records exact revision/digest provenance; a pin move affects the next turn only.
+- [x] Disabled, untrusted, archived, over-budget, or tool-incompatible Skills fail before model invocation and cannot expand the allowed tool set.
+- [x] Consecutive messages reuse one Storage conversation and response-loss replay with the same request ID returns the saved turn without duplication.
 
 **Verification:** Storage/Gateway/runtime/store/component tests cover persistence, Task 19 durability risks, Skill state transitions, and existing one-shot behavior.
 
@@ -522,11 +523,11 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Acceptance criteria:**
 
-- [ ] Schema v16 creates both `project_document_resources` and `provider_file_cleanup`; migration, backup/restore, and health tests freeze both tables before Gateway consumes them. Document resources remain separate from image `project_resources`, Prompt media, and browser/provider identities.
-- [ ] TXT/MD are strict UTF-8; DOCX extraction uses exactly `python-docx==1.2.0`; PDF uses the existing Ark SDK's Files/Responses interfaces only when the selected model declares support.
-- [ ] Limits are TXT/MD 5 MiB, DOCX 20 MiB, PDF 50 MiB, five attachments, and 100 MiB aggregate per turn; extension/MIME/signature/container/project/lifecycle checks all pass.
-- [ ] Each PDF is uploaded for one invocation and deleted in `finally`; failed deletion creates a redacted durable cleanup record retried on startup.
-- [ ] Unsupported providers/models return `document_input_not_supported` before invocation rather than switching provider, OCR, or parsing semantics.
+- [x] Schema v16 creates both `project_document_resources` and `provider_file_cleanup`; migration, backup/restore, and health tests freeze both tables before Gateway consumes them. Document resources remain separate from image `project_resources`, Prompt media, and browser/provider identities.
+- [x] TXT/MD are strict UTF-8; DOCX extraction uses exactly `python-docx==1.2.0`; PDF uses the existing Ark SDK's Files/Responses interfaces only when the selected model declares support.
+- [x] Limits are TXT/MD 5 MiB, DOCX 20 MiB, PDF 50 MiB, five attachments, and 100 MiB aggregate per turn; extension/MIME/signature/container/project/lifecycle checks all pass.
+- [x] Each PDF is uploaded for one invocation and deleted in `finally`; failed deletion creates a redacted durable cleanup record retried on startup.
+- [x] Unsupported providers/models return `document_input_not_supported` before invocation rather than switching provider, OCR, or parsing semantics.
 
 **Verification:** Storage and Gateway tests cover valid files, spoofing, corrupt/encrypted/zip-bomb DOCX, oversize/count, project isolation, backup/restore, scanned PDF, delete/retry/restart, redaction, and unchanged Chat Completions.
 
@@ -542,13 +543,13 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Acceptance criteria:**
 
-- [ ] Pin all selected `@tiptap/*` packages to `3.30.3`; keep an editor-neutral versioned block AST as the persisted/runtime contract, with Tiptap JSON only as a frontend adapter. Allow only headings, paragraphs, bold/italic, lists, quote, checklist, link, and basic table.
-- [ ] User edits are immediate canonical edits. Agent insertions are green/effective; Agent deletions remain red/struck through but are excluded from effective text; linked replacements resolve atomically.
-- [ ] Single/all accept/reject, undo/redo, inline/expanded/collapsed views, project save/reload, and old-project normalization preserve the same effective content.
-- [ ] `emit_document_create` and `emit_document_changes` use editor-neutral blocks/operations and bind the project, node kind, base revision/digest, NFC text, UTF-8 byte anchors, expected text digest, budgets, provenance, request ID, and edit ID; Tiptap JSON and arbitrary JSON patch are rejected.
-- [ ] Gateway records deterministic `pending_apply` edit/node IDs and expected result digest. Frontend saves content plus `AgentAppliedEditMarker` atomically; Gateway reloads Storage and verifies project/node kind/ID/marker/result before `applied`.
-- [ ] Reconciliation freezes every terminal: matching marker -> `applied`; absent marker plus revalidatable base -> same edit replay; changed conflicting base -> `failed_conflict`; marker/result mismatch -> `failed_integrity`; deleted/trashed project/target -> `failed_target_missing`. Save failure rolls back, and frontend ACK alone is not authority.
-- [ ] Ambient workspace snapshots expose only identity/title/revision/digest/bounded excerpt; full effective text requires explicit attachment, `@Document`, selection, or transform.
+- [x] Pin all selected `@tiptap/*` packages to `3.30.3`; keep an editor-neutral versioned block AST as the persisted/runtime contract, with Tiptap JSON only as a frontend adapter. Allow only headings, paragraphs, bold/italic, lists, quote, checklist, link, and basic table.
+- [x] User edits are immediate canonical edits. Agent insertions are green/effective; Agent deletions remain red/struck through but are excluded from effective text; linked replacements resolve atomically.
+- [x] Single/all accept/reject, undo/redo, inline/expanded/collapsed views, project save/reload, and old-project normalization preserve the same effective content.
+- [x] `emit_document_create` and `emit_document_changes` use editor-neutral blocks/operations and bind the project, node kind, base revision/digest, NFC text, UTF-8 byte anchors, expected text digest, budgets, provenance, request ID, and edit ID; Tiptap JSON and arbitrary JSON patch are rejected.
+- [x] Gateway records deterministic `pending_apply` edit/node IDs and expected result digest. Frontend saves content plus `AgentAppliedEditMarker` atomically; Gateway reloads Storage and verifies project/node kind/ID/marker/result before `applied`.
+- [x] Reconciliation freezes every terminal: matching marker -> `applied`; absent marker plus revalidatable base -> same edit replay; changed conflicting base -> `failed_conflict`; marker/result mismatch -> `failed_integrity`; deleted/trashed project/target -> `failed_target_missing`. Save failure rolls back, and frontend ACK alone is not authority.
+- [x] Ambient workspace snapshots expose only identity/title/revision/digest/bounded excerpt; full effective text requires explicit attachment, `@Document`, selection, or transform.
 
 **Verification:** Domain/editor/component/browser/Gateway/runtime/recovery tests cover rich text, suggestion semantics, conflicts, save failure, response loss, duplicate request, restart reconciliation, budgets, and context isolation.
 

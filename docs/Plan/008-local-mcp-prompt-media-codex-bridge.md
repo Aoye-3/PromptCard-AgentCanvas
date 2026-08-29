@@ -2,7 +2,7 @@
 
 ## Status
 
-Task 15.5 technically accepted; Tasks 15.6-15.10 planned and not implemented; Task 16 remains blocked
+Task 15.5 technically accepted; Tasks 15.6-15.9 implemented; Task 15.10 pending technical/user acceptance at Checkpoint 3.5; Task 16 remains blocked
 
 ## Current Normative Boundary
 
@@ -138,7 +138,7 @@ The maintained runtime also has important boundaries that this plan preserves:
 - the pi text Agent has no direct filesystem, Storage, or Canvas write access;
 - current provider image generation is independent from text-Agent sessions.
 
-The current left navigation includes the complete Task 15 Skill Hub management surface. PromptCard Storage schema v15 owns canonical Skill packages, immutable revisions and digests, provenance, lifecycle, exact-revision trust reviews, and independent host pins. Skill Hub supports inert folder/archive inspection, structured findings, import, history/diff, archive/restore, exact review, Codex/local-Agent controls, projection health, and explicit owned-drift repair. The Gateway continues to supply exact bounded snapshots to the local text Agent without expanding Runtime permissions.
+The current left navigation includes the complete Task 15 Skill Hub management surface. PromptCard Storage schema v16 owns canonical Skill packages, immutable revisions and digests, provenance, lifecycle, exact-revision trust reviews, and independent host pins. Skill Hub supports inert folder/archive inspection, structured findings, import, history/diff, archive/restore, exact review, Codex/local-Agent controls, projection health, and explicit owned-drift repair. The Gateway continues to supply exact bounded snapshots to the local text Agent without expanding Runtime permissions.
 
 Codex `.agents/skills` is a derived native projection, not the canonical store. Canonical revision updates do not move either host pin. Skill scripts, hooks, installers, automatic semantic matching, MCP Skill resources, and Task 16's host-neutral read surface remain unimplemented.
 

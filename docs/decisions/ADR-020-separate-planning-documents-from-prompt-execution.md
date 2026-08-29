@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Implementation status: planned, not implemented.
+Accepted. Implementation status: Task 15.6-15.9 implemented; Task 15.10 implementation pending checkpoint acceptance.
 
 ## Date
 
