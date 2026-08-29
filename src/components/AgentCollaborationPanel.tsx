@@ -40,7 +40,7 @@ interface AgentCollaborationPanelProps {
     conversationId: string
     pending: boolean
     nodeId?: string
-  }) => void
+  }) => Promise<void> | void
   autoApplyWorkspaceChanges?: boolean
   compact?: boolean
   embedded?: boolean
@@ -112,6 +112,10 @@ export function AgentCollaborationPanel({
   const [draft, setDraft] = useState(embedded ? '' : '告诉 Agent 你想怎么修改当前选中的提示词卡片。')
   const [appliedMessages, setAppliedMessages] = useState<AgentMessage[]>([])
   const [conversationId, setConversationId] = useState<string>()
+  const [pendingDocumentLedgerTarget, setPendingDocumentLedgerTarget] = useState<{
+    conversationId: string
+    nodeId: string
+  }>()
   const retryRequest = session.retryRequest as (
     (NonNullable<typeof session.retryRequest> & { conversationId: string }) | undefined
   )
@@ -212,6 +216,7 @@ export function AgentCollaborationPanel({
     setCanvasAttachments([])
     setDocumentAttachments([])
     setDocumentUploadingCount(0)
+    setPendingDocumentLedgerTarget(undefined)
     setPostSendApplyError(undefined)
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
@@ -225,16 +230,29 @@ export function AgentCollaborationPanel({
     }
     let cancelled = false
     let barrierReleased = false
+    let applyStarted = false
     const identity = `${sessionKey}:${workspaceContext.projectId}:${conversationId}`
-    const releaseBarrier = () => {
+    const releaseBarrier = async () => {
       if (barrierReleased) return
       barrierReleased = true
-      onDocumentReconcileStateChangeRef.current?.({ conversationId, pending: false })
+      try {
+        await onDocumentReconcileStateChangeRef.current?.({ conversationId, pending: false })
+      } catch {
+        // Releasing a local edit barrier is best-effort during identity changes.
+      }
     }
     setDocumentEditReconciling(true)
-    onDocumentReconcileStateChangeRef.current?.({ conversationId, pending: true })
     void (async () => {
       try {
+        const ledgerNodeId = pendingDocumentLedgerTarget?.conversationId === conversationId
+          ? pendingDocumentLedgerTarget.nodeId
+          : undefined
+        await onDocumentReconcileStateChangeRef.current?.({
+          conversationId,
+          pending: true,
+          ...(ledgerNodeId ? { nodeId: ledgerNodeId } : {})
+        })
+        if (cancelled || postSendApplyIdentityRef.current !== identity) return
         const reconciliation = await agentRuntimeService.reconcileDocumentEdits(
           workspaceContext.projectId,
           conversationId
@@ -243,12 +261,14 @@ export function AgentCollaborationPanel({
         if (reconciliation.status === 'pending_apply' && reconciliation.canvasEdits.length === 1) {
           const edit = reconciliation.canvasEdits[0]
           if (edit.kind === 'document_create' || edit.kind === 'document_changes') {
-            onDocumentReconcileStateChangeRef.current?.({
+            await onDocumentReconcileStateChangeRef.current?.({
               conversationId,
               pending: true,
               nodeId: edit.nodeId
             })
+            if (cancelled || postSendApplyIdentityRef.current !== identity) return
           }
+          applyStarted = true
           const applied = await onApplyCanvasEditRef.current?.(edit)
           if (applied === false && !cancelled && postSendApplyIdentityRef.current === identity) {
             setPostSendApplyError(POST_SEND_APPLY_ERROR)
@@ -262,14 +282,14 @@ export function AgentCollaborationPanel({
         if (!cancelled && postSendApplyIdentityRef.current === identity) {
           setDocumentEditReconciling(false)
         }
-        releaseBarrier()
+        await releaseBarrier()
       }
     })()
     return () => {
       cancelled = true
-      releaseBarrier()
+      if (!applyStarted) void releaseBarrier()
     }
-  }, [conversationId, sessionKey, workspaceContext.projectId])
+  }, [conversationId, pendingDocumentLedgerTarget, sessionKey, workspaceContext.projectId])
 
   const conversationMessages = useMemo(
     () => [...messages, ...appliedMessages].sort((a, b) => a.createdAt - b.createdAt),
@@ -801,6 +821,10 @@ export function AgentCollaborationPanel({
     }
     setPostSendApplyError(undefined)
     setConversationId(conversation.id)
+    const pendingDocumentNodeId = readUniquePendingDocumentLedgerNodeId(conversation)
+    setPendingDocumentLedgerTarget(pendingDocumentNodeId
+      ? { conversationId: conversation.id, nodeId: pendingDocumentNodeId }
+      : undefined)
     setInteractionMode(conversation.interactionMode || 'prompt-edit')
     setBoundSkillIds(conversation.boundSkillIds || [])
     setConversationRevision(conversation.revision || 1)
@@ -1131,6 +1155,27 @@ function summarizeAppliedCanvasEdits(edits: AgentCanvasEdit[]) {
 }
 
 export const AIChatbotBox = AgentCollaborationPanel
+
+function readUniquePendingDocumentLedgerNodeId(conversation: AgentConversationDetail): string | undefined {
+  const pendingNodeIds = conversation.turns.flatMap(turn => {
+    if (!isPlainRecord(turn) || !isPlainRecord(turn.applyEdit)) return []
+    const ledger = turn.applyEdit
+    if (
+      ledger.status !== 'pending_apply'
+      || (ledger.kind !== 'document_create' && ledger.kind !== 'document_changes')
+      || ledger.conversationId !== conversation.id
+      || typeof ledger.nodeId !== 'string'
+      || !ledger.nodeId
+      || ledger.nodeId.trim() !== ledger.nodeId
+    ) return []
+    return [ledger.nodeId]
+  })
+  return pendingNodeIds.length === 1 ? pendingNodeIds[0] : undefined
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
 
 function RuntimeErrorNotice({ error, dense = false }: { error: string; dense?: boolean }) {
   return (

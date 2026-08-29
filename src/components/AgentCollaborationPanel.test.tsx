@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   messages: [] as AgentMessage[],
   proposals: [] as AgentWorkspaceProposal[],
   storedMessages: [] as Array<Record<string, unknown>>,
+  storedTurns: [] as Array<Record<string, unknown>>,
   hydrateSession: vi.fn(),
   updateInteraction: vi.fn(),
   reconcileDocumentEdits: vi.fn(),
@@ -94,7 +95,7 @@ vi.mock('@/components/agent/AgentConversationMenu', () => ({
               connectionId: 'connection-chat', providerId: 'volcengine-ark', modelId: 'doubao-seed-2-0-lite-260215'
             },
             interactionMode: 'chat-experimental', boundSkillIds: ['SKL-tone'], revision: 4,
-            messages: mocks.storedMessages, proposals: [], turns: []
+            messages: mocks.storedMessages, proposals: [], turns: mocks.storedTurns
           })}
         >{label}</button>
       ))}
@@ -162,6 +163,7 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     mocks.messages = []
     mocks.proposals = []
     mocks.storedMessages = []
+    mocks.storedTurns = []
     mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'idle', canvasEdits: [] })
     mocks.updateConversationModel.mockResolvedValue({})
     mocks.hydrateSession.mockImplementation((_sessionKey, session) => {
@@ -315,6 +317,60 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
   })
 
+  it('awaits the unique pending Document ledger target barrier before reconciliation starts', async () => {
+    const barrier = deferred<void>()
+    mocks.storedTurns = [
+      {
+        requestId: 'request-applied',
+        applyEdit: {
+          status: 'applied', kind: 'document_changes', nodeId: 'document-history',
+          conversationId: 'conversation-experimental', requestId: 'request-applied', editId: 'edit-applied',
+          expectedResultDigest: `sha256:${'a'.repeat(64)}`
+        }
+      },
+      {
+        requestId: 'request-pending',
+        applyEdit: {
+          status: 'pending_apply', kind: 'document_changes', nodeId: 'document-ledger-target',
+          conversationId: 'conversation-experimental', requestId: 'request-pending', editId: 'edit-pending',
+          expectedResultDigest: `sha256:${'b'.repeat(64)}`
+        }
+      }
+    ]
+    const onDocumentReconcileStateChange = vi.fn((state: {
+      conversationId: string
+      pending: boolean
+      nodeId?: string
+    }) => state.pending ? barrier.promise : Promise.resolve())
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={vi.fn()}
+          onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+        />
+      )
+    })
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
+      conversationId: 'conversation-experimental', pending: true, nodeId: 'document-ledger-target'
+    })
+    expect(mocks.reconcileDocumentEdits).not.toHaveBeenCalled()
+
+    await act(async () => {
+      barrier.resolve()
+      await barrier.promise
+      await Promise.resolve()
+    })
+    expect(mocks.reconcileDocumentEdits).toHaveBeenCalledWith('project-a', 'conversation-experimental')
+  })
+
   it('releases the old conversation barrier when hydration switches during reconciliation', async () => {
     const pendingOldReconcile = deferred<{ status: 'idle'; canvasEdits: [] }>()
     mocks.reconcileDocumentEdits
@@ -354,6 +410,56 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
     expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith({
       conversationId: 'conversation-b', pending: false
+    })
+  })
+
+  it('keeps the old target locked when conversation switches after recovered apply starts', async () => {
+    const pendingApply = deferred<boolean>()
+    const edit = {
+      kind: 'document_changes' as const,
+      id: 'edit-switch-apply', editId: 'edit-switch-apply',
+      conversationId: 'conversation-experimental', requestId: 'request-switch-apply',
+      nodeId: 'document-reconcile', expectedResultDigest: `sha256:${'b'.repeat(64)}`,
+      base: { projectRevision: 1, nodeRevision: 2, nodeDigest: `sha256:${'a'.repeat(64)}` },
+      payload: { operations: [] }, rationale: 'Recover before switching.'
+    }
+    mocks.reconcileDocumentEdits
+      .mockResolvedValueOnce({ status: 'pending_apply', canvasEdits: [edit] })
+      .mockResolvedValueOnce({ status: 'idle', canvasEdits: [] })
+    const onDocumentReconcileStateChange = vi.fn()
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={() => pendingApply.promise}
+          onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+        />
+      )
+    })
+
+    await settleConversationSelection(renderer)
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith({
+      conversationId: 'conversation-experimental', pending: true, nodeId: 'document-reconcile'
+    })
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载会话 B' }).props.onClick()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(onDocumentReconcileStateChange).not.toHaveBeenCalledWith({
+      conversationId: 'conversation-experimental', pending: false
+    })
+
+    await act(async () => {
+      pendingApply.resolve(true)
+      await pendingApply.promise
+      await Promise.resolve()
+    })
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith({
+      conversationId: 'conversation-experimental', pending: false
     })
   })
 

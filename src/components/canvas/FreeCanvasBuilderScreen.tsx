@@ -1972,7 +1972,7 @@ const FreeCanvasBuilderInner = ({
     }
   }, [commitCanvasSelection])
 
-  const handleDocumentReconcileStateChange = useCallback((state: {
+  const handleDocumentReconcileStateChange = useCallback(async (state: {
     conversationId: string
     pending: boolean
     nodeId?: string
@@ -1980,13 +1980,7 @@ const FreeCanvasBuilderInner = ({
     if (!state.pending) {
       documentReconcileLocksRef.current.delete(state.conversationId)
     } else {
-      const locked = new Set(documentReconcileLocksRef.current.get(state.conversationId))
-      freeCanvasRef.current.nodes.forEach(node => {
-        if (
-          node.kind === 'document'
-          && node.agentAppliedEdit?.conversationId === state.conversationId
-        ) locked.add(node.id)
-      })
+      const locked = new Set<string>()
       if (state.nodeId) {
         const target = freeCanvasRef.current.nodes.find(node => node.id === state.nodeId)
         if (target?.kind === 'document') locked.add(target.id)
@@ -1998,6 +1992,11 @@ const FreeCanvasBuilderInner = ({
     )
     documentReconcileLockedNodeIdsRef.current = next
     setDocumentReconcileLockedNodeIds([...next])
+    if (state.pending) {
+      const scope = activeProjectScopeRef.current
+      const currentTail = documentMutationQueuesRef.current.get(documentMutationQueueKey(scope))
+      if (currentTail) await currentTail
+    }
   }, [])
 
   const enqueueDocumentMutation = useCallback(<T,>(

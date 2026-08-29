@@ -162,14 +162,14 @@ vi.mock('@/components/canvas/nodes/DocumentNode', async importOriginal => {
 vi.mock('@/components/AgentCollaborationPanel', () => ({
   AIChatbotBox: ({ onApplyCanvasEdit, onDocumentReconcileStateChange }: {
     onApplyCanvasEdit?: (edit: AgentCanvasEdit) => Promise<boolean | void> | boolean | void
-    onDocumentReconcileStateChange?: (state: { conversationId: string; pending: boolean; nodeId?: string }) => void
+    onDocumentReconcileStateChange?: (state: { conversationId: string; pending: boolean; nodeId?: string }) => Promise<void> | void
   }) => (
     <div>
       <button
         type="button"
         aria-label="测试开始 Document reconcile"
         onClick={() => onDocumentReconcileStateChange?.({
-          conversationId: 'conversation-restart', pending: true
+          conversationId: 'conversation-restart', pending: true, nodeId: 'document-1'
         })}
       >Start reconcile</button>
       <button
@@ -1792,9 +1792,9 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     expect(renderer.root.findByProps({ 'data-screen-document-node': 'document-1' }).props['data-document-collapsed']).toBe(true)
   })
 
-  it('locks only the saved-before-ACK Document while restart reconciliation is in flight', async () => {
+  it('locks only the ledger target when one conversation has multiple historical markers', async () => {
     const canvas = twoDocumentCanvas()
-    canvas.nodes = canvas.nodes.map(node => node.id === 'document-1' && node.kind === 'document'
+    canvas.nodes = canvas.nodes.map(node => node.kind === 'document'
       ? {
           ...node,
           agentAppliedEdit: {
@@ -1820,7 +1820,7 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     await act(async () => renderedDocument(renderer, 'document-1').findByProps({ 'aria-label': '测试编辑文档 A' }).props.onClick())
     expect(renderedDocument(renderer, 'document-1').props['data-document-text']).toBe('A')
 
-    act(() => renderer.root.findByProps({ 'aria-label': '测试开始 Document reconcile' }).props.onClick())
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试开始 Document reconcile' }).props.onClick())
     expect(renderedDocument(renderer, 'document-1').props['data-document-locked']).toBe(true)
     expect(renderedDocument(renderer, 'document-2').props['data-document-locked']).toBe(false)
 
@@ -1839,7 +1839,49 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
       ])
     }))
 
-    act(() => renderer.root.findByProps({ 'aria-label': '测试结束 Document reconcile' }).props.onClick())
+    await act(async () => renderer.root.findByProps({ 'aria-label': '测试结束 Document reconcile' }).props.onClick())
     expect(renderedDocument(renderer, 'document-1').props['data-document-locked']).toBe(false)
+  })
+
+  it('locks synchronously and waits for the current Document mutation queue before reconciliation', async () => {
+    const pendingSave = deferred<boolean>()
+    const onPersistCanvas = vi.fn()
+      .mockImplementationOnce(() => pendingSave.promise)
+      .mockResolvedValue(true)
+    const Harness = () => {
+      const [current, setCurrent] = useState(initialCanvas())
+      return (
+        <FreeCanvasBuilderScreen
+          activeProject={project(current)} freeCanvas={current} onBack={vi.fn()} onRenameProject={vi.fn()}
+          onSave={vi.fn()} onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+        />
+      )
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    let pendingEdit!: Promise<boolean>
+    act(() => {
+      pendingEdit = renderedDocument(renderer, 'document-1')
+        .findByProps({ 'aria-label': '测试编辑文档 A' }).props.onClick()
+    })
+    let barrierSettled = false
+    let barrier!: Promise<void>
+    act(() => {
+      barrier = renderer.root.findByProps({ 'aria-label': '测试开始 Document reconcile' }).props.onClick()
+      void barrier.then(() => { barrierSettled = true })
+    })
+
+    expect(renderedDocument(renderer, 'document-1').props['data-document-locked']).toBe(true)
+    expect(barrierSettled).toBe(false)
+    await act(async () => renderedDocument(renderer, 'document-1')
+      .findByProps({ 'aria-label': '测试编辑文档 B' }).props.onClick())
+    expect(onPersistCanvas).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      pendingSave.resolve(true)
+      await Promise.all([pendingEdit, barrier])
+    })
+    expect(barrierSettled).toBe(true)
   })
 })
