@@ -207,6 +207,54 @@ describe('agent runtime message contract', () => {
   })
 
   it.each([
+    ['empty rows', (candidate: Record<string, unknown>) => { candidate.rows = [] }],
+    ['missing lighting', (candidate: Record<string, unknown>) => {
+      delete (candidate.rows as Array<Record<string, unknown>>)[0].lighting
+    }],
+    ['missing audio', (candidate: Record<string, unknown>) => {
+      delete (candidate.rows as Array<Record<string, unknown>>)[0].audio
+    }],
+    ['numeric lighting', (candidate: Record<string, unknown>) => {
+      (candidate.rows as Array<Record<string, unknown>>)[0].lighting = 0
+    }],
+    ['null lighting', (candidate: Record<string, unknown>) => {
+      (candidate.rows as Array<Record<string, unknown>>)[0].lighting = null
+    }],
+    ['a sequence extra key', (candidate: Record<string, unknown>) => { candidate.browserTrusted = true }],
+    ['a row extra key', (candidate: Record<string, unknown>) => {
+      (candidate.rows as Array<Record<string, unknown>>)[0].browserTrusted = true
+    }],
+    ['a decomposed sequence id', (candidate: Record<string, unknown>) => { candidate.id = 'Cafe\u0301' }],
+    ['an unpaired surrogate row id', (candidate: Record<string, unknown>) => {
+      (candidate.rows as Array<Record<string, unknown>>)[0].id = 'bad\ud800'
+    }],
+    ['an oversized sequence id', (candidate: Record<string, unknown>) => { candidate.id = 'x'.repeat(10_001) }],
+    ['duplicate row ids', (candidate: Record<string, unknown>) => {
+      const rows = candidate.rows as Array<Record<string, unknown>>
+      rows.push({ ...rows[0] })
+    }],
+    ['an invalid sequence createdAt', (candidate: Record<string, unknown>) => { candidate.createdAt = -1 }],
+    ['an invalid sequence updatedAt', (candidate: Record<string, unknown>) => { candidate.updatedAt = 1.5 }],
+    ['invalid sequence metadata', (candidate: Record<string, unknown>) => { candidate.meta = [] }],
+    ['an invalid row createdAt', (candidate: Record<string, unknown>) => {
+      (candidate.rows as Array<Record<string, unknown>>)[0].createdAt = -1
+    }],
+    ['an invalid row updatedAt', (candidate: Record<string, unknown>) => {
+      (candidate.rows as Array<Record<string, unknown>>)[0].updatedAt = 1.5
+    }]
+  ])('rejects enriched Storyboard creation with %s at service ingress', async (_label, mutate) => {
+    const edit = storyboardResponseEdit()
+    mutate(edit.payload.sequence as unknown as Record<string, unknown>)
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      threadId: 'thread-1', conversationId: 'conversation-1', text: 'ok', proposals: [], canvasEdits: [edit]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(agentRuntimeService.sendMessage({ content: 'Create it', projectId: 'project-1' }))
+      .rejects.toThrow('Invalid agent canvas edits.')
+  })
+
+  it.each([
     ['nine Skills', () => ({
       ...storyboardResponseSource(),
       skills: Array.from({ length: 9 }, (_, index) => ({

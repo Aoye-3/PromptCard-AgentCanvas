@@ -30,9 +30,9 @@ import type { ImageRegion } from '@/domain/image-generation/image-generation'
 import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 import { createPlanningDocumentV1, parsePlanningDocumentV1 } from '@/domain/documents/planning-document'
 import {
+  isValidPersistedStoryboardSequence,
   isValidStoryboardPendingFieldChanges,
   isValidStoryboardSourceProvenance,
-  MAX_STORYBOARD_AGGREGATE_TEXT_BYTES,
   storyboardDigest
 } from '@/domain/storyboard/canvas-storyboard'
 
@@ -1157,75 +1157,13 @@ const normalizeStoryboardNode = (
   }
 }
 
-const STORYBOARD_SEQUENCE_TEXT_FIELDS = ['name', 'description', 'style', 'constraints'] as const
-const STORYBOARD_ROW_TEXT_FIELDS = ['cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration'] as const
 const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u
-const MAX_STORYBOARD_FIELD_BYTES = 10_000
 
 const isPlainRecordValue = (value: unknown): value is Record<string, unknown> => (
   Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 )
 
-const hasExactRecordKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => (
-  Object.keys(value).length === keys.length && keys.every(key => Object.prototype.hasOwnProperty.call(value, key))
-)
-
 const isNonNegativeSafeInteger = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0
-
-const isWellFormedStoryboardText = (value: string): boolean => {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index)
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1)
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false
-      index += 1
-    } else if (code >= 0xdc00 && code <= 0xdfff) return false
-  }
-  return true
-}
-
-const isValidStoryboardText = (value: unknown): value is string => (
-  typeof value === 'string'
-  && isWellFormedStoryboardText(value)
-  && value === value.normalize('NFC')
-  && new TextEncoder().encode(value).length <= MAX_STORYBOARD_FIELD_BYTES
-)
-
-const isValidStoryboardSequence = (value: unknown): value is IFreeCanvasStoryboardNode['sequence'] => {
-  if (!isPlainRecordValue(value) || !hasExactRecordKeys(value, [
-    'id', 'name', 'description', 'style', 'constraints', 'rows', 'createdAt', 'updatedAt', 'meta'
-  ])) return false
-  if (
-    !isValidStoryboardText(value.id) || !value.id
-    || STORYBOARD_SEQUENCE_TEXT_FIELDS.some(field => !isValidStoryboardText(value[field]))
-    || !Array.isArray(value.rows) || value.rows.length === 0 || value.rows.length > 200
-    || !isNonNegativeSafeInteger(value.createdAt) || !isNonNegativeSafeInteger(value.updatedAt)
-    || !isPlainRecordValue(value.meta)
-  ) return false
-  const rowIds = new Set<string>()
-  let aggregateTextBytes = STORYBOARD_SEQUENCE_TEXT_FIELDS.reduce(
-    (total, field) => total + new TextEncoder().encode(String(value[field])).length,
-    0
-  )
-  const validRows = value.rows.every(row => {
-    if (!isPlainRecordValue(row)) return false
-    const keys = ['id', ...STORYBOARD_ROW_TEXT_FIELDS, 'createdAt', 'updatedAt', ...(row.imageUrl === undefined ? [] : ['imageUrl'])]
-    if (
-      !hasExactRecordKeys(row, keys)
-      || !isValidStoryboardText(row.id) || !row.id || rowIds.has(row.id)
-      || STORYBOARD_ROW_TEXT_FIELDS.some(field => !isValidStoryboardText(row[field]))
-      || !isNonNegativeSafeInteger(row.createdAt) || !isNonNegativeSafeInteger(row.updatedAt)
-      || (row.imageUrl !== undefined && !isValidStoryboardText(row.imageUrl))
-    ) return false
-    rowIds.add(row.id)
-    aggregateTextBytes += STORYBOARD_ROW_TEXT_FIELDS.reduce(
-      (total, field) => total + new TextEncoder().encode(String(row[field])).length,
-      0
-    )
-    return true
-  })
-  return validRows && aggregateTextBytes <= MAX_STORYBOARD_AGGREGATE_TEXT_BYTES
-}
 
 const isValidPersistedStoryboardNode = (
   node: Partial<IFreeCanvasStoryboardNode>
@@ -1238,7 +1176,7 @@ const isValidPersistedStoryboardNode = (
     || typeof node.position.y !== 'number' || !Number.isFinite(node.position.y)
     || typeof node.width !== 'number' || !Number.isFinite(node.width) || node.width <= 0
     || typeof node.height !== 'number' || !Number.isFinite(node.height) || node.height <= 0
-    || !isValidStoryboardSequence(node.sequence)
+    || !isValidPersistedStoryboardSequence(node.sequence)
     || !isValidStoryboardSourceProvenance(node.source)
     || !isValidStoryboardPendingFieldChanges(node.pendingFieldChanges, node.sequence)
     || (node.revision !== undefined && !isNonNegativeSafeInteger(node.revision))

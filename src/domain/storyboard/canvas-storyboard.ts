@@ -50,6 +50,47 @@ const isWellFormedNfcText = (value: unknown, nonempty = false): value is string 
   return (!nonempty || value.length > 0) && new TextEncoder().encode(value).length <= MAX_STORYBOARD_FIELD_BYTES
 }
 
+export const isValidPersistedStoryboardSequence = (
+  value: unknown
+): value is IStoryboardSequence => {
+  if (!isPlainRecord(value) || !hasExactKeys(value, [
+    'id', ...STORYBOARD_SEQUENCE_FIELDS, 'rows', 'createdAt', 'updatedAt', 'meta'
+  ])) return false
+  if (
+    !isWellFormedNfcText(value.id, true)
+    || STORYBOARD_SEQUENCE_FIELDS.some(field => !isWellFormedNfcText(value[field]))
+    || !Array.isArray(value.rows) || value.rows.length < 1 || value.rows.length > 200
+    || !isNonNegativeSafeInteger(value.createdAt) || !isNonNegativeSafeInteger(value.updatedAt)
+    || !isPlainRecord(value.meta)
+  ) return false
+
+  let aggregateTextBytes = STORYBOARD_SEQUENCE_FIELDS.reduce(
+    (total, field) => total + new TextEncoder().encode(value[field] as string).length,
+    0
+  )
+  const rowIds = new Set<string>()
+  for (const row of value.rows) {
+    if (!isPlainRecord(row)) return false
+    const keys = [
+      'id', ...STORYBOARD_ROW_FIELDS, 'createdAt', 'updatedAt',
+      ...(row.imageUrl === undefined ? [] : ['imageUrl'])
+    ]
+    if (
+      !hasExactKeys(row, keys)
+      || !isWellFormedNfcText(row.id, true) || rowIds.has(row.id)
+      || STORYBOARD_ROW_FIELDS.some(field => !isWellFormedNfcText(row[field]))
+      || !isNonNegativeSafeInteger(row.createdAt) || !isNonNegativeSafeInteger(row.updatedAt)
+      || (row.imageUrl !== undefined && !isWellFormedNfcText(row.imageUrl))
+    ) return false
+    rowIds.add(row.id)
+    aggregateTextBytes += STORYBOARD_ROW_FIELDS.reduce(
+      (total, field) => total + new TextEncoder().encode(row[field] as string).length,
+      0
+    )
+  }
+  return aggregateTextBytes <= MAX_STORYBOARD_AGGREGATE_TEXT_BYTES
+}
+
 export const isValidStoryboardSourceProvenance = (
   value: unknown
 ): value is StoryboardSourceProvenance => {
@@ -106,8 +147,8 @@ const canonicalSequence = (sequence: IStoryboardSequence) => ({
     action: row.action,
     scene: row.scene,
     camera: row.camera,
-    lighting: row.lighting || '',
-    audio: row.audio || '',
+    lighting: row.lighting,
+    audio: row.audio,
     duration: row.duration
   }))
 })
@@ -121,21 +162,6 @@ export const storyboardDigest = (
 }))}`
 
 const cloneSequence = (sequence: IStoryboardSequence): IStoryboardSequence => structuredClone(sequence)
-
-const storyboardSequenceTextValues = (sequence: IStoryboardSequence): string[] => [
-  sequence.name, sequence.description, sequence.style, sequence.constraints,
-  ...sequence.rows.flatMap(row => [
-    row.cutLabel, row.timeRange, row.subject, row.action, row.scene, row.camera,
-    row.lighting || '', row.audio || '', row.duration
-  ])
-]
-
-const storyboardSequenceTextBytes = (sequence: IStoryboardSequence): number => (
-  storyboardSequenceTextValues(sequence).reduce(
-    (total, value) => total + new TextEncoder().encode(value.normalize('NFC')).length,
-    0
-  )
-)
 
 export const isValidStoryboardChangeOperations = (
   value: unknown,
@@ -227,19 +253,7 @@ export const isValidStoryboardPendingFieldChanges = (
 }
 
 const assertSequence = (sequence: IStoryboardSequence) => {
-  if (!sequence || !sequence.id || sequence.rows.length > 200) throw new Error('storyboard_sequence_invalid')
-  const values = storyboardSequenceTextValues(sequence)
-  const rowIds = new Set<string>()
-  sequence.rows.forEach(row => {
-    if (!row.id || rowIds.has(row.id)) throw new Error('storyboard_sequence_invalid')
-    rowIds.add(row.id)
-  })
-  if (values.some(value => !isWellFormedNfcText(value))) {
-    throw new Error('storyboard_sequence_invalid')
-  }
-  if (storyboardSequenceTextBytes(sequence) > MAX_STORYBOARD_AGGREGATE_TEXT_BYTES) {
-    throw new Error('storyboard_sequence_invalid')
-  }
+  if (!isValidPersistedStoryboardSequence(sequence)) throw new Error('storyboard_sequence_invalid')
 }
 
 export const createStoryboardNode = (

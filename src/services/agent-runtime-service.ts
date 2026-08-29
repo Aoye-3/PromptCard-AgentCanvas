@@ -15,6 +15,7 @@ import type {
   PromptLibraryWriteProposal
 } from '@/models/Agent.model'
 import {
+  isValidPersistedStoryboardSequence,
   isValidStoryboardChangeOperations,
   isValidStoryboardSourceProvenance
 } from '@/domain/storyboard/canvas-storyboard'
@@ -256,7 +257,7 @@ const isEnrichedDocumentEdit = (value: unknown): value is AgentCanvasEdit => {
   if (value.kind === 'storyboard_create') {
     return hasOnlyKeys(value.base, ['projectRevision']) && Number.isSafeInteger(value.base.projectRevision) &&
       hasOnlyKeys(value.payload, ['title', 'sequence', 'source']) && typeof value.payload.title === 'string' &&
-      isRecord(value.payload.sequence) && Array.isArray(value.payload.sequence.rows) &&
+      isValidPersistedStoryboardSequence(value.payload.sequence) &&
       isValidStoryboardSourceProvenance(value.payload.source)
   }
   if (value.kind === 'storyboard_changes') {

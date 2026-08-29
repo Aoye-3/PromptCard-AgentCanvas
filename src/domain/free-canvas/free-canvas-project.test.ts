@@ -735,9 +735,31 @@ describe('free canvas project domain', () => {
       originalNode: expect.objectContaining({ id: 'storyboard-strict', digest: `sha256:${'f'.repeat(64)}` })
     })
 
+    const rowWithoutLighting = { ...sequence.rows[0] } as Record<string, unknown>
+    delete rowWithoutLighting.lighting
+    const rowWithoutAudio = { ...sequence.rows[0] } as Record<string, unknown>
+    delete rowWithoutAudio.audio
     const malformed = [
       { label: 'sequence', node: { ...strictNode, sequence: { ...sequence, rows: 'not-rows' } } },
       { label: 'empty rows', node: { ...strictNode, sequence: { ...sequence, rows: [] } } },
+      { label: 'missing lighting', node: {
+        ...strictNode, sequence: { ...sequence, rows: [rowWithoutLighting] }
+      } },
+      { label: 'missing audio', node: {
+        ...strictNode, sequence: { ...sequence, rows: [rowWithoutAudio] }
+      } },
+      { label: 'numeric lighting', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], lighting: 0 }] }
+      } },
+      { label: 'null lighting', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], lighting: null }] }
+      } },
+      { label: 'sequence extra key', node: {
+        ...strictNode, sequence: { ...sequence, browserTrusted: true }
+      } },
+      { label: 'row extra key', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], browserTrusted: true }] }
+      } },
       { label: 'decomposed sequence id', node: { ...strictNode, sequence: { ...sequence, id: 'Cafe\u0301' } } },
       { label: 'oversized sequence id', node: { ...strictNode, sequence: { ...sequence, id: 'x'.repeat(10_001) } } },
       { label: 'surrogate row id', node: {
@@ -748,6 +770,21 @@ describe('free canvas project domain', () => {
       } },
       { label: 'oversized image URL', node: {
         ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], imageUrl: 'x'.repeat(10_001) }] }
+      } },
+      { label: 'invalid sequence createdAt', node: {
+        ...strictNode, sequence: { ...sequence, createdAt: -1 }
+      } },
+      { label: 'invalid sequence updatedAt', node: {
+        ...strictNode, sequence: { ...sequence, updatedAt: 1.5 }
+      } },
+      { label: 'invalid sequence meta', node: {
+        ...strictNode, sequence: { ...sequence, meta: [] }
+      } },
+      { label: 'invalid row createdAt', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], createdAt: -1 }] }
+      } },
+      { label: 'invalid row updatedAt', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], updatedAt: 1.5 }] }
       } },
       { label: 'pending change', node: {
         ...strictNode,
