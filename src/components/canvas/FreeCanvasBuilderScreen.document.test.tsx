@@ -833,6 +833,105 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     expect(mocks.applyResults).toEqual([false])
   })
 
+  it('rejects an authoritative handoff receipt with duplicate deterministic target node ids', async () => {
+    const canvas = initialCanvas()
+    const source = canvas.nodes[0] as IFreeCanvasDocumentNode
+    mocks.agentProposal = {
+      kind: 'free_canvas_text_create', id: 'prompt-handoff-winning-target-duplicate', status: 'pending',
+      agentName: 'PromptCard Agent', title: 'Prompt proposal', userText: 'Cinematic portrait',
+      threadId: 'conversation-1', provenance: handoffProvenance(),
+      handoffBasis: {
+        kind: 'document-selection', nodeId: source.id, documentRevision: source.document.revision,
+        documentDigest: source.document.digest, blockId: `${source.id}-paragraph`,
+        utf8Start: 0, utf8End: 6, selectedText: 'Before',
+        selectedTextDigest: `sha256:${sha256Utf8('Before')}`
+      }, rationale: 'Explicit handoff', createdAt: 1
+    }
+    const onChange = vi.fn()
+    const onPersistCanvas = vi.fn(async (next: IFreeCanvasProject) => {
+      const applied = next.nodes.find(node => node.kind === 'text' && node.agentPromptHandoff) as IFreeCanvasTextNode
+      const duplicate = structuredClone(applied)
+      delete duplicate.agentPromptHandoff
+      duplicate.title = 'Conflicting duplicate target'
+      return persistedReceipt({ ...next, nodes: [...next.nodes, duplicate] })
+    })
+    const renderer = create(
+      <FreeCanvasBuilderScreen
+        activeProject={project(canvas)} freeCanvas={canvas}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={onChange} onPersistCanvas={onPersistCanvas}
+      />
+    )
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick()
+    })
+
+    expect(onPersistCanvas).toHaveBeenCalledOnce()
+    expect(onChange).not.toHaveBeenCalled()
+    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining('完整性校验失败'))
+    expect(mocks.applyResults).toEqual([false])
+  })
+
+  it('rejects a concurrent live Canvas with duplicate deterministic handoff target node ids', async () => {
+    const canvas = initialCanvas()
+    const source = canvas.nodes[0] as IFreeCanvasDocumentNode
+    mocks.agentProposal = {
+      kind: 'free_canvas_text_create', id: 'prompt-handoff-live-target-duplicate', status: 'pending',
+      agentName: 'PromptCard Agent', title: 'Prompt proposal', userText: 'Cinematic portrait',
+      threadId: 'conversation-1', provenance: handoffProvenance(),
+      handoffBasis: {
+        kind: 'document-selection', nodeId: source.id, documentRevision: source.document.revision,
+        documentDigest: source.document.digest, blockId: `${source.id}-paragraph`,
+        utf8Start: 0, utf8End: 6, selectedText: 'Before',
+        selectedTextDigest: `sha256:${sha256Utf8('Before')}`
+      }, rationale: 'Explicit handoff', createdAt: 1
+    }
+    const receipt = deferred<ReturnType<typeof persistedReceipt>>()
+    const persistStarted = deferred<void>()
+    let requested!: IFreeCanvasProject
+    const onPersistCanvas = vi.fn((next: IFreeCanvasProject) => {
+      requested = next
+      persistStarted.resolve()
+      return receipt.promise
+    })
+    let publishDuplicate!: () => void
+    let latest = canvas
+    const Harness = () => {
+      const [current, setCurrent] = useState(canvas)
+      latest = current
+      publishDuplicate = () => setCurrent(value => {
+        const applied = requested.nodes.find(node => node.kind === 'text' && node.agentPromptHandoff) as IFreeCanvasTextNode
+        const duplicate = structuredClone(applied)
+        delete duplicate.agentPromptHandoff
+        duplicate.title = 'Conflicting duplicate target'
+        return { ...value, nodes: [...value.nodes, applied, duplicate] }
+      })
+      return <FreeCanvasBuilderScreen
+        activeProject={project(current)} freeCanvas={current}
+        onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+        onChange={setCurrent} onPersistCanvas={onPersistCanvas}
+      />
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Harness />) })
+
+    let approval!: Promise<void>
+    act(() => { approval = renderer.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick() })
+    await act(async () => { await persistStarted.promise })
+    act(() => publishDuplicate())
+    const duplicatedLiveCanvas = latest
+    await act(async () => {
+      receipt.resolve(persistedReceipt(requested))
+      await approval
+    })
+
+    expect(onPersistCanvas).toHaveBeenCalledOnce()
+    expect(latest).toEqual(duplicatedLiveCanvas)
+    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining('完整性校验失败'))
+    expect(mocks.applyResults).toEqual([false])
+  })
+
   it('rebases a superseded handoff onto concurrent Canvas changes and commits only the authoritative winning payload', async () => {
     const canvas = initialCanvas()
     const source = canvas.nodes[0] as IFreeCanvasDocumentNode
@@ -938,6 +1037,66 @@ describe('FreeCanvasBuilderScreen Document integration', () => {
     />)
     await act(async () => corruptRestart.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick())
     expect(corruptPersist).not.toHaveBeenCalled()
+    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining('完整性校验失败'))
+    expect(mocks.applyResults).toEqual([false])
+  })
+
+  it.each([
+    ['its deterministic target node id is missing', (saved: IFreeCanvasProject, applied: IFreeCanvasTextNode) => {
+      const moved = structuredClone(applied)
+      moved.id = `${applied.id}-unexpected`
+      return { ...saved, nodes: saved.nodes.map(node => node === applied ? moved : node) }
+    }],
+    ['its deterministic target node id is duplicated', (saved: IFreeCanvasProject, applied: IFreeCanvasTextNode) => {
+      const duplicate = structuredClone(applied)
+      delete duplicate.agentPromptHandoff
+      duplicate.title = 'Conflicting duplicate target'
+      return { ...saved, nodes: [...saved.nodes, duplicate] }
+    }],
+    ['its marker identity is duplicated', (saved: IFreeCanvasProject, applied: IFreeCanvasTextNode) => {
+      const duplicate = structuredClone(applied)
+      duplicate.id = `${applied.id}-identity-duplicate`
+      return { ...saved, nodes: [...saved.nodes, duplicate] }
+    }]
+  ])('rejects a durable handoff marker after restart when %s', async (_case, corruptSaved) => {
+    const canvas = initialCanvas()
+    const source = canvas.nodes[0] as IFreeCanvasDocumentNode
+    mocks.agentProposal = {
+      kind: 'free_canvas_text_create', id: 'prompt-handoff-restart-target-duplicate', status: 'pending',
+      agentName: 'PromptCard Agent', title: 'Prompt proposal', userText: 'Cinematic portrait',
+      threadId: 'conversation-1', provenance: handoffProvenance(),
+      handoffBasis: {
+        kind: 'document-selection', nodeId: source.id, documentRevision: source.document.revision,
+        documentDigest: source.document.digest, blockId: `${source.id}-paragraph`,
+        utf8Start: 0, utf8End: 6, selectedText: 'Before',
+        selectedTextDigest: `sha256:${sha256Utf8('Before')}`
+      }, rationale: 'Explicit handoff', createdAt: 1
+    }
+    let saved!: IFreeCanvasProject
+    const first = create(<FreeCanvasBuilderScreen
+      activeProject={project(canvas)} freeCanvas={canvas}
+      onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+      onChange={vi.fn()} onPersistCanvas={vi.fn(async (next: IFreeCanvasProject) => {
+        saved = next
+        return persistedReceipt(next)
+      })}
+    />)
+    await act(async () => first.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick())
+    first.unmount()
+
+    const applied = saved.nodes.find(node => node.kind === 'text' && node.agentPromptHandoff) as IFreeCanvasTextNode
+    const corrupted = corruptSaved(saved, applied)
+    mocks.applyResults = []
+    const restartPersist = vi.fn().mockResolvedValue(persistedReceipt(corrupted))
+    const restarted = create(<FreeCanvasBuilderScreen
+      activeProject={project(corrupted)} freeCanvas={corrupted}
+      onBack={vi.fn()} onRenameProject={vi.fn()} onSave={vi.fn()}
+      onChange={vi.fn()} onPersistCanvas={restartPersist}
+    />)
+
+    await act(async () => restarted.root.findByProps({ 'aria-label': '测试应用 Prompt handoff 提案' }).props.onClick())
+
+    expect(restartPersist).not.toHaveBeenCalled()
     expect(window.alert).toHaveBeenCalledWith(expect.stringContaining('完整性校验失败'))
     expect(mocks.applyResults).toEqual([false])
   })

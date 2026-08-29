@@ -6747,9 +6747,12 @@ const inspectPromptHandoffApplication = (
     && node.agentPromptHandoff?.conversationId === application.marker.conversationId
     && node.agentPromptHandoff?.proposalId === application.marker.proposalId
   ))
-  const deterministicNode = canvas.nodes.find(node => node.id === application.nodeId)
-  if (identityMatches.length === 0 && !deterministicNode) return { status: 'missing' }
-  if (identityMatches.length !== 1 || deterministicNode !== identityMatches[0]) return { status: 'conflict' }
+  const deterministicMatches = canvas.nodes.filter(node => node.id === application.nodeId)
+  if (identityMatches.length === 0 && deterministicMatches.length === 0) return { status: 'missing' }
+  if (identityMatches.length !== 1
+    || deterministicMatches.length !== 1
+    || deterministicMatches[0] !== identityMatches[0]
+  ) return { status: 'conflict' }
   const node = identityMatches[0]
   const marker = node.agentPromptHandoff
   if (!marker || Object.keys(marker).sort().join(',') !== 'basisDigest,conversationId,proposalId,resultDigest,version') {
