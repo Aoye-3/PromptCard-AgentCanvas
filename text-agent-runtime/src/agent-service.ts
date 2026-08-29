@@ -1106,9 +1106,12 @@ function acceptedToolResult(edit: Record<string, unknown>) {
 
 export function buildAgentSystemPrompt(invocation: ReturnType<typeof buildInvocation>) {
   const isExperimentalChat = invocation.interactionMode === 'chat-experimental'
-  const context = invocation.workspaceContext
-    ? JSON.stringify(invocation.workspaceContext)
-    : 'No Canvas workspace context.'
+  const isPromptHandoff = invocation.documentWriteContext?.operationKind === 'prompt_handoff'
+  const context = isPromptHandoff
+    ? 'Omitted for Prompt handoff.'
+    : invocation.workspaceContext
+      ? JSON.stringify(invocation.workspaceContext)
+      : 'No Canvas workspace context.'
   const library = JSON.stringify(invocation.promptLibrary)
   const mediaInstruction = invocation.attachments.length
     ? 'Analyze only the single explicitly attached image. Do not infer access to other media.'

@@ -30,14 +30,22 @@ vi.mock('./components/app/ProjectHome', () => ({
   }) => <button type="button" data-open-project onClick={() => onOpenProject(projects[0])}>Open project</button>
 }))
 vi.mock('./components/canvas/FreeCanvasBuilderScreen', () => ({
-  default: ({ activeProject, onBack, onRenameProject, onPersistCanvas, freeCanvas }: {
+  default: ({ activeProject, onBack, onRenameProject, onChange, onPersistCanvas, freeCanvas }: {
     activeProject: IPromptProject
     onBack: () => void
     onRenameProject: () => void
+    onChange: (freeCanvas: IFreeCanvasProject) => void
     onPersistCanvas: (canvas: IFreeCanvasProject) => Promise<unknown>
     freeCanvas: IFreeCanvasProject
   }) => (
-    <div data-free-canvas-builder data-builder-title={activeProject.title}>
+    <div
+      data-free-canvas-builder
+      data-builder-title={activeProject.title}
+      data-builder-handoff-approved={freeCanvas.meta.handoffApproved}
+      data-builder-handoff-marker-count={
+        Array.isArray(freeCanvas.meta.handoffMarkerIds) ? freeCanvas.meta.handoffMarkerIds.length : 0
+      }
+    >
       <button type="button" data-builder-back onClick={onBack}>Back</button>
       <button type="button" data-builder-rename onClick={onRenameProject}>Rename</button>
       <button type="button" data-builder-persist onClick={async () => {
@@ -57,6 +65,21 @@ vi.mock('./components/canvas/FreeCanvasBuilderScreen', () => ({
         }
         mocks.persistResult = receipt
       }}>Persist with rebase</button>
+      <button type="button" data-builder-persist-authoritative onClick={async () => {
+        const requested = {
+          ...freeCanvas,
+          meta: {
+            ...freeCanvas.meta,
+            handoffApproved: true,
+            handoffMarkerIds: ['handoff-marker-1']
+          }
+        }
+        const receipt = await onPersistCanvas(requested)
+        if (receipt && typeof receipt === 'object' && 'freeCanvas' in receipt) {
+          onChange(receipt.freeCanvas as IFreeCanvasProject)
+        }
+        mocks.persistResult = receipt
+      }}>Persist authoritative handoff</button>
     </div>
   )
 }))
@@ -313,6 +336,57 @@ describe('App generated result media placement', () => {
       saved: true,
       freeCanvas: expect.objectContaining({ meta: expect.objectContaining({ handoffRequested: true }) })
     }))
+  })
+
+  it('rebases a delayed Rename confirmation onto the handoff-complete active project', async () => {
+    mocks.project = canvasProject()
+    const handoffSave = deferred<IPromptProject>()
+    let storageWinner = mocks.project
+    let renderer!: ReactTestRenderer
+    await act(async () => { renderer = create(<App />); await settle() })
+    await act(async () => {
+      renderer.root.findByProps({ 'data-open-project': true }).props.onClick()
+      await settle()
+    })
+    mocks.projectUpdate.mockClear()
+    mocks.projectUpdate.mockImplementation(async (_id, updates) => {
+      if (mocks.projectUpdate.mock.calls.length === 1) {
+        storageWinner = await handoffSave.promise
+        return storageWinner
+      }
+      storageWinner = { ...storageWinner!, ...updates, revision: (storageWinner?.revision || 0) + 1 }
+      return storageWinner
+    })
+
+    let handoff!: Promise<void>
+    await act(async () => {
+      handoff = renderer.root.findByProps({ 'data-builder-persist-authoritative': true }).props.onClick()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(mocks.projectUpdate).toHaveBeenCalledTimes(1))
+    act(() => { void renderer.root.findByProps({ 'data-builder-rename': true }).props.onClick() })
+    act(() => renderer.root.findByProps({ 'data-change-rename': true }).props.onClick())
+
+    const handoffRequest = mocks.projectUpdate.mock.calls[0][1] as Partial<IPromptProject>
+    handoffSave.resolve({ ...mocks.project, ...handoffRequest, revision: 2 })
+    await act(async () => { await handoff })
+    expect(renderer.root.findByProps({ 'data-free-canvas-builder': true }).props['data-builder-handoff-approved'])
+      .toBe(true)
+    expect(renderer.root.findByProps({ 'data-free-canvas-builder': true }).props['data-builder-handoff-marker-count'])
+      .toBe(1)
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'data-confirm-rename': true }).props.onClick()
+      await settle()
+    })
+
+    expect(storageWinner?.title).toBe('Renamed while saving')
+    expect(storageWinner?.freeCanvas?.meta.handoffApproved).toBe(true)
+    expect(storageWinner?.freeCanvas?.meta.handoffMarkerIds).toEqual(['handoff-marker-1'])
+    expect(renderer.root.findByProps({ 'data-free-canvas-builder': true }).props['data-builder-title'])
+      .toBe('Renamed while saving')
+    expect(renderer.root.findByProps({ 'data-free-canvas-builder': true }).props['data-builder-handoff-marker-count'])
+      .toBe(1)
   })
 
   it('returns the authoritative Storage canvas rather than treating a superseding save as boolean success', async () => {

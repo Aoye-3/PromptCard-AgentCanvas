@@ -818,7 +818,10 @@ function App() {
       return
     }
 
-    const optimisticProject = { ...renameProject, title: nextTitle, updatedAt: Date.now() }
+    const currentProject = activeProjectRef.current?.id === renameProject.id
+      ? activeProjectRef.current
+      : projects.find(project => project.id === renameProject.id) || renameProject
+    const optimisticProject = { ...currentProject, title: nextTitle, updatedAt: Date.now() }
     markProjectEdited(renameProject.id)
     const editSeq = getProjectEditSeq(renameProject.id)
     upsertProject(optimisticProject)

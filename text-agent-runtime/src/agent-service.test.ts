@@ -96,6 +96,73 @@ describe('pi text-agent system boundary', () => {
     expect(prompt.split(shotText)).toHaveLength(2)
   })
 
+  it('keeps ambient Canvas and Prompt Library content out of Prompt handoff prompts', () => {
+    const cases = [
+      {
+        authoritativeText: '权威文档选区 AMBIENT_DUPLICATE',
+        expectedPrefix: 'Authoritative selected Document text:',
+        documentWriteContext: {
+          operationKind: 'prompt_handoff' as const,
+          basis: {
+            kind: 'document-selection' as const,
+            nodeId: 'document-1', documentRevision: 4,
+            documentDigest: `sha256:${'a'.repeat(64)}`, blockId: 'paragraph-1',
+            utf8Start: 0, utf8End: 36,
+            selectedText: '权威文档选区 AMBIENT_DUPLICATE', selectedTextDigest: `sha256:${'b'.repeat(64)}`
+          }
+        }
+      },
+      {
+        authoritativeText: '权威镜头 AMBIENT_DUPLICATE',
+        expectedPrefix: 'Authoritative Storyboard shot text:',
+        documentWriteContext: {
+          operationKind: 'prompt_handoff' as const,
+          basis: {
+            kind: 'storyboard-shot' as const,
+            nodeId: 'storyboard-1', storyboardRevision: 7,
+            storyboardDigest: `sha256:${'c'.repeat(64)}`, rowId: 'shot-7',
+            shotDigest: `sha256:${'d'.repeat(64)}`, shotText: '权威镜头 AMBIENT_DUPLICATE'
+          }
+        }
+      }
+    ]
+
+    for (const testCase of cases) {
+      const prompt = buildAgentSystemPrompt(buildInvocation({
+        content: 'Create only from the authoritative basis',
+        permissionScope: 'workspace-chatbot-agent',
+        interactionMode: 'chat-experimental',
+        workspaceContext: {
+          snapshot: {
+            nodes: [
+              {
+                id: 'ambient-document', kind: 'document',
+                title: 'AMBIENT_DOCUMENT_SECRET', excerpt: testCase.authoritativeText
+              },
+              {
+                id: 'ambient-storyboard', kind: 'storyboard',
+                title: 'AMBIENT_STORYBOARD_SECRET', excerpt: 'OTHER_STORYBOARD_EXCERPT'
+              }
+            ]
+          }
+        },
+        promptLibrary: [{
+          id: 'ambient-library', label: 'AMBIENT_LIBRARY_SECRET',
+          content: `LIBRARY_CONTENT ${testCase.authoritativeText}`
+        }],
+        documentWriteContext: testCase.documentWriteContext
+      }))
+
+      expect(prompt).toContain(`${testCase.expectedPrefix} ${JSON.stringify(testCase.authoritativeText)}.`)
+      expect(prompt.split(testCase.authoritativeText)).toHaveLength(2)
+      expect(prompt).not.toContain('AMBIENT_DOCUMENT_SECRET')
+      expect(prompt).not.toContain('AMBIENT_STORYBOARD_SECRET')
+      expect(prompt).not.toContain('OTHER_STORYBOARD_EXCERPT')
+      expect(prompt).not.toContain('AMBIENT_LIBRARY_SECRET')
+      expect(prompt).not.toContain('LIBRARY_CONTENT')
+    }
+  })
+
   it('places skill instructions below immutable runtime policy', () => {
     const prompt = buildAgentSystemPrompt(buildInvocation({
       content: 'Edit', permissionScope: 'workspace-chatbot-agent',
