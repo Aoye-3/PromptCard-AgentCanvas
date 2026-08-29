@@ -840,21 +840,32 @@ class PromptCardRuntimeService:
         storyboard_edit = edit_kind in {"storyboard_create", "storyboard_changes"}
         expected_node_kind = "storyboard" if storyboard_edit else "document"
         if (
-            storyboard_edit
-            and isinstance(node, dict)
-            and node.get("kind") == "storyboard"
-            and not await _storyboard_source_matches_storage(
-                project_id, project, conversation, turn, edit, node
+            edit_kind == "storyboard_create"
+            or (
+                edit_kind == "storyboard_changes"
+                and isinstance(node, dict)
+                and node.get("kind") == "storyboard"
             )
         ):
-            return await _terminal_agent_edit(
-                conversation_id,
-                request_id,
-                edit_id,
-                "failed_integrity",
-                {"nodeId": node_id, "kind": "storyboard", "code": "storyboard_source_mismatch"},
-                include_canvas_edits=include_canvas_edits,
+            authoritative_source = await _authoritative_storyboard_source(
+                project_id, project, conversation, turn, edit
             )
+            if (
+                authoritative_source is None
+                or (
+                    isinstance(node, dict)
+                    and node.get("kind") == "storyboard"
+                    and node.get("source") != authoritative_source
+                )
+            ):
+                return await _terminal_agent_edit(
+                    conversation_id,
+                    request_id,
+                    edit_id,
+                    "failed_integrity",
+                    {"nodeId": node_id, "kind": "storyboard", "code": "storyboard_source_mismatch"},
+                    include_canvas_edits=include_canvas_edits,
+                )
         marker = node.get("agentAppliedEdit") if isinstance(node, dict) else None
         if isinstance(marker, dict):
             if node.get("kind") != expected_node_kind:
@@ -1262,6 +1273,35 @@ def _canonical_nfc_json(value: Any) -> str:
     )
 
 
+def _normalize_storyboard_text(
+    value: Any,
+    *,
+    persisted: bool,
+    max_bytes: int = 10_000,
+    nonempty: bool = False,
+) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = unicodedata.normalize("NFC", value)
+    if persisted and normalized != value:
+        return None
+    try:
+        encoded = normalized.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    if len(encoded) > max_bytes or (nonempty and not normalized):
+        return None
+    return normalized
+
+
+def _valid_storyboard_timestamp(value: Any) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= 9_007_199_254_740_991
+    )
+
+
 def _normalize_storyboard_sequence(value: Any, *, model_output: bool) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -1269,20 +1309,26 @@ def _normalize_storyboard_sequence(value: Any, *, model_output: bool) -> dict[st
     persisted = core | {"createdAt", "updatedAt", "meta"}
     if set(value) != (core if model_output else persisted):
         return None
-    sequence_id = value.get("id")
+    sequence_id = _normalize_storyboard_text(
+        value.get("id"), persisted=not model_output, nonempty=True
+    )
     rows = value.get("rows")
-    if not isinstance(sequence_id, str) or not sequence_id.strip() or not isinstance(rows, list) or not 0 < len(rows) <= 200:
+    if sequence_id is None or not isinstance(rows, list) or not 0 < len(rows) <= 200:
+        return None
+    if not model_output and (
+        not _valid_storyboard_timestamp(value.get("createdAt"))
+        or not _valid_storyboard_timestamp(value.get("updatedAt"))
+        or not isinstance(value.get("meta"), dict)
+    ):
         return None
     fields: dict[str, str] = {}
     aggregate_text_bytes = 0
     for field in _STORYBOARD_SEQUENCE_FIELDS:
-        item = value.get(field)
-        if not isinstance(item, str):
+        item = _normalize_storyboard_text(value.get(field), persisted=not model_output)
+        if item is None:
             return None
-        fields[field] = unicodedata.normalize("NFC", item)
-        if len(fields[field].encode("utf-8")) > 10_000:
-            return None
-        aggregate_text_bytes += len(fields[field].encode("utf-8"))
+        fields[field] = item
+        aggregate_text_bytes += len(item.encode("utf-8"))
     normalized_rows: list[dict[str, Any]] = []
     row_ids: set[str] = set()
     for row in rows:
@@ -1293,32 +1339,38 @@ def _normalize_storyboard_sequence(value: Any, *, model_output: bool) -> dict[st
         allowed_persisted = {frozenset(row_persisted), frozenset(row_persisted | {"imageUrl"})}
         if (model_output and set(row) != row_core) or (not model_output and frozenset(row) not in allowed_persisted):
             return None
-        row_id = row.get("id")
-        if not isinstance(row_id, str) or not row_id.strip() or row_id in row_ids:
+        row_id = _normalize_storyboard_text(
+            row.get("id"), persisted=not model_output, nonempty=True
+        )
+        if row_id is None or row_id in row_ids:
+            return None
+        if not model_output and (
+            not _valid_storyboard_timestamp(row.get("createdAt"))
+            or not _valid_storyboard_timestamp(row.get("updatedAt"))
+        ):
             return None
         row_ids.add(row_id)
-        normalized_row: dict[str, Any] = {"id": unicodedata.normalize("NFC", row_id)}
+        normalized_row: dict[str, Any] = {"id": row_id}
         for field in _STORYBOARD_ROW_FIELDS:
-            item = row.get(field)
-            if not isinstance(item, str):
+            item = _normalize_storyboard_text(row.get(field), persisted=not model_output)
+            if item is None:
                 return None
-            normalized_row[field] = unicodedata.normalize("NFC", item)
-            if len(normalized_row[field].encode("utf-8")) > 10_000:
-                return None
-            aggregate_text_bytes += len(normalized_row[field].encode("utf-8"))
+            normalized_row[field] = item
+            aggregate_text_bytes += len(item.encode("utf-8"))
         timestamp = int(time.time() * 1000)
         normalized_row["createdAt"] = timestamp if model_output else row["createdAt"]
         normalized_row["updatedAt"] = timestamp if model_output else row["updatedAt"]
         if not model_output and "imageUrl" in row:
-            if not isinstance(row["imageUrl"], str):
+            image_url = _normalize_storyboard_text(row["imageUrl"], persisted=True)
+            if image_url is None:
                 return None
-            normalized_row["imageUrl"] = row["imageUrl"]
+            normalized_row["imageUrl"] = image_url
         normalized_rows.append(normalized_row)
     if aggregate_text_bytes > _MAX_STORYBOARD_AGGREGATE_TEXT_BYTES:
         return None
     timestamp = int(time.time() * 1000)
     return {
-        "id": unicodedata.normalize("NFC", sequence_id),
+        "id": sequence_id,
         **fields,
         "rows": normalized_rows,
         "createdAt": timestamp if model_output else value["createdAt"],
@@ -1344,19 +1396,24 @@ def _valid_storyboard_source(value: Any) -> bool:
     model = value.get("model")
     skills = value.get("skills")
     return (
-        isinstance(value.get("documentNodeId"), str) and bool(value["documentNodeId"])
-        and isinstance(value.get("documentRevision"), int) and not isinstance(value["documentRevision"], bool) and value["documentRevision"] >= 0
+        _normalize_storyboard_text(value.get("documentNodeId"), persisted=True, nonempty=True) is not None
+        and isinstance(value.get("documentRevision"), int) and not isinstance(value["documentRevision"], bool)
+        and 0 <= value["documentRevision"] <= 9_007_199_254_740_991
         and _valid_sha256_digest(value.get("documentDigest"))
         and isinstance(value.get("documentResourceDigests"), list) and len(value["documentResourceDigests"]) <= 5
         and all(_valid_sha256_digest(item) for item in value["documentResourceDigests"])
         and isinstance(model, dict) and set(model) == {"connectionId", "providerId", "modelId"}
-        and all(isinstance(model.get(key), str) and model[key] for key in ("connectionId", "providerId", "modelId"))
+        and all(
+            _normalize_storyboard_text(model.get(key), persisted=True, nonempty=True) is not None
+            for key in ("connectionId", "providerId", "modelId")
+        )
         and isinstance(skills, list)
         and len({skill.get("skillId") for skill in skills if isinstance(skill, dict)}) == len(skills)
         and all(
             isinstance(skill, dict) and set(skill) == {"skillId", "revision", "digest"}
-            and isinstance(skill.get("skillId"), str) and bool(skill["skillId"])
-            and isinstance(skill.get("revision"), int) and not isinstance(skill["revision"], bool) and skill["revision"] >= 0
+            and _normalize_storyboard_text(skill.get("skillId"), persisted=True, nonempty=True) is not None
+            and isinstance(skill.get("revision"), int) and not isinstance(skill["revision"], bool)
+            and 0 <= skill["revision"] <= 9_007_199_254_740_991
             and _valid_sha256_digest(skill.get("digest"))
             for skill in skills
         )
@@ -1396,28 +1453,24 @@ def _expected_storyboard_source(
     return None, None
 
 
-async def _storyboard_source_matches_storage(
+async def _authoritative_storyboard_source(
     project_id: str,
     project: dict[str, Any],
     conversation: dict[str, Any],
     current_turn: dict[str, Any],
     edit: dict[str, Any],
-    storyboard_node: dict[str, Any],
-) -> bool:
-    saved_source = storyboard_node.get("source")
+) -> dict[str, Any] | None:
     expected_source, source_turn = _expected_storyboard_source(conversation, current_turn, edit)
     if (
-        not _valid_storyboard_source(saved_source)
-        or not _valid_storyboard_source(expected_source)
-        or saved_source != expected_source
+        not _valid_storyboard_source(expected_source)
         or not isinstance(source_turn, dict)
         or source_turn.get("modelSnapshot") != expected_source["model"]
         or source_turn.get("skillSnapshots") != expected_source["skills"]
     ):
-        return False
+        return None
     document_node = _project_canvas_node(project, expected_source["documentNodeId"])
     if not isinstance(document_node, dict) or document_node.get("kind") != "document":
-        return False
+        return None
     document = _normalize_persisted_document(document_node.get("document"))
     resource_ids = document_node.get("linkedDocumentResourceIds")
     if (
@@ -1426,20 +1479,32 @@ async def _storyboard_source_matches_storage(
         or document["digest"] != expected_source["documentDigest"]
         or not isinstance(resource_ids, list)
         or len(resource_ids) > MAX_DOCUMENT_ATTACHMENTS
-        or not all(isinstance(item, str) and item for item in resource_ids)
+        or not all(
+            _normalize_storyboard_text(item, persisted=True, nonempty=True) is not None
+            for item in resource_ids
+        )
     ):
-        return False
+        return None
     try:
         resources = await _load_document_resources(project_id, resource_ids)
     except HTTPException:
-        return False
+        return None
     resource_digests = ["sha256:" + hashlib.sha256(resource.content).hexdigest() for resource in resources]
-    return resource_digests == expected_source["documentResourceDigests"]
+    return deepcopy(expected_source) if resource_digests == expected_source["documentResourceDigests"] else None
 
 
-def _normalize_storyboard_pending_changes(value: Any) -> list[dict[str, Any]] | None:
+def _normalize_storyboard_pending_changes(
+    value: Any,
+    sequence: dict[str, Any] | None = None,
+) -> list[dict[str, Any]] | None:
     if not isinstance(value, list) or len(value) > 32:
         return None
+    rows = {
+        row["id"]: row for row in sequence.get("rows", [])
+    } if isinstance(sequence, dict) else {}
+    change_ids: set[str] = set()
+    identities: set[str] = set()
+    aggregate_text_bytes = 0
     result: list[dict[str, Any]] = []
     for change in value:
         if not isinstance(change, dict) or change.get("scope") not in {"sequence", "row"}:
@@ -1447,15 +1512,50 @@ def _normalize_storyboard_pending_changes(value: Any) -> list[dict[str, Any]] | 
         required = {"id", "editId", "scope", "field", "previousValue", "newValue"}
         if change["scope"] == "row":
             required.add("rowId")
-        if set(change) != required or not all(isinstance(change.get(key), str) for key in required - {"scope"}):
+        if set(change) != required:
             return None
+        change_id = _normalize_storyboard_text(change.get("id"), persisted=True, nonempty=True)
+        edit_id = _normalize_storyboard_text(change.get("editId"), persisted=True, nonempty=True)
+        previous_value = _normalize_storyboard_text(change.get("previousValue"), persisted=True)
+        new_value = _normalize_storyboard_text(change.get("newValue"), persisted=True)
         if (
-            change["scope"] == "sequence" and change.get("field") not in _STORYBOARD_SEQUENCE_FIELDS
-        ) or (
-            change["scope"] == "row" and change.get("field") not in _STORYBOARD_ROW_FIELDS
+            change_id is None or edit_id is None or previous_value is None or new_value is None
+            or change_id in change_ids
         ):
             return None
-        result.append(deepcopy(change))
+        scope = change["scope"]
+        field = change.get("field")
+        if (
+            scope == "sequence" and field not in _STORYBOARD_SEQUENCE_FIELDS
+        ) or (
+            scope == "row" and field not in _STORYBOARD_ROW_FIELDS
+        ):
+            return None
+        if scope == "sequence":
+            identity = f"sequence:{field}"
+            expected_previous = sequence.get(field) if isinstance(sequence, dict) else None
+            normalized_change = {
+                "id": change_id, "editId": edit_id, "scope": scope, "field": field,
+                "previousValue": previous_value, "newValue": new_value,
+            }
+        else:
+            row_id = _normalize_storyboard_text(change.get("rowId"), persisted=True, nonempty=True)
+            if row_id is None or (sequence is not None and row_id not in rows):
+                return None
+            identity = f"row:{row_id}:{field}"
+            expected_previous = rows.get(row_id, {}).get(field) if sequence is not None else None
+            normalized_change = {
+                "id": change_id, "editId": edit_id, "scope": scope, "rowId": row_id,
+                "field": field, "previousValue": previous_value, "newValue": new_value,
+            }
+        if identity in identities or (sequence is not None and previous_value != expected_previous):
+            return None
+        change_ids.add(change_id)
+        identities.add(identity)
+        aggregate_text_bytes += len(new_value.encode("utf-8"))
+        result.append(normalized_change)
+    if aggregate_text_bytes > _MAX_STORYBOARD_AGGREGATE_TEXT_BYTES:
+        return None
     return result
 
 
@@ -1471,8 +1571,8 @@ def _normalize_storyboard_change_operations(value: Any, sequence: dict[str, Any]
             return None
         scope = change["scope"]
         field = change.get("field")
-        normalized_value = unicodedata.normalize("NFC", change["value"])
-        if len(normalized_value.encode("utf-8")) > 10_000:
+        normalized_value = _normalize_storyboard_text(change["value"], persisted=False)
+        if normalized_value is None:
             return None
         if scope == "sequence":
             if set(change) != {"scope", "field", "value"} or field not in _STORYBOARD_SEQUENCE_FIELDS:
@@ -1606,7 +1706,7 @@ def validate_agent_document_edits(
         if target_node_id != expected_write_context.get("nodeId") or not isinstance(target, dict) or target.get("kind") != "storyboard":
             return []
         sequence = _normalize_storyboard_sequence(target.get("sequence"), model_output=False)
-        pending = _normalize_storyboard_pending_changes(target.get("pendingFieldChanges"))
+        pending = _normalize_storyboard_pending_changes(target.get("pendingFieldChanges"), sequence)
         revision = target.get("revision", 0)
         digest = target.get("digest") or (_storyboard_digest(sequence, pending) if sequence is not None and pending is not None else None)
         if (
@@ -1769,7 +1869,7 @@ def _resolve_document_write_context(
         if not isinstance(node, dict) or node.get("kind") != "storyboard":
             raise HTTPException(status_code=422, detail="document_write_target_invalid")
         sequence = _normalize_storyboard_sequence(node.get("sequence"), model_output=False)
-        pending = _normalize_storyboard_pending_changes(node.get("pendingFieldChanges"))
+        pending = _normalize_storyboard_pending_changes(node.get("pendingFieldChanges"), sequence)
         revision = node.get("revision", 0)
         digest = node.get("digest") or (_storyboard_digest(sequence, pending) if sequence is not None and pending is not None else None)
         if sequence is None or pending is None or pending or not isinstance(revision, int) or digest != _storyboard_digest(sequence, pending):
@@ -2333,7 +2433,7 @@ def _persisted_storyboard_state(node: Any) -> dict[str, Any] | None:
     if not isinstance(node, dict):
         return None
     sequence = _normalize_storyboard_sequence(node.get("sequence"), model_output=False)
-    pending = _normalize_storyboard_pending_changes(node.get("pendingFieldChanges"))
+    pending = _normalize_storyboard_pending_changes(node.get("pendingFieldChanges"), sequence)
     revision = node.get("revision")
     digest = node.get("digest")
     if (
@@ -2341,7 +2441,7 @@ def _persisted_storyboard_state(node: Any) -> dict[str, Any] | None:
         or pending is None
         or not isinstance(revision, int)
         or isinstance(revision, bool)
-        or revision < 0
+        or not 0 <= revision <= 9_007_199_254_740_991
         or not _valid_sha256_digest(digest)
         or digest != _storyboard_digest(sequence, pending)
     ):

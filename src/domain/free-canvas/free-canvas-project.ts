@@ -1297,7 +1297,14 @@ const isValidPersistedStoryboardNode = (
   node: Partial<IFreeCanvasStoryboardNode>
 ): node is IFreeCanvasStoryboardNode => {
   if (
-    !isValidStoryboardSequence(node.sequence)
+    typeof node.id !== 'string' || !node.id
+    || typeof node.title !== 'string'
+    || !isPlainRecordValue(node.position)
+    || typeof node.position.x !== 'number' || !Number.isFinite(node.position.x)
+    || typeof node.position.y !== 'number' || !Number.isFinite(node.position.y)
+    || typeof node.width !== 'number' || !Number.isFinite(node.width) || node.width <= 0
+    || typeof node.height !== 'number' || !Number.isFinite(node.height) || node.height <= 0
+    || !isValidStoryboardSequence(node.sequence)
     || !isValidStoryboardSource(node.source)
     || !isValidStoryboardPendingChanges(node.pendingFieldChanges, node.sequence)
     || (node.revision !== undefined && !isNonNegativeSafeInteger(node.revision))
@@ -1311,15 +1318,18 @@ const normalizeUnsupportedNode = (
   node: Partial<IFreeCanvasUnsupportedNode>,
   timestamp: number
 ): IFreeCanvasUnsupportedNode => ({
-  id: node.id || `free-unsupported-${timestamp}`,
+  id: typeof node.id === 'string' && node.id ? node.id : `free-unsupported-${timestamp}`,
   kind: 'unsupported',
-  title: node.title || 'Unsupported node',
-  position: normalizePosition(node.position),
-  width: Number(node.width || 360),
-  height: Number(node.height || 220),
+  title: typeof node.title === 'string' && node.title ? node.title : 'Unsupported node',
+  position: {
+    x: typeof node.position?.x === 'number' && Number.isFinite(node.position.x) ? node.position.x : 0,
+    y: typeof node.position?.y === 'number' && Number.isFinite(node.position.y) ? node.position.y : 0
+  },
+  width: typeof node.width === 'number' && Number.isFinite(node.width) && node.width > 0 ? node.width : 360,
+  height: typeof node.height === 'number' && Number.isFinite(node.height) && node.height > 0 ? node.height : 220,
   originalKind: typeof node.originalKind === 'string' ? node.originalKind : 'unknown',
   originalNode: cloneFrozenRecord(node.originalNode || {}),
-  meta: node.meta || {}
+  meta: isPlainRecordValue(node.meta) ? node.meta : {}
 })
 
 const cloneStructuredValue = <T>(value: T): T => structuredClone(value)

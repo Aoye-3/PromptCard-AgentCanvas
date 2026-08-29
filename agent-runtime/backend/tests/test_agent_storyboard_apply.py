@@ -202,7 +202,10 @@ async def test_storyboard_create_reconcile_replays_absent_and_recovers_saved_bef
         "base": {"projectRevision": 12}, "expectedResultDigest": expected,
         "payload": {"title": "Opening", "sequence": sequence, "source": storyboard_source()}, "rationale": "Create",
     }
-    nodes = [{"id": "other", "kind": "text"}]
+    nodes = [{"id": "other", "kind": "text"}, {
+        "id": "document-1", "kind": "document", "document": document(),
+        "linkedDocumentResourceIds": ["resource-1"],
+    }]
     if saved:
         nodes = [{
             "id": node_id, "kind": "storyboard", "sequence": sequence,
@@ -244,6 +247,68 @@ async def test_storyboard_create_reconcile_replays_absent_and_recovers_saved_bef
         assert result["status"] == "pending_apply"
         assert result["canvasEdits"] == [edit]
         assert patches == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("tamper", [
+    "missing_edit_source", "edit_source", "turn_model", "turn_skills",
+    "missing_document", "stale_document", "missing_resource", "resource_digest",
+])
+async def test_storyboard_create_absent_target_never_replays_without_complete_authority(monkeypatch, tamper):
+    sequence = storyboard_sequence()
+    expected = promptcard_runtime._storyboard_digest(sequence, [])
+    edit_id, node_id = promptcard_runtime._deterministic_document_edit_ids(
+        "conversation-1", "request-absent", "storyboard_create", None
+    )
+    source = storyboard_source()
+    edit = {
+        "kind": "storyboard_create", "id": edit_id, "editId": edit_id,
+        "conversationId": "conversation-1", "requestId": "request-absent", "nodeId": node_id,
+        "base": {"projectRevision": 12}, "expectedResultDigest": expected,
+        "payload": {"title": "Opening", "sequence": sequence, "source": deepcopy(source)}, "rationale": "Create",
+    }
+    if tamper == "missing_edit_source":
+        edit["payload"].pop("source")
+    elif tamper == "edit_source":
+        edit["payload"]["source"]["documentDigest"] = "sha256:" + "d" * 64
+    detail = conversation_with_edit(edit)
+    if tamper == "turn_model":
+        detail["turns"][0]["modelSnapshot"]["modelId"] = "forged"
+    if tamper == "turn_skills":
+        detail["turns"][0]["skillSnapshots"] = []
+    nodes = [{
+        "id": "document-1", "kind": "document", "document": document(),
+        "linkedDocumentResourceIds": ["resource-1"],
+    }]
+    if tamper == "missing_document":
+        nodes = [{"id": "other", "kind": "text"}]
+    elif tamper == "stale_document":
+        nodes[0]["document"] = {**document(), "revision": 8}
+    patches: list[dict] = []
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return detail
+        if method == "GET" and path == "/api/projects/project-1":
+            return project(nodes)
+        if method == "PATCH" and path.endswith("/apply-edit"):
+            patches.append(kwargs["json"])
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_resources(*_args):
+        if tamper == "missing_resource":
+            raise promptcard_runtime.HTTPException(status_code=404, detail="missing")
+        content = b"tampered" if tamper == "resource_digest" else b"resource body"
+        return [SimpleNamespace(content=content)]
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_load_document_resources", fake_resources)
+    result = await promptcard_runtime.runtime_service.reconcile_document_edits("project-1", "conversation-1")
+
+    assert result["status"] == "failed_integrity"
+    assert result["canvasEdits"] == []
+    assert patches[0]["evidence"]["code"] == "storyboard_source_mismatch"
 
 
 @pytest.mark.anyio
@@ -317,6 +382,86 @@ async def test_storyboard_saved_before_ack_rejects_any_tampered_canonical_source
     else:
         assert "canvasEdits" not in result
     assert patches[0]["evidence"]["code"] == "storyboard_source_mismatch"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("malformed", [
+    "unpaired_surrogate", "invalid_timestamp", "invalid_meta", "source_unicode",
+    "duplicate_pending", "invalid_row_ref", "previous_value", "pending_budget",
+])
+async def test_storyboard_recovery_is_total_and_rejects_malformed_persisted_state(monkeypatch, malformed):
+    sequence = storyboard_sequence()
+    source = storyboard_source()
+    pending = [{
+        "id": "change-1", "editId": "edit-create", "scope": "row", "rowId": "row-1",
+        "field": "camera", "previousValue": "wide", "newValue": "close-up",
+    }]
+    if malformed == "unpaired_surrogate":
+        sequence["name"] = "bad\ud800"
+    elif malformed == "invalid_timestamp":
+        sequence["rows"][0]["createdAt"] = True
+    elif malformed == "invalid_meta":
+        sequence["meta"] = []
+    elif malformed == "source_unicode":
+        source["model"]["modelId"] = "bad\ud800"
+    elif malformed == "duplicate_pending":
+        pending.append({**pending[0], "id": "change-2", "newValue": "medium"})
+    elif malformed == "invalid_row_ref":
+        pending[0]["rowId"] = "missing-row"
+    elif malformed == "previous_value":
+        pending[0]["previousValue"] = "forged"
+    elif malformed == "pending_budget":
+        pending[0]["newValue"] = "a" * 10_001
+    result_digest = (
+        "sha256:" + "e" * 64
+        if malformed == "unpaired_surrogate"
+        else promptcard_runtime._storyboard_digest(sequence, pending)
+    )
+    edit_id, node_id = promptcard_runtime._deterministic_document_edit_ids(
+        "conversation-1", "request-malformed", "storyboard_create", None
+    )
+    edit = {
+        "kind": "storyboard_create", "id": edit_id, "editId": edit_id,
+        "conversationId": "conversation-1", "requestId": "request-malformed", "nodeId": node_id,
+        "base": {"projectRevision": 12}, "expectedResultDigest": result_digest,
+        "payload": {"title": "Opening", "sequence": storyboard_sequence(), "source": deepcopy(source)},
+        "rationale": "Create",
+    }
+    node = {
+        "id": node_id, "kind": "storyboard", "sequence": sequence, "source": source,
+        "pendingFieldChanges": pending, "revision": 1, "digest": result_digest,
+        "agentAppliedEdit": {
+            "conversationId": "conversation-1", "requestId": "request-malformed",
+            "editId": edit_id, "resultDigest": result_digest,
+        },
+    }
+    patches: list[dict] = []
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return conversation_with_edit(edit)
+        if method == "GET" and path == "/api/projects/project-1":
+            return project([node, {
+                "id": "document-1", "kind": "document", "document": document(),
+                "linkedDocumentResourceIds": ["resource-1"],
+            }])
+        if method == "PATCH" and path.endswith("/apply-edit"):
+            patches.append(kwargs["json"])
+            return kwargs["json"]
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_load_document_resources", lambda *_: __import__("asyncio").sleep(
+        0, result=[SimpleNamespace(content=b"resource body")]
+    ))
+    try:
+        result = await promptcard_runtime.runtime_service.reconcile_document_edits("project-1", "conversation-1")
+    except Exception as exc:  # Recovery must be total over persisted JSON.
+        pytest.fail(f"reconcile raised {type(exc).__name__}: {exc}")
+
+    assert result["status"] == "failed_integrity"
+    assert result["canvasEdits"] == []
+    assert patches[0]["status"] == "failed_integrity"
 
 
 @pytest.mark.anyio

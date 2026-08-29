@@ -729,7 +729,13 @@ describe('free canvas project domain', () => {
         ...strictNode, source: { ...strictNode.source, documentDigest: 'not-a-digest' }
       } },
       { label: 'revision', node: { ...strictNode, revision: -1 } },
-      { label: 'metadata', node: { ...strictNode, meta: [] } }
+      { label: 'metadata', node: { ...strictNode, meta: [] } },
+      { label: 'id', node: { ...strictNode, id: 42 } },
+      { label: 'title', node: { ...strictNode, title: { forged: true } } },
+      { label: 'geometry type', node: { ...strictNode, position: { x: 'left', y: 0 } } },
+      { label: 'geometry finite', node: { ...strictNode, position: { x: Infinity, y: 0 } } },
+      { label: 'width', node: { ...strictNode, width: 'wide' } },
+      { label: 'height', node: { ...strictNode, height: -1 } }
     ]
     malformed.forEach(({ label, node }) => {
       let normalized!: ReturnType<typeof normalizeFreeCanvasProject>
@@ -739,6 +745,16 @@ describe('free canvas project domain', () => {
       expect(normalized.nodes[0], label).toMatchObject({
         kind: 'unsupported', originalKind: 'storyboard', originalNode: node
       })
+      const unsupported = normalized.nodes[0]
+      if (unsupported.kind !== 'unsupported') throw new Error('Expected unsupported Storyboard')
+      expect(typeof unsupported.id, label).toBe('string')
+      expect(typeof unsupported.title, label).toBe('string')
+      expect(Number.isFinite(unsupported.position.x), label).toBe(true)
+      expect(Number.isFinite(unsupported.position.y), label).toBe(true)
+      expect(Number.isFinite(unsupported.width) && unsupported.width > 0, label).toBe(true)
+      expect(Number.isFinite(unsupported.height) && unsupported.height > 0, label).toBe(true)
+      expect(unsupported.meta && typeof unsupported.meta === 'object' && !Array.isArray(unsupported.meta), label).toBe(true)
+      expect(unsupported.originalNode, label).toEqual(node)
     })
   })
 
