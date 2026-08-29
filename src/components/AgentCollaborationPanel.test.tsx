@@ -1485,6 +1485,83 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
   })
 
+  it('shows the post-send apply error when the explicit Storyboard direct-send handler returns false', async () => {
+    const storyboardEdit: AgentCanvasEdit = {
+      id: 'storyboard-edit-terminal', editId: 'storyboard-edit-terminal',
+      kind: 'storyboard_create', conversationId: 'conversation-experimental',
+      requestId: 'request-storyboard-terminal', nodeId: 'storyboard-terminal',
+      expectedResultDigest: `sha256:${'a'.repeat(64)}`, base: { projectRevision: 3 },
+      payload: {
+        title: 'Opening',
+        sequence: {
+          id: 'sequence-1', name: 'Opening', description: '', style: '', constraints: '',
+          rows: [{
+            id: 'row-1', cutLabel: '1', timeRange: '0-1s', subject: '', action: '', scene: '',
+            camera: '', lighting: '', audio: '', duration: '1s', createdAt: 1, updatedAt: 1
+          }],
+          createdAt: 1, updatedAt: 1, meta: {}
+        },
+        source: {
+          documentNodeId: 'document-1', documentRevision: 2,
+          documentDigest: `sha256:${'b'.repeat(64)}`, documentResourceDigests: [],
+          model: {
+            connectionId: 'connection-chat', providerId: 'volcengine-ark',
+            modelId: 'doubao-seed-2-0-lite-260215', displayName: 'Doubao Seed 2.0 Lite', capabilities: {}
+          },
+          skills: []
+        }
+      },
+      rationale: 'Explicit transform'
+    }
+    mocks.sendMessage.mockResolvedValueOnce({ proposals: [], canvasEdits: [storyboardEdit] })
+    const applyCanvasEdit = vi.fn().mockResolvedValue(false)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={applyCanvasEdit} embedded
+          draftRequest={{
+            id: 'storyboard-direct-terminal', content: 'Create storyboard',
+            documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
+          }}
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Create storyboard', [])
+    })
+
+    expect(applyCanvasEdit).toHaveBeenCalledWith(storyboardEdit)
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('does not treat an ordinary non-applicable Canvas edit as a terminal post-send failure', async () => {
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [], canvasEdits: [{ id: 'edit-not-applicable', kind: 'free_canvas_text_create' }]
+    })
+    const applyCanvasEdit = vi.fn().mockResolvedValue(false)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={applyCanvasEdit} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Try ordinary edit', [])
+    })
+
+    expect(applyCanvasEdit).toHaveBeenCalledOnce()
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
   it('shows the same fixed post-send error when automatic workspace apply throws', async () => {
     mocks.sendMessage.mockResolvedValueOnce({
       proposals: [{

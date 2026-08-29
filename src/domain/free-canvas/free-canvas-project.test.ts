@@ -712,11 +712,24 @@ describe('free canvas project domain', () => {
     }
 
     const valid = normalizeFreeCanvasProject({ nodes: [strictNode] as never, edges: [], meta: {} }, 100)
+    const exactSkillBoundary = normalizeFreeCanvasProject({
+      nodes: [{
+        ...strictNode,
+        source: {
+          ...strictNode.source,
+          skills: Array.from({ length: 8 }, (_, index) => ({
+            skillId: `skill-${index + 1}`, revision: index + 1, digest: `sha256:${String(index + 1).repeat(64)}`
+          }))
+        }
+      }] as never,
+      edges: [], meta: {}
+    }, 100)
     const corrupt = normalizeFreeCanvasProject({
       nodes: [{ ...strictNode, digest: `sha256:${'f'.repeat(64)}` }] as never, edges: [], meta: {}
     }, 100)
 
     expect(valid.nodes[0]).toMatchObject({ kind: 'storyboard', revision: 0, digest, agentAppliedEdit: strictNode.agentAppliedEdit })
+    expect(exactSkillBoundary.nodes[0]).toMatchObject({ kind: 'storyboard', id: 'storyboard-strict' })
     expect(corrupt.nodes[0]).toMatchObject({
       kind: 'unsupported', originalKind: 'storyboard',
       originalNode: expect.objectContaining({ id: 'storyboard-strict', digest: `sha256:${'f'.repeat(64)}` })
@@ -763,6 +776,14 @@ describe('free canvas project domain', () => {
       { label: 'oversized Skill id', node: {
         ...strictNode, source: {
           ...strictNode.source, skills: [{ skillId: 'x'.repeat(10_001), revision: 1, digest: `sha256:${'c'.repeat(64)}` }]
+        }
+      } },
+      { label: 'nine Skills', node: {
+        ...strictNode, source: {
+          ...strictNode.source,
+          skills: Array.from({ length: 9 }, (_, index) => ({
+            skillId: `skill-${index + 1}`, revision: index + 1, digest: `sha256:${String(index + 1).repeat(64)}`
+          }))
         }
       } },
       { label: 'revision', node: { ...strictNode, revision: -1 } },

@@ -430,7 +430,17 @@ export function AgentCollaborationPanel({
       if (onApplyCanvasEdit) {
         for (const edit of returned.canvasEdits) {
           const applied = await onApplyCanvasEdit(edit)
-          if (applied === false) continue
+          if (applied === false) {
+            if (
+              edit.kind === 'document_create'
+              || edit.kind === 'document_changes'
+              || edit.kind === 'storyboard_create'
+              || edit.kind === 'storyboard_changes'
+            ) {
+              throw new Error('terminal_document_apply_failure')
+            }
+            continue
+          }
           appliedCanvasEdits.push(edit)
         }
       }

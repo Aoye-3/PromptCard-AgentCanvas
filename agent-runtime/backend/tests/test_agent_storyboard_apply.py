@@ -400,6 +400,10 @@ async def test_storyboard_create_absent_target_never_replays_without_complete_au
     [{"skillId": "skill-1", "revision": "4", "digest": "sha256:" + "c" * 64}],
     [{"skillId": "skill-1", "revision": 4, "digest": "bad"}],
     [{"skillId": "x" * 10_001, "revision": 4, "digest": "sha256:" + "c" * 64}],
+    [
+        {"skillId": f"skill-{index}", "revision": index, "digest": "sha256:" + f"{index}" * 64}
+        for index in range(1, 10)
+    ],
 ])
 async def test_absent_storyboard_recovery_rejects_every_malformed_skill_snapshot_without_raising(monkeypatch, invalid_skills):
     sequence = storyboard_sequence()
@@ -443,6 +447,46 @@ async def test_absent_storyboard_recovery_rejects_every_malformed_skill_snapshot
     assert result["status"] == "failed_integrity"
     assert result["canvasEdits"] == []
     assert patches[0]["evidence"]["code"] == "storyboard_source_mismatch"
+
+
+@pytest.mark.anyio
+async def test_absent_storyboard_recovery_accepts_exactly_eight_authoritative_skill_snapshots(monkeypatch):
+    sequence = storyboard_sequence()
+    edit_id, node_id = promptcard_runtime._deterministic_document_edit_ids(
+        "conversation-1", "request-eight-skills", "storyboard_create", None
+    )
+    source = storyboard_source()
+    source["skills"] = [
+        {"skillId": f"skill-{index}", "revision": index, "digest": "sha256:" + f"{index}" * 64}
+        for index in range(1, 9)
+    ]
+    edit = {
+        "kind": "storyboard_create", "id": edit_id, "editId": edit_id,
+        "conversationId": "conversation-1", "requestId": "request-eight-skills", "nodeId": node_id,
+        "base": {"projectRevision": 12}, "expectedResultDigest": promptcard_runtime._storyboard_digest(sequence, []),
+        "payload": {"title": "Opening", "sequence": sequence, "source": source}, "rationale": "Create",
+    }
+    detail = conversation_with_edit(edit)
+
+    async def fake_storage(method, path, **kwargs):
+        if method == "GET" and path.endswith("/conversation-1"):
+            return detail
+        if method == "GET" and path == "/api/projects/project-1":
+            return project([{
+                "id": "document-1", "kind": "document", "document": document(),
+                "linkedDocumentResourceIds": ["resource-1"],
+            }])
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr(promptcard_runtime, "_storage_request", fake_storage)
+    monkeypatch.setattr(promptcard_runtime, "_load_document_resources", lambda *_: __import__("asyncio").sleep(
+        0, result=[SimpleNamespace(content=b"resource body")]
+    ))
+
+    result = await promptcard_runtime.runtime_service.reconcile_document_edits("project-1", "conversation-1")
+
+    assert result["status"] == "pending_apply"
+    assert result["canvasEdits"] == [edit]
 
 
 @pytest.mark.anyio

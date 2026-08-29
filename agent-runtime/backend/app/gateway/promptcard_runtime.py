@@ -1431,6 +1431,7 @@ def _valid_storyboard_source(value: Any) -> bool:
         )
         or not isinstance(model.get("capabilities"), dict)
         or not isinstance(skills, list)
+        or len(skills) > 8
     ):
         return False
     skill_ids: set[str] = set()

@@ -1204,6 +1204,7 @@ const isValidStoryboardSource = (value: unknown): boolean => {
     ))
     || !isPlainRecordValue(model.capabilities)
     || !Array.isArray(value.skills)
+    || value.skills.length > 8
   ) return false
   const skillIds = new Set<string>()
   return value.skills.every(skill => {
