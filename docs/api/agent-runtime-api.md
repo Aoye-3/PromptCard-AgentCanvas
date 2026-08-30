@@ -19,6 +19,8 @@ Each trusted profile declares fixed scopes and may bind one configured Codex `re
 
 `workspace` requires an explicit project/context pair, lists only objects snapshotted into that CVC, and resolves only active, trusted, enabled exact Codex Skill pins in the profile's configured repository scope. `reference` refuses codes outside the CVC. Storage error codes and safe public references are preserved while paths, internal IDs, credentials, and unrestricted metadata are redacted. Search, asset read, delivery, staging and status remain advertised by the frozen v3 contract but are enabled only as their Plan 008 slices land.
 
+The repository CLI in `promptcard-bridge-cli/` calls only these Gateway routes. It accepts the Bridge origin/token from process environment, refuses non-loopback origins before sending the token, produces one stable JSON value on stdout, sends diagnostics to stderr, and assigns stable exit classes for usage/auth/lifecycle/offline/remote failures. CLI and Gateway success payloads are JSON-equivalent; the CLI does not read Storage or project files.
+
 ## PromptCard Runtime Boundary
 
 Authenticated browser mutations are protected by the Runtime CSRF middleware. The maintained frontend client sends the session cookie with `credentials: "include"`, reads the CSRF cookie, and copies it to `X-CSRF-Token`. Direct callers that omit or mismatch the token receive a structured rejection before model, keyring, Storage, or provider work begins.

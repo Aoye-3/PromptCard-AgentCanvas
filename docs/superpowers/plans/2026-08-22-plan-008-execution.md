@@ -636,11 +636,13 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Build a Node/TypeScript CLI that invokes the Gateway read contracts and emits exactly one JSON result to stdout, diagnostics to stderr, and stable exit codes.
 
+**Status:** Implemented on `feat/skill-document-storyboard-loop` (2026-08-30); exact-read CLI tests and typecheck pass. Search is added when Task 18 exposes the shared retrieval contract.
+
 **Acceptance criteria:**
 
-- [ ] CLI supports runtime describe and every exact resolve before search.
-- [ ] Same inputs produce contract-equivalent CLI/Gateway output.
-- [ ] CLI never reads SQLite or local media paths directly.
+- [x] CLI supports runtime describe and every exact resolve before search.
+- [x] Same inputs produce contract-equivalent CLI/Gateway output.
+- [x] CLI never reads SQLite or local media paths directly.
 
 **Verification:** CLI contract tests cover success, unknown/offline codes, redaction, exit codes, and stdout purity.
 
@@ -649,6 +651,8 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 **Files likely touched:** new `promptcard-bridge-cli/` package, package scripts, contract tests.
 
 **Estimated scope:** Medium.
+
+**Evidence:** `npm.cmd run test:bridge-cli` reports `5 passed`; `npm.cmd run bridge:cli:check` passes. Tests cover stdout purity, exact argument mapping, structured redaction, stable exit classes, offline behavior, invalid JSON, and non-loopback rejection.
 
 ### Task 18: Add the transactional FTS5 retrieval core
 

@@ -22,6 +22,9 @@
     "pretest": "npm run test:contracts",
     "test": "vitest",
     "test:contracts": "node --test --test-isolation=none tests/contracts/promptcard-bridge-contract.test.mjs",
+    "bridge:cli": "node --experimental-strip-types promptcard-bridge-cli/src/cli.ts",
+    "bridge:cli:check": "tsc -p promptcard-bridge-cli/tsconfig.json",
+    "test:bridge-cli": "node --experimental-strip-types --test promptcard-bridge-cli/tests/*.test.ts",
     "test:frontend": "powershell -ExecutionPolicy Bypass -File scripts/run-frontend-tests.ps1",
     "test:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-e2e-tests.ps1"
   },
