@@ -23,3 +23,4 @@ Architecture Decision Records capture durable product and engineering decisions 
 - [ADR-019: Freeze The Generic Local Agent Bridge Boundary](./ADR-019-generic-local-agent-bridge-boundary.md)
 - [ADR-020: Separate Planning Documents From Executable Prompt Content](./ADR-020-separate-planning-documents-from-prompt-execution.md)
 - [ADR-021: Keep Project Documents Local And Provider Files Ephemeral](./ADR-021-project-document-resources-and-ephemeral-provider-files.md)
+- [ADR-022: Position PromptCard-Manager As A Portable Creative Context Environment](./ADR-022-portable-creative-context-environment.md)

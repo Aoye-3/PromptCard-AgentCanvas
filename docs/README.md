@@ -14,6 +14,7 @@ This is the single entry point for the maintained project documentation. Histori
 - [Canvas Agent Omnireference Prompt Editing](./frontend/canvas-agent-reference-editing.md)
 - [Skill Host Pins And Projections](./architecture/skill-host-projections.md)
 - [Generic Local Agent Bridge Boundary](./decisions/ADR-019-generic-local-agent-bridge-boundary.md)
+- [Portable Creative Context Environment](./decisions/ADR-022-portable-creative-context-environment.md)
 - [Task 15.5 Technical Acceptance](./reviews/2026-08-24-task-15-5-technical-acceptance.md)
 - [Task 15.6-15.9 Progress Snapshot](./reviews/2026-08-29-task-15-6-through-15-9-progress.md)
 - [Task 15.10 / Checkpoint 3.5 Technical Acceptance](./reviews/2026-08-27-task-15-10-technical-acceptance.md)
@@ -45,22 +46,11 @@ Contextual image actions and explicit multi-view groups are tracked by [Plan 007
 
 ## Product Vision
 
-PromptCard-Manager is evolving into an AIGC director's storyboard-script workstation. The product direction is to integrate Prompt management, AIGC script grids, storyboard images, and script planning into an external management board that reduces video workflow information overload before work enters video production tools.
+PromptCard-Manager is evolving into a portable, cross-platform creative-context environment. It preserves a creator's project context across external Agent applications and creation tools instead of competing to become another image/video generation canvas or model aggregator. The durable core is the context itself—script, references, structured storyboard, shot execution information, assets, feedback, and decisions—while Free Canvas is the shared human/Agent workbench for viewing and editing that context.
 
-Slogan:
+The immediate product/technical priority is the host-neutral Local Agent Bridge / MCP foundation. It must let external Agents operate on explicit, typed project objects through Gateway/Storage policy and reviewable proposals. Browser-facing delivery is deliberately later: an Asset Shelf and connectors should first make project assets portable through file/image drag-out, text copy, and execution-package export; platform-specific fill/return flows follow only where they are reliable and valuable.
 
-```text
-让视频制作画布与编导画布分割开来。
-```
-
-Roadmap:
-
-| Workstream | Target Completion |
-| --- | --- |
-| Prompt管理与协作Agent改造 | TBD |
-| 自由画布式改造 | TBD |
-| 图片API置入 | Seedream 5.0 Pro 自动化适配完成；真实 Ark 发布冒烟待完成 |
-| 宫格分镜大师 | TBD |
+See [ADR-022](./decisions/ADR-022-portable-creative-context-environment.md) and [Plan 009](./Plan/009-portable-creative-context-environment.md) for scope, sequencing, and non-goals.
 
 The root workspace `F:\.Agent-PromptCardManager` is not the project. The project repository is:
 
