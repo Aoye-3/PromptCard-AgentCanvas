@@ -9,7 +9,7 @@ from urllib.parse import quote, unquote
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .assets import MAX_IMAGE_IMPORT_BYTES
 from .document_resources import (
@@ -111,6 +111,20 @@ class BridgeDeliveryFinishPayload(BaseModel):
 class BridgeDeliveryRecoveryPayload(BaseModel):
     staleBeforeMs: int = Field(ge=0)
     limit: int = Field(default=100, ge=1, le=500)
+
+
+class BridgePromptDeliveryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operationContext: dict[str, Any]
+    deliveryRequest: dict[str, Any]
+
+
+class BridgeDeliveryDecisionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accepted", "rejected"]
+    resultCodes: list[str] = Field(default_factory=list, max_length=32)
 
 
 class RecentCaptureRegistrationPayload(BaseModel):
@@ -735,6 +749,73 @@ def create_app(
                 payload.staleBeforeMs, limit=payload.limit
             )
         })
+
+    @application.post("/api/internal/bridge-prompt-deliveries/preview")
+    def preview_bridge_prompt_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.preview_bridge_prompt_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.post("/api/internal/bridge-prompt-deliveries/commit")
+    def commit_bridge_prompt_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.commit_bridge_prompt_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.get("/api/internal/bridge-prompt-deliveries/{client_request_id}")
+    def get_bridge_prompt_delivery(
+        client_request_id: str,
+        profileId: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.get_bridge_prompt_delivery(
+            profileId, client_request_id
+        ))
+
+    @application.get("/api/internal/context-packs/{cvc_code}/bridge-deliveries")
+    def list_profile_bridge_deliveries(
+        cvc_code: str,
+        profileId: str,
+        request: Request,
+        state: Literal["previewed", "pending_review", "accepted", "rejected", "failed"] | None = None,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: {
+            "deliveries": storage.list_bridge_deliveries(
+                cvc_code, state=state, profile_id=profileId
+            )
+        })
+
+    @application.get("/api/context-packs/{cvc_code}/bridge-deliveries")
+    def list_bridge_deliveries(
+        cvc_code: str,
+        state: Literal["previewed", "pending_review", "accepted", "rejected", "failed"] | None = None,
+    ) -> dict[str, Any]:
+        return _handle(lambda: {
+            "deliveries": storage.list_bridge_deliveries(cvc_code, state=state)
+        })
+
+    @application.post(
+        "/api/context-packs/{cvc_code}/bridge-deliveries/{proposal_id}/decision"
+    )
+    def decide_bridge_delivery(
+        cvc_code: str,
+        proposal_id: str,
+        payload: BridgeDeliveryDecisionPayload,
+    ) -> dict[str, Any]:
+        return _handle(lambda: storage.decide_bridge_delivery(
+            cvc_code, proposal_id, payload.decision, payload.resultCodes
+        ))
+
     @application.get("/api/context-packs/{cvc_code}")
     def inspect_context_pack(cvc_code: str) -> dict[str, Any]:
         return _handle(lambda: storage.inspect_context_pack(cvc_code))

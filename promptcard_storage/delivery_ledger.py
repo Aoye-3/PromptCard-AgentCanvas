@@ -93,12 +93,19 @@ class BridgeDeliveryLedger:
         operation_context: dict[str, Any],
         operation: str,
         request: dict[str, Any],
+        *,
+        target_manifest: dict[str, Any] | None = None,
+        source_manifest: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         trusted_context = _normalize_operation_context(operation_context)
         normalized_operation = _normalize_operation(operation)
-        normalized_request = _normalize_request(request)
-        target_manifest = _target_manifest(normalized_request)
-        source_manifest = _source_manifest(normalized_request)
+        normalized_request = _normalize_request(request, normalized_operation)
+        normalized_target = _target_manifest(
+            target_manifest if target_manifest is not None else normalized_request
+        )
+        normalized_source = _source_manifest(
+            source_manifest if source_manifest is not None else normalized_request
+        )
         profile_id = trusted_context["profileId"]
         request_id = normalized_request["clientRequestId"]
         digest = normalized_request["normalizedRequestDigest"]
@@ -110,7 +117,12 @@ class BridgeDeliveryLedger:
                     raise BridgeDeliveryConflict(existing[3])
                 return _record(existing, disposition="replay")
 
-            _require_writable_context(connection, target_manifest["cvcCode"])
+            _require_writable_context(connection, normalized_target["cvcCode"])
+            _require_source_codes_in_context(
+                connection,
+                normalized_target["cvcCode"],
+                normalized_source["sourceCodes"],
+            )
             timestamp = self._now_ms()
             connection.execute(
                 """INSERT INTO bridge_delivery_ledger(
@@ -126,11 +138,11 @@ class BridgeDeliveryLedger:
                     request_id,
                     normalized_operation,
                     digest,
-                    target_manifest["cvcCode"],
+                    normalized_target["cvcCode"],
                     _json(trusted_context),
                     _json(normalized_request),
-                    _json(target_manifest),
-                    _json(source_manifest),
+                    _json(normalized_target),
+                    _json(normalized_source),
                     timestamp,
                     timestamp,
                 ),
@@ -181,6 +193,120 @@ class BridgeDeliveryLedger:
         with self._connect() as connection:
             row = self._row(connection, profile, request_id)
         return _record(row, disposition="original") if row is not None else None
+
+    def find_preview(self, profile_id: str, proposal_id: str) -> dict[str, Any] | None:
+        profile = _normalize_profile_id(profile_id)
+        proposal = _normalize_proposal_id(proposal_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT profile_id, client_request_id, operation,
+                          normalized_request_digest, cvc_code,
+                          operation_context_json, request_json,
+                          target_manifest_json, source_manifest_json,
+                          provenance, state, result_json, created_at, updated_at
+                   FROM bridge_delivery_ledger
+                   WHERE profile_id=? AND operation='delivery.preview'
+                     AND json_extract(result_json, '$.proposalId')=?
+                   LIMIT 1""",
+                (profile, proposal),
+            ).fetchone()
+        return _record(row, disposition="original") if row is not None else None
+
+    def list_records(
+        self,
+        cvc_code: str,
+        *,
+        operation: str | None = None,
+        state: str | None = None,
+        profile_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        context = _target_manifest({"cvcCode": cvc_code})["cvcCode"]
+        if operation is not None:
+            operation = _normalize_operation(operation)
+        if state is not None and state not in _RESULT_STATES:
+            raise BridgeDeliveryValidationError("delivery_state_invalid")
+        clauses = ["cvc_code=?"]
+        parameters: list[Any] = [context]
+        if operation is not None:
+            clauses.append("operation=?")
+            parameters.append(operation)
+        if state is not None:
+            clauses.append("state=?")
+            parameters.append(state)
+        if profile_id is not None:
+            clauses.append("profile_id=?")
+            parameters.append(_normalize_profile_id(profile_id))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT profile_id, client_request_id, operation,
+                           normalized_request_digest, cvc_code,
+                           operation_context_json, request_json,
+                           target_manifest_json, source_manifest_json,
+                           provenance, state, result_json, created_at, updated_at
+                    FROM bridge_delivery_ledger
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY created_at, profile_id, client_request_id""",
+                tuple(parameters),
+            ).fetchall()
+        return [_record(row, disposition="original") for row in rows]
+
+    def transition(
+        self,
+        profile_id: str,
+        client_request_id: str,
+        proposal_id: str,
+        state: str,
+        result_codes: list[str],
+        message: str,
+    ) -> dict[str, Any]:
+        profile = _normalize_profile_id(profile_id)
+        request_id = _normalize_request_id(client_request_id)
+        proposal = _normalize_proposal_id(proposal_id)
+        if state not in {"accepted", "rejected"}:
+            raise BridgeDeliveryValidationError("delivery_decision_invalid")
+        if not isinstance(result_codes, list) or any(
+            not isinstance(code, str) for code in result_codes
+        ):
+            raise BridgeDeliveryValidationError("delivery_result_codes_invalid")
+        if not isinstance(message, str) or len(message) > 1000:
+            raise BridgeDeliveryValidationError("delivery_message_invalid")
+        with self._transaction() as connection:
+            existing = self._row(connection, profile, request_id)
+            if existing is None:
+                raise KeyError((profile, request_id))
+            result = json.loads(existing[11]) if existing[11] is not None else {}
+            if existing[2] != "delivery.commit" or result.get("proposalId") != proposal:
+                raise BridgeDeliveryValidationError("delivery_proposal_invalid")
+            if existing[10] in {"accepted", "rejected"}:
+                if existing[10] != state:
+                    raise BridgeDeliveryConflict(existing[3])
+                return _record(existing, disposition="replay")
+            if existing[10] != "pending_review":
+                raise BridgeDeliveryValidationError("delivery_not_pending")
+            if state == "accepted":
+                _require_result_codes_in_context(
+                    connection, existing[4], result_codes
+                )
+            timestamp = max(self._now_ms(), existing[13])
+            result.update({
+                "resultCodes": result_codes,
+                "message": message,
+                "visualProposal": {
+                    **dict(result.get("visualProposal") or {}),
+                    "status": "approved" if state == "accepted" else "rejected",
+                },
+            })
+            connection.execute(
+                """UPDATE bridge_delivery_ledger
+                   SET state=?, result_json=?, updated_at=?
+                   WHERE profile_id=? AND client_request_id=? AND state='pending_review'""",
+                (state, _bounded_json(result, _MAX_RESULT_BYTES, "delivery_result_invalid"),
+                 timestamp, profile, request_id),
+            )
+            updated = self._row(connection, profile, request_id)
+            if updated is None:
+                raise RuntimeError("bridge delivery transition failed")
+            return _record(updated, disposition="original")
 
     def reconcile_processing(self, stale_before_ms: int, *, limit: int = 100) -> int:
         if type(stale_before_ms) is not int or stale_before_ms < 0:
@@ -266,14 +392,14 @@ def _normalize_operation_context(value: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _normalize_request(value: dict[str, Any]) -> dict[str, Any]:
+def _normalize_request(value: dict[str, Any], operation: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise BridgeDeliveryValidationError("delivery_request_invalid")
     if _FORBIDDEN_REQUEST_FIELDS.intersection(value):
         raise BridgeDeliveryValidationError("bridge_authority_in_request")
     request_id = _normalize_request_id(value.get("clientRequestId"))
     digest = _normalize_digest(value.get("normalizedRequestDigest"))
-    if value.get("provenance") != "promptcard-bridge":
+    if operation != "delivery.commit" and value.get("provenance") != "promptcard-bridge":
         raise BridgeDeliveryValidationError("bridge_provenance_invalid")
     _bounded_json(value, _MAX_REQUEST_BYTES, "delivery_request_invalid")
     return {
@@ -285,6 +411,8 @@ def _normalize_request(value: dict[str, Any]) -> dict[str, Any]:
 
 def _target_manifest(request: dict[str, Any]) -> dict[str, Any]:
     target = request.get("target")
+    if target is None and "cvcCode" in request:
+        target = request
     if not isinstance(target, dict):
         raise BridgeDeliveryValidationError("delivery_target_invalid")
     if "cvcCode" not in target:
@@ -301,9 +429,20 @@ def _target_manifest(request: dict[str, Any]) -> dict[str, Any]:
 def _source_manifest(request: dict[str, Any]) -> dict[str, Any]:
     source_codes = request.get("sourceCodes")
     skill_pins = request.get("skillPins")
-    if not isinstance(source_codes, list) or not isinstance(skill_pins, list):
+    if (
+        not isinstance(source_codes, list)
+        or len(source_codes) > 32
+        or any(not isinstance(code, str) for code in source_codes)
+        or not isinstance(skill_pins, list)
+    ):
         raise BridgeDeliveryValidationError("delivery_source_manifest_invalid")
-    return {"skillPins": skill_pins, "sourceCodes": source_codes}
+    try:
+        canonical_sources = [parse_reference_code(code).code for code in source_codes]
+    except (TypeError, ValueError) as exc:
+        raise BridgeDeliveryValidationError("delivery_source_manifest_invalid") from exc
+    if len(canonical_sources) != len(set(canonical_sources)):
+        raise BridgeDeliveryValidationError("delivery_source_manifest_invalid")
+    return {"skillPins": skill_pins, "sourceCodes": canonical_sources}
 
 
 def _require_writable_context(connection: sqlite3.Connection, cvc_code: str) -> None:
@@ -328,6 +467,53 @@ def _require_writable_context(connection: sqlite3.Connection, cvc_code: str) -> 
         raise BridgeDeliveryValidationError("context_stale")
 
 
+def _require_source_codes_in_context(
+    connection: sqlite3.Connection,
+    cvc_code: str,
+    source_codes: list[str],
+) -> None:
+    if not source_codes:
+        return
+    row = connection.execute(
+        """SELECT project_code, entries_json, source_codes_json
+           FROM context_packs WHERE cvc_code=?""",
+        (cvc_code,),
+    ).fetchone()
+    if row is None:
+        raise BridgeDeliveryValidationError("context_not_found")
+    entries = json.loads(row[1])
+    allowed = {cvc_code, row[0], *json.loads(row[2])}
+    allowed.update(
+        entry.get("reference", {}).get("code")
+        for entry in entries
+        if isinstance(entry, dict)
+    )
+    if any(code not in allowed for code in source_codes):
+        raise BridgeDeliveryValidationError("source_reference_outside_context")
+
+
+def _require_result_codes_in_context(
+    connection: sqlite3.Connection,
+    cvc_code: str,
+    result_codes: list[str],
+) -> None:
+    for code in result_codes:
+        row = connection.execute(
+            """SELECT 1
+               FROM context_packs AS context
+               JOIN public_references AS project
+                 ON project.public_code=context.project_code
+                AND project.namespace='PRJ' AND project.owner_scope=''
+               JOIN public_references AS result
+                 ON result.owner_scope=project.internal_id
+                AND result.namespace='CVT'
+               WHERE context.cvc_code=? AND result.public_code=?""",
+            (cvc_code, code),
+        ).fetchone()
+        if row is None:
+            raise BridgeDeliveryValidationError("delivery_result_code_unavailable")
+
+
 def _normalize_profile_id(value: Any) -> str:
     if not isinstance(value, str) or _PROFILE_ID.fullmatch(value) is None:
         raise BridgeDeliveryValidationError("bridge_profile_invalid")
@@ -349,6 +535,15 @@ def _normalize_digest(value: Any) -> str:
 def _normalize_operation(value: Any) -> str:
     if value not in _OPERATIONS:
         raise BridgeDeliveryValidationError("delivery_operation_invalid")
+    return value
+
+
+def _normalize_proposal_id(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}", value) is None
+    ):
+        raise BridgeDeliveryValidationError("delivery_proposal_invalid")
     return value
 
 

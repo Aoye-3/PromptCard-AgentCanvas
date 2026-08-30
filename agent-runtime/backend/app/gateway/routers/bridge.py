@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.gateway.bridge import (
     asset_read,
+    delivery_commit,
+    delivery_preview,
+    delivery_status,
     prompt_search,
     reference_resolve,
     runtime_description,
@@ -27,6 +30,49 @@ class PromptSearchPayload(BaseModel):
     types: list[str] = Field(default_factory=list, max_length=16)
     categories: list[str] = Field(default_factory=list, max_length=16)
     limit: int = Field(default=8, ge=1, le=20)
+
+
+class SkillPinPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    skillCode: str
+    revision: int = Field(ge=1)
+    digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class DeliveryTargetPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cvcCode: str
+
+
+class PromptCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=500)
+    userText: str = Field(min_length=1, max_length=100_000)
+
+
+class DeliveryPreviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    clientRequestId: str = Field(min_length=1, max_length=128)
+    normalizedRequestDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    kind: Literal["prompt.create"]
+    target: DeliveryTargetPayload
+    sourceCodes: list[str] = Field(max_length=32)
+    skillPins: list[SkillPinPayload] = Field(max_length=8)
+    rationale: str = Field(min_length=1, max_length=4000)
+    provenance: Literal["promptcard-bridge"]
+    payload: PromptCreatePayload
+
+
+class DeliveryCommitPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    clientRequestId: str = Field(min_length=1, max_length=128)
+    normalizedRequestDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    proposalId: str = Field(pattern=r"^DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}$")
 
 
 @router.get("/runtime")
@@ -95,6 +141,36 @@ async def read_asset(
 ):
     _reject_extra_query(request, {"cvcCode", "code"})
     return await asset_read(principal, cvc_code, code)
+
+
+@router.post("/delivery/preview")
+async def preview_delivery(
+    request: Request,
+    payload: DeliveryPreviewPayload,
+    principal: Principal,
+):
+    _reject_extra_query(request, set())
+    return await delivery_preview(principal, payload.model_dump())
+
+
+@router.post("/delivery/commit")
+async def commit_delivery(
+    request: Request,
+    payload: DeliveryCommitPayload,
+    principal: Principal,
+):
+    _reject_extra_query(request, set())
+    return await delivery_commit(principal, payload.model_dump())
+
+
+@router.get("/delivery/status")
+async def read_delivery_status(
+    request: Request,
+    principal: Principal,
+    client_request_id: str = Query(alias="clientRequestId", min_length=1, max_length=128),
+):
+    _reject_extra_query(request, {"clientRequestId"})
+    return await delivery_status(principal, client_request_id)
 
 
 def _reject_extra_query(request: Request, allowed: set[str]) -> None:

@@ -35,6 +35,10 @@ Reusing internal Canvas node IDs, UI focus, fuzzy titles, or arbitrary filesyste
 - The Agent workspace UI can explain connection, profile, scope, context, Skill pins, Tools, proposals, failures, and provenance without exposing paths or internal IDs.
 - Search remains discovery only. A search result must be explicitly re-resolved before it can become source context and can never become a write target.
 
+## Implementation Note
+
+Task 24 implements the `prompt.create` vertical slice. Preview and commit are separate profile-scoped ledger operations; commit creates only a pending visual proposal. Free Canvas persists a deterministic all-`user` Prompt and receives its Storage-owned `CVT-*` before the delivery can become `accepted`. A failed save or failed acknowledgement leaves the proposal pending and retryable, while an existing exact marker is reused after restart. The selected CVC is explicit UI state and local preference only; it never replaces Storage validation or Bridge profile authority.
+
 ## Alternatives Considered
 
 ### Extend Bridge v2 In Place

@@ -44,6 +44,7 @@ import { ImageNodeActionBar } from '@/components/canvas/image-actions/ImageNodeA
 import { CanvasNodeContextMenu } from '@/components/canvas/image-actions/CanvasNodeContextMenu'
 import { CanvasProjectReferenceCodeAction } from '@/components/canvas/image-actions/CanvasReferenceCodeAction'
 import { CopyCodexContext } from '@/components/canvas/context-packs/CopyCodexContext'
+import { BridgeDeliveryInbox } from '@/components/canvas/bridge/BridgeDeliveryInbox'
 import { CanvasUnsupportedNodeContextMenu } from '@/components/canvas/image-actions/CanvasUnsupportedNodeContextMenu'
 import {
   CanvasTextNodeContextMenu,
@@ -175,6 +176,7 @@ import {
 } from '@/services/image-generation-client'
 import {
   storageServiceClient,
+  type BridgePromptDelivery,
   type ImageGenerationConversationSummary,
   type ImageGenerationRun,
   type ProjectResource
@@ -464,6 +466,9 @@ const FreeCanvasBuilderInner = ({
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
   const [resourceLibraryExpanded, setResourceLibraryExpanded] = useState(false)
   const [rightPanelMode, setRightPanelMode] = useState<'agent' | 'image-generation' | 'prompt-library'>('agent')
+  const [activeBridgeCvcCode, setActiveBridgeCvcCode] = useState<string | null>(
+    () => readActiveBridgeContext(activeProject.id)
+  )
   const [previewPreset, setPreviewPreset] = useState<IPreset | null>(null)
   const [quickDrawerOpen, setQuickDrawerOpen] = useState(false)
   const [quickComposerOpen, setQuickComposerOpen] = useState(false)
@@ -519,6 +524,10 @@ const FreeCanvasBuilderInner = ({
   } | null>(null)
   const [imageAnnotationDocuments, setImageAnnotationDocuments] = useState<Record<string, ImageAnnotationDocument>>({})
   const [optimisticImageTurn, setOptimisticImageTurn] = useState<ImageGenerationTurn | null>(null)
+
+  useEffect(() => {
+    setActiveBridgeCvcCode(readActiveBridgeContext(activeProject.id))
+  }, [activeProject.id])
   const selectedNode = freeCanvas.nodes.find(node => node.id === freeCanvas.selectedNodeId) || null
   const selectedImageNode = selectedNode?.kind === 'image' ? selectedNode : null
   const quickPresets = useMemo(() => presets.filter(isQuickMessagePreset), [presets])
@@ -3240,6 +3249,64 @@ const FreeCanvasBuilderInner = ({
     void addImageFiles(files, nextNodePosition(reactFlow, freeCanvas.nodes.length))
   }
 
+  const handleAcceptBridgePromptDelivery = async (
+    delivery: BridgePromptDelivery
+  ): Promise<string[]> => {
+    const scope = activeProjectScopeRef.current
+    if (!onPersistCanvas || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+    const application = await createBridgePromptApplication(delivery)
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const baseCanvas = freeCanvasRef.current
+      const existing = inspectPromptHandoffApplication(baseCanvas, application)
+      if (existing.status === 'conflict') {
+        window.alert('外部 Agent Prompt 标记完整性校验失败，无法应用。')
+        return []
+      }
+      if (existing.status === 'exact') {
+        const saved = baseCanvas.nodes.find(node => node.id === application.nodeId && node.kind === 'text')
+        return saved?.referenceCode ? [saved.referenceCode] : []
+      }
+      const node = createBridgePromptNode(
+        delivery,
+        application,
+        nextNodePosition(reactFlow, baseCanvas.nodes.length)
+      )
+      const requestedCanvas = {
+        ...baseCanvas,
+        selectedNodeId: node.id,
+        nodes: [...baseCanvas.nodes, node]
+      }
+      let receipt: boolean | FreeCanvasPersistReceipt = false
+      try {
+        receipt = await onPersistCanvas(requestedCanvas)
+      } catch {
+        receipt = false
+      }
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+      const winningCanvas = authoritativePersistedCanvas(receipt)
+      if (!winningCanvas) return []
+      const winning = inspectPromptHandoffApplication(winningCanvas, application)
+      const liveCanvas = freeCanvasRef.current
+      const liveChanged = canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(baseCanvas)
+        && canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(winningCanvas)
+      if (winning.status === 'exact' && !liveChanged) {
+        const saved = winningCanvas.nodes.find(candidate => (
+          candidate.id === application.nodeId && candidate.kind === 'text'
+        ))
+        if (!saved?.referenceCode) return []
+        commitCanvasSelection(winningCanvas, application.nodeId)
+        return [saved.referenceCode]
+      }
+      if (winning.status === 'conflict') {
+        window.alert('持久化返回的外部 Agent Prompt 标记完整性校验失败。')
+        return []
+      }
+      freeCanvasRef.current = liveChanged ? liveCanvas : winningCanvas
+    }
+    window.alert('Canvas 在保存期间持续变化，请重试外部 Agent Prompt 提案。')
+    return []
+  }
+
   const handleApplyAgentProposal = async (proposal: AgentWorkspaceProposal | AgentCanvasEdit) => {
     if (
       proposal.kind === 'document_create'
@@ -3754,6 +3821,11 @@ const FreeCanvasBuilderInner = ({
           project={activeProject}
           nodes={freeCanvas.nodes}
           selectedNodeIds={selectedNodeIds}
+          onActiveContextChange={context => {
+            const code = context?.cvcCode || null
+            setActiveBridgeCvcCode(code)
+            writeActiveBridgeContext(activeProject.id, code)
+          }}
         />
         <ToolbarButton title="Save" onClick={onSave}><Save className="h-4 w-4" /></ToolbarButton>
       </header>
@@ -4320,19 +4392,27 @@ const FreeCanvasBuilderInner = ({
               />
             </div>
           ) : !previewMode ? (
-            <AIChatbotBox
-              title="Free Canvas Agent"
-              mode="free-canvas-workspace"
-              sessionKey={`workspace:free-canvas:${activeProject.id}`}
-              workspaceContext={workspaceContext}
-              onApplyWorkspaceProposal={handleApplyAgentProposal}
-              onApplyCanvasEdit={handleApplyAgentProposal}
-              onDocumentReconcileStateChange={handleDocumentReconcileStateChange}
-              draftRequest={agentDraftRequest}
-              compact
-              embedded
-              contextLabel={`已读取画布 · ${freeCanvas.nodes.length} 个节点`}
-            />
+            <div className="flex min-h-0 flex-1 flex-col">
+              <BridgeDeliveryInbox
+                cvcCode={activeBridgeCvcCode}
+                onAccept={handleAcceptBridgePromptDelivery}
+              />
+              <div className="min-h-0 flex-1">
+                <AIChatbotBox
+                  title="Free Canvas Agent"
+                  mode="free-canvas-workspace"
+                  sessionKey={`workspace:free-canvas:${activeProject.id}`}
+                  workspaceContext={workspaceContext}
+                  onApplyWorkspaceProposal={handleApplyAgentProposal}
+                  onApplyCanvasEdit={handleApplyAgentProposal}
+                  onDocumentReconcileStateChange={handleDocumentReconcileStateChange}
+                  draftRequest={agentDraftRequest}
+                  compact
+                  embedded
+                  contextLabel={`已读取画布 · ${freeCanvas.nodes.length} 个节点`}
+                />
+              </div>
+            </div>
           ) : (
             <div className="p-5 text-sm font-semibold text-gray-400">Preview mode disables Agent Runtime.</div>
           )}
@@ -6704,6 +6784,56 @@ const createPromptHandoffApplication = async (
   }
 }
 
+const createBridgePromptApplication = async (
+  delivery: BridgePromptDelivery
+): Promise<PromptHandoffApplication> => {
+  const title = delivery.visualProposal.title.trim() || 'External Agent Prompt'
+  const basisDigest = await sha256Text(pythonCanonicalJson({
+    cvcCode: delivery.request.target.cvcCode,
+    normalizedRequestDigest: delivery.request.normalizedRequestDigest,
+    sourceCodes: delivery.request.sourceCodes,
+    skillPins: delivery.request.skillPins
+  }))
+  const provenance: PromptHandoffApplication['provenance'] = {
+    model: {
+      connectionId: `bridge:${delivery.operationContext.profileId}`,
+      providerId: 'external-agent',
+      modelId: delivery.operationContext.clientInfo?.name || delivery.operationContext.profileId,
+      displayName: delivery.visualProposal.agentName
+    },
+    skills: delivery.request.skillPins.map(pin => ({
+      skillId: pin.skillCode,
+      revision: pin.revision,
+      digest: pin.digest
+    }))
+  }
+  const resultDigest = await sha256Text(pythonCanonicalJson({
+    provenance,
+    title,
+    userText: delivery.visualProposal.userText
+  }))
+  const conversationId = `bridge:${delivery.operationContext.profileId}:${delivery.request.target.cvcCode}`
+  const applicationDigest = await sha256Text(pythonCanonicalJson({
+    basisDigest,
+    conversationId,
+    proposalId: delivery.proposalId,
+    resultDigest
+  }))
+  return {
+    nodeId: `bridge-prompt-${applicationDigest.slice(7, 39)}`,
+    marker: {
+      version: 1,
+      conversationId,
+      proposalId: delivery.proposalId,
+      basisDigest,
+      resultDigest
+    },
+    title,
+    userText: delivery.visualProposal.userText,
+    provenance
+  }
+}
+
 const promptHandoffSourceIsCurrent = (
   canvas: IFreeCanvasProject,
   basis: AgentPromptHandoffBasis
@@ -6724,6 +6854,26 @@ const createPromptHandoffNode = (
   position: { x: number; y: number }
 ): IFreeCanvasTextNode => {
   const created = createFreeCanvasTextNode(proposal.userText, position)
+  return {
+    ...created,
+    id: application.nodeId,
+    title: application.title,
+    segments: created.segments.map((segment, index) => ({
+      ...segment,
+      id: `${application.nodeId}-user-${index + 1}`,
+      source: 'user'
+    })),
+    provenance: application.provenance,
+    agentPromptHandoff: application.marker
+  }
+}
+
+const createBridgePromptNode = (
+  delivery: BridgePromptDelivery,
+  application: PromptHandoffApplication,
+  position: { x: number; y: number }
+): IFreeCanvasTextNode => {
+  const created = createFreeCanvasTextNode(delivery.visualProposal.userText, position)
   return {
     ...created,
     id: application.nodeId,
@@ -6803,6 +6953,28 @@ const freeCanvasSegmentsDigest = (node: IFreeCanvasTextNode): Promise<string> =>
 const nodeTypes = {
   freeCanvasNode: FreeCanvasNode,
   imageGeneratorNode: ImageGeneratorFlowNode
+}
+
+const activeBridgeContextKey = (projectId: string): string => (
+  `promptcard:active-bridge-context:${projectId}`
+)
+
+const readActiveBridgeContext = (projectId: string): string | null => {
+  try {
+    const value = globalThis.localStorage?.getItem(activeBridgeContextKey(projectId))
+    return value && /^CVC-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+const writeActiveBridgeContext = (projectId: string, cvcCode: string | null): void => {
+  try {
+    if (cvcCode) globalThis.localStorage?.setItem(activeBridgeContextKey(projectId), cvcCode)
+    else globalThis.localStorage?.removeItem(activeBridgeContextKey(projectId))
+  } catch {
+    // Local UI preference is optional; Storage remains authoritative.
+  }
 }
 
 const createLocalId = (prefix: string): string => globalThis.crypto?.randomUUID?.()

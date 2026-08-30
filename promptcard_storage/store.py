@@ -24,6 +24,7 @@ from .assets import (
 )
 from .backup import BackupManager
 from .delivery_ledger import BridgeDeliveryLedger, create_bridge_delivery_schema
+from .prompt_delivery import BridgePromptDeliveryService
 from .document_resources import DocumentResourceStore
 from .image_runs import (
     decode_cursor,
@@ -204,6 +205,9 @@ class SqliteStore:
         )
         self._bridge_deliveries = BridgeDeliveryLedger(
             self._transaction, self._connect, now_ms
+        )
+        self._bridge_prompt_deliveries = BridgePromptDeliveryService(
+            self._bridge_deliveries
         )
         self._backups = BackupManager(
             self.database_path,
@@ -934,6 +938,50 @@ class SqliteStore:
     ) -> int:
         return self._bridge_deliveries.reconcile_processing(
             stale_before_ms, limit=limit
+        )
+
+    def preview_bridge_prompt_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_prompt_deliveries.preview(operation_context, request)
+
+    def commit_bridge_prompt_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_prompt_deliveries.commit(operation_context, request)
+
+    def get_bridge_prompt_delivery(
+        self, profile_id: str, client_request_id: str
+    ) -> dict[str, Any]:
+        try:
+            return self._bridge_prompt_deliveries.status(profile_id, client_request_id)
+        except KeyError as exc:
+            raise MissingItem(client_request_id) from exc
+
+    def list_bridge_deliveries(
+        self,
+        cvc_code: str,
+        *,
+        state: str | None = None,
+        profile_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._bridge_prompt_deliveries.list(
+            cvc_code, state=state, profile_id=profile_id
+        )
+
+    def decide_bridge_delivery(
+        self,
+        cvc_code: str,
+        proposal_id: str,
+        decision: str,
+        result_codes: list[str],
+    ) -> dict[str, Any]:
+        return self._bridge_prompt_deliveries.decide(
+            cvc_code, proposal_id, decision, result_codes
         )
 
     def inspect_context_pack(self, cvc_code: str) -> dict[str, Any]:

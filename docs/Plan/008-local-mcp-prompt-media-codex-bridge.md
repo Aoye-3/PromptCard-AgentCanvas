@@ -2,7 +2,7 @@
 
 ## Status
 
-Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-23 are implemented on `feat/skill-document-storyboard-loop`; the next slice is typed Prompt proposal delivery through the profile-scoped ledger.
+Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-24 are implemented on `feat/skill-document-storyboard-loop`; the next slice is typed image staging/delivery through the profile-scoped ledger.
 
 ## Current Normative Boundary
 
@@ -738,7 +738,7 @@ Additional rules:
 
 **Goal:** Return Local Agent Bridge outputs to the correct Canvas safely.
 
-- Implement additive Prompt node proposal delivery.
+- [x] Implement additive Prompt node proposal delivery. Preview is non-mutating, commit enters the visual CVC-scoped review queue, accept saves one deterministic all-`user` Prompt before terminal acknowledgement, and reject remains audited.
 - Implement multipart image delivery with v2 `promptcard-bridge` provenance and profile-scoped idempotency; accept v1 `codex-harness` only at the compatibility boundary.
 - Add idempotent generic pending Canvas placements independent of provider generation runs.
 - Reuse the existing save-before-placed reconciliation order.

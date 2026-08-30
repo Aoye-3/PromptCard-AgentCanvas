@@ -136,8 +136,11 @@ def test_workspace_describe_resolves_explicit_project_context_and_skill_pins(
             }
         if path == "/api/skills":
             return {"skills": []}
-        if path == "/api/context-packs/pending-deliveries":
-            return {"count": 0}
+        if path == f"/api/internal/context-packs/{CVC}/bridge-deliveries":
+            assert kwargs["params"] == {
+                "profileId": "codex-local", "state": "pending_review"
+            }
+            return {"deliveries": []}
         raise AssertionError((method, path, kwargs))
 
     monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
@@ -230,6 +233,8 @@ def test_workspace_describe_lists_only_typed_creative_objects(client, monkeypatc
             }
         if path == "/api/skills":
             return {"skills": []}
+        if path == f"/api/internal/context-packs/{CVC}/bridge-deliveries":
+            return {"deliveries": []}
         raise AssertionError((method, path, kwargs))
 
     monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
@@ -529,6 +534,191 @@ def test_skill_read_rejects_an_unhealthy_codex_projection(client, monkeypatch):
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "skill_projection_unhealthy"
+
+
+def test_prompt_delivery_preview_commit_and_status_use_trusted_profile(client, monkeypatch):
+    proposal_id = "DVP-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    preview_request = {
+        "clientRequestId": "preview-1",
+        "normalizedRequestDigest": DIGEST,
+        "kind": "prompt.create",
+        "target": {"cvcCode": CVC},
+        "sourceCodes": [],
+        "skillPins": [],
+        "rationale": "Create a prompt.",
+        "provenance": "promptcard-bridge",
+        "payload": {"title": "Opening", "userText": "Wide shot"},
+    }
+    calls = []
+
+    async def fake_storage(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path.endswith("/preview"):
+            assert kwargs["json"]["operationContext"]["profileId"] == "codex-local"
+            assert "profileId" not in kwargs["json"]["deliveryRequest"]
+            return _delivery_record(preview_request, proposal_id, "previewed")
+        if path.endswith("/commit"):
+            assert kwargs["json"]["deliveryRequest"] == {
+                "clientRequestId": "commit-1",
+                "normalizedRequestDigest": "sha256:" + "b" * 64,
+                "proposalId": proposal_id,
+            }
+            return _delivery_record(preview_request, proposal_id, "pending_review")
+        if path.endswith("/commit-1"):
+            assert kwargs["params"] == {"profileId": "codex-local"}
+            return _delivery_record(preview_request, proposal_id, "pending_review")
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    preview = client.post(
+        "/api/promptcard/bridge/v3/delivery/preview",
+        json=preview_request,
+        headers=auth_headers(),
+    )
+    commit = client.post(
+        "/api/promptcard/bridge/v3/delivery/commit",
+        json={
+            "clientRequestId": "commit-1",
+            "normalizedRequestDigest": "sha256:" + "b" * 64,
+            "proposalId": proposal_id,
+        },
+        headers=auth_headers(),
+    )
+    status = client.get(
+        "/api/promptcard/bridge/v3/delivery/status",
+        params={"clientRequestId": "commit-1"},
+        headers=auth_headers(),
+    )
+
+    assert preview.status_code == 200
+    assert commit.status_code == 200
+    assert status.status_code == 200
+    assert status.json()["state"] == "pending_review"
+    assert len(calls) == 3
+
+
+def test_prompt_delivery_rejects_forged_authority_and_missing_scope(client, monkeypatch):
+    called = False
+
+    async def fake_storage(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("must reject before Storage")
+
+    monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    forged = client.post(
+        "/api/promptcard/bridge/v3/delivery/preview",
+        json={
+            "clientRequestId": "preview-1",
+            "normalizedRequestDigest": DIGEST,
+            "kind": "prompt.create",
+            "target": {"cvcCode": CVC},
+            "sourceCodes": [],
+            "skillPins": [],
+            "rationale": "Create a prompt.",
+            "provenance": "promptcard-bridge",
+            "payload": {"title": "Opening", "userText": "Wide shot"},
+            "profileId": "forged-admin",
+        },
+        headers=auth_headers(),
+    )
+    assert forged.status_code == 422
+    assert called is False
+
+
+def test_prompt_delivery_rejects_sources_outside_context(client, monkeypatch):
+    outside = "PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    calls = []
+
+    async def fake_storage(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path.endswith("/resolve"):
+            return {
+                "projectCode": PRJ,
+                "cvcCode": CVC,
+                "entries": [],
+                "sourceCodes": [],
+            }
+        raise AssertionError("delivery must not reach Storage")
+
+    monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    response = client.post(
+        "/api/promptcard/bridge/v3/delivery/preview",
+        json={
+            "clientRequestId": "preview-outside",
+            "normalizedRequestDigest": DIGEST,
+            "kind": "prompt.create",
+            "target": {"cvcCode": CVC},
+            "sourceCodes": [outside],
+            "skillPins": [],
+            "rationale": "Create a prompt.",
+            "provenance": "promptcard-bridge",
+            "payload": {"title": "Opening", "userText": "Wide shot"},
+        },
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "reference_outside_context"
+    assert len(calls) == 1
+
+
+def test_prompt_delivery_rejects_unapproved_skill_pin(client, monkeypatch):
+    skill_code = "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    called = False
+
+    async def fake_storage(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("delivery must not reach Storage")
+
+    async def no_workspace_skills(_principal):
+        return []
+
+    monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    monkeypatch.setattr("app.gateway.bridge._workspace_skills", no_workspace_skills)
+    response = client.post(
+        "/api/promptcard/bridge/v3/delivery/preview",
+        json={
+            "clientRequestId": "preview-unapproved-skill",
+            "normalizedRequestDigest": DIGEST,
+            "kind": "prompt.create",
+            "target": {"cvcCode": CVC},
+            "sourceCodes": [],
+            "skillPins": [{
+                "skillCode": skill_code,
+                "revision": 3,
+                "digest": DIGEST,
+            }],
+            "rationale": "Create a prompt.",
+            "provenance": "promptcard-bridge",
+            "payload": {"title": "Opening", "userText": "Wide shot"},
+        },
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "skill_not_enabled"
+    assert called is False
+
+
+def _delivery_record(request, proposal_id, state):
+    return {
+        "operationContext": {
+            "profileId": "codex-local",
+            "scopes": ["bridge:deliver:prompt"],
+            "provenance": "promptcard-bridge",
+            "clientInfo": {"name": "codex", "version": "1.0.0"},
+        },
+        "request": request,
+        "proposalId": proposal_id,
+        "state": state,
+        "disposition": "original",
+        "resultCodes": [],
+        "message": "ready",
+        "createdAt": "2026-08-30T00:00:00.000Z",
+        "updatedAt": "2026-08-30T00:00:00.000Z",
+    }
 
 
 @pytest.mark.anyio

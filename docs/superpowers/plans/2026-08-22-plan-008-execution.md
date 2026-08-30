@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Tasks 16-23 complete on the feature branch; Task 24 typed Prompt proposal delivery is next; final real-Codex closed-loop gate remains the merge condition`
+- Status: `Tasks 16-24 complete on the feature branch; Task 25 typed image staging/delivery is next; final real-Codex closed-loop gate remains the merge condition`
 - Date: `2026-08-30`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -795,7 +795,7 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Persist trusted `profileId`, operation, `clientRequestId`, normalized digest, exact target/source manifest, `promptcard-bridge` provenance, state, result, and timestamps before implementing Prompt or image delivery. Client name/version remain audit-only.
 
-**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). Storage schema v19 owns one durable ledger for preview, commit, and staging operations; it does not yet create or apply a Canvas proposal.
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). Storage schema v19 owns one durable ledger for preview, commit, and staging operations. Task 24 now consumes it for Prompt proposals without changing the schema.
 
 **Acceptance criteria:**
 
@@ -821,11 +821,17 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Create a pending `free_canvas_text_create` proposal against exact CVC placement, preserving source codes and approval semantics without replacing project JSON.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). Gateway exposes v3 Prompt preview/commit/status, Storage projects committed records into a profile-scoped visual review queue, and Free Canvas accepts or rejects them against the explicitly selected CVC.
+
 **Acceptance criteria:**
 
-- [ ] Proposal targets the resolved project/context and contains bounded content/provenance.
-- [ ] Repeated request creates no duplicate proposal/node.
-- [ ] Apply uses the existing save coordinator; reject leaves an auditable terminal result.
+- [x] Proposal targets the resolved project/context and contains bounded content/provenance.
+- [x] Repeated request creates no duplicate proposal/node.
+- [x] Apply uses the existing save coordinator; reject leaves an auditable terminal result.
+
+**Implementation evidence:** `promptcard_delivery_preview`, `promptcard_delivery_commit`, and `promptcard_delivery_status` now have strict v3 Gateway routes. The trusted Bridge profile remains outside the request and selects `bridge:deliver:prompt` / `bridge:status`; Storage validates the exact current CVC, emits a deterministic `DVP-*`, and records commit as `pending_review`. The Free Canvas review inbox follows the user-selected CVC, refreshes while open, displays Agent/rationale/content, and requires explicit accept or reject. Accept persists a deterministic all-`user` Prompt node first, requires the resulting same-project `CVT-*`, then records `accepted`; failure before confirmation leaves the proposal pending. Restart/retry inspects the durable marker and does not duplicate the node. Reject records a terminal audited result without changing project JSON.
+
+**Verification evidence:** focused Storage Prompt delivery/API tests cover preview-without-mutation, replay/conflict, pending review, reject/restart, same-project result-code validation, cross-context source rejection, and internal-token isolation; existing ledger tests remain green. Gateway Bridge tests cover trusted-profile preview/commit/status, forged-authority rejection, cross-context source rejection, and rejection of unapproved Skill pins. Frontend client/inbox/CVC/Canvas suites cover strict parsing, accept/reject, save failure retention, and existing deterministic save/rebase behavior. The Task 24 gate passed with 363 Storage tests (3 skipped), 479 Gateway tests, 1,390 frontend tests, 52 v3 contract tests, 7 Bridge CLI tests, 7 MCP transport tests, TypeScript checks for the app/Text Agent/CLI/MCP, Ruff over the touched Python modules, zero-warning ESLint over every touched frontend file, and a production build. Repository-wide ESLint still reports 41 pre-existing warnings against its 30-warning budget; none are in Task 24 files. The build retains pre-existing non-blocking CSS minification and bundle-size warnings.
 
 **Verification:** Gateway/Storage/frontend tests cover pending, apply, reject, save conflict, replay, and unavailable context.
 
@@ -855,14 +861,14 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 ### Task 26: Expose MCP delivery and status tools
 
-**Description:** Add host-neutral delivery preview, commit, and status Tools. Image commit consumes a bridge-created staged asset handle; it never accepts an arbitrary client path or remote URL. Codex and TRAE use the same names, schemas, permissions, and results.
+**Description:** Add host-neutral delivery preview, commit, and status Tools for all v3 creative kinds. Image commit consumes a bridge-created staged asset handle; it never accepts an arbitrary client path or remote URL. Codex and TRAE use the same names, schemas, permissions, and results.
 
 **Acceptance criteria:**
 
 - [ ] Staging resolves any local source under an allowed workspace root, rejects traversal/symlink/junction escape, and returns an opaque bounded handle; commit accepts only that handle.
 - [ ] Write Tools require exact CVC/source codes and never accept search queries as targets.
 - [ ] Status polling never repeats the mutation.
-- [ ] `bridge:deliver:prompt`, `bridge:deliver:image`, and `bridge:status` are checked independently before Gateway mutation.
+- [ ] Document, Storyboard, Prompt, image, and status scopes are checked independently before Gateway mutation.
 
 **Verification:** MCP tests cover valid workspace file, path escape, duplicate request, digest conflict, pending recovery, and stdout purity.
 
@@ -872,14 +878,52 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Estimated scope:** Medium.
 
+### Task 26A: Adapt typed Document writeback into visual suggestions
+
+**Description:** Implement `document.create` and `document.change` on the same preview/commit/status ledger, resolving only exact CVC/CVD/revision/digest targets. Reuse the editor-neutral AST, suggestion rendering, conflict checks, save coordinator, and single/all accept/reject mechanisms already implemented for the local Agent.
+
+**Acceptance criteria:**
+
+- [ ] Create and change payloads are bounded, canonical, and never expose internal node IDs.
+- [ ] Stale base revisions/digests fail before a proposal can be applied.
+- [ ] Restart/replay creates exactly one proposal and one accepted Document result.
+- [ ] Red-delete/green-add review and terminal acceptance/rejection preserve external Agent, Skill revision, source codes, and request identity.
+
+**Dependencies:** Tasks 23-24.
+
+### Task 26B: Adapt typed Storyboard writeback into field review
+
+**Description:** Implement `storyboard.create` and `storyboard.change` through the same ledger. Resolve exact CVS/revision/digest targets, compile ordinal-addressed external changes into the existing structured sequence proposal, and reuse per-shot/per-field review rather than creating another editor.
+
+**Acceptance criteria:**
+
+- [ ] Storyboard create/change preserves the canonical sequence and source Document evidence.
+- [ ] Stale base, invalid ordinal, and already-changed field fail closed.
+- [ ] Per-field accept/reject, save/retry, restart, and replay remain deterministic and auditable.
+
+**Dependencies:** Tasks 23 and 26A.
+
+### Task 26C: Complete the discoverable Agent work environment UI
+
+**Description:** Turn the existing CVC selector and review inbox into one Agent work-environment surface showing Bridge connection/profile/scopes, explicit PRJ/CVC revision, exact Skill pins/projection health, available Tools/object kinds, pending deliveries, request failures, and source Agent. “Send to Agent” emits exact object/CVC references and a copyable task description; it never asks the Agent to infer a target from a screenshot.
+
+**Acceptance criteria:**
+
+- [ ] A newly connected Codex can discover Bootstrap → runtime → workspace → exact Skill/reference reads without prior internal-schema knowledge.
+- [ ] The user can see and change the explicit CVC authority and understand stale/revoked/unavailable failures.
+- [ ] All four proposal kinds reuse their native Canvas review UI and expose provenance/status consistently.
+- [ ] UI preference persistence never becomes Bridge authority; Storage and trusted profile checks remain decisive.
+
+**Dependencies:** Tasks 16-26B.
+
 ### Checkpoint 5: Delivery
 
-- [ ] Prompt and image delivery are additive, idempotent, recoverable, and correctly scoped.
+- [ ] Document, Storyboard, Prompt, and image delivery are typed, proposal-only, idempotent, recoverable, and correctly scoped.
 - [ ] No bridge-delivered output is recorded as a provider generation run.
 - [ ] Repeating every E2E delivery creates exactly one durable result.
 - [ ] The delivery ledger persists processing intent before any Prompt or Canvas mutation, and retry/restart reconciles interrupted operations without duplicate results.
 - [ ] Exact CVC, project, source-code, and workspace-file scopes are enforced; search results and arbitrary paths cannot become write targets.
-- [ ] Prompt delivery creates reviewable additive proposals, while image delivery records `promptcard-bridge` provenance and never fabricates provider-run history.
+- [ ] Document/Storyboard reuse native suggestion review, Prompt remains create-only/all-`user`, and image delivery records `promptcard-bridge` provenance without fabricating provider-run history.
 - [ ] Replaying the same `clientRequestId` and digest returns the first result; reusing the key with a different digest returns an explicit conflict.
 - [ ] User acceptance covers success, duplicate replay, digest conflict, failure/retry, restart recovery, and out-of-scope rejection before Task 27.
 

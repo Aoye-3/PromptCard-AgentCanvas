@@ -24,6 +24,7 @@ interface CopyCodexContextProps {
   nodes: IFreeCanvasNode[]
   selectedNodeIds: string[]
   client?: ContextPackClient
+  onActiveContextChange?: (context: ContextPackInspection | null) => void
 }
 
 interface PreviewSnapshot {
@@ -45,7 +46,8 @@ export const CopyCodexContext = ({
   project,
   nodes,
   selectedNodeIds,
-  client = storageServiceClient.contextPacks
+  client = storageServiceClient.contextPacks,
+  onActiveContextChange
 }: CopyCodexContextProps) => {
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -185,6 +187,7 @@ export const CopyCodexContext = ({
       if (!open || !isCurrentContextRequest(request, result.cvcCode)) return
       setCreated(result)
       setInspected(null)
+      onActiveContextChange?.(result)
       inspectionCodeRef.current = result.cvcCode
       setInspectionCode(result.cvcCode)
       await copyText(result.cvcCode, copyTarget)
@@ -214,6 +217,11 @@ export const CopyCodexContext = ({
       setInspectionCode(code)
       setInspected(result)
       if (created?.cvcCode === result.cvcCode) setCreated(result)
+      onActiveContextChange?.(
+        result.projectCode === project.referenceCode && result.revokedAt === null
+          ? result
+          : null
+      )
     } catch (cause) {
       if (open && isCurrentContextRequest(request)) {
         setInspected(null)
@@ -238,6 +246,7 @@ export const CopyCodexContext = ({
       if (!open || !isCurrentContextRequest(request, result.cvcCode)) return
       setInspected(result)
       if (created?.cvcCode === result.cvcCode) setCreated(result)
+      onActiveContextChange?.(null)
     } catch (cause) {
       if (open && isCurrentContextRequest(request)) setError(contextPackErrorMessage(cause, '撤销失败，请重试。'))
     } finally {

@@ -173,6 +173,28 @@ describe('storageServiceClient', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  test('lists and decides typed bridge prompt deliveries for an exact CVC', async () => {
+    const delivery = bridgePromptDelivery()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ deliveries: [delivery] }))
+      .mockResolvedValueOnce(jsonResponse({ ...delivery, state: 'rejected' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )).resolves.toEqual([delivery])
+    await expect(storageServiceClient.bridgeDeliveries.decide(
+      delivery.request.target.cvcCode,
+      delivery.proposalId,
+      'rejected',
+      []
+    )).resolves.toMatchObject({ state: 'rejected' })
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1]?.method, call[1]?.body])).toEqual([
+      [`/storage-api/context-packs/${delivery.request.target.cvcCode}/bridge-deliveries?state=pending_review`, undefined, undefined],
+      [`/storage-api/context-packs/${delivery.request.target.cvcCode}/bridge-deliveries/${delivery.proposalId}/decision`, 'POST', JSON.stringify({ decision: 'rejected', resultCodes: [] })]
+    ])
+  })
+
   test('reports storage health without throwing', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -1141,4 +1163,50 @@ const contextPackInspection = () => ({
   revokedAt: null,
   revokedBy: null,
   revocationReason: null
+})
+
+const bridgePromptDelivery = () => ({
+  operationContext: {
+    profileId: 'codex-local',
+    scopes: ['bridge:deliver:prompt'],
+    provenance: 'promptcard-bridge',
+    clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'preview-1',
+    normalizedRequestDigest: `sha256:${'a'.repeat(64)}`,
+    kind: 'prompt.create',
+    target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+    sourceCodes: [],
+    skillPins: [],
+    rationale: 'Create a prompt.',
+    provenance: 'promptcard-bridge',
+    payload: { title: 'Opening', userText: 'Wide shot' }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+  state: 'pending_review',
+  disposition: 'original',
+  resultCodes: [],
+  message: 'waiting',
+  createdAt: '2026-08-30T00:00:00.000Z',
+  updatedAt: '2026-08-30T00:00:00.000Z',
+  visualProposal: {
+    kind: 'free_canvas_text_create',
+    id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    agentName: 'codex',
+    title: 'Opening',
+    userText: 'Wide shot',
+    segments: [{ source: 'user', text: 'Wide shot' }],
+    rationale: 'Create a prompt.',
+    status: 'pending',
+    createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local',
+      cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      clientRequestId: 'preview-1',
+      normalizedRequestDigest: `sha256:${'a'.repeat(64)}`,
+      sourceCodes: [],
+      skillPins: []
+    }
+  }
 })

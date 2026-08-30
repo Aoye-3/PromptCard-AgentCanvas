@@ -109,6 +109,14 @@ async def workspace_description(
     snapshot_digest = inspection.get("snapshotDigest")
     if not isinstance(snapshot_digest, str):
         raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+    pending = await _storage_request(
+        "GET",
+        f"/api/internal/context-packs/{context}/bridge-deliveries",
+        params={"profileId": principal.profile_id, "state": "pending_review"},
+    )
+    pending_deliveries = pending.get("deliveries")
+    if not isinstance(pending_deliveries, list):
+        raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
     return {
         "projectCode": project,
         "cvcCode": context,
@@ -117,7 +125,7 @@ async def workspace_description(
         "revoked": inspection.get("revokedAt") is not None,
         "skills": await _workspace_skills(principal),
         "objects": _workspace_objects(resolved.get("entries")),
-        "pendingDeliveries": 0,
+        "pendingDeliveries": len(pending_deliveries),
     }
 
 
@@ -248,6 +256,153 @@ async def prompt_search(
             "callerId": principal.profile_id,
         },
     )
+
+
+async def delivery_preview(
+    principal: BridgePrincipal,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    kind = request.get("kind")
+    if kind != "prompt.create":
+        raise HTTPException(status_code=422, detail={"code": "delivery_kind_unavailable"})
+    require_bridge_scope(principal, "bridge:deliver:prompt")
+    request = await _validate_delivery_sources_and_skills(principal, request)
+    record = await _storage_request(
+        "POST",
+        "/api/internal/bridge-prompt-deliveries/preview",
+        json={
+            "operationContext": principal.operation_context(),
+            "deliveryRequest": request,
+        },
+    )
+    return _delivery_contract_record(record)
+
+
+async def _validate_delivery_sources_and_skills(
+    principal: BridgePrincipal,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    target = request.get("target")
+    if not isinstance(target, dict):
+        raise HTTPException(status_code=422, detail={"code": "delivery_target_invalid"})
+    cvc_code = _canonical_reference(target.get("cvcCode"), "CVC")
+    source_codes = request.get("sourceCodes")
+    if not isinstance(source_codes, list):
+        raise HTTPException(
+            status_code=422, detail={"code": "delivery_source_manifest_invalid"}
+        )
+    canonical_sources = [_canonical_reference(code) for code in source_codes]
+    if len(canonical_sources) != len(set(canonical_sources)):
+        raise HTTPException(
+            status_code=422, detail={"code": "delivery_source_manifest_invalid"}
+        )
+    if canonical_sources:
+        resolved = await _storage_request(
+            "GET", f"/api/context-packs/{cvc_code}/resolve"
+        )
+        resolved_sources = resolved.get("sourceCodes")
+        resolved_entries = resolved.get("entries")
+        if (
+            resolved.get("cvcCode") != cvc_code
+            or not isinstance(resolved.get("projectCode"), str)
+            or not isinstance(resolved_sources, list)
+            or not all(isinstance(code, str) for code in resolved_sources)
+            or not isinstance(resolved_entries, list)
+        ):
+            raise HTTPException(
+                status_code=502, detail={"code": "storage_response_invalid"}
+            )
+        allowed = {
+            cvc_code,
+            resolved.get("projectCode"),
+            *resolved_sources,
+            *(
+                entry.get("reference", {}).get("code")
+                for entry in resolved_entries
+                if isinstance(entry, dict)
+            ),
+        }
+        if any(code not in allowed for code in canonical_sources):
+            raise HTTPException(
+                status_code=403, detail={"code": "reference_outside_context"}
+            )
+
+    pins = request.get("skillPins")
+    if not isinstance(pins, list):
+        raise HTTPException(
+            status_code=422, detail={"code": "delivery_source_manifest_invalid"}
+        )
+    if pins:
+        enabled = {
+            item["skillCode"]: item for item in await _workspace_skills(principal)
+        }
+        seen: set[str] = set()
+        for pin in pins:
+            code = _canonical_reference(pin.get("skillCode"), "SKL")
+            if code in seen:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "delivery_source_manifest_invalid"},
+                )
+            seen.add(code)
+            approved = enabled.get(code)
+            if approved is None:
+                raise HTTPException(status_code=403, detail={"code": "skill_not_enabled"})
+            if approved["projectionHealth"] != "healthy":
+                raise HTTPException(
+                    status_code=409, detail={"code": "skill_projection_unhealthy"}
+                )
+            if (
+                approved["revision"] != pin.get("revision")
+                or approved["digest"] != pin.get("digest")
+            ):
+                raise HTTPException(status_code=409, detail={"code": "skill_pin_stale"})
+    return {
+        **request,
+        "target": {"cvcCode": cvc_code},
+        "sourceCodes": canonical_sources,
+    }
+
+
+async def delivery_commit(
+    principal: BridgePrincipal,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    require_bridge_scope(principal, "bridge:deliver:prompt")
+    record = await _storage_request(
+        "POST",
+        "/api/internal/bridge-prompt-deliveries/commit",
+        json={
+            "operationContext": principal.operation_context(),
+            "deliveryRequest": request,
+        },
+    )
+    return _delivery_contract_record(record)
+
+
+async def delivery_status(
+    principal: BridgePrincipal,
+    client_request_id: str,
+) -> dict[str, Any]:
+    require_bridge_scope(principal, "bridge:status")
+    record = await _storage_request(
+        "GET",
+        f"/api/internal/bridge-prompt-deliveries/{quote(client_request_id, safe='')}",
+        params={"profileId": principal.profile_id},
+    )
+    return _delivery_contract_record(record)
+
+
+def _delivery_contract_record(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+    fields = (
+        "operationContext", "request", "proposalId", "state", "disposition",
+        "resultCodes", "message", "createdAt", "updatedAt",
+    )
+    if any(field not in value for field in fields):
+        raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+    return {field: value[field] for field in fields}
 
 
 async def asset_read(

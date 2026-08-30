@@ -619,6 +619,54 @@ export interface ContextPackCreateRequest {
   creator: 'promptcard-ui'
 }
 
+export type BridgeDeliveryState = 'previewed' | 'pending_review' | 'accepted' | 'rejected' | 'failed'
+
+export interface BridgePromptDelivery {
+  operationContext: {
+    profileId: string
+    scopes: string[]
+    provenance: 'promptcard-bridge'
+    clientInfo?: { name: string; version: string }
+  }
+  request: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    kind: 'prompt.create'
+    target: { cvcCode: string }
+    sourceCodes: string[]
+    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    rationale: string
+    provenance: 'promptcard-bridge'
+    payload: { title: string; userText: string }
+  }
+  proposalId: string
+  state: BridgeDeliveryState
+  disposition: 'original' | 'replay' | 'conflict'
+  resultCodes: string[]
+  message: string
+  createdAt: string
+  updatedAt: string
+  visualProposal: {
+    kind: 'free_canvas_text_create'
+    id: string
+    agentName: string
+    title: string
+    userText: string
+    segments: Array<{ source: 'user'; text: string }>
+    rationale: string
+    status: 'pending' | 'approved' | 'rejected'
+    createdAt: number
+    bridgeDelivery: {
+      profileId: string
+      cvcCode: string
+      clientRequestId: string
+      normalizedRequestDigest: string
+      sourceCodes: string[]
+      skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    }
+  }
+}
+
 const parseProjectDocumentResource = (value: unknown): ProjectDocumentResource => {
   if (!value || typeof value !== 'object') {
     throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid document resource.')
@@ -1150,6 +1198,33 @@ export const storageServiceClient = {
       ))
     }
   },
+  bridgeDeliveries: {
+    async list(cvcCode: string, state: BridgeDeliveryState = 'pending_review'): Promise<BridgePromptDelivery[]> {
+      const code = requireContextPackCode(cvcCode)
+      const payload = await request<{ deliveries?: unknown[] }>(
+        `/storage-api/context-packs/${encodeURIComponent(code)}/bridge-deliveries?state=${encodeURIComponent(state)}`
+      )
+      if (!Array.isArray(payload.deliveries)) {
+        throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge delivery list.')
+      }
+      return payload.deliveries.map(parseBridgePromptDelivery)
+    },
+    async decide(
+      cvcCode: string,
+      proposalId: string,
+      decision: 'accepted' | 'rejected',
+      resultCodes: string[]
+    ): Promise<BridgePromptDelivery> {
+      const code = requireContextPackCode(cvcCode)
+      if (!/^DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(proposalId)) {
+        throw new StorageHttpError(400, 'invalid_delivery_proposal', 'Bridge proposal code is invalid.')
+      }
+      return parseBridgePromptDelivery(await request<unknown>(
+        `/storage-api/context-packs/${encodeURIComponent(code)}/bridge-deliveries/${encodeURIComponent(proposalId)}/decision`,
+        { method: 'POST', body: JSON.stringify({ decision, resultCodes }) }
+      ))
+    }
+  },
   projects: {
     async getAll(): Promise<IPromptProject[]> {
       return (await request<{ projects: IPromptProject[] }>('/storage-api/projects')).projects
@@ -1580,6 +1655,93 @@ const parseContextPackInspection = (value: unknown): ContextPackInspection => {
     revocationReason: active ? null : value.revocationReason as string
   }
 }
+
+const parseBridgePromptDelivery = (value: unknown): BridgePromptDelivery => {
+  const invalid = (): never => {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge delivery.')
+  }
+  if (!isClosedRecord(value, [
+    'operationContext', 'request', 'proposalId', 'state', 'disposition', 'resultCodes',
+    'message', 'createdAt', 'updatedAt', 'visualProposal'
+  ])) return invalid()
+  if (
+    !isRecord(value.operationContext)
+    || !hasOnlyKeys(value.operationContext, ['profileId', 'scopes', 'provenance'], ['clientInfo'])
+    || typeof value.operationContext.profileId !== 'string'
+    || !Array.isArray(value.operationContext.scopes)
+    || !value.operationContext.scopes.every(scope => typeof scope === 'string')
+    || value.operationContext.provenance !== 'promptcard-bridge'
+    || (value.operationContext.clientInfo !== undefined && (
+      !isClosedRecord(value.operationContext.clientInfo, ['name', 'version'])
+      || typeof value.operationContext.clientInfo.name !== 'string'
+      || typeof value.operationContext.clientInfo.version !== 'string'
+    ))
+    || !isClosedRecord(value.request, [
+      'clientRequestId', 'normalizedRequestDigest', 'kind', 'target', 'sourceCodes',
+      'skillPins', 'rationale', 'provenance', 'payload'
+    ])
+    || typeof value.request.clientRequestId !== 'string'
+    || !isSha256(value.request.normalizedRequestDigest)
+    || value.request.kind !== 'prompt.create'
+    || !isClosedRecord(value.request.target, ['cvcCode'])
+    || !validatePublicReferenceCode(value.request.target.cvcCode, 'CVC')
+    || !Array.isArray(value.request.sourceCodes)
+    || !value.request.sourceCodes.every(code => typeof code === 'string')
+    || !Array.isArray(value.request.skillPins)
+    || !value.request.skillPins.every(isBridgeSkillPin)
+    || typeof value.request.rationale !== 'string'
+    || value.request.provenance !== 'promptcard-bridge'
+    || !isClosedRecord(value.request.payload, ['title', 'userText'])
+    || typeof value.request.payload.title !== 'string'
+    || typeof value.request.payload.userText !== 'string'
+    || typeof value.proposalId !== 'string'
+    || !/^DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value.proposalId)
+    || !['previewed', 'pending_review', 'accepted', 'rejected', 'failed'].includes(String(value.state))
+    || !['original', 'replay', 'conflict'].includes(String(value.disposition))
+    || !Array.isArray(value.resultCodes)
+    || !value.resultCodes.every(code => typeof code === 'string')
+    || typeof value.message !== 'string'
+    || typeof value.createdAt !== 'string'
+    || typeof value.updatedAt !== 'string'
+    || !isClosedRecord(value.visualProposal, [
+      'kind', 'id', 'agentName', 'title', 'userText', 'segments', 'rationale',
+      'status', 'createdAt', 'bridgeDelivery'
+    ])
+    || value.visualProposal.kind !== 'free_canvas_text_create'
+    || value.visualProposal.id !== value.proposalId
+    || typeof value.visualProposal.agentName !== 'string'
+    || typeof value.visualProposal.title !== 'string'
+    || typeof value.visualProposal.userText !== 'string'
+    || !Array.isArray(value.visualProposal.segments)
+    || !value.visualProposal.segments.every(segment => (
+      isClosedRecord(segment, ['source', 'text'])
+      && segment.source === 'user'
+      && typeof segment.text === 'string'
+    ))
+    || typeof value.visualProposal.rationale !== 'string'
+    || !['pending', 'approved', 'rejected'].includes(String(value.visualProposal.status))
+    || typeof value.visualProposal.createdAt !== 'number'
+    || !isClosedRecord(value.visualProposal.bridgeDelivery, [
+      'profileId', 'cvcCode', 'clientRequestId', 'normalizedRequestDigest',
+      'sourceCodes', 'skillPins'
+    ])
+    || value.visualProposal.bridgeDelivery.profileId !== value.operationContext.profileId
+    || value.visualProposal.bridgeDelivery.cvcCode !== value.request.target.cvcCode
+    || value.visualProposal.bridgeDelivery.clientRequestId !== value.request.clientRequestId
+    || value.visualProposal.bridgeDelivery.normalizedRequestDigest !== value.request.normalizedRequestDigest
+    || !Array.isArray(value.visualProposal.bridgeDelivery.sourceCodes)
+    || !Array.isArray(value.visualProposal.bridgeDelivery.skillPins)
+    || !value.visualProposal.bridgeDelivery.skillPins.every(isBridgeSkillPin)
+  ) return invalid()
+  return value as unknown as BridgePromptDelivery
+}
+
+const isBridgeSkillPin = (value: unknown): boolean => (
+  isClosedRecord(value, ['skillCode', 'revision', 'digest'])
+  && Boolean(validatePublicReferenceCode(value.skillCode, 'SKL'))
+  && isPositiveInteger(value.revision)
+  && isSha256(value.digest)
+)
 
 const parseContextPackEntry = (value: unknown): ContextPackEntry[] => {
   if (

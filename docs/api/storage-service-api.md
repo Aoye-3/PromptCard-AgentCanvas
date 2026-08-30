@@ -355,8 +355,19 @@ The following routes are internal-token-only Gateway/Storage coordination and ar
 - `POST /api/internal/bridge-deliveries/{clientRequestId}/finish`
 - `GET /api/internal/bridge-deliveries/{clientRequestId}?profileId=`
 - `POST /api/internal/bridge-deliveries/reconcile`
+- `POST /api/internal/bridge-prompt-deliveries/preview`
+- `POST /api/internal/bridge-prompt-deliveries/commit`
+- `GET /api/internal/bridge-prompt-deliveries/{clientRequestId}?profileId=`
+- `GET /api/internal/context-packs/{cvcCode}/bridge-deliveries?profileId=&state=`
 
-The Bridge delivery routes implement the schema v19 profile-scoped idempotency ledger. `begin` receives trusted operation context separately from the untrusted delivery request; requests containing `profileId`, scopes, client identity, or an operation context are rejected. Only new operations require a current active CVC; replay and status return the first durable result without repeating the mutation. `finish` is compare-by-profile/request/digest, and recovery converts bounded stale `processing` rows to a durable redacted failure. These are coordination routes for Gateway only and do not constitute a browser or MCP write surface by themselves.
+The Bridge delivery routes implement the schema v19 profile-scoped idempotency ledger. `begin` receives trusted operation context separately from the untrusted delivery request; requests containing `profileId`, scopes, client identity, or an operation context are rejected. Only new operations require a current active CVC; replay and status return the first durable result without repeating the mutation. `finish` is compare-by-profile/request/digest, and recovery converts bounded stale `processing` rows to a durable redacted failure. The typed Prompt routes adapt the v3 `prompt.create` preview/commit/status contract into that ledger and keep profile-specific status isolated.
+
+The local user interface uses two CVC-scoped review routes:
+
+- `GET /api/context-packs/{cvcCode}/bridge-deliveries?state=pending_review`
+- `POST /api/context-packs/{cvcCode}/bridge-deliveries/{proposalId}/decision`
+
+Commit only creates a pending proposal. The browser records `accepted` only after the existing project save path returns one same-project `CVT-*`; Storage rejects invented or cross-project result codes. Reject requires no result code and never changes project JSON. The internal routes remain Gateway-only; the CVC review routes are the local human-approval surface and do not accept Bridge credentials or expand Bridge scopes.
 
 For Ark PDF input, Gateway uploads a remote file for one invocation and deletes it in `finally`. A failed remote deletion is stored as a redacted cleanup row and retried on Gateway startup with bounded backoff. Public responses and diagnostics expose counts/safe error codes only; remote file IDs are never returned to the browser.
 
