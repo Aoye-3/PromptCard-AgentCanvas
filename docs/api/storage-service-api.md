@@ -21,6 +21,7 @@ Returns service status and the active data directory.
 - `POST /api/assets`
 - `GET /api/assets/{asset_id}`
 - `GET /api/assets/diagnostics`
+- `GET /api/internal/context-packs/{cvcCode}/assets/{PLM-or-CVM}` (internal authentication only)
 
 Asset uploads send the bytes as the request body, the MIME type in `Content-Type`, and the original filename in `X-File-Name`. The service accepts signature-validated image and video asset types supported by the asset store. The service stores files up to 200 MB and returns:
 
@@ -36,6 +37,8 @@ Asset uploads send the bytes as the request body, the MIME type in `Content-Type
 The generated ID is safe to persist in project metadata and Recent Capture metadata. The read endpoint serves the original bytes with their stored content type. Invalid types, empty or oversized bodies return `400`; unknown or malformed IDs return `404`.
 
 `GET /api/assets/diagnostics` checks the asset manifest and reference graph. Active and Trash projects, active and Trash Prompt presets, and Recent Captures all participate in the reference scan. Registering or placing a capture therefore does not require a copied asset.
+
+The internal context-asset route is the only binary read used by the Local Agent Bridge. It accepts no `assetId` or path: Storage resolves an exact public `PLM`/`CVM`, proves that it is included in an active non-revoked `CVC`, rechecks its owner and asset lifecycle, and returns current bytes plus public-reference metadata headers. Gateway applies the external 5 MiB response budget and never forwards the internal ID or relative path.
 
 Succeeded image-generation runs also participate in the reference scan through `outputAssetIds`. Deleting a project or capture record must not make a historical generated output appear orphaned.
 

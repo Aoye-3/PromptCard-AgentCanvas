@@ -1,0 +1,102 @@
+{
+  "name": "runtime description shared by Gateway CLI and MCP",
+  "entryPoint": "runtimeDescription",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v3/runtime-description.schema.json",
+  "expectedSchemaValidity": true,
+  "instance": {
+    "contractVersion": "3.0.0",
+    "serverName": "promptcard-bridge",
+    "bootstrapSkill": {
+      "name": "promptcard-bootstrap",
+      "revision": 1,
+      "digest": "sha256:862fce6d7cf3a7becb46412a44bbedba40fc8321976fbdc37cc44447865789fe"
+    },
+    "tools": [
+      {
+        "name": "promptcard_runtime_describe",
+        "mode": "read",
+        "requiredScopes": ["bridge:read"],
+        "description": "Describe the Bridge contract, Tools, limits, and next discovery step."
+      },
+      {
+        "name": "promptcard_workspace_describe",
+        "mode": "read",
+        "requiredScopes": ["bridge:read"],
+        "description": "Describe one explicit PRJ/CVC workspace, Skill pins, objects, and pending proposals."
+      },
+      {
+        "name": "promptcard_skill_read",
+        "mode": "read",
+        "requiredScopes": ["bridge:read"],
+        "description": "Read one user-approved exact Skill revision."
+      },
+      {
+        "name": "promptcard_reference_resolve",
+        "mode": "read",
+        "requiredScopes": ["bridge:read"],
+        "description": "Resolve an exact typed public reference inside its project scope."
+      },
+      {
+        "name": "promptcard_prompt_search",
+        "mode": "read",
+        "requiredScopes": ["bridge:read"],
+        "description": "Search bounded Prompt evidence; results are discovery-only."
+      },
+      {
+        "name": "promptcard_asset_read",
+        "mode": "read",
+        "requiredScopes": ["bridge:read"],
+        "description": "Read one explicitly authorized bounded asset."
+      },
+      {
+        "name": "promptcard_delivery_preview",
+        "mode": "proposal",
+        "requiredScopes": [
+          "bridge:deliver:document",
+          "bridge:deliver:storyboard",
+          "bridge:deliver:prompt",
+          "bridge:deliver:image"
+        ],
+        "description": "Validate a typed creative writeback and create or replay its preview."
+      },
+      {
+        "name": "promptcard_delivery_commit",
+        "mode": "proposal",
+        "requiredScopes": [
+          "bridge:deliver:document",
+          "bridge:deliver:storyboard",
+          "bridge:deliver:prompt",
+          "bridge:deliver:image"
+        ],
+        "description": "Commit a preview to the visual review queue; never auto-apply it."
+      },
+      {
+        "name": "promptcard_delivery_status",
+        "mode": "status",
+        "requiredScopes": ["bridge:status"],
+        "description": "Read delivery state without repeating its mutation."
+      },
+      {
+        "name": "promptcard_asset_stage",
+        "mode": "proposal",
+        "requiredScopes": ["bridge:deliver:image"],
+        "description": "Stage one validated workspace image and return an opaque handle."
+      }
+    ],
+    "writebackKinds": [
+      "document.create",
+      "document.change",
+      "storyboard.create",
+      "storyboard.change",
+      "prompt.create",
+      "image.place"
+    ],
+    "constraints": {
+      "explicitContextRequired": true,
+      "userApprovalRequired": true,
+      "promptCreateOnly": true,
+      "arbitraryPathsAccepted": false
+    },
+    "next": "Ask the user to select a project and create or choose a CVC, then call promptcard_workspace_describe."
+  }
+}

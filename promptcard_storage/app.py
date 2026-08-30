@@ -642,6 +642,29 @@ def create_app(
     def resolve_context_pack(cvc_code: str) -> dict[str, Any]:
         return _handle(lambda: storage.resolve_context_pack(cvc_code))
 
+    @application.get(
+        "/api/internal/context-packs/{cvc_code}/assets/{reference_code}"
+    )
+    def read_context_asset(
+        cvc_code: str,
+        reference_code: str,
+        request: Request,
+    ) -> FileResponse:
+        _require_internal_auth(request)
+        path, metadata = _handle(
+            lambda: storage.read_context_asset(cvc_code, reference_code)
+        )
+        return FileResponse(
+            path,
+            media_type=metadata["contentType"],
+            headers={
+                "X-File-Name": quote(metadata["filename"], safe=""),
+                "X-PromptCard-Reference-Namespace": metadata["reference"]["namespace"],
+                "X-PromptCard-Reference-Code": metadata["reference"]["code"],
+                "X-PromptCard-Asset-Size": str(metadata["size"]),
+            },
+        )
+
     @application.get("/api/context-packs/{cvc_code}")
     def inspect_context_pack(cvc_code: str) -> dict[str, Any]:
         return _handle(lambda: storage.inspect_context_pack(cvc_code))

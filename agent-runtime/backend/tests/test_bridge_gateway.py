@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.gateway.auth_middleware import AuthMiddleware
-from app.gateway.bridge import _storage_request
+from app.gateway.bridge import _storage_asset_request, _storage_request
 from app.gateway.routers import bridge
 
 TOKEN = "bridge-test-token-that-is-longer-than-thirty-two-characters"
@@ -349,6 +349,64 @@ def test_prompt_search_requires_explicit_context_and_supplies_trusted_profile(cl
     assert forged.status_code == 422
 
 
+def test_asset_read_returns_bounded_encoded_bytes_for_an_explicit_context_reference(
+    client, monkeypatch
+):
+    media_code = "CVM-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    payload = b"\x89PNG\r\n\x1a\nasset"
+
+    async def fake_asset_request(cvc_code, reference_code):
+        assert cvc_code == CVC
+        assert reference_code == media_code
+        return {
+            "reference": {"namespace": "canvasMedia", "code": media_code},
+            "filename": "shot.png",
+            "contentType": "image/png",
+            "size": len(payload),
+            "digest": "sha256:"
+            + __import__("hashlib").sha256(payload).hexdigest(),
+            "dataBase64": __import__("base64").b64encode(payload).decode("ascii"),
+        }
+
+    monkeypatch.setattr(
+        "app.gateway.bridge._storage_asset_request", fake_asset_request
+    )
+    response = client.get(
+        "/api/promptcard/bridge/v3/asset",
+        params={"cvcCode": CVC.lower(), "code": media_code.lower()},
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reference"] == {
+        "namespace": "canvasMedia",
+        "code": media_code,
+    }
+    assert response.json()["dataBase64"] == "iVBORw0KGgphc3NldA=="
+
+
+def test_asset_read_rejects_non_media_references_before_storage(client, monkeypatch):
+    called = False
+
+    async def fake_asset_request(*_args):
+        nonlocal called
+        called = True
+        raise AssertionError("must not read storage")
+
+    monkeypatch.setattr(
+        "app.gateway.bridge._storage_asset_request", fake_asset_request
+    )
+    response = client.get(
+        "/api/promptcard/bridge/v3/asset",
+        params={"cvcCode": CVC, "code": PRJ},
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "asset_reference_invalid"
+    assert called is False
+
+
 def test_skill_read_requires_the_exact_enabled_codex_pin(client, monkeypatch):
     skill_code = "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV"
     skill_digest = "sha256:" + "b" * 64
@@ -502,3 +560,62 @@ async def test_bridge_storage_errors_preserve_codes_but_redact_internal_details(
         "code": "context_revoked",
         "reference": {"namespace": "canvasContext", "code": CVC},
     }
+
+
+@pytest.mark.anyio
+async def test_bridge_asset_storage_reader_validates_metadata_digest_and_budget(monkeypatch):
+    media_code = "CVM-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    content = b"\x89PNG\r\n\x1a\nasset"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith(f"/{media_code}")
+        return httpx.Response(
+            200,
+            content=content,
+            headers={
+                "Content-Type": "image/png",
+                "X-File-Name": "shot.png",
+                "X-PromptCard-Reference-Namespace": "canvasMedia",
+                "X-PromptCard-Reference-Code": media_code,
+                "X-PromptCard-Asset-Size": str(len(content)),
+            },
+        )
+
+    real_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        "app.gateway.bridge.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+    result = await _storage_asset_request(CVC, media_code)
+
+    assert result["contentType"] == "image/png"
+    assert result["size"] == len(content)
+    assert result["digest"] == "sha256:" + __import__("hashlib").sha256(content).hexdigest()
+    assert __import__("base64").b64decode(result["dataBase64"]) == content
+
+
+@pytest.mark.anyio
+async def test_bridge_asset_storage_reader_rejects_oversize_before_read(monkeypatch):
+    media_code = "PLM-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"x",
+            headers={
+                "Content-Type": "image/png",
+                "Content-Length": str(5 * 1024 * 1024 + 1),
+            },
+        )
+
+    real_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        "app.gateway.bridge.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+    with pytest.raises(Exception) as caught:
+        await _storage_asset_request(CVC, media_code)
+    assert caught.value.status_code == 413
+    assert caught.value.detail == {"code": "asset_read_too_large"}

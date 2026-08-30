@@ -6,7 +6,7 @@ The maintained frontend contract is the PromptCard Runtime Boundary. In developm
 /agent-api/* -> ${PROMPTCARD_AGENT_URL}/api/*
 ```
 
-## Local Agent Bridge v3 (implementation in progress)
+## Local Agent Bridge v3
 
 The external-Agent surface is separate from the browser Runtime boundary and uses `/api/promptcard/bridge/v3/*`. It accepts only `Authorization: Bearer <bridge-token>` backed by `PROMPTCARD_BRIDGE_PROFILES_JSON`; the internal Runtime token and browser session do not authorize it, and a Bridge credential cannot call internal-chat, model-management, or image-generation routes.
 
@@ -16,10 +16,22 @@ Each trusted profile declares fixed scopes and may bind one configured Codex `re
 - `GET /api/promptcard/bridge/v3/workspace?projectCode=PRJ-...&cvcCode=CVC-...`
 - `GET /api/promptcard/bridge/v3/reference?cvcCode=CVC-...&code=...`
 - `GET /api/promptcard/bridge/v3/skill?skillCode=SKL-...&revision=...&digest=sha256:...`
+- `POST /api/promptcard/bridge/v3/prompt-search`
+- `GET /api/promptcard/bridge/v3/asset?cvcCode=CVC-...&code=PLM-...|CVM-...`
 
-`workspace` requires an explicit project/context pair, lists only objects snapshotted into that CVC, and resolves only active, trusted, enabled exact Codex Skill pins in the profile's configured repository scope. `reference` refuses codes outside the CVC. Storage error codes and safe public references are preserved while paths, internal IDs, credentials, and unrestricted metadata are redacted. Search, asset read, delivery, staging and status remain advertised by the frozen v3 contract but are enabled only as their Plan 008 slices land.
+`workspace` requires an explicit project/context pair, lists only objects snapshotted into that CVC, and resolves only active, trusted, enabled exact Codex Skill pins in the profile's configured repository scope. `reference` refuses codes outside the CVC. `prompt-search` reuses Storage v18 retrieval with the trusted Bridge profile as caller identity. `asset` accepts only a `PLM` or `CVM` explicitly contained by the CVC, limits the body to 5 MiB, validates current lifecycle/MIME/size/reference metadata, and returns filename, MIME, size, SHA-256 and Base64 without an internal asset ID or path. Delivery, staging and status remain advertised by the frozen v3 contract but are enabled only as their Plan 008 slices land.
 
-The repository CLI in `promptcard-bridge-cli/` calls only these Gateway routes. It accepts the Bridge origin/token from process environment, refuses non-loopback origins before sending the token, produces one stable JSON value on stdout, sends diagnostics to stderr, and assigns stable exit classes for usage/auth/lifecycle/offline/remote failures. CLI and Gateway success payloads are JSON-equivalent; the CLI does not read Storage or project files.
+The repository CLI in `promptcard-bridge-cli/` calls only these Gateway routes, including bounded search and exact asset read. It accepts the Bridge origin/token from process environment, refuses non-loopback origins before sending the token, produces one stable JSON value on stdout, sends diagnostics to stderr, and assigns stable exit classes for usage/auth/lifecycle/offline/remote failures. CLI and Gateway success payloads are JSON-equivalent; the CLI does not read Storage or project files.
+
+`promptcard-mcp/` wraps that same client with six closed-schema, read-only Tools. `npm.cmd run mcp:stdio` reserves stdout for JSON-RPC. `npm.cmd run mcp:http` binds only `127.0.0.1` (default port `8142`), serves `/mcp`, validates loopback Host/Origin, and requires a separate `PROMPTCARD_MCP_HTTP_TOKEN`. Both transports support the 2025-11-25 and 2026-07-28 protocol eras from one server factory; no legacy SSE endpoint exists.
+
+Required process environment is intentionally small:
+
+- both transports: `PROMPTCARD_BRIDGE_URL`, `PROMPTCARD_BRIDGE_TOKEN`;
+- HTTP only: `PROMPTCARD_MCP_HTTP_TOKEN`, optional `PROMPTCARD_MCP_PORT`;
+- platform launch essentials such as `PATH`, `SystemRoot`, `ComSpec`, `TEMP`, and `TMP` may be passed by the host.
+
+The MCP process has no direct SQLite, shell, keyring, arbitrary-filesystem, or general network Tool. Codex is the first real acceptance host; other MCP hosts use the identical Tool names, schemas, permissions, and results.
 
 ## PromptCard Runtime Boundary
 

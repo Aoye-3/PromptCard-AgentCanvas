@@ -808,6 +808,87 @@ class SqliteStore:
                 "sourceCodes": source_codes,
             }
 
+    def read_context_asset(
+        self,
+        cvc_code: str,
+        reference_code: str,
+    ) -> tuple[Path, dict[str, Any]]:
+        resolved = self.resolve_context_pack(cvc_code)
+        parsed_reference = parse_reference_code(reference_code)
+        if parsed_reference.namespace not in {
+            ReferenceNamespace.CANVAS_MEDIA,
+            ReferenceNamespace.PROMPT_MEDIA,
+        }:
+            raise ReferenceCodeError("reference_namespace_mismatch")
+        namespace = (
+            "canvasMedia"
+            if parsed_reference.namespace is ReferenceNamespace.CANVAS_MEDIA
+            else "promptMedia"
+        )
+        reference = {"namespace": namespace, "code": parsed_reference.code}
+        allowed_codes = {
+            entry.get("reference", {}).get("code")
+            for entry in resolved["entries"]
+            if isinstance(entry, dict)
+        }
+        allowed_codes.update(resolved["sourceCodes"])
+        if parsed_reference.code not in allowed_codes:
+            self._raise_context_pack_error(
+                "asset_reference_outside_context", reference, status_code=403
+            )
+
+        with self._connect() as connection:
+            context_row = self._context_pack_row(connection, resolved["cvcCode"])
+            if context_row is None:
+                self._raise_context_pack_error(
+                    "context_not_found",
+                    {"namespace": "canvasContext", "code": resolved["cvcCode"]},
+                    status_code=404,
+                )
+            if context_row[10] is not None:
+                self._raise_context_pack_error(
+                    "context_revoked",
+                    {"namespace": "canvasContext", "code": resolved["cvcCode"]},
+                    status_code=410,
+                )
+            if parsed_reference.namespace is ReferenceNamespace.CANVAS_MEDIA:
+                asset_id = self._context_canvas_asset_id(
+                    connection, resolved["projectCode"], parsed_reference.code
+                )
+                unavailable_code = "media_unavailable"
+            else:
+                asset_id = self._context_prompt_asset_id(
+                    connection, parsed_reference.code
+                )
+                unavailable_code = "source_unavailable"
+            asset = connection.execute(
+                """SELECT original_filename, relative_path, content_type, size,
+                          lifecycle_status
+                   FROM assets WHERE asset_id=?""",
+                (asset_id,),
+            ).fetchone()
+        if asset is None or asset[4] != "active":
+            self._raise_context_pack_error(
+                unavailable_code, reference, status_code=410
+            )
+        path = (self.data_dir / asset[1]).resolve()
+        try:
+            path.relative_to(self.data_dir.resolve())
+        except ValueError:
+            self._raise_context_pack_error(
+                unavailable_code, reference, status_code=410
+            )
+        if not path.is_file():
+            self._raise_context_pack_error(
+                unavailable_code, reference, status_code=410
+            )
+        return path, {
+            "reference": reference,
+            "filename": asset[0],
+            "contentType": asset[2],
+            "size": asset[3],
+        }
+
     def inspect_context_pack(self, cvc_code: str) -> dict[str, Any]:
         parsed = parse_reference_code(
             cvc_code, expected_namespace=ReferenceNamespace.CANVAS_CONTEXT
@@ -5256,6 +5337,96 @@ class SqliteStore:
                 "source_unavailable", reference, status_code=410
             )
 
+    def _context_canvas_asset_id(
+        self,
+        connection: sqlite3.Connection,
+        project_code: str,
+        media_code: str,
+    ) -> str:
+        project_registry = connection.execute(
+            """SELECT internal_id FROM public_references
+               WHERE public_code=? AND namespace='PRJ' AND owner_scope=''""",
+            (project_code,),
+        ).fetchone()
+        registry = connection.execute(
+            """SELECT owner_scope, internal_id FROM public_references
+               WHERE public_code=? AND namespace='CVM'""",
+            (media_code,),
+        ).fetchone()
+        reference = {"namespace": "canvasMedia", "code": media_code}
+        if project_registry is None or registry is None or registry[0] != project_registry[0]:
+            self._raise_context_pack_error(
+                "media_unavailable", reference, status_code=410
+            )
+        project_row = connection.execute(
+            "SELECT status, payload_json FROM projects WHERE id=?",
+            (project_registry[0],),
+        ).fetchone()
+        if project_row is None or project_row[0] != "active":
+            self._raise_context_pack_error(
+                "media_unavailable", reference, status_code=410
+            )
+        try:
+            node = self._resolve_current_canvas_node(
+                json.loads(project_row[1]),
+                registry[1],
+                ReferenceNamespace.CANVAS_MEDIA,
+                reference,
+            )
+        except (PromptReferenceError, TypeError, json.JSONDecodeError):
+            self._raise_context_pack_error(
+                "media_unavailable", reference, status_code=410
+            )
+        asset_id = node.get("assetId")
+        if not isinstance(asset_id, str) or not asset_id:
+            self._raise_context_pack_error(
+                "media_unavailable", reference, status_code=410
+            )
+        return asset_id
+
+    def _context_prompt_asset_id(
+        self,
+        connection: sqlite3.Connection,
+        media_code: str,
+    ) -> str:
+        reference = {"namespace": "promptMedia", "code": media_code}
+        registry = connection.execute(
+            """SELECT owner_scope, internal_id FROM public_references
+               WHERE public_code=? AND namespace='PLM'""",
+            (media_code,),
+        ).fetchone()
+        prompt_row = (
+            connection.execute(
+                "SELECT status, payload_json FROM presets WHERE id=?", (registry[0],)
+            ).fetchone()
+            if registry is not None
+            else None
+        )
+        try:
+            prompt = json.loads(prompt_row[1]) if prompt_row is not None else None
+        except (TypeError, json.JSONDecodeError):
+            prompt = None
+        bindings = (
+            [
+                binding
+                for binding in self._preset_media(prompt)
+                if binding.get("id") == registry[1]
+            ]
+            if isinstance(prompt, dict) and registry is not None
+            else []
+        )
+        asset_id = bindings[0].get("assetId") if len(bindings) == 1 else None
+        if (
+            prompt_row is None
+            or prompt_row[0] != "active"
+            or not isinstance(asset_id, str)
+            or not asset_id
+        ):
+            self._raise_context_pack_error(
+                "source_unavailable", reference, status_code=410
+            )
+        return asset_id
+
     @staticmethod
     def _context_pack_select() -> str:
         return (
@@ -5308,6 +5479,7 @@ class SqliteStore:
             "source_reference_not_found": "Context source reference was not found",
             "source_unavailable": "Context source is unavailable",
             "media_unavailable": "Canvas media is unavailable",
+            "asset_reference_outside_context": "Asset reference is outside the canvas context",
         }
         raise PromptReferenceError(
             code, messages[code], reference, status_code=status_code

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.gateway.bridge import (
+    asset_read,
     prompt_search,
     reference_resolve,
     runtime_description,
@@ -83,6 +84,17 @@ async def search_prompt_library(
         payload.categories,
         payload.limit,
     )
+
+
+@router.get("/asset")
+async def read_asset(
+    request: Request,
+    principal: Principal,
+    cvc_code: str = Query(alias="cvcCode"),
+    code: str = Query(),
+):
+    _reject_extra_query(request, {"cvcCode", "code"})
+    return await asset_read(principal, cvc_code, code)
 
 
 def _reject_extra_query(request: Request, allowed: set[str]) -> None:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
 import re
 from typing import Any
+from urllib.parse import quote, unquote
 
 import httpx
 from fastapi import HTTPException
@@ -16,6 +18,19 @@ _REFERENCE_PATTERN = re.compile(
     r"^(?P<prefix>PRJ|PLP|PLM|CVT|CVM|CVC|SKL|CVD|CVS)-[0-7][0-9A-HJKMNP-TV-Z]{25}$",
     re.IGNORECASE,
 )
+_BRIDGE_ASSET_CONTENT_TYPES = {
+    "image/bmp",
+    "image/gif",
+    "image/heic",
+    "image/heif",
+    "image/jpeg",
+    "image/png",
+    "image/tiff",
+    "image/webp",
+    "video/mp4",
+    "video/webm",
+}
+MAX_BRIDGE_ASSET_READ_BYTES = 5 * 1024 * 1024
 _BOOTSTRAP_TEXT = """# PromptCard Bootstrap
 
 PromptCard is a portable creative-context environment. Start with
@@ -235,6 +250,21 @@ async def prompt_search(
     )
 
 
+async def asset_read(
+    principal: BridgePrincipal,
+    cvc_code: str,
+    reference_code: str,
+) -> dict[str, Any]:
+    require_bridge_scope(principal, "bridge:read")
+    context = _canonical_reference(cvc_code, "CVC")
+    reference = _canonical_reference(reference_code)
+    if reference[:3] not in {"CVM", "PLM"}:
+        raise HTTPException(
+            status_code=422, detail={"code": "asset_reference_invalid"}
+        )
+    return await _storage_asset_request(context, reference)
+
+
 async def skill_read(
     principal: BridgePrincipal,
     skill_code: str,
@@ -356,6 +386,7 @@ async def _storage_request(
     path: str,
     *,
     params: dict[str, Any] | None = None,
+    json: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     base_url = os.getenv("PROMPTCARD_STORAGE_URL", "http://127.0.0.1:8002").rstrip("/")
     try:
@@ -364,6 +395,7 @@ async def _storage_request(
                 method,
                 f"{base_url}{path}",
                 params=params,
+                json=json,
                 headers=create_internal_auth_headers(),
             )
     except httpx.HTTPError:
@@ -377,26 +409,119 @@ async def _storage_request(
             status_code=502, detail={"code": "storage_response_invalid"}
         ) from None
     if response.status_code >= 400:
-        detail = payload.get("detail") if isinstance(payload, dict) else None
-        code = detail.get("code") if isinstance(detail, dict) else None
-        sanitized: dict[str, Any] = {
-            "code": code if isinstance(code, str) else "storage_request_failed"
-        }
-        reference = detail.get("reference") if isinstance(detail, dict) else None
-        if (
-            isinstance(reference, dict)
-            and isinstance(reference.get("namespace"), str)
-            and isinstance(reference.get("code"), str)
-            and _REFERENCE_PATTERN.fullmatch(reference["code"])
-        ):
-            sanitized["reference"] = {
-                "namespace": reference["namespace"],
-                "code": reference["code"].upper(),
-            }
-        status_code = response.status_code if response.status_code in {400, 404, 409, 410, 422} else 502
-        raise HTTPException(status_code=status_code, detail=sanitized)
+        _raise_storage_error(response.status_code, payload)
     if not isinstance(payload, dict):
         raise HTTPException(
             status_code=502, detail={"code": "storage_response_invalid"}
         )
     return payload
+
+
+async def _storage_asset_request(
+    cvc_code: str,
+    reference_code: str,
+) -> dict[str, Any]:
+    base_url = os.getenv("PROMPTCARD_STORAGE_URL", "http://127.0.0.1:8002").rstrip("/")
+    path = (
+        f"/api/internal/context-packs/{quote(cvc_code, safe='')}"
+        f"/assets/{quote(reference_code, safe='')}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            async with client.stream(
+                "GET",
+                f"{base_url}{path}",
+                headers=create_internal_auth_headers(),
+            ) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = None
+                    _raise_storage_error(response.status_code, payload)
+                content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+                if content_type not in _BRIDGE_ASSET_CONTENT_TYPES:
+                    raise HTTPException(
+                        status_code=502, detail={"code": "asset_content_type_invalid"}
+                    )
+                declared_length = response.headers.get("content-length")
+                if declared_length is not None:
+                    try:
+                        declared_size = int(declared_length)
+                    except ValueError:
+                        raise HTTPException(
+                            status_code=502,
+                            detail={"code": "storage_response_invalid"},
+                        ) from None
+                    if declared_size > MAX_BRIDGE_ASSET_READ_BYTES:
+                        raise HTTPException(
+                            status_code=413, detail={"code": "asset_read_too_large"}
+                        )
+                content = bytearray()
+                async for chunk in response.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) > MAX_BRIDGE_ASSET_READ_BYTES:
+                        raise HTTPException(
+                            status_code=413, detail={"code": "asset_read_too_large"}
+                        )
+                headers = dict(response.headers)
+    except HTTPException:
+        raise
+    except httpx.HTTPError:
+        raise HTTPException(
+            status_code=503, detail={"code": "storage_unavailable"}
+        ) from None
+
+    returned_code = headers.get("x-promptcard-reference-code")
+    namespace = headers.get("x-promptcard-reference-namespace")
+    declared_asset_size = headers.get("x-promptcard-asset-size")
+    expected_namespace = "canvasMedia" if reference_code.startswith("CVM-") else "promptMedia"
+    try:
+        metadata_size = int(declared_asset_size or "")
+    except ValueError:
+        metadata_size = -1
+    if (
+        returned_code != reference_code
+        or namespace != expected_namespace
+        or metadata_size != len(content)
+        or not content
+    ):
+        raise HTTPException(
+            status_code=502, detail={"code": "storage_response_invalid"}
+        )
+    filename = unquote(headers.get("x-file-name", ""))
+    if not filename or len(filename) > 500 or "\x00" in filename:
+        raise HTTPException(
+            status_code=502, detail={"code": "storage_response_invalid"}
+        )
+    encoded = base64.b64encode(bytes(content)).decode("ascii")
+    return {
+        "reference": {"namespace": namespace, "code": reference_code},
+        "filename": filename,
+        "contentType": content_type,
+        "size": len(content),
+        "digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+        "dataBase64": encoded,
+    }
+
+
+def _raise_storage_error(status_code: int, payload: Any) -> None:
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    code = detail.get("code") if isinstance(detail, dict) else None
+    sanitized: dict[str, Any] = {
+        "code": code if isinstance(code, str) else "storage_request_failed"
+    }
+    reference = detail.get("reference") if isinstance(detail, dict) else None
+    if (
+        isinstance(reference, dict)
+        and isinstance(reference.get("namespace"), str)
+        and isinstance(reference.get("code"), str)
+        and _REFERENCE_PATTERN.fullmatch(reference["code"])
+    ):
+        sanitized["reference"] = {
+            "namespace": reference["namespace"],
+            "code": reference["code"].upper(),
+        }
+    public_status = status_code if status_code in {400, 403, 404, 409, 410, 413, 422} else 502
+    raise HTTPException(status_code=public_status, detail=sanitized)

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { after, before, test } from 'node:test'
 import path from 'node:path'
@@ -7,6 +8,11 @@ import path from 'node:path'
 const token = 'bridge-cli-test-token-that-is-longer-than-thirty-two-characters'
 const project = 'PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAV'
 const context = 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV'
+const media = 'CVM-01ARZ3NDEKTSV4RRFFQ69G5FAV'
+const runtimeFixture = JSON.parse(readFileSync(
+  path.resolve('contracts/promptcard-bridge/v3/fixtures/11-runtime-description-valid.json'),
+  'utf8',
+)).instance
 let server: Server
 let baseUrl: string
 
@@ -16,7 +22,7 @@ before(async () => {
     response.setHeader('content-type', 'application/json')
     const url = new URL(request.url || '/', 'http://127.0.0.1')
     if (url.pathname.endsWith('/runtime')) {
-      response.end(JSON.stringify({ serverName: 'promptcard-bridge', contractVersion: '3.0.0' }))
+      response.end(JSON.stringify(runtimeFixture))
       return
     }
     if (url.pathname.endsWith('/workspace')) {
@@ -38,6 +44,19 @@ before(async () => {
         })
         response.end(JSON.stringify({ queryDigest: `sha256:${'a'.repeat(64)}`, results: [], degraded: false }))
       })
+      return
+    }
+    if (url.pathname.endsWith('/asset')) {
+      assert.equal(url.searchParams.get('cvcCode'), context)
+      assert.equal(url.searchParams.get('code'), media)
+      response.end(JSON.stringify({
+        reference: { namespace: 'canvasMedia', code: media },
+        filename: 'shot.png',
+        contentType: 'image/png',
+        size: 8,
+        digest: `sha256:${'b'.repeat(64)}`,
+        dataBase64: 'iVBORw0KGgo=',
+      }))
       return
     }
     if (url.searchParams.get('code')?.startsWith('CVD-')) {
@@ -63,10 +82,7 @@ test('runtime emits one deterministic Gateway-equivalent JSON line', async () =>
   assert.equal(result.code, 0)
   assert.equal(result.stderr, '')
   assert.equal(result.stdout.split('\n').filter(Boolean).length, 1)
-  assert.deepEqual(JSON.parse(result.stdout), {
-    contractVersion: '3.0.0',
-    serverName: 'promptcard-bridge',
-  })
+  assert.deepEqual(JSON.parse(result.stdout), runtimeFixture)
 })
 
 test('workspace maps exact arguments without adding authority fields', async () => {
@@ -79,6 +95,15 @@ test('search remains discovery-only and maps through the same Gateway', async ()
   const result = await runCli(['search', '--context', context, '--query', 'neon city', '--limit', '5'])
   assert.equal(result.code, 0)
   assert.deepEqual(JSON.parse(result.stdout).results, [])
+})
+
+test('asset reads only an exact public media reference inside a context', async () => {
+  const result = await runCli(['asset', '--context', context, '--code', media])
+  assert.equal(result.code, 0)
+  assert.deepEqual(JSON.parse(result.stdout).reference, {
+    namespace: 'canvasMedia',
+    code: media,
+  })
 })
 
 test('structured remote errors are redacted and use stable lifecycle exit code', async () => {

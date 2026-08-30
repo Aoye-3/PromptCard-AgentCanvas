@@ -3,7 +3,8 @@ export type BridgeCliCommand =
   | { kind: 'workspace'; projectCode: string; cvcCode: string }
   | { kind: 'reference'; cvcCode: string; code: string }
   | { kind: 'skill'; skillCode: string; revision: number; digest: string }
-  | { kind: 'search'; cvcCode: string; query: string; limit: number }
+  | { kind: 'search'; cvcCode: string; query: string; types: string[]; categories: string[]; limit: number }
+  | { kind: 'asset'; cvcCode: string; code: string }
 
 export type BridgeCliFailure = {
   ok: false
@@ -64,7 +65,16 @@ export function parseCommand(argv: string[]): BridgeCliCommand {
       kind: 'search',
       cvcCode: required(options, 'context'),
       query: required(options, 'query'),
+      types: [],
+      categories: [],
       limit,
+    }
+  }
+  if (name === 'asset' && hasOnly(options, ['context', 'code'])) {
+    return {
+      kind: 'asset',
+      cvcCode: required(options, 'context'),
+      code: required(options, 'code'),
     }
   }
   usage('usage_invalid')
@@ -129,11 +139,15 @@ function endpointFor(command: BridgeCliCommand, baseUrl: URL): { url: URL; metho
       body: {
         cvcCode: command.cvcCode,
         query: command.query,
-        types: [],
-        categories: [],
+        types: command.types,
+        categories: command.categories,
         limit: command.limit,
       },
     }
+  } else if (command.kind === 'asset') {
+    url.pathname = '/api/promptcard/bridge/v3/asset'
+    url.searchParams.set('cvcCode', command.cvcCode)
+    url.searchParams.set('code', command.code)
   }
   return { url, method: 'GET' }
 }
@@ -214,7 +228,7 @@ function required(options: Map<string, string>, name: string): string {
 }
 
 function usage(code: string): never {
-  throw new BridgeCliError(2, failure(code), 'Usage: runtime | workspace --project PRJ --context CVC | resolve --context CVC --code REF | skill --skill SKL --revision N --digest sha256:... | search --context CVC --query TEXT --limit N')
+  throw new BridgeCliError(2, failure(code), 'Usage: runtime | workspace --project PRJ --context CVC | resolve --context CVC --code REF | skill --skill SKL --revision N --digest sha256:... | search --context CVC --query TEXT --limit N | asset --context CVC --code PLM_OR_CVM')
 }
 
 function sortValue(value: unknown): unknown {

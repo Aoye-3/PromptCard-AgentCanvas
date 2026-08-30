@@ -88,7 +88,7 @@ flowchart LR
 
 ## Image-Generation Isolation
 
-Image generation remains a separate Gateway module using `image.primary`. Image models never enter the PI text provider collection or the text-SDK registry. It does not depend on text-Agent availability. The current Storage schema is v17: it preserves the image-generation conversations and durable placements introduced in v4, the original/derived image relationships introduced in v5, the later asset-lifecycle and project-resource additions, and the v8-v9 text-Agent conversation, Skill, and model-binding tables. Versions 10–17 add public references, immutable context packs, canonical Skill packages, exact host pins, projection recovery, exact-revision trust reviews, project document/provider-cleanup tables, and typed creative references without changing image-run lifecycle. Image runs remain immutable, and Recent Capture behavior remains unchanged.
+Image generation remains a separate Gateway module using `image.primary`. Image models never enter the PI text provider collection or the text-SDK registry. It does not depend on text-Agent availability. The current Storage schema is v18: it preserves the image-generation conversations and durable placements introduced in v4, the original/derived image relationships introduced in v5, the later asset-lifecycle and project-resource additions, and the v8-v9 text-Agent conversation, Skill, and model-binding tables. Versions 10–18 add public references, immutable context packs, canonical Skill packages, exact host pins, projection recovery, exact-revision trust reviews, project document/provider-cleanup tables, typed creative references, and transactional Prompt retrieval without changing image-run lifecycle. Image runs remain immutable, and Recent Capture behavior remains unchanged.
 
 ## Local Port Discovery
 
@@ -104,6 +104,6 @@ Browser code continues to use `/agent-api` and `/storage-api`; only launch/proxy
 ## Deferred
 
 - video media analysis;
-- MCP/Bridge exposure and the Codex delivery runtime;
+- typed Bridge delivery, visual proposal review, and the final real-Codex acceptance loop;
 - production multi-user authentication;
 - general Canvas write tools, automatic Skill matching, local OCR, and asset/plugin node types.

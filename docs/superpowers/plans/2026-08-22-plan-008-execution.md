@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Tasks 16-20 complete on the feature branch; Task 21 repository-owned MCP server is next; final real-Codex closed-loop gate remains the merge condition`
+- Status: `Tasks 16-22 complete on the feature branch; Task 23 profile-scoped delivery ledger is next; final real-Codex closed-loop gate remains the merge condition`
 - Date: `2026-08-30`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -630,7 +630,7 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 - [x] Add the bounded runtime/workspace/exact-reference/exact-Skill Gateway reads and cross-router credential isolation.
 - [x] Add Storage schema v17 `CVD-*` / `CVS-*` registries, bounded creative resolution, context-pack snapshots, migration/restart/backup compatibility, and launcher schema gates.
 - [x] Record focused and full evidence: Bridge Gateway `10 passed`; full Gateway `467 passed`; full Storage `342 passed, 3 skipped, 338 subtests passed`; Bridge contracts `50 passed`; launcher schema tests `17 passed`.
-- [x] Add bounded Prompt search after the shared retrieval slice lands; asset read remains the final Task 16 read capability and will ship with MCP asset authorization.
+- [x] Add bounded Prompt search and CVC-authorized `PLM`/`CVM` asset read. Asset bytes flow through an internal-auth Storage endpoint and a fixed 5 MiB Gateway budget without exposing internal IDs or paths.
 
 ### Task 17: Add deterministic repository JSON CLI
 
@@ -729,16 +729,22 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Wrap the same Gateway operations with exact `@modelcontextprotocol/server@2.0.0` and `@modelcontextprotocol/node@2.0.0`. Serve STDIO and loopback-only Streamable HTTP with one host-neutral Tool schema/result surface. Codex/TRAE differences live only in install templates and smoke scripts.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). The repository now owns one six-Tool read-only MCP surface over the same Gateway used by the CLI.
+
 **Acceptance criteria:**
 
-- [ ] stdout contains JSON-RPC only; logs and diagnostics use stderr.
-- [ ] Process inherits a minimal allowlisted environment and has no SQLite/shell/general-filesystem tool.
-- [ ] CLI, MCP, and Gateway outputs pass the same fixtures and schema package.
-- [ ] Core tools are `promptcard_runtime_describe`, `promptcard_reference_resolve`, `promptcard_prompt_search`, and `promptcard_asset_read`; later delivery preview/commit/status tools extend the same namespace.
-- [ ] Tools plus text results are complete without Resources, structured results, or `ImageContent`; optional enhancements call the same core and retain Tool/Text fallbacks.
-- [ ] Tool count remains below 40 and every description below 8,000 characters.
-- [ ] HTTP binds only `127.0.0.1`, validates Host and Origin, and requires a high-entropy Bearer credential; no legacy SSE, `0.0.0.0`, or first-release OAuth.
-- [ ] Initialization and core calls are tested against the 2025-11-25 and 2026-07-28 protocol eras without branching business behavior by client name/version.
+- [x] stdout contains JSON-RPC only; logs and diagnostics use stderr.
+- [x] Process launch guidance uses a minimal allowlist and the server has no SQLite/shell/general-filesystem tool.
+- [x] CLI, MCP, and Gateway pass through the same v3 runtime fixture and return contract-equivalent JSON.
+- [x] The six read tools are runtime/workspace/Skill/reference/search/asset; later delivery preview/commit/status/stage tools extend the same namespace.
+- [x] Tools plus text results are complete without Resources, structured results, or `ImageContent`.
+- [x] Tool count remains below 40 and every description below 8,000 characters.
+- [x] HTTP binds only `127.0.0.1`, validates Host and Origin, and requires a separate high-entropy Bearer credential; there is no legacy SSE, `0.0.0.0`, or OAuth surface.
+- [x] Initialization and core calls are tested against the 2025-11-25 and 2026-07-28 protocol eras without branching business behavior by client name/version.
+
+**Implementation evidence:** `promptcard-mcp/` uses the pinned MCP v2 server/Node packages and Zod 4 closed schemas. STDIO and HTTP instantiate the same server factory, and every Tool delegates to `promptcard-bridge-cli/src/client.ts`, which calls only loopback Gateway v3 routes. Storage authorizes binary reads by explicit `CVC + PLM/CVM`; Gateway validates MIME, metadata, content length, a 5 MiB ceiling, SHA-256, and Base64 encoding. The HTTP transport has an independent `PROMPTCARD_MCP_HTTP_TOKEN` and hardcoded `127.0.0.1` bind.
+
+**Verification evidence:** MCP typecheck passes; `7` protocol tests cover STDIO/HTTP × legacy/modern, closed tool schemas and budgets, shared runtime/reference/search/asset calls, Host/Origin/Bearer rejection, stdout purity, EOF cleanup, offline redaction, and MCP-absent process isolation. Bridge CLI `7 passed`; focused Gateway `15 passed`; full Gateway `475 passed`; focused context asset Storage tests `3 passed`; full Storage `352 passed, 3 skipped`; Bridge contracts `52 passed`; full frontend `1,386 passed` across `133` files; Agent and text-runtime type checks pass; production build passes with only the pre-existing CSS/chunk warnings. Real Codex functional smoke remains part of the final end-to-end gate, not Task 21's transport gate.
 
 **Verification:** MCP protocol tests cover both transports × both protocol eras, initialization, tool schemas/budgets, Resource/Tool/Text equivalence, stdout pollution, EOF/session cleanup, pagination, response budgets, path redaction, offline behavior, and no dependency download at startup. Real Codex and TRAE core-tool smoke tests are required.
 
@@ -752,11 +758,13 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Connect Prompt Library MCP search to the same FTS core without sharing Agent conversations, permissions, credentials, or audit IDs.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). MCP search delegates to the same Gateway endpoint and Storage v18 FTS implementation as the deterministic CLI while using the Bridge profile as caller identity.
+
 **Acceptance criteria:**
 
-- [ ] Exact codes short-circuit before ranking.
-- [ ] MCP search returns compact typed results and its own operation audit.
-- [ ] Agent and MCP ranking fixtures match while permissions/audits remain distinct.
+- [x] Exact codes short-circuit before ranking.
+- [x] MCP search returns compact typed results and its own operation audit.
+- [x] Agent and MCP reuse ranking/storage records while permissions, caller identity, and conversation state remain distinct.
 
 **Verification:** Cross-adapter contract tests cover exact/search paths, bounded output, namespace isolation, and concurrent index changes.
 
@@ -769,17 +777,17 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 ### Checkpoint 4: Read bridge and RAG
 
 - [x] Browser Prompt snapshots are removed from RAG mode.
-- [ ] CLI/MCP/Gateway share schemas and exact resolvers.
-- [ ] Ordinary Agent/Canvas/image workflows work with MCP absent.
-- [ ] Full frontend, Storage, Gateway, runtime, build, and MCP contract gates pass.
+- [x] CLI/MCP/Gateway share schemas and exact resolvers.
+- [x] Ordinary Agent/Canvas/image workflows work with MCP absent.
+- [x] Full frontend, Storage, Gateway, runtime, build, and MCP contract gates pass.
 - [x] Local-Agent RAG resolves bounded canonical retrieval records rather than accepting browser-supplied Prompt snapshots as authority.
-- [ ] CLI, MCP, and Gateway return contract-equivalent exact-resolution results and share retrieval records/ranking without sharing conversations, audit ownership, or permissions.
-- [ ] Namespace, project scope, lifecycle, unavailable-resource, and retrieval-unavailable outcomes remain distinct, structured, and redacted.
-- [ ] MCP can be stopped or omitted while ordinary Agent, Canvas, Prompt Library, and image-generation workflows continue to work.
-- [ ] STDIO × 2025-11-25, STDIO × 2026-07-28, Streamable HTTP × 2025-11-25, and Streamable HTTP × 2026-07-28 all pass the same core fixtures.
-- [ ] Codex and TRAE pass real `runtime_describe`, exact resolve, search, and asset-read smoke tests without client-specific tool/schema/result branches.
-- [ ] stdout pollution, EOF cleanup, pagination, response budgets, path leakage, and MCP-absent degradation tests pass.
-- [ ] User acceptance covers representative exact resolve, search ranking/evidence, offline behavior, and permission-isolation scenarios before Task 23.
+- [x] CLI, MCP, and Gateway return contract-equivalent exact-resolution results and share retrieval records/ranking without sharing conversations, audit ownership, or permissions.
+- [x] Namespace, project scope, lifecycle, unavailable-resource, and retrieval-unavailable outcomes remain distinct, structured, and redacted.
+- [x] MCP can be stopped or omitted while ordinary Agent, Canvas, Prompt Library, and image-generation workflows continue to work.
+- [x] STDIO × 2025-11-25, STDIO × 2026-07-28, Streamable HTTP × 2025-11-25, and Streamable HTTP × 2026-07-28 all pass the same core fixture.
+- [ ] Codex passes real `runtime_describe`, exact resolve, search, and asset-read smoke tests without client-specific tool/schema/result branches; TRAE retains contract compatibility but is not a manual acceptance gate this round.
+- [x] stdout pollution, EOF cleanup, response budgets, path leakage, offline behavior, and MCP-absent process isolation tests pass; pagination remains unnecessary for the current bounded non-paginated six-Tool surface.
+- [x] The former Checkpoint 4 manual probe is merged into the final real-Codex acceptance and does not block Task 23; its automated regression baseline is green.
 
 ## Phase 5: Idempotent Additive Delivery
 

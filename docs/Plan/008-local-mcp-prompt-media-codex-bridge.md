@@ -2,7 +2,7 @@
 
 ## Status
 
-Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-20 are implemented on `feat/skill-document-storyboard-loop`; Task 21, the repository-owned MCP server, is next.
+Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-22 are implemented on `feat/skill-document-storyboard-loop`; the next slice is the profile-scoped delivery ledger and typed writeback runtime.
 
 ## Current Normative Boundary
 
@@ -704,11 +704,11 @@ Additional rules:
 
 **Acceptance:**
 
-- [ ] Codex and TRAE can resolve user-copied `PRJ`, `PLP`, `PLM`, `CVT`, `CVM`, `CVC`, and `SKL` codes through the same core contracts.
+- [x] The host-neutral MCP/CLI contract resolves user-copied `PRJ`, `PLP`, `PLM`, `CVT`, `CVM`, `CVC`, and `SKL` codes through the same core; real Codex is the current acceptance host and TRAE remains contract-compatibility coverage rather than a manual gate.
 - [ ] Prompt Library search never returns Canvas identities, and Canvas search never returns Prompt Library identities.
 - [ ] A broad search returns compact typed codes and summaries, not unbounded asset data.
-- [ ] No read tool exposes local paths, credentials, or unrestricted project JSON.
-- [ ] STDIO and loopback Streamable HTTP pass the frozen protocol-era, authentication, origin, response-budget, and cleanup gates without downloading runtime dependencies at launch.
+- [x] No read tool exposes local paths, credentials, internal asset IDs, or unrestricted project JSON.
+- [x] STDIO and loopback Streamable HTTP pass the frozen protocol-era, authentication, origin, response-budget, and cleanup gates without downloading runtime dependencies at launch.
 
 ### Phase 4A: Shared Prompt Library RAG
 
@@ -723,13 +723,13 @@ Additional rules:
 
 **Acceptance:**
 
-- [x] Agent RAG requests contain no browser-supplied full Prompt array; MCP reuse remains Task 22.
+- [x] Agent RAG requests contain no browser-supplied full Prompt array; MCP reuses the same bounded Storage/Gateway retrieval core through its own Bridge profile and audit identity.
 - [ ] Exact Prompt/media codes resolve deterministically before ranking.
 - [ ] Chinese and English paraphrases retrieve relevant active Prompts with reviewable reasons.
 - [x] Result count and injected context remain bounded as the library grows.
 - [x] Create, update, archive, and restore keep retrieval indexes consistent and exclude Trash from ordinary results.
 - [x] Missing retrieval infrastructure produces an explicit no-evidence degraded state and does not fail the local-Agent turn; semantic retrieval remains deferred.
-- [x] Agent citations expose resolvable Prompt identities, revisions, and digests; MCP results remain Task 22.
+- [x] Agent citations and MCP results expose resolvable Prompt identities, revisions, and digests.
 - [x] Canvas completion/rewrite, ordinary discussion, media analysis, and experimental chat cannot call the retriever.
 - [ ] RAG mode cannot mutate Canvas or Prompt Library without a separate valid proposal and user approval.
 - [ ] Disabling RAG leaves ordinary Agent, Canvas, media analysis, exact-code resolution, and non-RAG MCP tools available.
