@@ -1,0 +1,58 @@
+# ADR-023: Use A Typed Creative Writeback Boundary And Discoverable Agent Workspace
+
+## Status
+
+Accepted
+
+## Date
+
+2026-08-30
+
+## Context
+
+The existing Bridge v1/v2 contract covers exact Prompt/media/Canvas/Skill references, host-neutral profiles, and additive Prompt/image delivery. The accepted product direction now requires an external Agent to enter PromptCard without prior knowledge of internal schemas, understand one explicitly selected project context, and propose work across Planning Documents, Storyboards, Prompts, and images.
+
+Reusing internal Canvas node IDs, UI focus, fuzzy titles, or arbitrary filesystem paths would couple an external Agent to presentation details and weaken project, revision, and path authority. Adding Document and Storyboard to the old additive item union would also change the already frozen v1/v2 compatibility boundary.
+
+## Decision
+
+1. Bridge v1 and v2 remain unchanged. Bridge v3 composes them and adds the typed creative boundary.
+2. `CVD-*` is the stable public identity of a Canvas Planning Document and `CVS-*` is the stable public identity of a Canvas Storyboard. Internal node IDs remain private.
+3. External writeback supports only six operations: `document.create`, `document.change`, `storyboard.create`, `storyboard.change`, `prompt.create`, and `image.place`.
+4. Document and Storyboard changes require their exact public reference, revision, and digest. A Storyboard row is addressed by ordinal against that exact base revision; no internal row ID crosses the Bridge.
+5. Prompt writeback is create-only and produces one new all-`user` Prompt proposal. It cannot update an existing Prompt or write Prompt Library.
+6. Image bytes first enter a bounded workspace staging operation. Delivery consumes only an opaque `AST-*` handle and never an arbitrary path or remote URL. Placement does not create a provider generation run.
+7. Every write creates a visual proposal and requires user acceptance or rejection. There is no trusted-profile auto-apply in v3.
+8. A single profile-scoped ledger owns preview, commit, status, replay, conflict, recovery, provenance, and result identities for all six operations.
+9. The built-in `promptcard-bootstrap` Skill and the `promptcard_runtime_describe` / `promptcard_workspace_describe` Tools are progressive-disclosure entry points. Workspace discovery requires an explicit `PRJ` and `CVC`; current UI focus is never authority.
+10. Read, Document, Storyboard, Prompt, image, and status authority use independent scopes. Client name/version are audit metadata only and cannot select behavior or permissions.
+
+## Consequences
+
+- Storage must assign and preserve `CVD/CVS` public references independently of project JSON node identities.
+- Gateway, CLI, MCP, and frontend must validate and emit the same v3 contract values.
+- Existing Document suggestion and Storyboard field-review components remain the visual application mechanisms; external delivery adapts into them instead of building a second editor.
+- The Agent workspace UI can explain connection, profile, scope, context, Skill pins, Tools, proposals, failures, and provenance without exposing paths or internal IDs.
+- Search remains discovery only. A search result must be explicitly re-resolved before it can become source context and can never become a write target.
+
+## Alternatives Considered
+
+### Extend Bridge v2 In Place
+
+Rejected because it would silently change frozen scope and delivery semantics for existing consumers.
+
+### Expose Generic Canvas Node Mutation
+
+Rejected because it would make presentation IDs and arbitrary Canvas state an external write API.
+
+### Allow Trusted Profiles To Auto-Apply
+
+Rejected for the first release. Human review is part of the product boundary and recovery model.
+
+## References
+
+- [Plan 008 execution ledger](../superpowers/plans/2026-08-22-plan-008-execution.md)
+- [Plan 009: Portable Creative Context Environment](../Plan/009-portable-creative-context-environment.md)
+- [ADR-019: Generic Local Agent Bridge Boundary](./ADR-019-generic-local-agent-bridge-boundary.md)
+- [ADR-020: Separate Planning Documents From Prompt Execution](./ADR-020-separate-planning-documents-from-prompt-execution.md)
+- [Bridge v3 contract](../../contracts/promptcard-bridge/v3/README.md)

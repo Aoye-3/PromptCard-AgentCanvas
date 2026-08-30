@@ -14,6 +14,11 @@ const v2ContractDirectory = new URL(
   import.meta.url,
 );
 const v2FixtureDirectory = new URL("fixtures/", v2ContractDirectory);
+const v3ContractDirectory = new URL(
+  "../../contracts/promptcard-bridge/v3/",
+  import.meta.url,
+);
+const v3FixtureDirectory = new URL("fixtures/", v3ContractDirectory);
 
 async function readJson(filename) {
   return JSON.parse(
@@ -66,6 +71,38 @@ async function loadV2Fixtures() {
       filename,
       fixture: JSON.parse(
         await readFile(new URL(filename, v2FixtureDirectory), "utf8"),
+      ),
+    })),
+  );
+}
+
+async function readV3Json(filename) {
+  return JSON.parse(
+    await readFile(new URL(filename, v3ContractDirectory), "utf8"),
+  );
+}
+
+async function loadV3Contract() {
+  const manifest = await readV3Json("manifest.json");
+  const v1Schema = await readJson("schema.json");
+  const v2Schema = await readV2Json("schema.json");
+  const schema = await readV3Json(manifest.schemaFile);
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  ajv.addSchema(v1Schema);
+  ajv.addSchema(v2Schema);
+  ajv.addSchema(schema);
+  return { ajv, manifest, schema };
+}
+
+async function loadV3Fixtures() {
+  const filenames = (await readdir(v3FixtureDirectory))
+    .filter((filename) => filename.endsWith(".json"))
+    .sort();
+  return Promise.all(
+    filenames.map(async (filename) => ({
+      filename,
+      fixture: JSON.parse(
+        await readFile(new URL(filename, v3FixtureDirectory), "utf8"),
       ),
     })),
   );
@@ -566,5 +603,102 @@ describe("PromptCard bridge v2 host-neutral boundary", () => {
     );
     assert.equal(codexRecord.operationContext.clientInfo.name, "codex");
     assert.equal(traeRecord.operationContext.clientInfo.name, "trae");
+  });
+});
+
+describe("PromptCard bridge v3 typed creative writeback boundary", () => {
+  it("adds creative references, workspace discovery, staging, and typed delivery without changing v1/v2", async () => {
+    const { ajv, manifest, schema } = await loadV3Contract();
+
+    assert.equal(manifest.contractVersion, "3.0.0");
+    assert.deepEqual(manifest.compatibleBases, [
+      "../v1/manifest.json",
+      "../v2/manifest.json",
+    ]);
+    assert.equal(schema.$schema, manifest.schemaDialect);
+    assert.deepEqual(Object.keys(manifest.entryPoints).sort(), [
+      "assetStageRequest",
+      "creativeReference",
+      "deliveryCommitRequest",
+      "deliveryPreviewRequest",
+      "deliveryRecord",
+      "deliveryStatusRequest",
+      "operationContext",
+      "runtimeDescription",
+      "workspaceDescription",
+    ]);
+    for (const [name, id] of Object.entries(manifest.entryPoints)) {
+      assert.match(
+        id,
+        /^https:\/\/schemas\.promptcard\.dev\/promptcard-bridge\/v3\/[a-z-]+\.schema\.json$/,
+      );
+      assert.equal(typeof ajv.getSchema(id), "function", `${name}: ${id}`);
+      assert.doesNotThrow(() => ajv.compile({ $ref: id }), name);
+    }
+  });
+
+  it("validates every v3 fixture and keeps authority outside untrusted requests", async (t) => {
+    const fixtures = await loadV3Fixtures();
+    assert.ok(fixtures.length >= 8, "v3 fixtures must cover discovery and all writeback kinds");
+
+    for (const { filename, fixture } of fixtures) {
+      await t.test(fixture.name ?? filename, async () => {
+        const { ajv, manifest } = await loadV3Contract();
+        assert.equal(manifest.entryPoints[fixture.entryPoint], fixture.schemaId);
+        const validate = ajv.getSchema(fixture.schemaId);
+        assert.equal(typeof validate, "function");
+        assert.equal(
+          validate(fixture.instance),
+          fixture.expectedSchemaValidity,
+          `${fixture.name}: ${JSON.stringify(validate.errors)}`,
+        );
+      });
+    }
+  });
+
+  it("requires separate scopes for all four creative outputs", async () => {
+    const { ajv } = await loadV3Contract();
+    const validate = ajv.getSchema(
+      "https://schemas.promptcard.dev/promptcard-bridge/v3/operation-context.schema.json",
+    );
+    const operationContext = {
+      profileId: "codex-local",
+      scopes: [
+        "bridge:read",
+        "bridge:deliver:document",
+        "bridge:deliver:storyboard",
+        "bridge:deliver:prompt",
+        "bridge:deliver:image",
+        "bridge:status",
+      ],
+      provenance: "promptcard-bridge",
+      clientInfo: { name: "codex", version: "1.0.0" },
+    };
+
+    assert.equal(validate(operationContext), true);
+    assert.equal(validate({ ...operationContext, scopes: ["bridge:deliver"] }), false);
+  });
+
+  it("rejects internal IDs, fuzzy targets, arbitrary image paths, and update Prompt kinds", async () => {
+    const { ajv } = await loadV3Contract();
+    const validateDelivery = ajv.getSchema(
+      "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-preview-request.schema.json",
+    );
+    const fixtures = new Map(
+      (await loadV3Fixtures()).map(({ fixture }) => [fixture.name, fixture]),
+    );
+    const prompt = fixtures.get("prompt create proposal").instance;
+    const image = fixtures.get("image placement proposal").instance;
+
+    assert.equal(validateDelivery({ ...prompt, nodeId: "internal-node" }), false);
+    assert.equal(validateDelivery({ ...prompt, targetTitle: "Opening shot" }), false);
+    assert.equal(validateDelivery({ ...prompt, kind: "prompt.update" }), false);
+    assert.equal(
+      validateDelivery({
+        ...image,
+        payload: { stagedAssetHandle: "C:\\Users\\creator\\shot.png" },
+      }),
+      false,
+    );
   });
 });

@@ -4,8 +4,8 @@
 
 ## Status
 
-- Status: `Tasks 15.6-15.10 implemented and technically accepted with documented baseline gate residuals; paused at Checkpoint 3.5 for user manual acceptance; Task 16 blocked and not started`
-- Date: `2026-08-29`
+- Status: `Checkpoint 3.5 automation accepted as the regression baseline; its manual probes are merged into the final real-Codex closed-loop gate; Task 16 implementation in progress`
+- Date: `2026-08-30`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
 - Plan 007 prerequisite: manual acceptance confirmed by the user on `2026-08-22`
@@ -13,7 +13,7 @@
 
 ## Goal
 
-First complete a project-local Skill conversation -> document attachment -> planning Document -> explicit Storyboard -> explicit Prompt proposal loop. Then expose PromptCard's local Prompt Library, Canvas context, and canonical Skill packages to MCP-capable Agent applications through stable typed references and the host-neutral PromptCard Local Agent Bridge, and accept only idempotent additive Prompt/image deliveries back to an explicitly persisted Canvas context.
+First complete a project-local Skill conversation -> document attachment -> planning Document -> explicit Storyboard -> explicit Prompt proposal loop. Then expose PromptCard's local Prompt Library, Canvas context, canonical Skill packages, Planning Documents, and Storyboards to MCP-capable Agent applications through stable typed references and the host-neutral PromptCard Local Agent Bridge. Accept only idempotent, reviewable Document, Storyboard, Prompt, and image proposals back to an explicitly persisted Canvas context.
 
 Do this without replacing the existing pi text Agent, embedding a third-party Agent chat in PromptCard, granting direct SQLite/filesystem access, or representing bridge-delivered output as a provider generation run.
 
@@ -64,7 +64,7 @@ These are test-first verification tasks, not assumptions that authorize unrelate
 3. **Namespace separation is semantic.** `PLM` and `CVM` may refer to identical bytes but remain different business identities and permission boundaries.
 4. **No ambient MCP project.** Every Canvas search, resolve, context, or delivery operation carries an exact `PRJ` or `CVC` reference. UI focus and MCP connection state are never authority.
 5. **MCP uses STDIO and loopback Streamable HTTP.** Pin `@modelcontextprotocol/server@2.0.0` and `@modelcontextprotocol/node@2.0.0`, cover the 2025-11-25 and 2026-07-28 protocol eras, and exclude `0.0.0.0`, legacy SSE, first-release OAuth, MCP Apps, Sampling, Tasks, and general filesystem tools.
-6. **Schema dialect is JSON Schema 2020-12.** Preserve `contracts/promptcard-bridge/v1/` unchanged and add the host-neutral trust/delivery overlay at `contracts/promptcard-bridge/v2/`. Use the explicitly declared validator for both versions.
+6. **Schema dialect is JSON Schema 2020-12.** Preserve `contracts/promptcard-bridge/v1/` and `v2/` unchanged. Bridge v3 composes both frozen bases and adds `CVD/CVS`, workspace discovery, staging, and typed creative writeback. Use the explicitly declared validator for all versions.
 7. **Tools/Text are the portability baseline.** Exact Tool resolution and optional `promptcard://` Resource Templates call the same Gateway resolver and permission checks; Resources, structured results, and `ImageContent` always have Tool/Text fallbacks.
 8. **FTS before vectors.** Phase 4A starts with SQLite FTS5/BM25, revision/digest freshness, fixed budgets, citations, and audit. Semantic retrieval is a later optional slice that requires explicit provider consent and measured value.
 9. **Skill projections are rebuildable.** Storage holds canonical immutable packages and host pins. `.agents/skills` and local-Agent snapshots are derived projections and never become the authority.
@@ -76,6 +76,7 @@ These are test-first verification tasks, not assumptions that authorize unrelate
 15. **Project documents stay local; provider files are ephemeral.** Schema v16 adds project document resources. TXT/Markdown/DOCX are normalized locally; PDF uses an isolated Ark Files/Responses path with per-call deletion and durable redacted cleanup retry.
 16. **Agent creative writes are narrow and recoverable.** Dedicated Document/Storyboard create/change tools bind exact revisions/digests. Frontend persistence acknowledgement, rollback, request/edit idempotency, and restart reconciliation prevent silent conversation/Canvas divergence.
 17. **Transforms require explicit user actions.** Document -> Storyboard and selected Document text/Storyboard shot -> Prompt are the only cross-domain paths in this slice; the latter produces a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node and cannot update an existing Prompt or read/write Prompt Library.
+18. **External creative writeback is typed and proposal-only.** `CVD` and `CVS` are stable external references. Document/Storyboard create/change, Prompt create, and staged image placement share a profile-scoped ledger and independent scopes; every result requires visual acceptance. See ADR-023 and Bridge v3.
 
 ## Global Constraints
 
@@ -87,7 +88,7 @@ These are test-first verification tasks, not assumptions that authorize unrelate
 - Browser and model output are untrusted at Gateway boundaries.
 - Every migration is idempotent, preserves Trash/restore semantics, and is covered by backup/restore tests.
 - Each task leaves the application buildable and testable. No task silently combines refactoring with a feature slice.
-- Tasks 15.6-15.10 do not use MCP, Bridge credentials/profiles, or the Bridge delivery ledger. They must complete and receive acceptance before Task 16 begins.
+- Tasks 15.6-15.10 remain independent of MCP, Bridge credentials/profiles, and the Bridge delivery ledger. Their automated acceptance is the Phase 4 regression baseline; the deferred manual probes are part of the final real-Codex closed-loop gate.
 - Preserve existing Prompt-node, Prompt Library/RAG, image-generation, one-shot Skill, and standalone Storyboard behavior; union extensions require explicit dispatch rather than casts/fallbacks.
 
 ## Dependency Graph
@@ -589,16 +590,16 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 - [x] Adversarial isolation proves Document/Storyboard never enter Prompt Library, Prompt RAG, Prompt compilation, image-generation inputs, or ambient full-body context.
 - [x] Existing Prompt, image, Skill projection, standalone Storyboard, context pack, reference-code, Storage, Gateway/runtime, Ruff, TypeScript, and production-build gates pass.
 - [x] The evidence package lists commits, test counts/skips/warnings, manual probes, cleanup/path/credential checks, residual risks, and unrelated startup-script changes left untouched.
-- [x] Stop for user acceptance; do not begin Task 16.
+- [x] Package the technical evidence. On 2026-08-30 the user merged the remaining manual probes into final real-Codex acceptance and explicitly unlocked Task 16.
 
-### Checkpoint 3.5: Skill Conversation And Creative Documents
+### Checkpoint 3.5: Skill Conversation And Creative Documents (manual probes merged into final gate)
 
 - [ ] Import/review a storyboard-master Skill, enable one exact local-Agent revision, and use it across three experimental conversation turns plus app restart.
 - [ ] Upload all four file types including a scanned PDF; create a character/asset planning Document and inspect inline/fullscreen/collapsed persistence.
 - [ ] Apply Agent suggestions, accept/reject individual/all changes, and confirm later Agent/Storyboard work uses the effective draft.
 - [ ] Explicitly create and revise a Storyboard, then explicitly convert one selection/shot to a Prompt proposal.
 - [ ] Confirm no implicit Document/Storyboard Prompt indexing, compilation, or image context and no duplicate state after restart/retry.
-- [ ] Stop for user acceptance before Phase 4.
+- [x] Do not run this as a separate manual checkpoint. Preserve the automated Phase 3.5 baseline and exercise these probes inside the final external-Agent functional loop.
 
 ## Phase 4: Read-Only Gateway, CLI, Retrieval, And MCP
 
@@ -616,7 +617,7 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Verification:** Gateway contract/security tests cover every scope, reference type, redaction, bound, offline error, forged profile, and cross-router 401/403 isolation.
 
-**Dependencies:** Checkpoints 2-3.5 and explicit user acceptance of Checkpoint 3.5.
+**Dependencies:** Checkpoints 2-3 and the automated Checkpoint 3.5 baseline. Explicit implementation authorization received on 2026-08-30.
 
 **Files likely touched:** new Gateway bridge contracts/router/service and focused tests.
 

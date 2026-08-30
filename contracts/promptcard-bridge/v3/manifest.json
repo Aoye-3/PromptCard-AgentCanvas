@@ -1,0 +1,21 @@
+{
+  "name": "promptcard-bridge",
+  "contractVersion": "3.0.0",
+  "schemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "schemaFile": "schema.json",
+  "compatibleBases": [
+    "../v1/manifest.json",
+    "../v2/manifest.json"
+  ],
+  "entryPoints": {
+    "creativeReference": "https://schemas.promptcard.dev/promptcard-bridge/v3/creative-reference.schema.json",
+    "operationContext": "https://schemas.promptcard.dev/promptcard-bridge/v3/operation-context.schema.json",
+    "runtimeDescription": "https://schemas.promptcard.dev/promptcard-bridge/v3/runtime-description.schema.json",
+    "workspaceDescription": "https://schemas.promptcard.dev/promptcard-bridge/v3/workspace-description.schema.json",
+    "assetStageRequest": "https://schemas.promptcard.dev/promptcard-bridge/v3/asset-stage-request.schema.json",
+    "deliveryPreviewRequest": "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-preview-request.schema.json",
+    "deliveryCommitRequest": "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-commit-request.schema.json",
+    "deliveryStatusRequest": "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-status-request.schema.json",
+    "deliveryRecord": "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-record.schema.json"
+  }
+}

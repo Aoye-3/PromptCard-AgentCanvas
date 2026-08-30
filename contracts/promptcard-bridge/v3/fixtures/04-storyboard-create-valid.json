@@ -1,0 +1,41 @@
+{
+  "name": "storyboard create proposal",
+  "entryPoint": "deliveryPreviewRequest",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-preview-request.schema.json",
+  "expectedSchemaValidity": true,
+  "instance": {
+    "clientRequestId": "storyboard-create-001",
+    "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "storyboard.create",
+    "target": { "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV" },
+    "sourceCodes": ["CVD-01ARZ3NDEKTSV4RRFFQ69G5FAV"],
+    "skillPins": [],
+    "rationale": "Turn the accepted document into shots.",
+    "provenance": "promptcard-bridge",
+    "payload": {
+      "title": "Opening sequence",
+      "sourceDocumentCode": "CVD-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "sourceDocumentRevision": 2,
+      "sourceDocumentDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "sequence": {
+        "name": "Opening",
+        "description": "A quiet reveal.",
+        "style": "Naturalistic",
+        "constraints": "No dialogue",
+        "rows": [
+          {
+            "cutLabel": "1",
+            "timeRange": "00:00-00:04",
+            "subject": "Empty street",
+            "action": "Rain falls",
+            "scene": "Night exterior",
+            "camera": "Slow push",
+            "lighting": "Neon reflections",
+            "audio": "Rain",
+            "duration": "4s"
+          }
+        ]
+      }
+    }
+  }
+}

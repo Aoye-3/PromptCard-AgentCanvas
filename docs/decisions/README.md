@@ -24,3 +24,4 @@ Architecture Decision Records capture durable product and engineering decisions 
 - [ADR-020: Separate Planning Documents From Executable Prompt Content](./ADR-020-separate-planning-documents-from-prompt-execution.md)
 - [ADR-021: Keep Project Documents Local And Provider Files Ephemeral](./ADR-021-project-document-resources-and-ephemeral-provider-files.md)
 - [ADR-022: Position PromptCard-Manager As A Portable Creative Context Environment](./ADR-022-portable-creative-context-environment.md)
+- [ADR-023: Use A Typed Creative Writeback Boundary And Discoverable Agent Workspace](./ADR-023-typed-creative-writeback-and-agent-workspace.md)
