@@ -308,6 +308,47 @@ def test_reference_resolve_requires_the_code_to_be_inside_the_explicit_context(
     assert denied.json()["detail"]["code"] == "reference_outside_context"
 
 
+def test_prompt_search_requires_explicit_context_and_supplies_trusted_profile(client, monkeypatch):
+    async def fake_storage(method, path, **kwargs):
+        if path == f"/api/context-packs/{CVC}/resolve":
+            assert method == "GET"
+            return {"projectCode": PRJ, "cvcCode": CVC, "entries": [], "sourceCodes": []}
+        if path == "/api/prompt-retrieval/search":
+            assert method == "POST"
+            assert kwargs["json"] == {
+                "query": "neon city",
+                "types": ["storyboard"],
+                "categories": [],
+                "limit": 5,
+                "callerKind": "bridge",
+                "callerId": "codex-local",
+            }
+            return {"queryDigest": DIGEST, "results": [], "auditId": "audit", "degraded": False, "staleRejectedCount": 0}
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    accepted = client.post(
+        "/api/promptcard/bridge/v3/prompt-search",
+        json={
+            "cvcCode": CVC.lower(),
+            "query": "neon city",
+            "types": ["storyboard"],
+            "categories": [],
+            "limit": 5,
+        },
+        headers=auth_headers(),
+    )
+    forged = client.post(
+        "/api/promptcard/bridge/v3/prompt-search",
+        json={"cvcCode": CVC, "query": "neon", "callerId": "forged"},
+        headers=auth_headers(),
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["results"] == []
+    assert forged.status_code == 422
+
+
 def test_skill_read_requires_the_exact_enabled_codex_pin(client, monkeypatch):
     skill_code = "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV"
     skill_digest = "sha256:" + "b" * 64

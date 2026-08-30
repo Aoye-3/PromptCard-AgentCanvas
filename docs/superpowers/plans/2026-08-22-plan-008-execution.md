@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Checkpoint 3.5 automation accepted as the regression baseline; its manual probes are merged into the final real-Codex closed-loop gate; Task 16 implementation in progress`
+- Status: `Tasks 16-18 implemented on the feature branch; Task 19 durability regression confirmation in progress; final real-Codex closed-loop gate remains the merge condition`
 - Date: `2026-08-30`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -609,11 +609,11 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Acceptance criteria:**
 
-- [ ] Namespace/project/lifecycle errors remain distinct and structured.
-- [ ] Responses expose no paths, credentials, unrestricted metadata, or full project JSON.
-- [ ] Search cannot be accepted by any execution endpoint.
-- [ ] `bridge:read` can call runtime describe/read operations, but the same credential receives 401/403 from internal-chat, model-management, and image-generation routes.
-- [ ] Startup/authentication context supplies `profileId`; request bodies and client names cannot grant or widen scopes.
+- [x] Namespace/project/lifecycle errors remain distinct and structured.
+- [x] Responses expose no paths, credentials, unrestricted metadata, or full project JSON.
+- [x] Search cannot be accepted by any execution endpoint.
+- [x] `bridge:read` can call runtime describe/read operations, but the same credential receives 401/403 from internal-chat, model-management, and image-generation routes.
+- [x] Startup/authentication context supplies `profileId`; request bodies and client names cannot grant or widen scopes.
 
 **Verification:** Gateway contract/security tests cover every scope, reference type, redaction, bound, offline error, forged profile, and cross-router 401/403 isolation.
 
@@ -630,13 +630,13 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 - [x] Add the bounded runtime/workspace/exact-reference/exact-Skill Gateway reads and cross-router credential isolation.
 - [x] Add Storage schema v17 `CVD-*` / `CVS-*` registries, bounded creative resolution, context-pack snapshots, migration/restart/backup compatibility, and launcher schema gates.
 - [x] Record focused and full evidence: Bridge Gateway `10 passed`; full Gateway `467 passed`; full Storage `342 passed, 3 skipped, 338 subtests passed`; Bridge contracts `50 passed`; launcher schema tests `17 passed`.
-- [ ] Add bounded Prompt search and asset read after the shared retrieval/asset authorization slices land; until then the v3 runtime descriptor advertises them as planned capabilities rather than callable Gateway routes.
+- [x] Add bounded Prompt search after the shared retrieval slice lands; asset read remains the final Task 16 read capability and will ship with MCP asset authorization.
 
 ### Task 17: Add deterministic repository JSON CLI
 
 **Description:** Build a Node/TypeScript CLI that invokes the Gateway read contracts and emits exactly one JSON result to stdout, diagnostics to stderr, and stable exit codes.
 
-**Status:** Implemented on `feat/skill-document-storyboard-loop` (2026-08-30); exact-read CLI tests and typecheck pass. Search is added when Task 18 exposes the shared retrieval contract.
+**Status:** Implemented on `feat/skill-document-storyboard-loop` (2026-08-30); exact-read/search CLI tests and typecheck pass.
 
 **Acceptance criteria:**
 
@@ -652,17 +652,23 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Estimated scope:** Medium.
 
-**Evidence:** `npm.cmd run test:bridge-cli` reports `5 passed`; `npm.cmd run bridge:cli:check` passes. Tests cover stdout purity, exact argument mapping, structured redaction, stable exit classes, offline behavior, invalid JSON, and non-loopback rejection.
+**Evidence:** `npm.cmd run test:bridge-cli` reports `6 passed`; `npm.cmd run bridge:cli:check` passes. Tests cover stdout purity, exact/search argument mapping, structured redaction, stable exit classes, offline behavior, invalid JSON, and non-loopback rejection.
 
 ### Task 18: Add the transactional FTS5 retrieval core
 
 **Description:** Create normalized Prompt retrieval documents, external-content FTS5/BM25 indexes, lifecycle triggers, explicit rebuild, deterministic ranking, fixed budgets, freshness re-resolution, health, and audit records.
 
+**Status:** Implemented on `feat/skill-document-storyboard-loop` (2026-08-30); focused and full regression gates pass.
+
 **Acceptance criteria:**
 
-- [ ] Prompt writes and lexical index updates are transactionally consistent; existing rows rebuild explicitly.
-- [ ] Trash is excluded and stale revision/digest candidates cannot reach a host.
-- [ ] Results include identity, revision, matched fields, score components, reason, and bounded safe media metadata.
+- [x] Prompt writes and lexical index updates are transactionally consistent; existing rows rebuild explicitly.
+- [x] Trash is excluded and stale revision/digest candidates cannot reach a host.
+- [x] Results include identity, revision, matched fields, score components, reason, and bounded safe media metadata.
+
+**Implementation evidence:** Storage schema v18 adds normalized retrieval documents, external-content FTS5, lifecycle triggers, explicit rebuild/health, stale-candidate rejection, and digest-only audit records. The same response contract is exposed through Storage, Gateway `/prompt-search`, and the repository JSON CLI. Bridge v3 now freezes the bounded search request/response shape while v1/v2 remain unchanged.
+
+**Verification evidence:** focused retrieval/Bridge `17 passed`; independent-connection compatibility `19 passed, 35 subtests passed`; full Storage `348 passed, 3 skipped, 338 subtests passed`; full Gateway `468 passed`; Bridge contracts `51 passed`; CLI `6 passed`; launcher schema gates `17 passed`; CLI TypeScript and changed Python Ruff checks pass. The full Storage gate caught and drove removal of a connection-private SQLite function dependency from write triggers before this slice was accepted.
 
 **Verification:** Storage tests cover create/update/archive/restore, rebuild, induced drift, Chinese/English queries, ranking stability, and fixed result/evidence budgets.
 

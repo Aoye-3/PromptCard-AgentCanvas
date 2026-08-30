@@ -272,7 +272,7 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 ### PromptCard Local Agent Bridge 与 Prompt 库 RAG
 
-当前已经完成 Skill Hub 管理工作流、宿主中立的 Bridge v1/v2 合同边界，以及承载 Document、Storyboard、Prompt 与图片提案的 Bridge v3 合同。Storage v17 为 Canvas Document 和 Canvas Storyboard 增加稳定的 `CVD-*` / `CVS-*` 外部引用；Task 16 正在实现独立凭据保护的只读 Gateway，使外部 Agent 能从明确选择的 `PRJ-*` / `CVC-*` 工作上下文发现对象和精确 Skill pin。
+当前已经完成 Skill Hub 管理工作流、宿主中立的 Bridge v1/v2 合同边界，以及承载 Document、Storyboard、Prompt 与图片提案的 Bridge v3 合同。Storage v18 在稳定的 `CVD-*` / `CVS-*` 外部引用之上增加事务化 Prompt FTS5 检索；独立凭据保护的只读 Gateway 与确定性 JSON CLI 已能让外部 Agent 从明确选择的 `PRJ-*` / `CVC-*` 工作上下文发现对象、精确 Skill pin 和带 revision/digest 的 Prompt 证据。
 
 - 外部 Agent 应用是创作入口；PMAgent-Canvas 不内嵌某一家的聊天界面，也不按客户端名称分叉核心工具、schema、权限或结果。
 - 后续桥接计划支持本地 STDIO 与仅监听 `127.0.0.1` 的 Streamable HTTP；不实现已弃用的旧 SSE。Codex 与 TRAE 是首批验收目标，豆包与 MarsCode 暂标“待验证”。
@@ -281,7 +281,7 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 - 左侧全局 **Skill Hub** 已支持惰性导入预审、结构化发现、revision 历史与 diff、精确 revision 信任审阅、archive/restore，以及 Codex/local-Agent 独立 pin 和显式投影修复。
 - Codex `.agents/skills` 是一个准确命名的具体 Host Adapter；canonical revision 更新不会自动移动 Codex 或 local-Agent pin。
 - Skill 导入只读取与校验包，不执行其中的脚本、安装器、hook 或依赖；本地 Agent 只读取受限的指令与文本参考资料。
-- Canvas 已使用“复制 Agent/MCP 上下文”这一宿主中立入口；Task 16 的只读 Gateway router 与 Storage v17 引用层正在当前功能分支实现，CLI、检索/RAG、MCP 和写回账本仍按 Plan 008 顺序推进。
+- Canvas 已使用“复制 Agent/MCP 上下文”这一宿主中立入口；当前功能分支已完成只读 Gateway、Storage v18 检索核心与 repository JSON CLI。local-Agent RAG、MCP、写回账本和可视化 Agent 工作环境仍按 Plan 008 顺序推进。
 
 本地 Agent 的 Prompt 库手动搜索后续将升级为有界、可引用、可审计的 RAG 检索。Plan 008 的 Tasks 15.6–15.10 自动化结果保留为回归基线，原 Checkpoint 3.5 人工探针已并入最终真实 Codex 闭环，不再单独阻塞 Task 16。详见 [Plan 008 执行台账](./docs/superpowers/plans/2026-08-22-plan-008-execution.md)、[ADR-023](./docs/decisions/ADR-023-typed-creative-writeback-and-agent-workspace.md) 与 [Plan 009](./docs/Plan/009-portable-creative-context-environment.md)。
 

@@ -206,6 +206,35 @@ async def reference_resolve(
     raise HTTPException(status_code=422, detail={"code": "reference_invalid"})
 
 
+async def prompt_search(
+    principal: BridgePrincipal,
+    cvc_code: str,
+    query: str,
+    types: list[str],
+    categories: list[str],
+    limit: int,
+) -> dict[str, Any]:
+    require_bridge_scope(principal, "bridge:read")
+    context = _canonical_reference(cvc_code, "CVC")
+    resolved_context = await _storage_request(
+        "GET", f"/api/context-packs/{context}/resolve"
+    )
+    if resolved_context.get("cvcCode") != context:
+        raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+    return await _storage_request(
+        "POST",
+        "/api/prompt-retrieval/search",
+        json={
+            "query": query,
+            "types": types,
+            "categories": categories,
+            "limit": limit,
+            "callerKind": "bridge",
+            "callerId": principal.profile_id,
+        },
+    )
+
+
 async def skill_read(
     principal: BridgePrincipal,
     skill_code: str,

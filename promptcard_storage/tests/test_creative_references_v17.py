@@ -122,7 +122,7 @@ class CreativeReferencesV17Test(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_schema_and_projection_assign_stable_cvd_and_cvs_without_polluting_json(self):
-        self.assertEqual(SCHEMA_VERSION, 17)
+        self.assertGreaterEqual(SCHEMA_VERSION, 17)
         created = self.store.create_project(project([document_node(), storyboard_node()]))
         nodes = created["freeCanvas"]["nodes"]
         self.assertRegex(nodes[0]["referenceCode"], r"^CVD-[0-7][0-9A-HJKMNP-TV-Z]{25}$")
@@ -196,8 +196,15 @@ class CreativeReferencesV17Test(unittest.TestCase):
     def test_v16_upgrade_reconciles_creative_codes_and_exposes_the_bounded_api(self):
         self.store.create_project(project([document_node(), storyboard_node()]))
         with self.store._connect() as connection:
+            for trigger in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE '%prompt_retrieval%'"
+            ).fetchall():
+                connection.execute(f'DROP TRIGGER "{trigger[0]}"')
+            connection.execute("DROP TABLE prompt_retrieval_fts")
+            connection.execute("DROP TABLE prompt_retrieval_audits")
+            connection.execute("DROP TABLE prompt_retrieval_documents")
             connection.execute("DROP TABLE creative_references")
-            connection.execute("DELETE FROM schema_migrations WHERE version=17")
+            connection.execute("DELETE FROM schema_migrations WHERE version>=17")
             connection.execute(
                 "INSERT INTO schema_migrations(version, name, applied_at) VALUES (16, 'fixture-v16', 1)"
             )
@@ -218,7 +225,7 @@ class CreativeReferencesV17Test(unittest.TestCase):
                 connection.execute(
                     "SELECT MAX(version) FROM schema_migrations"
                 ).fetchone()[0],
-                17,
+                SCHEMA_VERSION,
             )
 
 

@@ -79,7 +79,7 @@ if (!$env:PROMPTCARD_INTERNAL_TOKEN) {
 if (!$env:PROMPTCARD_IMAGE_GENERATION_NODE_V1) {
   $env:PROMPTCARD_IMAGE_GENERATION_NODE_V1 = "1"
 }
-$ExpectedStorageSchemaVersion = 17
+$ExpectedStorageSchemaVersion = 18
 
 $StorageHealthUrl = $Runtime.storageHealthUrl
 $AgentHealthUrl = $Runtime.agentHealthUrl

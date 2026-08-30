@@ -3,6 +3,7 @@ export type BridgeCliCommand =
   | { kind: 'workspace'; projectCode: string; cvcCode: string }
   | { kind: 'reference'; cvcCode: string; code: string }
   | { kind: 'skill'; skillCode: string; revision: number; digest: string }
+  | { kind: 'search'; cvcCode: string; query: string; limit: number }
 
 export type BridgeCliFailure = {
   ok: false
@@ -56,6 +57,16 @@ export function parseCommand(argv: string[]): BridgeCliCommand {
       digest: required(options, 'digest'),
     }
   }
+  if (name === 'search' && hasOnly(options, ['context', 'query', 'limit'])) {
+    const limit = Number(required(options, 'limit'))
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) usage('limit_invalid')
+    return {
+      kind: 'search',
+      cvcCode: required(options, 'context'),
+      query: required(options, 'query'),
+      limit,
+    }
+  }
   usage('usage_invalid')
 }
 
@@ -70,10 +81,14 @@ export async function invokeBridge(
   }
   const baseUrl = loopbackBaseUrl(environment.PROMPTCARD_BRIDGE_URL)
   const endpoint = endpointFor(command, baseUrl)
+  const headers: Record<string, string> = { authorization: `Bearer ${token}` }
+  if (endpoint.body !== undefined) headers['content-type'] = 'application/json'
   let response: Response
   try {
-    response = await fetcher(endpoint, {
-      headers: { authorization: `Bearer ${token}` },
+    response = await fetcher(endpoint.url, {
+      method: endpoint.method,
+      headers,
+      ...(endpoint.body === undefined ? {} : { body: JSON.stringify(endpoint.body) }),
       signal: AbortSignal.timeout(10_000),
     })
   } catch {
@@ -91,7 +106,7 @@ export function stableJson(value: unknown): string {
   return JSON.stringify(sortValue(value))
 }
 
-function endpointFor(command: BridgeCliCommand, baseUrl: URL): URL {
+function endpointFor(command: BridgeCliCommand, baseUrl: URL): { url: URL; method: 'GET' | 'POST'; body?: unknown } {
   const url = new URL('/api/promptcard/bridge/v3/runtime', baseUrl)
   if (command.kind === 'workspace') {
     url.pathname = '/api/promptcard/bridge/v3/workspace'
@@ -106,8 +121,21 @@ function endpointFor(command: BridgeCliCommand, baseUrl: URL): URL {
     url.searchParams.set('skillCode', command.skillCode)
     url.searchParams.set('revision', String(command.revision))
     url.searchParams.set('digest', command.digest)
+  } else if (command.kind === 'search') {
+    url.pathname = '/api/promptcard/bridge/v3/prompt-search'
+    return {
+      url,
+      method: 'POST',
+      body: {
+        cvcCode: command.cvcCode,
+        query: command.query,
+        types: [],
+        categories: [],
+        limit: command.limit,
+      },
+    }
   }
-  return url
+  return { url, method: 'GET' }
 }
 
 function loopbackBaseUrl(value: string | undefined): URL {
@@ -186,7 +214,7 @@ function required(options: Map<string, string>, name: string): string {
 }
 
 function usage(code: string): never {
-  throw new BridgeCliError(2, failure(code), 'Usage: runtime | workspace --project PRJ --context CVC | resolve --context CVC --code REF | skill --skill SKL --revision N --digest sha256:...')
+  throw new BridgeCliError(2, failure(code), 'Usage: runtime | workspace --project PRJ --context CVC | resolve --context CVC --code REF | skill --skill SKL --revision N --digest sha256:... | search --context CVC --query TEXT --limit N')
 }
 
 function sortValue(value: unknown): unknown {

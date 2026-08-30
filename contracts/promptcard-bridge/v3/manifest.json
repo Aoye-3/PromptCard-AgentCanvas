@@ -12,6 +12,8 @@
     "operationContext": "https://schemas.promptcard.dev/promptcard-bridge/v3/operation-context.schema.json",
     "runtimeDescription": "https://schemas.promptcard.dev/promptcard-bridge/v3/runtime-description.schema.json",
     "workspaceDescription": "https://schemas.promptcard.dev/promptcard-bridge/v3/workspace-description.schema.json",
+    "promptSearchRequest": "https://schemas.promptcard.dev/promptcard-bridge/v3/prompt-search-request.schema.json",
+    "promptSearchResponse": "https://schemas.promptcard.dev/promptcard-bridge/v3/prompt-search-response.schema.json",
     "assetStageRequest": "https://schemas.promptcard.dev/promptcard-bridge/v3/asset-stage-request.schema.json",
     "deliveryPreviewRequest": "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-preview-request.schema.json",
     "deliveryCommitRequest": "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-commit-request.schema.json",

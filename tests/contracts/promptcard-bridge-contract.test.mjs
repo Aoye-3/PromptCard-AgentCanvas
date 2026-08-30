@@ -624,6 +624,8 @@ describe("PromptCard bridge v3 typed creative writeback boundary", () => {
       "deliveryRecord",
       "deliveryStatusRequest",
       "operationContext",
+      "promptSearchRequest",
+      "promptSearchResponse",
       "runtimeDescription",
       "workspaceDescription",
     ]);

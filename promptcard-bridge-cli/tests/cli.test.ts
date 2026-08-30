@@ -25,6 +25,21 @@ before(async () => {
       response.end(JSON.stringify({ projectCode: project, cvcCode: context, objects: [] }))
       return
     }
+    if (url.pathname.endsWith('/prompt-search')) {
+      let body = ''
+      request.on('data', chunk => { body += chunk })
+      request.on('end', () => {
+        assert.deepEqual(JSON.parse(body), {
+          cvcCode: context,
+          query: 'neon city',
+          types: [],
+          categories: [],
+          limit: 5,
+        })
+        response.end(JSON.stringify({ queryDigest: `sha256:${'a'.repeat(64)}`, results: [], degraded: false }))
+      })
+      return
+    }
     if (url.searchParams.get('code')?.startsWith('CVD-')) {
       response.statusCode = 404
       response.end(JSON.stringify({ detail: { code: 'unknown_code', path: 'F:/private' } }))
@@ -58,6 +73,12 @@ test('workspace maps exact arguments without adding authority fields', async () 
   const result = await runCli(['workspace', '--project', project, '--context', context])
   assert.equal(result.code, 0)
   assert.deepEqual(JSON.parse(result.stdout), { projectCode: project, cvcCode: context, objects: [] })
+})
+
+test('search remains discovery-only and maps through the same Gateway', async () => {
+  const result = await runCli(['search', '--context', context, '--query', 'neon city', '--limit', '5'])
+  assert.equal(result.code, 0)
+  assert.deepEqual(JSON.parse(result.stdout).results, [])
 })
 
 test('structured remote errors are redacted and use stable lifecycle exit code', async () => {

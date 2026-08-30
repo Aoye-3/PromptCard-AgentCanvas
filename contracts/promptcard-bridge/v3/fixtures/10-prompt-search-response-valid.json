@@ -1,0 +1,34 @@
+{
+  "name": "bounded prompt search response",
+  "entryPoint": "promptSearchResponse",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v3/prompt-search-response.schema.json",
+  "expectedSchemaValidity": true,
+  "instance": {
+    "queryDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "results": [
+      {
+        "reference": {
+          "namespace": "promptBundle",
+          "code": "PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        },
+        "revision": 2,
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "title": "Rainy neon establishing shot",
+        "summary": "A wide establishing shot of a rainy neon city at night.",
+        "type": "storyboard",
+        "category": "shot",
+        "matchedFields": ["label", "content"],
+        "score": 1.05,
+        "scoreComponents": {
+          "lexical": 1,
+          "usage": 1
+        },
+        "reason": "Matched label, content",
+        "media": []
+      }
+    ],
+    "auditId": "f9432f86-4431-4010-a115-ddf1f12e536b",
+    "degraded": false,
+    "staleRejectedCount": 0
+  }
+}

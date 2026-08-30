@@ -193,10 +193,10 @@ class SqliteStoreTest(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_fresh_schema_v17_contains_document_cleanup_and_creative_reference_tables(self) -> None:
+    def test_fresh_schema_v18_contains_document_creative_and_retrieval_tables(self) -> None:
         store = JsonCollectionStore(self.data_dir)
 
-        self.assertEqual(SCHEMA_VERSION, 17)
+        self.assertEqual(SCHEMA_VERSION, 18)
         connection = sqlite3.connect(store.database_path)
         try:
             tables = {
@@ -208,14 +208,20 @@ class SqliteStoreTest(unittest.TestCase):
             migration = connection.execute(
                 "SELECT version, name FROM schema_migrations"
             ).fetchall()
+            preset_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(presets)")
+            }
         finally:
             connection.close()
 
         self.assertIn("project_document_resources", tables)
         self.assertIn("provider_file_cleanup", tables)
         self.assertIn("creative_references", tables)
-        self.assertIn("creative_references", tables)
-        self.assertEqual(migration, [(17, "json-v1-to-sqlite")])
+        self.assertIn("prompt_retrieval_documents", tables)
+        self.assertIn("prompt_retrieval_fts", tables)
+        self.assertIn("prompt_retrieval_audits", tables)
+        self.assertIn("retrieval_digest", preset_columns)
+        self.assertEqual(migration, [(18, "json-v1-to-sqlite")])
 
     def test_v15_migrates_both_v16_tables_and_then_repairs_conversation_columns(self) -> None:
         store = JsonCollectionStore(self.data_dir)
@@ -261,6 +267,7 @@ class SqliteStoreTest(unittest.TestCase):
                 (15, "legacy-v15"),
                 (16, "add-project-document-resources-and-provider-file-cleanup"),
                 (17, "add-creative-object-references"),
+                (18, "add-transactional-prompt-retrieval"),
             ],
         )
 

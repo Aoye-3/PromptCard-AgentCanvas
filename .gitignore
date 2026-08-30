@@ -18,6 +18,7 @@ agent-runtime/backend/.promptcard-runtime/
 agent-runtime/backend/.pytest_cache/
 agent-runtime/backend/tests/.tmp/
 agent-runtime/backend/pytest-tmp/
+promptcard_storage/pytest-tmp*/
 agent-runtime/.promptcard-runtime/
 agent-runtime/.agent/
 agent-runtime/.uv-cache/

@@ -2,7 +2,7 @@
 
 ## Status
 
-Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Task 16 implementation is in progress on `feat/skill-document-storyboard-loop`.
+Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-18 are implemented on `feat/skill-document-storyboard-loop`; Task 19 durability regression confirmation is next.
 
 ## Current Normative Boundary
 
@@ -138,9 +138,9 @@ The maintained runtime also has important boundaries that this plan preserves:
 - the pi text Agent has no direct filesystem, Storage, or Canvas write access;
 - current provider image generation is independent from text-Agent sessions.
 
-The current left navigation includes the complete Task 15 Skill Hub management surface. PromptCard Storage schema v17 owns canonical Skill packages, immutable revisions and digests, provenance, lifecycle, exact-revision trust reviews, independent host pins, and typed creative references. Skill Hub supports inert folder/archive inspection, structured findings, import, history/diff, archive/restore, exact review, Codex/local-Agent controls, projection health, and explicit owned-drift repair. The Gateway continues to supply exact bounded snapshots to the local text Agent without expanding Runtime permissions.
+The current left navigation includes the complete Task 15 Skill Hub management surface. PromptCard Storage schema v18 owns canonical Skill packages, immutable revisions and digests, provenance, lifecycle, exact-revision trust reviews, independent host pins, typed creative references, and transactional Prompt retrieval/audit records. Skill Hub supports inert folder/archive inspection, structured findings, import, history/diff, archive/restore, exact review, Codex/local-Agent controls, projection health, and explicit owned-drift repair. The Gateway continues to supply exact bounded snapshots to the local text Agent without expanding Runtime permissions.
 
-Codex `.agents/skills` is a derived native projection, not the canonical store. Canonical revision updates do not move either host pin. Skill scripts, hooks, installers, automatic semantic matching, and MCP Skill resources remain unimplemented. Task 16's host-neutral read surface is in progress and resolves Codex pins only through a trusted profile repository scope.
+Codex `.agents/skills` is a derived native projection, not the canonical store. Canonical revision updates do not move either host pin. Skill scripts, hooks, installers, automatic semantic matching, and MCP Skill resources remain unimplemented. Task 16's host-neutral read surface resolves Codex pins only through a trusted profile repository scope; Task 18 Prompt search remains discovery-only and requires an explicit `CVC-*`.
 
 The current Canvas Agent `prompt-library` mode is still request-snapshot based: the browser may serialize up to 200 Prompt records, the pi Runtime keeps at most 100, and `search_prompt_library` searches only that array. This avoids ambient library access but scales request and context size with the library, cannot provide maintained semantic retrieval, and cannot durably explain why a Prompt was selected. The shared RAG track below replaces this transport while keeping Agent and MCP permissions separate.
 

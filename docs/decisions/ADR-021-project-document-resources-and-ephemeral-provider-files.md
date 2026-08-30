@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Implementation status: Task 15.8 and the dependent Task 15.10 flow are implemented and technically accepted as the regression baseline; Checkpoint 3.5 manual probes are merged into final real-Codex acceptance and Task 16 is in progress.
+Accepted. Implementation status: Task 15.8 and the dependent Task 15.10 flow are implemented and technically accepted as the regression baseline; Checkpoint 3.5 manual probes are merged into final real-Codex acceptance. Tasks 16-18 now provide the bounded external read/retrieval foundation without changing document-resource ownership.
 
 ## Date
 

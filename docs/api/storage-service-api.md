@@ -4,7 +4,7 @@ The local storage service is the durable source of truth for projects, Prompt Li
 
 ## Health
 
-`GET /health` returns `serviceVersion`, `schemaVersion`, `storage`, `database`, `pid`, and capabilities including `sqlite`, `assets`, `presetBatch`, `browserImportIdempotency`, `backup`, `recentCaptures`, `projectResources`, `projectDocumentResources`, `agentConversations`, `skillHub`, and `contextPacks`. The current service reports schema version `17`. Versions 10–17 add public reference codes, immutable Canvas context packs, canonical Skill packages, independent Skill host pins, exact-revision trust reviews, project document resources, durable remote-file cleanup retries, and typed creative references; see [Schema Notes](../database/schema-notes.md).
+`GET /health` returns `serviceVersion`, `schemaVersion`, `storage`, `database`, `pid`, and capabilities including `sqlite`, `assets`, `presetBatch`, `browserImportIdempotency`, `backup`, `recentCaptures`, `projectResources`, `projectDocumentResources`, `agentConversations`, `skillHub`, `contextPacks`, and `promptRetrieval`. The current service reports schema version `18`. Versions 10–18 add public reference codes, immutable Canvas context packs, canonical Skill packages, independent Skill host pins, exact-revision trust reviews, project document resources, durable remote-file cleanup retries, typed creative references, and transactional Prompt retrieval; see [Schema Notes](../database/schema-notes.md).
 
 ## Typed Creative References
 
@@ -366,6 +366,14 @@ For Ark PDF input, Gateway uploads a remote file for one invocation and deletes 
 - `DELETE /api/presets/trash`
 
 Preset updates and usage increments require the current revision. The batch endpoint atomically replaces the active Prompt Library: every supplied existing item must have its current revision, new IDs are inserted, and omitted active items move to Trash.
+
+### Prompt retrieval (trusted service callers)
+
+- `POST /api/prompt-retrieval/search`
+- `GET /api/prompt-retrieval/health`
+- `POST /api/prompt-retrieval/rebuild`
+
+Search receives `query`, bounded `types`/`categories`, `limit`, and an authenticated service-supplied `callerKind`/`callerId`. It returns exact Prompt references with revision/digest evidence plus an audit ID; it never returns preset IDs, local paths, or raw asset paths. Gateway resolves the supplied `CVC-*` before invoking search. Rebuild is an explicit maintenance operation for migration or detected drift, not a normal write path.
 
 ## Trash Payloads
 

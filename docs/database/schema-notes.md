@@ -25,7 +25,13 @@ Core frontend schemas:
 - `ImageGenerationCanvasPlacement`
 - `ImageAssetDerivation`
 
-Schema changes should be documented with migration or normalization behavior. The current PromptCard Storage schema is v17. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
+Schema changes should be documented with migration or normalization behavior. The current PromptCard Storage schema is v18. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
+
+## Prompt Retrieval Index And Audit
+
+Storage schema v18 adds the canonical `presets.retrieval_digest`, `prompt_retrieval_documents`, its external-content FTS5 index, lifecycle triggers, and `prompt_retrieval_audits`. Prompt create/update/trash/restore/delete and the lexical index update in the same SQLite transaction. Store writes calculate the digest before SQL execution, so triggers do not depend on a connection-private SQLite function; an out-of-band payload edit leaves a stale digest and is rejected by freshness validation. The v17-to-v18 migration creates the structures and explicitly rebuilds them from canonical active and trashed Prompt rows without changing Prompt identity or revision.
+
+Search accepts at most 256 query characters, 16 type/category filters, and 20 results. Returned evidence is capped at 12,000 characters and contains only exact `PLP-*` identity, revision/digest, bounded text, score components, matched fields, reason, and safe `PLM-*` media metadata. Before returning each candidate, Storage compares the indexed revision/digest with the canonical Prompt row; stale candidates are rejected, counted, audited, and mark the response degraded. Audit rows retain a query digest and result codes rather than raw query text.
 
 ## Typed Creative References
 

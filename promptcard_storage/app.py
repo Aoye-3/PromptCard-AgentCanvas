@@ -85,6 +85,15 @@ class PresetBatchPayload(BaseModel):
     presets: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class PromptRetrievalPayload(BaseModel):
+    query: str = Field(min_length=1, max_length=256)
+    types: list[str] = Field(default_factory=list, max_length=16)
+    categories: list[str] = Field(default_factory=list, max_length=16)
+    limit: int = Field(default=8, ge=1, le=20)
+    callerKind: Literal["bridge", "local-agent", "maintenance"]
+    callerId: str = Field(min_length=1, max_length=128)
+
+
 class RecentCaptureRegistrationPayload(BaseModel):
     intent: Literal["initial", "analysis-derived"] = "initial"
     mode: str
@@ -779,6 +788,27 @@ def create_app(
     @application.get("/api/presets")
     def list_presets() -> dict[str, Any]:
         return {"presets": storage.list_presets()}
+
+    @application.post("/api/prompt-retrieval/search")
+    def search_prompts(payload: PromptRetrievalPayload) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.search_prompts(
+                payload.query,
+                types=payload.types,
+                categories=payload.categories,
+                limit=payload.limit,
+                caller_kind=payload.callerKind,
+                caller_id=payload.callerId,
+            )
+        )
+
+    @application.get("/api/prompt-retrieval/health")
+    def prompt_retrieval_health() -> dict[str, Any]:
+        return storage.prompt_retrieval_health()
+
+    @application.post("/api/prompt-retrieval/rebuild")
+    def rebuild_prompt_retrieval_index() -> dict[str, Any]:
+        return _handle(storage.rebuild_prompt_retrieval)
 
     @application.get("/api/presets/trash")
     def list_preset_trash() -> dict[str, Any]:

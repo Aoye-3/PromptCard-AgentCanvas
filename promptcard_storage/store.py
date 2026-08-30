@@ -41,6 +41,14 @@ from .reference_codes import (
     generate_reference_code,
     parse_reference_code,
 )
+from .retrieval import (
+    PromptRetrievalRepository,
+    create_prompt_retrieval_schema,
+    drop_prompt_retrieval_preset_triggers,
+    ensure_prompt_retrieval_digest_column,
+    prompt_retrieval_digest,
+    rebuild_prompt_retrieval,
+)
 from .skill_packages import (
     DIGEST_VERSION as SKILL_DIGEST_VERSION,
     canonical_package_digest,
@@ -54,7 +62,7 @@ from .skill_packages import (
 
 Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 DATABASE_NAME = "promptcard.sqlite3"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE = " \t\n\v\f\r"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
@@ -190,6 +198,9 @@ class SqliteStore:
             self._transaction,
             now_ms,
         )
+        self._prompt_retrieval = PromptRetrievalRepository(
+            self.data_dir, self._connect, self._transaction, now_ms
+        )
         self._backups = BackupManager(
             self.database_path,
             self.assets_dir,
@@ -226,6 +237,7 @@ class SqliteStore:
                 "agentConversations": True,
                 "skillHub": True,
                 "contextPacks": True,
+                "promptRetrieval": True,
             },
         }
 
@@ -2504,6 +2516,31 @@ class SqliteStore:
                 for row in rows
             ]
 
+    def search_prompts(
+        self,
+        query: str,
+        *,
+        types: list[str] | None = None,
+        categories: list[str] | None = None,
+        limit: int = 8,
+        caller_kind: str,
+        caller_id: str,
+    ) -> dict[str, Any]:
+        return self._prompt_retrieval.search(
+            query,
+            types=types,
+            categories=categories,
+            limit=limit,
+            caller_kind=caller_kind,
+            caller_id=caller_id,
+        )
+
+    def rebuild_prompt_retrieval(self) -> dict[str, Any]:
+        return self._prompt_retrieval.rebuild()
+
+    def prompt_retrieval_health(self) -> dict[str, Any]:
+        return self._prompt_retrieval.health()
+
     def get_preset(self, item_id: str) -> dict[str, Any]:
         with self._connect() as connection:
             prompt = self._get_row_payload(connection, "presets", item_id, "active")
@@ -2543,8 +2580,8 @@ class SqliteStore:
                 "updatedAt": normalized_updates.get("updatedAt") or now_ms(),
             })
             connection.execute(
-                "UPDATE presets SET revision=?, type=?, category=?, usage_count=?, created_at=?, updated_at=?, payload_json=? WHERE id=? AND status='active'",
-                (updated["revision"], updated["type"], updated["category"], updated["usageCount"], updated["createdAt"], updated["updatedAt"], _json(updated), item_id),
+                "UPDATE presets SET revision=?, type=?, category=?, usage_count=?, created_at=?, updated_at=?, payload_json=?, retrieval_digest=? WHERE id=? AND status='active'",
+                (updated["revision"], updated["type"], updated["category"], updated["usageCount"], updated["createdAt"], updated["updatedAt"], _json(updated), _prompt_retrieval_digest(updated), item_id),
             )
             self._ensure_preset_public_references(connection, updated)
             return self._with_preset_public_references(connection, updated)
@@ -2564,8 +2601,8 @@ class SqliteStore:
                 if item["id"] in ordered_set:
                     item = {**item, "revision": item["revision"] + 1, "updatedAt": now}
                     connection.execute(
-                        "UPDATE presets SET sort_order=?, revision=?, updated_at=?, payload_json=? WHERE id=?",
-                        (index, item["revision"], now, _json(item), item["id"]),
+                        "UPDATE presets SET sort_order=?, revision=?, updated_at=?, payload_json=?, retrieval_digest=? WHERE id=?",
+                        (index, item["revision"], now, _json(item), _prompt_retrieval_digest(item), item["id"]),
                     )
                     next_items[index] = item
                 else:
@@ -2592,8 +2629,8 @@ class SqliteStore:
                         raise RevisionConflict(existing)
                     next_item = normalize_preset({**existing, **item, "revision": existing["revision"] + 1, "updatedAt": now})
                     connection.execute(
-                        "UPDATE presets SET revision=?, type=?, category=?, usage_count=?, sort_order=?, updated_at=?, payload_json=? WHERE id=?",
-                        (next_item["revision"], next_item["type"], next_item["category"], next_item["usageCount"], index, next_item["updatedAt"], _json(next_item), item["id"]),
+                        "UPDATE presets SET revision=?, type=?, category=?, usage_count=?, sort_order=?, updated_at=?, payload_json=?, retrieval_digest=? WHERE id=?",
+                        (next_item["revision"], next_item["type"], next_item["category"], next_item["usageCount"], index, next_item["updatedAt"], _json(next_item), _prompt_retrieval_digest(next_item), item["id"]),
                     )
                     normalized[index] = next_item
                 else:
@@ -3906,10 +3943,29 @@ class SqliteStore:
                 except Exception:
                     connection.rollback()
                     raise
+            if current_version == 17:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    drop_prompt_retrieval_preset_triggers(connection)
+                    ensure_prompt_retrieval_digest_column(connection)
+                    create_prompt_retrieval_schema(connection)
+                    rebuild_prompt_retrieval(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (18, "add-transactional-prompt-retrieval", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 18
+                except Exception:
+                    connection.rollback()
+                    raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
             connection.execute("BEGIN IMMEDIATE")
             try:
+                drop_prompt_retrieval_preset_triggers(connection)
+                ensure_prompt_retrieval_digest_column(connection)
+                create_prompt_retrieval_schema(connection)
                 self._harden_weak_public_references_v10_schema(connection)
                 self._migrate_agent_conversation_interaction_metadata(connection)
                 self._seed_builtin_skills(connection)
@@ -3937,7 +3993,7 @@ class SqliteStore:
                 id TEXT PRIMARY KEY, revision INTEGER NOT NULL, type TEXT NOT NULL, category TEXT NOT NULL,
                 usage_count INTEGER NOT NULL, sort_order INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('active','trash')),
                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER, deleted_by TEXT,
-                delete_reason TEXT, payload_json TEXT NOT NULL
+                delete_reason TEXT, payload_json TEXT NOT NULL, retrieval_digest TEXT NOT NULL
             );
             CREATE INDEX presets_status_order ON presets(status, sort_order, created_at);
             CREATE TABLE assets(
@@ -3962,6 +4018,7 @@ class SqliteStore:
         self._create_skill_reviews_v15_schema(connection)
         self._create_document_resources_v16_schema(connection)
         self._create_creative_references_v17_schema(connection)
+        create_prompt_retrieval_schema(connection)
 
     @staticmethod
     def _create_creative_references_v17_schema(connection: sqlite3.Connection) -> None:
@@ -5804,10 +5861,11 @@ class SqliteStore:
 
     def _insert_preset(self, connection: sqlite3.Connection, item: dict[str, Any], status: str, sort_order: int, trash: dict[str, Any] | None = None) -> None:
         connection.execute(
-            "INSERT INTO presets(id, revision, type, category, usage_count, sort_order, status, created_at, updated_at, deleted_at, deleted_by, delete_reason, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO presets(id, revision, type, category, usage_count, sort_order, status, created_at, updated_at, deleted_at, deleted_by, delete_reason, payload_json, retrieval_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (item["id"], item["revision"], item["type"], item["category"], item["usageCount"], sort_order, status,
              item["createdAt"], item["updatedAt"], trash.get("deletedAt") if trash else None,
-             trash.get("deletedBy") if trash else None, trash.get("deleteReason") if trash else None, _json(item)),
+             trash.get("deletedBy") if trash else None, trash.get("deleteReason") if trash else None, _json(item),
+             _prompt_retrieval_digest(item)),
         )
 
     def _create_recent_captures_schema(self, connection: sqlite3.Connection) -> None:
@@ -6221,6 +6279,10 @@ def _ensure_unique_ids(items: list[dict[str, Any]], label: str) -> None:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _prompt_retrieval_digest(value: dict[str, Any]) -> str:
+    return prompt_retrieval_digest(_json(value))
 
 
 def _canonical_json(value: Any) -> str:
