@@ -288,11 +288,11 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 1024,
-          "pattern": "^(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$))(?!.*:)[^\\u0000]+$"
+          "pattern": "^(?![/\\\\])(?!.*[/\\\\]$)(?!.*[/\\\\]{2})(?!.*(?:^|[/\\\\])\\.{1,2}(?:[/\\\\]|$))(?!.*:)[^\\u0000]+$"
         },
         "contentDigest": { "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/digest.schema.json" },
         "mediaType": { "enum": ["image/png", "image/jpeg", "image/webp"] },
-        "byteLength": { "type": "integer", "minimum": 1, "maximum": 52428800 }
+        "byteLength": { "type": "integer", "minimum": 1, "maximum": 31457280 }
       },
       "required": ["clientRequestId", "cvcCode", "workspaceRelativePath", "contentDigest", "mediaType", "byteLength"],
       "additionalProperties": false

@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Tasks 16-25 complete on the feature branch; Task 26 MCP delivery/status exposure is next; final real-Codex closed-loop gate remains the merge condition`
+- Status: `Tasks 16-26 complete on the feature branch; Task 26A typed Document writeback is next; final real-Codex closed-loop gate remains the merge condition`
 - Date: `2026-08-31`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -871,10 +871,14 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Acceptance criteria:**
 
-- [ ] Staging resolves any local source under an allowed workspace root, rejects traversal/symlink/junction escape, and returns an opaque bounded handle; commit accepts only that handle.
-- [ ] Write Tools require exact CVC/source codes and never accept search queries as targets.
-- [ ] Status polling never repeats the mutation.
-- [ ] Document, Storyboard, Prompt, image, and status scopes are checked independently before Gateway mutation.
+- [x] Staging resolves any local source under an allowed workspace root, rejects traversal/symlink/junction escape, and returns an opaque bounded handle; commit accepts only that handle.
+- [x] Write Tools require exact CVC/source codes and never accept search queries as targets.
+- [x] Status polling never repeats the mutation.
+- [x] Document, Storyboard, Prompt, image, and status scopes are checked independently before Gateway mutation.
+
+**Implementation evidence:** the repository MCP now exposes the six read Tools plus `promptcard_delivery_preview`, `promptcard_delivery_commit`, `promptcard_delivery_status`, and `promptcard_asset_stage` from one server factory for STDIO and loopback HTTP. All write inputs use the closed Bridge v3 kind-specific schemas and the shared deterministic Gateway client; status is a GET and cannot repeat a mutation. Workspace staging requires `PROMPTCARD_BRIDGE_WORKSPACE_ROOT`, resolves root/candidate real paths, rejects lexical and symlink/junction escape, enforces one regular PNG/JPEG/WebP file up to 30 MiB, and rechecks signature, length, and SHA-256 before multipart upload. Gateway retains independent profile/scope/CVC/ledger authority and returns only `AST-*` handles.
+
+**Verification evidence:** Bridge v1/v2/v3 contracts pass 52 tests, including the exact 30 MiB staging ceiling. Bridge CLI passes 8 tests. MCP passes 10 tests across legacy/modern STDIO and HTTP, including pure stdout, exact ten-Tool discovery, duplicate/replay, digest conflict, pending status, valid staging, traversal, junction escape, digest change, MIME spoofing, environment redaction, and transport security. CLI/MCP TypeScript checks pass.
 
 **Verification:** MCP tests cover valid workspace file, path escape, duplicate request, digest conflict, pending recovery, and stdout purity.
 

@@ -7,6 +7,13 @@ import {
   stableJson,
   type BridgeCliCommand,
 } from '../../promptcard-bridge-cli/src/client.ts'
+import {
+  assetStageSchema,
+  deliveryCommitSchema,
+  deliveryPreviewSchema,
+  deliveryStatusSchema,
+} from './delivery-schema.ts'
+import { resolveWorkspaceAsset, WorkspaceAssetError } from './workspace-asset.ts'
 
 const MAX_MCP_TEXT_CHARS = 8_000_000
 const reference = z.string().regex(/^(?:PRJ|PLP|PLM|CVT|CVM|CVC|SKL|CVD|CVS)-[0-7][0-9A-HJKMNP-TV-Z]{25}$/i)
@@ -23,8 +30,14 @@ export function createPromptCardMcpServer(
   fetcher: BridgeFetcher = fetch,
 ): McpServer {
   const server = new McpServer({ name: 'promptcard-mcp', version: '1.0.0' })
-  const annotations = {
+  const readAnnotations = {
     readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  } as const
+  const writeAnnotations = {
+    readOnlyHint: false,
     destructiveHint: false,
     idempotentHint: true,
     openWorldHint: false,
@@ -35,7 +48,7 @@ export function createPromptCardMcpServer(
     {
       description: 'Discover the PromptCard Bridge contract, available Tools, safety limits, and the required next workspace-discovery step.',
       inputSchema: z.strictObject({}),
-      annotations,
+      annotations: readAnnotations,
     },
     () => invokeTool({ kind: 'runtime' }, environment, fetcher),
   )
@@ -44,7 +57,7 @@ export function createPromptCardMcpServer(
     {
       description: 'Describe one user-selected PromptCard project and canvas context, including exact creative objects and approved Skill pins.',
       inputSchema: z.strictObject({ projectCode: projectReference, cvcCode: contextReference }),
-      annotations,
+      annotations: readAnnotations,
     },
     input => invokeTool(
       { kind: 'workspace', projectCode: input.projectCode, cvcCode: input.cvcCode },
@@ -61,7 +74,7 @@ export function createPromptCardMcpServer(
         revision: z.number().int().min(1),
         digest,
       }),
-      annotations,
+      annotations: readAnnotations,
     },
     input => invokeTool(
       {
@@ -79,7 +92,7 @@ export function createPromptCardMcpServer(
     {
       description: 'Resolve one exact typed public reference that is explicitly present in the selected canvas context.',
       inputSchema: z.strictObject({ cvcCode: contextReference, code: reference }),
-      annotations,
+      annotations: readAnnotations,
     },
     input => invokeTool(
       { kind: 'reference', cvcCode: input.cvcCode, code: input.code },
@@ -98,7 +111,7 @@ export function createPromptCardMcpServer(
         categories: z.array(z.string().min(1).max(120)).max(16).default([]),
         limit: z.number().int().min(1).max(20).default(8),
       }),
-      annotations,
+      annotations: readAnnotations,
     },
     input => invokeTool(
       {
@@ -118,13 +131,61 @@ export function createPromptCardMcpServer(
     {
       description: 'Read one bounded image or video through an exact PLM/CVM reference explicitly authorized by the selected canvas context.',
       inputSchema: z.strictObject({ cvcCode: contextReference, code: mediaReference }),
-      annotations,
+      annotations: readAnnotations,
     },
     input => invokeTool(
       { kind: 'asset', cvcCode: input.cvcCode, code: input.code },
       environment,
       fetcher,
     ),
+  )
+  server.registerTool(
+    'promptcard_delivery_preview',
+    {
+      description: 'Create or replay one typed, review-only Document, Storyboard, Prompt, or image-placement proposal in an exact canvas context.',
+      inputSchema: deliveryPreviewSchema,
+      annotations: writeAnnotations,
+    },
+    input => invokeTool({ kind: 'delivery-preview', request: input }, environment, fetcher),
+  )
+  server.registerTool(
+    'promptcard_delivery_commit',
+    {
+      description: 'Move one exact previewed delivery into the visual review queue; this never auto-applies creative content.',
+      inputSchema: deliveryCommitSchema,
+      annotations: writeAnnotations,
+    },
+    input => invokeTool({ kind: 'delivery-commit', request: input }, environment, fetcher),
+  )
+  server.registerTool(
+    'promptcard_delivery_status',
+    {
+      description: 'Read the durable status of one profile-scoped delivery request without repeating its mutation.',
+      inputSchema: deliveryStatusSchema,
+      annotations: readAnnotations,
+    },
+    input => invokeTool({ kind: 'delivery-status', clientRequestId: input.clientRequestId }, environment, fetcher),
+  )
+  server.registerTool(
+    'promptcard_asset_stage',
+    {
+      description: 'Stage one validated image from the configured workspace root and return an opaque handle for image.place.',
+      inputSchema: assetStageSchema,
+      annotations: writeAnnotations,
+    },
+    async input => {
+      try {
+        const asset = await resolveWorkspaceAsset(input, environment)
+        return await invokeTool(
+          { kind: 'asset-stage', request: input, filename: asset.filename, content: asset.content },
+          environment,
+          fetcher,
+        )
+      } catch (error) {
+        if (error instanceof WorkspaceAssetError) return toolError(error.code)
+        return toolError('promptcard_mcp_internal')
+      }
+    },
   )
 
   return server

@@ -10,7 +10,7 @@ The maintained frontend contract is the PromptCard Runtime Boundary. In developm
 
 The external-Agent surface is separate from the browser Runtime boundary and uses `/api/promptcard/bridge/v3/*`. It accepts only `Authorization: Bearer <bridge-token>` backed by `PROMPTCARD_BRIDGE_PROFILES_JSON`; the internal Runtime token and browser session do not authorize it, and a Bridge credential cannot call internal-chat, model-management, or image-generation routes.
 
-Each trusted profile declares fixed scopes and may bind one configured Codex `repositoryScope`. Neither `profileId`, scopes, client identity, nor repository scope is accepted from a Tool request. The current read-only slice exposes:
+Each trusted profile declares fixed scopes and may bind one configured Codex `repositoryScope`. Neither `profileId`, scopes, client identity, nor repository scope is accepted from a Tool request. The current Bridge exposes:
 
 - `GET /api/promptcard/bridge/v3/runtime`
 - `GET /api/promptcard/bridge/v3/workspace?projectCode=PRJ-...&cvcCode=CVC-...`
@@ -18,20 +18,25 @@ Each trusted profile declares fixed scopes and may bind one configured Codex `re
 - `GET /api/promptcard/bridge/v3/skill?skillCode=SKL-...&revision=...&digest=sha256:...`
 - `POST /api/promptcard/bridge/v3/prompt-search`
 - `GET /api/promptcard/bridge/v3/asset?cvcCode=CVC-...&code=PLM-...|CVM-...`
+- `POST /api/promptcard/bridge/v3/assets/stage`
+- `POST /api/promptcard/bridge/v3/delivery/preview`
+- `POST /api/promptcard/bridge/v3/delivery/commit`
+- `GET /api/promptcard/bridge/v3/delivery/status?clientRequestId=...`
 
-`workspace` requires an explicit project/context pair, lists only objects snapshotted into that CVC, and resolves only active, trusted, enabled exact Codex Skill pins in the profile's configured repository scope. `reference` refuses codes outside the CVC. `prompt-search` reuses Storage v18 retrieval with the trusted Bridge profile as caller identity. `asset` accepts only a `PLM` or `CVM` explicitly contained by the CVC, limits the body to 5 MiB, validates current lifecycle/MIME/size/reference metadata, and returns filename, MIME, size, SHA-256 and Base64 without an internal asset ID or path. Delivery, staging and status remain advertised by the frozen v3 contract but are enabled only as their Plan 008 slices land.
+`workspace` requires an explicit project/context pair, lists only objects snapshotted into that CVC, and resolves only active, trusted, enabled exact Codex Skill pins in the profile's configured repository scope. `reference` refuses codes outside the CVC. `prompt-search` reuses Storage v18 retrieval with the trusted Bridge profile as caller identity. `asset` accepts only a `PLM` or `CVM` explicitly contained by the CVC, limits the body to 5 MiB, validates current lifecycle/MIME/size/reference metadata, and returns filename, MIME, size, SHA-256 and Base64 without an internal asset ID or path. Delivery preview/commit/status use the profile-scoped v19 ledger; Prompt and image kinds are implemented now, while Document and Storyboard adapters land in Tasks 26A-26B.
 
 The repository CLI in `promptcard-bridge-cli/` calls only these Gateway routes, including bounded search and exact asset read. It accepts the Bridge origin/token from process environment, refuses non-loopback origins before sending the token, produces one stable JSON value on stdout, sends diagnostics to stderr, and assigns stable exit classes for usage/auth/lifecycle/offline/remote failures. CLI and Gateway success payloads are JSON-equivalent; the CLI does not read Storage or project files.
 
-`promptcard-mcp/` wraps that same client with six closed-schema, read-only Tools. `npm.cmd run mcp:stdio` reserves stdout for JSON-RPC. `npm.cmd run mcp:http` binds only `127.0.0.1` (default port `8142`), serves `/mcp`, validates loopback Host/Origin, and requires a separate `PROMPTCARD_MCP_HTTP_TOKEN`. Both transports support the 2025-11-25 and 2026-07-28 protocol eras from one server factory; no legacy SSE endpoint exists.
+`promptcard-mcp/` wraps that same client with ten closed-schema Tools: six bounded reads plus delivery preview, delivery commit, delivery status, and image staging. `npm.cmd run mcp:stdio` reserves stdout for JSON-RPC. `npm.cmd run mcp:http` binds only `127.0.0.1` (default port `8142`), serves `/mcp`, validates loopback Host/Origin, and requires a separate `PROMPTCARD_MCP_HTTP_TOKEN`. Both transports support the 2025-11-25 and 2026-07-28 protocol eras from one server factory; no legacy SSE endpoint exists. Preview/commit are idempotent, proposal-only mutations; status is read-only and never repeats a mutation.
 
 Required process environment is intentionally small:
 
 - both transports: `PROMPTCARD_BRIDGE_URL`, `PROMPTCARD_BRIDGE_TOKEN`;
+- image staging: `PROMPTCARD_BRIDGE_WORKSPACE_ROOT`, an explicit absolute root whose real path contains every file eligible for staging;
 - HTTP only: `PROMPTCARD_MCP_HTTP_TOKEN`, optional `PROMPTCARD_MCP_PORT`;
 - platform launch essentials such as `PATH`, `SystemRoot`, `ComSpec`, `TEMP`, and `TMP` may be passed by the host.
 
-The MCP process has no direct SQLite, shell, keyring, arbitrary-filesystem, or general network Tool. Codex is the first real acceptance host; other MCP hosts use the identical Tool names, schemas, permissions, and results.
+The MCP process has no direct SQLite, shell, keyring, arbitrary-filesystem, or general network Tool. Only `promptcard_asset_stage` reads a caller-declared relative path; it resolves both root and candidate through the filesystem, rejects traversal and symlink/junction escape, validates regular-file status, 30 MiB size, image signature, declared length, and SHA-256, then uploads multipart bytes to Gateway. Codex is the first real acceptance host; other MCP hosts use the identical Tool names, schemas, permissions, and results.
 
 ## PromptCard Runtime Boundary
 

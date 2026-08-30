@@ -5,6 +5,27 @@ export type BridgeCliCommand =
   | { kind: 'skill'; skillCode: string; revision: number; digest: string }
   | { kind: 'search'; cvcCode: string; query: string; types: string[]; categories: string[]; limit: number }
   | { kind: 'asset'; cvcCode: string; code: string }
+  | { kind: 'asset-stage'; request: AssetStageRequest; filename: string; content: Uint8Array }
+  | { kind: 'delivery-preview'; request: DeliveryPreviewRequest }
+  | { kind: 'delivery-commit'; request: DeliveryCommitRequest }
+  | { kind: 'delivery-status'; clientRequestId: string }
+
+export type AssetStageRequest = {
+  clientRequestId: string
+  cvcCode: string
+  workspaceRelativePath: string
+  contentDigest: string
+  mediaType: 'image/png' | 'image/jpeg' | 'image/webp'
+  byteLength: number
+}
+
+export type DeliveryPreviewRequest = Record<string, unknown>
+
+export type DeliveryCommitRequest = {
+  clientRequestId: string
+  normalizedRequestDigest: string
+  proposalId: string
+}
 
 export type BridgeCliFailure = {
   ok: false
@@ -92,13 +113,26 @@ export async function invokeBridge(
   const baseUrl = loopbackBaseUrl(environment.PROMPTCARD_BRIDGE_URL)
   const endpoint = endpointFor(command, baseUrl)
   const headers: Record<string, string> = { authorization: `Bearer ${token}` }
-  if (endpoint.body !== undefined) headers['content-type'] = 'application/json'
+  let body: BodyInit | undefined
+  if (endpoint.multipart !== undefined) {
+    const form = new FormData()
+    form.append('metadata', JSON.stringify(endpoint.multipart.request))
+    form.append(
+      'file',
+      new Blob([Uint8Array.from(endpoint.multipart.content).buffer], { type: endpoint.multipart.request.mediaType }),
+      endpoint.multipart.filename,
+    )
+    body = form
+  } else if (endpoint.body !== undefined) {
+    headers['content-type'] = 'application/json'
+    body = JSON.stringify(endpoint.body)
+  }
   let response: Response
   try {
     response = await fetcher(endpoint.url, {
       method: endpoint.method,
       headers,
-      ...(endpoint.body === undefined ? {} : { body: JSON.stringify(endpoint.body) }),
+      ...(body === undefined ? {} : { body }),
       signal: AbortSignal.timeout(10_000),
     })
   } catch {
@@ -116,7 +150,12 @@ export function stableJson(value: unknown): string {
   return JSON.stringify(sortValue(value))
 }
 
-function endpointFor(command: BridgeCliCommand, baseUrl: URL): { url: URL; method: 'GET' | 'POST'; body?: unknown } {
+function endpointFor(command: BridgeCliCommand, baseUrl: URL): {
+  url: URL
+  method: 'GET' | 'POST'
+  body?: unknown
+  multipart?: { request: AssetStageRequest; filename: string; content: Uint8Array }
+} {
   const url = new URL('/api/promptcard/bridge/v3/runtime', baseUrl)
   if (command.kind === 'workspace') {
     url.pathname = '/api/promptcard/bridge/v3/workspace'
@@ -148,6 +187,26 @@ function endpointFor(command: BridgeCliCommand, baseUrl: URL): { url: URL; metho
     url.pathname = '/api/promptcard/bridge/v3/asset'
     url.searchParams.set('cvcCode', command.cvcCode)
     url.searchParams.set('code', command.code)
+  } else if (command.kind === 'asset-stage') {
+    url.pathname = '/api/promptcard/bridge/v3/assets/stage'
+    return {
+      url,
+      method: 'POST',
+      multipart: {
+        request: command.request,
+        filename: command.filename,
+        content: command.content,
+      },
+    }
+  } else if (command.kind === 'delivery-preview') {
+    url.pathname = '/api/promptcard/bridge/v3/delivery/preview'
+    return { url, method: 'POST', body: command.request }
+  } else if (command.kind === 'delivery-commit') {
+    url.pathname = '/api/promptcard/bridge/v3/delivery/commit'
+    return { url, method: 'POST', body: command.request }
+  } else if (command.kind === 'delivery-status') {
+    url.pathname = '/api/promptcard/bridge/v3/delivery/status'
+    url.searchParams.set('clientRequestId', command.clientRequestId)
   }
   return { url, method: 'GET' }
 }

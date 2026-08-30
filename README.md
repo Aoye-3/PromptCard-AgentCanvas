@@ -276,7 +276,7 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 ### PromptCard Local Agent Bridge 与 Prompt 库 RAG
 
-当前已经完成 Skill Hub 管理工作流、宿主中立的 Bridge v1/v2 合同边界，以及承载 Document、Storyboard、Prompt 与图片提案的 Bridge v3 合同。Storage v19 在 v18 事务化 Prompt FTS5 检索与稳定 `CVD-*` / `CVS-*` 外部引用之上，增加统一的 profile-scoped 写回账本；独立凭据保护的只读 Gateway、确定性 JSON CLI 和 repository-owned MCP 已能让外部 Agent 从明确选择的 `PRJ-*` / `CVC-*` 工作上下文发现对象、精确 Skill pin、带 revision/digest 的 Prompt 证据及明确授权的媒体。
+当前已经完成 Skill Hub 管理工作流、宿主中立的 Bridge v1/v2 合同边界，以及承载 Document、Storyboard、Prompt 与图片提案的 Bridge v3 合同。Storage v19 在 v18 事务化 Prompt FTS5 检索与稳定 `CVD-*` / `CVS-*` 外部引用之上，增加统一的 profile-scoped 写回账本；独立凭据保护的 Gateway、确定性 JSON CLI 和 repository-owned MCP 已能让外部 Agent 从明确选择的 `PRJ-*` / `CVC-*` 工作上下文发现对象、精确 Skill pin、带 revision/digest 的 Prompt 证据及明确授权的媒体，并通过同一合同提交、排队和查询待审阅的创作提案。
 
 - 外部 Agent 应用是创作入口；PMAgent-Canvas 不内嵌某一家的聊天界面，也不按客户端名称分叉核心工具、schema、权限或结果。
 - MCP 已支持本地 STDIO 与仅监听 `127.0.0.1` 的 Streamable HTTP，并覆盖 2025-11-25 与 2026-07-28 两个协议时代；不实现旧 SSE。Codex 是本轮首个真实验收宿主，TRAE 保留合同兼容覆盖，不作为本轮人工验收门槛；豆包与 MarsCode 暂标“待验证”。
@@ -285,7 +285,7 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 - 左侧全局 **Skill Hub** 已支持惰性导入预审、结构化发现、revision 历史与 diff、精确 revision 信任审阅、archive/restore，以及 Codex/local-Agent 独立 pin 和显式投影修复。
 - Codex `.agents/skills` 是一个准确命名的具体 Host Adapter；canonical revision 更新不会自动移动 Codex 或 local-Agent pin。
 - Skill 导入只读取与校验包，不执行其中的脚本、安装器、hook 或依赖；本地 Agent 只读取受限的指令与文本参考资料。
-- Canvas 已使用“复制 Agent/MCP 上下文”这一宿主中立入口；当前功能分支已完成只读 Gateway、Storage v18 检索、local-Agent RAG、repository JSON CLI、同一 Gateway 之上的六工具 MCP、Storage v19 统一写回账本，以及 `prompt.create` 与 `image.place` 两条可视化闭环。外部 Agent 的 preview/commit 只产生待审阅提案；Prompt 接受后先保存全 `user` 节点并取得 `CVT-*`，图片则先经 30 MB、MIME、摘要和路径边界校验进入不透明 `AST-*` staging，再由 Canvas 保存普通图片节点并取得 `CVM-*` 后确认。两类流程都可安全重试，不重复建节点；图片写回不会伪造 provider generation run。下一步按 Plan 008 把 delivery/status 暴露到 MCP，再扩展 Document 与 Storyboard typed writeback。
+- Canvas 已使用“复制 Agent/MCP 上下文”这一宿主中立入口；当前功能分支已完成只读 Gateway、Storage v18 检索、local-Agent RAG、repository JSON CLI、Storage v19 统一写回账本，以及同一 Gateway 之上的十工具 MCP。新增的 `promptcard_delivery_preview`、`promptcard_delivery_commit`、`promptcard_delivery_status` 与 `promptcard_asset_stage` 对 Codex 和其他 MCP 宿主保持相同 schema 与结果；文件 staging 只允许配置的 workspace root 内真实文件，拒绝路径穿越和 symlink/junction 逃逸。外部 Agent 的 preview/commit 只产生待审阅提案；Prompt 接受后先保存全 `user` 节点并取得 `CVT-*`，图片则先经 30 MB、MIME、摘要和路径边界校验进入不透明 `AST-*` staging，再由 Canvas 保存普通图片节点并取得 `CVM-*` 后确认。两类流程都可安全重试，不重复建节点；图片写回不会伪造 provider generation run。下一步按 Plan 008 扩展 Document 与 Storyboard typed writeback。
 
 本地 Agent 与 MCP 现已复用同一个有界、可引用、可审计 Prompt 检索核心，但保持会话、身份与权限隔离。Plan 008 的 Tasks 15.6–15.10 自动化结果保留为回归基线，Task 19 已再次确认连续消息、丢失响应重放和重启 hydration；原 Checkpoint 3.5 人工探针已并入最终真实 Codex 闭环。详见 [Plan 008 执行台账](./docs/superpowers/plans/2026-08-22-plan-008-execution.md)、[ADR-023](./docs/decisions/ADR-023-typed-creative-writeback-and-agent-workspace.md) 与 [Plan 009](./docs/Plan/009-portable-creative-context-environment.md)。
 

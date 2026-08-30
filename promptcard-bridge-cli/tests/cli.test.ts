@@ -1,14 +1,24 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { after, before, test } from 'node:test'
 import path from 'node:path'
 
+import { invokeBridge } from '../src/client.ts'
+
 const token = 'bridge-cli-test-token-that-is-longer-than-thirty-two-characters'
 const project = 'PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAV'
 const context = 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV'
 const media = 'CVM-01ARZ3NDEKTSV4RRFFQ69G5FAV'
+const proposal = 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAV'
+const stagedAsset = 'AST-01ARZ3NDEKTSV4RRFFQ69G5FAV'
+const stageContent = readFileSync(path.resolve('public/app-icon.png'))
+const promptRequest = JSON.parse(readFileSync(
+  path.resolve('contracts/promptcard-bridge/v3/fixtures/06-prompt-create-valid.json'),
+  'utf8',
+)).instance
 const runtimeFixture = JSON.parse(readFileSync(
   path.resolve('contracts/promptcard-bridge/v3/fixtures/11-runtime-description-valid.json'),
   'utf8',
@@ -17,7 +27,7 @@ let server: Server
 let baseUrl: string
 
 before(async () => {
-  server = createServer((request, response) => {
+  server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, `Bearer ${token}`)
     response.setHeader('content-type', 'application/json')
     const url = new URL(request.url || '/', 'http://127.0.0.1')
@@ -57,6 +67,25 @@ before(async () => {
         digest: `sha256:${'b'.repeat(64)}`,
         dataBase64: 'iVBORw0KGgo=',
       }))
+      return
+    }
+    if (url.pathname.endsWith('/assets/stage')) {
+      assert.match(request.headers['content-type'] || '', /^multipart\/form-data; boundary=/)
+      response.end(JSON.stringify({ stagedAssetHandle: stagedAsset, state: 'staged' }))
+      return
+    }
+    if (url.pathname.endsWith('/delivery/preview')) {
+      assert.deepEqual(JSON.parse(await requestBody(request)), promptRequest)
+      response.end(JSON.stringify({ proposalId: proposal, state: 'previewed' }))
+      return
+    }
+    if (url.pathname.endsWith('/delivery/commit')) {
+      response.end(JSON.stringify({ proposalId: proposal, state: 'pending_review' }))
+      return
+    }
+    if (url.pathname.endsWith('/delivery/status')) {
+      assert.equal(url.searchParams.get('clientRequestId'), promptRequest.clientRequestId)
+      response.end(JSON.stringify({ proposalId: proposal, state: 'pending_review' }))
       return
     }
     if (url.searchParams.get('code')?.startsWith('CVD-')) {
@@ -106,6 +135,42 @@ test('asset reads only an exact public media reference inside a context', async 
   })
 })
 
+test('shared client maps typed delivery, status, and multipart stage through the same Gateway', async () => {
+  const environment = {
+    PROMPTCARD_BRIDGE_URL: baseUrl,
+    PROMPTCARD_BRIDGE_TOKEN: token,
+  }
+  assert.deepEqual(await invokeBridge(
+    { kind: 'delivery-preview', request: promptRequest },
+    environment,
+  ), { proposalId: proposal, state: 'previewed' })
+  assert.deepEqual(await invokeBridge({
+    kind: 'delivery-commit',
+    request: {
+      clientRequestId: promptRequest.clientRequestId,
+      normalizedRequestDigest: promptRequest.normalizedRequestDigest,
+      proposalId: proposal,
+    },
+  }, environment), { proposalId: proposal, state: 'pending_review' })
+  assert.deepEqual(await invokeBridge(
+    { kind: 'delivery-status', clientRequestId: promptRequest.clientRequestId },
+    environment,
+  ), { proposalId: proposal, state: 'pending_review' })
+  assert.deepEqual(await invokeBridge({
+    kind: 'asset-stage',
+    request: {
+      clientRequestId: 'asset-stage-cli-001',
+      cvcCode: context,
+      workspaceRelativePath: 'public/app-icon.png',
+      contentDigest: `sha256:${createHash('sha256').update(stageContent).digest('hex')}`,
+      mediaType: 'image/png',
+      byteLength: stageContent.length,
+    },
+    filename: 'app-icon.png',
+    content: stageContent,
+  }, environment), { stagedAssetHandle: stagedAsset, state: 'staged' })
+})
+
 test('structured remote errors are redacted and use stable lifecycle exit code', async () => {
   const result = await runCli(['resolve', '--context', context, '--code', 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAV'])
   assert.equal(result.code, 4)
@@ -153,4 +218,10 @@ function runCli(args: string[], environment: Record<string, string> = {}) {
     child.on('error', reject)
     child.on('close', code => resolve({ code, stdout, stderr }))
   })
+}
+
+async function requestBody(request: import('node:http').IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of request) chunks.push(Buffer.from(chunk))
+  return Buffer.concat(chunks).toString('utf8')
 }

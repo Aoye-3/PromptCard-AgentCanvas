@@ -686,11 +686,15 @@ describe("PromptCard bridge v3 typed creative writeback boundary", () => {
     const validateDelivery = ajv.getSchema(
       "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-preview-request.schema.json",
     );
+    const validateStage = ajv.getSchema(
+      "https://schemas.promptcard.dev/promptcard-bridge/v3/asset-stage-request.schema.json",
+    );
     const fixtures = new Map(
       (await loadV3Fixtures()).map(({ fixture }) => [fixture.name, fixture]),
     );
     const prompt = fixtures.get("prompt create proposal").instance;
     const image = fixtures.get("image placement proposal").instance;
+    const stage = fixtures.get("bounded image staging request").instance;
 
     assert.equal(validateDelivery({ ...prompt, nodeId: "internal-node" }), false);
     assert.equal(validateDelivery({ ...prompt, targetTitle: "Opening shot" }), false);
@@ -702,5 +706,7 @@ describe("PromptCard bridge v3 typed creative writeback boundary", () => {
       }),
       false,
     );
+    assert.equal(validateStage({ ...stage, byteLength: 30 * 1024 * 1024 }), true);
+    assert.equal(validateStage({ ...stage, byteLength: 30 * 1024 * 1024 + 1 }), false);
   });
 });

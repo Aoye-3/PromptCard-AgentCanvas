@@ -41,6 +41,8 @@ Task 24 implements the `prompt.create` vertical slice. Preview and commit are se
 
 Task 25 implements the `image.place` vertical slice without borrowing provider-generation identity. The external host uploads bounded multipart bytes and closed metadata; Gateway validates scope, path shape, MIME, filename, size, and digest before Storage mutation. Storage validates and prepares the image with the existing asset pipeline, records an idempotent `asset.stage`, and exposes only an opaque `AST-*` handle externally. Preview/commit produces a visual placement proposal, while Free Canvas saves a deterministic ordinary image carrying `promptcard-bridge` provenance and acknowledges acceptance only with the resulting same-project `CVM-*`. A crash after file creation, lost response, restart, or repeated acceptance converges on the same asset and node and never creates an image-generation run.
 
+Task 26 exposes the v3 write surface through the same repository CLI client and MCP server used by the read Tools. STDIO and loopback HTTP now publish identical closed schemas for delivery preview, commit, status, and asset staging. Staging requires an explicit absolute workspace root and resolves the candidate's real path before reading, so traversal and symlink/junction escape fail before Gateway I/O; size, signature, declared length, and digest are rechecked locally and again by Gateway. Status remains read-only, while preview/commit are declared idempotent, non-destructive proposal operations. Codex and other hosts therefore share one Tool contract rather than client-specific adapters.
+
 ## Alternatives Considered
 
 ### Extend Bridge v2 In Place
