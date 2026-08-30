@@ -54,7 +54,7 @@ The text Agent supports the third step without becoming a general-purpose autono
 - `rewrite` exposes the same tool name with a different schema that accepts one complete `userText`. Valid output becomes `free_canvas_text_create`; approval creates a derived node to the source node's right and never changes the source.
 - New proposals carry `baseNodeRevision`, `templateDigest`, and `baseSegmentsDigest`. Gateway and the apply path reject the whole proposal when any basis or anchor is stale.
 - The built-in `canvas-prompt-editor` revision 3 is bound by `canvas.prompt.edit`, but target locking, reference immutability, tool schemas, and approval checks remain Gateway/application policy rather than Skill-granted authority.
-- Prompt Library content is not included in ordinary Canvas discussion or edit calls. It is available only in the explicit `prompt-library` mode, which exposes search but no Canvas mutation tool.
+- Prompt Library content is not included in ordinary Canvas discussion or edit calls. Only explicit Prompt Library modes may send a bounded `promptRetrieval` request; Gateway resolves revision-pinned Storage evidence and the pi search tool can inspect only that evidence, with no Storage authority or Canvas mutation tool.
 - The frontend must show Apply and Reject controls. No Agent response writes to Canvas automatically.
 
 ## Experimental Conversation And Creative-Document Contract
@@ -70,7 +70,7 @@ The text Agent supports the third step without becoming a general-purpose autono
 
 ## Prompt Library Contract
 
-The Prompt Library Agent may search the provided snapshot and emit only additive `prompt_library_write_proposal` records with `operation: "create"`. Update, overwrite, archive, and delete are outside the Agent tool surface.
+The Prompt Library Agent may search Gateway-supplied, revision-pinned evidence and emit only additive `prompt_library_write_proposal` records with `operation: "create"`. The browser never supplies a Prompt snapshot. Citations and retrieval diagnostics are persisted with the assistant turn; unavailable retrieval degrades to an explicit empty-evidence state. Update, overwrite, archive, and delete are outside the Agent tool surface.
 
 ## Media Analysis Contract
 

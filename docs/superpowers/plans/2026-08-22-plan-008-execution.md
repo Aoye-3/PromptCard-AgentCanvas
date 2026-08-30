@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Tasks 16-19 complete on the feature branch; Task 20 local-Agent RAG integration is next; final real-Codex closed-loop gate remains the merge condition`
+- Status: `Tasks 16-20 complete on the feature branch; Task 21 repository-owned MCP server is next; final real-Codex closed-loop gate remains the merge condition`
 - Date: `2026-08-30`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -705,11 +705,17 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Send query, conversation, filters, and exact codes only; retrieve bounded evidence in Gateway/Storage; inject citations and persist retrieval audit.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). The browser snapshot field is closed and rejected; only explicit Prompt Library modes can request bounded retrieval.
+
 **Acceptance criteria:**
 
-- [ ] Browser sends no Prompt array and runtime receives at most the fixed evidence budget.
-- [ ] Only explicit Prompt Library RAG modes receive the retriever/evidence.
-- [ ] Citations resolve to current Prompt identities; lexical degraded state is visible and auditable.
+- [x] Browser sends no Prompt array and runtime receives at most the fixed evidence budget.
+- [x] Only explicit Prompt Library RAG modes receive the retriever/evidence.
+- [x] Citations resolve to current Prompt identities; unavailable retrieval is visible and the successful query is auditable without copying Prompt bodies into the conversation ledger.
+
+**Implementation evidence:** `promptRetrieval` is a closed query/filter/exact-code request capped at 20 results. Gateway reuses Storage v18 search/exact resolution, rejects stale or malformed evidence, caps injected content at 12,000 characters, and persists only retrieval diagnostics/citations with the turn. The pi tool searches only this bounded evidence. Frontend messages persist and render exact `PLP` revision/digest citations and an explicit degraded state. `chat-experimental`, ordinary Canvas completion/rewrite, and non-RAG calls transport no Prompt evidence.
+
+**Verification evidence:** Gateway boundary `50 passed` and full Gateway `471 passed`; focused frontend/service/text-runtime `170 passed`; full frontend/text-runtime `1,386 passed`; full Storage `348 passed, 3 skipped, 338 subtests passed`; exact-reference focus `13 passed, 35 subtests passed`; Bridge contracts `51 passed`; main and text-runtime TypeScript checks pass. Coverage includes lifecycle maintenance, stale rejection, deterministic ranking, evidence budgets, unavailable-retrieval fallback, mode isolation, snapshot rejection, citation persistence, and citation/degraded-state rendering.
 
 **Verification:** Frontend/Gateway/runtime tests prove no snapshot transport, mode isolation, citation rendering, stale rejection, and disabled-RAG fallback.
 
@@ -762,11 +768,11 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 ### Checkpoint 4: Read bridge and RAG
 
-- [ ] Browser Prompt snapshots are removed from RAG mode.
+- [x] Browser Prompt snapshots are removed from RAG mode.
 - [ ] CLI/MCP/Gateway share schemas and exact resolvers.
 - [ ] Ordinary Agent/Canvas/image workflows work with MCP absent.
 - [ ] Full frontend, Storage, Gateway, runtime, build, and MCP contract gates pass.
-- [ ] Local-Agent RAG resolves bounded canonical retrieval records rather than accepting browser-supplied Prompt snapshots as authority.
+- [x] Local-Agent RAG resolves bounded canonical retrieval records rather than accepting browser-supplied Prompt snapshots as authority.
 - [ ] CLI, MCP, and Gateway return contract-equivalent exact-resolution results and share retrieval records/ranking without sharing conversations, audit ownership, or permissions.
 - [ ] Namespace, project scope, lifecycle, unavailable-resource, and retrieval-unavailable outcomes remain distinct, structured, and redacted.
 - [ ] MCP can be stopped or omitted while ordinary Agent, Canvas, Prompt Library, and image-generation workflows continue to work.

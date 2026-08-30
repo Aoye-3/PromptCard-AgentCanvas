@@ -396,8 +396,7 @@ Request:
         "userText": "existing prompt"
       }
     }
-  },
-  "promptLibrary": []
+  }
 }
 ```
 
@@ -463,8 +462,7 @@ An ordinary experimental turn adds `"interactionMode": "chat-experimental"`. It 
   "documentResourceIds": ["0123456789abcdef0123456789abcdef"],
   "explicitDocumentNodeIds": ["document-node-1"],
   "documentWriteContext": { "operationKind": "document_create" },
-  "workspaceContext": null,
-  "promptLibrary": []
+  "workspaceContext": null
 }
 ```
 
@@ -501,7 +499,7 @@ Gateway never trusts the browser receipt alone. It reloads the project, requires
 
 #### Explicit Prompt Library lookup
 
-Prompt Library access is opt-in per request. A normal project Agent request, including `complete` and `rewrite`, sends `promptLibrary: []`; the Runtime does not inject the library into model context and does not expose `search_prompt_library`. To perform a read-only lookup from the Canvas Agent, the browser sends:
+Prompt Library access is opt-in per request. A normal project Agent request, including `complete`, `rewrite`, ordinary discussion, media analysis, and `chat-experimental`, omits `promptRetrieval`; Gateway injects no library evidence and the Runtime does not expose `search_prompt_library`. To perform a read-only lookup from the Canvas Agent or dedicated Prompt Library assistant, the browser sends only a bounded request:
 
 ```json
 {
@@ -512,24 +510,19 @@ Prompt Library access is opt-in per request. A normal project Agent request, inc
     "referenceNodeIds": [],
     "mentions": []
   },
-  "promptLibrary": [
-    {
-      "id": "preset-1",
-      "type": "style",
-      "category": "cinematic",
-      "label": "Cool industrial light",
-      "content": "Hard directional light with cool highlights.",
-      "meta": {
-        "media": [{ "assetId": "asset-1", "captureId": "capture-1" }]
-      }
-    }
-  ]
+  "promptRetrieval": {
+    "query": "cool industrial light",
+    "types": ["style"],
+    "categories": ["cinematic"],
+    "exactCodes": [],
+    "limit": 10
+  }
 }
 ```
 
-The browser includes at most 200 Prompt records, and request validation rejects larger arrays. The stateless pi Runtime narrows an accepted snapshot to the first 100 records. Search covers Prompt labels and content and returns the matching records with their supplied metadata, including linked `meta.media`; it is not authorization to load other assets or records. In this mode `allowedProposalKinds` is empty, so a successful response has no Canvas write target or Canvas proposal.
+`query` is at most 256 characters; type/category filters, exact `PLP` codes, and result count have fixed limits. Gateway queries Storage, revalidates revision/digest evidence, caps total injected label/content to 12,000 characters, and sends no internal preset ID, local path, raw asset bytes, or unrestricted metadata to the pi Runtime. The returned `diagnostics.promptRetrieval` contains `auditId`, query digest, stale rejection/result counts, degraded/error state, and citations (`referenceCode`, title, revision, digest). The frontend persists citations with the assistant message and renders them outside model-authored Markdown.
 
-The embedded Canvas client renders Runtime validation failures as a visible summary rather than hiding the original failure behind a generic disconnected state. Prompt Library length failures are summarized as `Prompt Library 条目超过上限（实际数量/上限）`; other validation text is whitespace-normalized and limited to 240 characters.
+If retrieval Storage is unavailable, Gateway invokes the Agent with an empty evidence list and returns `degraded: true` plus `prompt_retrieval_unavailable`; the UI makes that state visible. A malformed request, forbidden mode, or unknown exact code fails closed. In `prompt-library` Canvas mode `allowedProposalKinds` remains empty, so retrieval has no Canvas write target.
 
 ### `POST /agent-api/promptcard/runtime/media-analysis`
 

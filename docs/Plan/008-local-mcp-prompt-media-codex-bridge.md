@@ -2,7 +2,7 @@
 
 ## Status
 
-Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-18 are implemented on `feat/skill-document-storyboard-loop`; Task 19 durability regression confirmation is next.
+Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-20 are implemented on `feat/skill-document-storyboard-loop`; Task 21, the repository-owned MCP server, is next.
 
 ## Current Normative Boundary
 
@@ -142,7 +142,7 @@ The current left navigation includes the complete Task 15 Skill Hub management s
 
 Codex `.agents/skills` is a derived native projection, not the canonical store. Canonical revision updates do not move either host pin. Skill scripts, hooks, installers, automatic semantic matching, and MCP Skill resources remain unimplemented. Task 16's host-neutral read surface resolves Codex pins only through a trusted profile repository scope; Task 18 Prompt search remains discovery-only and requires an explicit `CVC-*`.
 
-The current Canvas Agent `prompt-library` mode is still request-snapshot based: the browser may serialize up to 200 Prompt records, the pi Runtime keeps at most 100, and `search_prompt_library` searches only that array. This avoids ambient library access but scales request and context size with the library, cannot provide maintained semantic retrieval, and cannot durably explain why a Prompt was selected. The shared RAG track below replaces this transport while keeping Agent and MCP permissions separate.
+The Canvas Agent `prompt-library` mode and dedicated Prompt Library assistant now send only a bounded query/filter/exact-code request. Gateway loads revision-pinned evidence from Storage schema v18, caps the injected body, records digest-only retrieval audit metadata, and returns resolvable citations plus an explicit degraded state. Ordinary Canvas editing, discussion, media analysis, and `chat-experimental` receive neither the retriever nor Prompt evidence. The pi Runtime still exposes its model-facing `search_prompt_library` tool, but that tool searches only Gateway-supplied evidence and has no Storage authority.
 
 Agent-delivered images must not be represented as successful Seedream or other provider generation runs. New delivery records use v2 `promptcard-bridge` provenance and a profile-scoped ledger; v1 `codex-harness` remains compatibility-only. Delivery uses a separate additive asset path.
 
@@ -723,14 +723,14 @@ Additional rules:
 
 **Acceptance:**
 
-- [ ] Agent RAG requests and MCP searches contain no browser-supplied full Prompt array.
+- [x] Agent RAG requests contain no browser-supplied full Prompt array; MCP reuse remains Task 22.
 - [ ] Exact Prompt/media codes resolve deterministically before ranking.
 - [ ] Chinese and English paraphrases retrieve relevant active Prompts with reviewable reasons.
-- [ ] Result count and injected context remain bounded as the library grows.
-- [ ] Create, update, archive, and restore keep retrieval indexes consistent and exclude Trash from ordinary results.
-- [ ] Missing semantic infrastructure produces an explicit lexical fallback and does not fail the Agent conversation or MCP search.
-- [ ] Agent citations and MCP results expose resolvable Prompt identities and revisions.
-- [ ] Canvas completion/rewrite, ordinary discussion, and media analysis cannot call the retriever.
+- [x] Result count and injected context remain bounded as the library grows.
+- [x] Create, update, archive, and restore keep retrieval indexes consistent and exclude Trash from ordinary results.
+- [x] Missing retrieval infrastructure produces an explicit no-evidence degraded state and does not fail the local-Agent turn; semantic retrieval remains deferred.
+- [x] Agent citations expose resolvable Prompt identities, revisions, and digests; MCP results remain Task 22.
+- [x] Canvas completion/rewrite, ordinary discussion, media analysis, and experimental chat cannot call the retriever.
 - [ ] RAG mode cannot mutate Canvas or Prompt Library without a separate valid proposal and user approval.
 - [ ] Disabling RAG leaves ordinary Agent, Canvas, media analysis, exact-code resolution, and non-RAG MCP tools available.
 
