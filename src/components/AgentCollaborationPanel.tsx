@@ -709,7 +709,7 @@ export function AgentCollaborationPanel({
                   {message.role === 'user' ? '你' : message.role === 'system' ? '已应用' : 'Agent'}
                 </div>
                 {message.role === 'assistant' ? (
-                  <AgentMarkdownMessage content={message.content} />
+                  <AgentMarkdownMessage content={message.content} citations={message.citations} promptRetrieval={message.promptRetrieval} />
                 ) : (
                   <pre className="whitespace-pre-wrap break-words font-sans">{message.content}</pre>
                 )}

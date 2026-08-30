@@ -108,7 +108,9 @@ class PromptReferenceResolutionTest(unittest.TestCase):
             "namespace": "promptBundle",
             "code": created["referenceCode"],
         })
-        self.assertEqual(resolved["prompt"], {
+        resolved_prompt = dict(resolved["prompt"])
+        self.assertRegex(resolved_prompt.pop("digest"), r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(resolved_prompt, {
             "referenceCode": created["referenceCode"],
             "revision": 1,
             "type": "custom",

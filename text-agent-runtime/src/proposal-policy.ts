@@ -74,10 +74,17 @@ export type PromptHandoffContext = { operationKind: 'prompt_handoff'; basis: Pro
 
 export interface PromptLibraryItem {
   id?: string
+  referenceCode?: string
+  revision?: number
+  digest?: string
   type?: string
   category?: string
   label: string
   content: string
+  matchedFields?: string[]
+  score?: number
+  reason?: string
+  media?: Array<Record<string, unknown>>
   meta?: Record<string, unknown>
 }
 

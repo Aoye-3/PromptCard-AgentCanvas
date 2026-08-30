@@ -39,7 +39,7 @@ const AGENT_RUNTIME_MESSAGE_KEYS = new Set([
   'sessionKey',
   'projectId',
   'workspaceContext',
-  'promptLibrary',
+  'promptRetrieval',
   'selectedSkillIds',
   'interactionMode',
   'canvasNodeContext',
@@ -84,7 +84,13 @@ export interface AgentRuntimeMessageRequest {
   sessionKey?: string
   projectId?: string
   workspaceContext?: unknown
-  promptLibrary?: Array<Record<string, unknown>>
+  promptRetrieval?: {
+    query: string
+    types: string[]
+    categories: string[]
+    exactCodes: string[]
+    limit: number
+  }
   selectedSkillIds?: string[]
   interactionMode?: AgentInteractionMode
   canvasNodeContext?: CanvasAgentNodeContext
@@ -485,13 +491,42 @@ function agentRuntimeMessageBody(body: AgentRuntimeMessageRequest): AgentRuntime
     ...(body.sessionKey !== undefined ? { sessionKey: body.sessionKey } : {}),
     ...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
     ...(body.workspaceContext !== undefined ? { workspaceContext: body.workspaceContext } : {}),
-    ...(body.promptLibrary !== undefined ? { promptLibrary: body.promptLibrary } : {}),
+    ...(body.promptRetrieval !== undefined ? { promptRetrieval: validatePromptRetrieval(body.promptRetrieval) } : {}),
     ...(body.selectedSkillIds !== undefined ? { selectedSkillIds: body.selectedSkillIds } : {}),
     ...(body.interactionMode !== undefined ? { interactionMode: body.interactionMode } : {}),
     ...(body.canvasNodeContext !== undefined ? { canvasNodeContext: body.canvasNodeContext } : {}),
     ...(documentResourceIds !== undefined ? { documentResourceIds } : {}),
     ...(explicitDocumentNodeIds !== undefined ? { explicitDocumentNodeIds } : {}),
     ...(body.documentWriteContext !== undefined ? { documentWriteContext: validatePlanningWriteContext(body.documentWriteContext) } : {})
+  }
+}
+
+function validatePromptRetrieval(value: unknown): NonNullable<AgentRuntimeMessageRequest['promptRetrieval']> {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['query', 'types', 'categories', 'exactCodes', 'limit'])) {
+    throw new Error('Invalid promptRetrieval.')
+  }
+  const query = typeof value.query === 'string' ? value.query.trim() : ''
+  const validateStrings = (candidate: unknown, max: number, pattern?: RegExp) => (
+    Array.isArray(candidate)
+    && candidate.length <= max
+    && candidate.every(item => typeof item === 'string' && item.length > 0 && item.length <= 80 && (!pattern || pattern.test(item)))
+    && new Set(candidate).size === candidate.length
+  )
+  if (
+    !query || query.length > 256
+    || !validateStrings(value.types, 16)
+    || !validateStrings(value.categories, 16)
+    || !validateStrings(value.exactCodes, 20, /^PLP-[0-7][0-9A-HJKMNP-TV-Z]{25}$/)
+    || !Number.isSafeInteger(value.limit) || Number(value.limit) < 1 || Number(value.limit) > 20
+  ) {
+    throw new Error('Invalid promptRetrieval.')
+  }
+  return {
+    query,
+    types: [...(value.types as string[])],
+    categories: [...(value.categories as string[])],
+    exactCodes: [...(value.exactCodes as string[])],
+    limit: Number(value.limit)
   }
 }
 

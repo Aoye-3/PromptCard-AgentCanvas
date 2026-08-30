@@ -191,7 +191,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  sendMessage: async (content, presets, options) => {
+  sendMessage: async (content, _presets, options) => {
     const sessionKey = options?.sessionKey
     if (!sessionKey) {
       throw new Error('Agent sessionKey is required')
@@ -274,19 +274,23 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           documentResourceIds: documentRequest.documentResourceIds,
           explicitDocumentNodeIds: documentRequest.explicitDocumentNodeIds
         } : {}),
-        promptLibrary: (
-          options?.permissionScope === 'prompt-library-agent'
-          || options?.canvasNodeContext?.mode === 'prompt-library'
-            ? presets.slice(0, 200)
-            : []
-        ).map(preset => ({
-          id: preset.id,
-          type: preset.type,
-          category: preset.category,
-          label: preset.label,
-          content: preset.content,
-          meta: preset.meta
-        }))
+        ...(
+          options?.interactionMode !== 'chat-experimental'
+          && (
+            options?.permissionScope === 'prompt-library-agent'
+            || options?.canvasNodeContext?.mode === 'prompt-library'
+          )
+            ? {
+                promptRetrieval: {
+                  query: content.trim().slice(0, 256),
+                  types: [],
+                  categories: [],
+                  exactCodes: [],
+                  limit: 10
+                }
+              }
+            : {}
+        )
       })
       const proposals = result.proposals.map(proposal => ({
         ...proposal,
@@ -302,6 +306,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
               contextId: edit.contextId || options?.workspaceContext?.contextId
             }
       ))
+      const citations = promptCitations(result.diagnostics)
+      const promptRetrieval = promptRetrievalState(result.diagnostics)
 
       set(state => ({
         sessionsByKey: updateSessions(state.sessionsByKey, sessionKey, session => ({
@@ -321,7 +327,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
               id: messageId(),
               role: 'assistant',
               content: result.text,
-              createdAt: Date.now()
+              createdAt: Date.now(),
+              ...(citations.length
+                ? { citations }
+                : {}),
+              ...(promptRetrieval ? { promptRetrieval } : {})
             }
           ],
           proposals: mergeProposals(session.proposals, proposals),
@@ -424,4 +434,47 @@ function mergeProposals(
       return true
     })
   ]
+}
+
+function promptCitations(diagnostics: unknown): NonNullable<AgentMessage['citations']> {
+  if (!diagnostics || typeof diagnostics !== 'object' || Array.isArray(diagnostics)) return []
+  const retrieval = (diagnostics as Record<string, unknown>).promptRetrieval
+  if (!retrieval || typeof retrieval !== 'object' || Array.isArray(retrieval)) return []
+  const citations = (retrieval as Record<string, unknown>).citations
+  if (!Array.isArray(citations)) return []
+  return citations.flatMap(value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+    const item = value as Record<string, unknown>
+    if (
+      typeof item.referenceCode !== 'string'
+      || typeof item.title !== 'string'
+      || !Number.isSafeInteger(item.revision)
+      || typeof item.digest !== 'string'
+    ) return []
+    return [{
+      referenceCode: item.referenceCode,
+      title: item.title,
+      revision: Number(item.revision),
+      digest: item.digest
+    }]
+  })
+}
+
+function promptRetrievalState(diagnostics: unknown): AgentMessage['promptRetrieval'] {
+  if (!diagnostics || typeof diagnostics !== 'object' || Array.isArray(diagnostics)) return undefined
+  const value = (diagnostics as Record<string, unknown>).promptRetrieval
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const retrieval = value as Record<string, unknown>
+  if (
+    typeof retrieval.degraded !== 'boolean'
+    || !Number.isSafeInteger(retrieval.resultCount)
+    || !Number.isSafeInteger(retrieval.staleRejectedCount)
+  ) return undefined
+  return {
+    degraded: retrieval.degraded,
+    resultCount: Number(retrieval.resultCount),
+    staleRejectedCount: Number(retrieval.staleRejectedCount),
+    ...(typeof retrieval.auditId === 'string' ? { auditId: retrieval.auditId } : {}),
+    ...(typeof retrieval.errorCode === 'string' ? { errorCode: retrieval.errorCode } : {})
+  }
 }

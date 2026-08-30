@@ -122,7 +122,6 @@ describe('agent store', () => {
       permissionScope: 'workspace-chatbot-agent',
       sessionKey: 'workspace:card:project-1',
       projectId: 'project-1',
-      promptLibrary: [],
       workspaceContext
     })
   })
@@ -256,7 +255,7 @@ describe('agent store', () => {
     expect(returned.canvasEdits[0]).not.toHaveProperty('contextId')
   })
 
-  it('does not attach the Prompt Library to ordinary Canvas completion requests', async () => {
+  it('does not request Prompt retrieval for ordinary Canvas completion', async () => {
     await useAgentStore.getState().sendMessage('补全目标', promptLibraryPresets(254), {
       sessionKey: 'workspace:free-canvas:project-1',
       mode: 'free-canvas-workspace',
@@ -266,10 +265,12 @@ describe('agent store', () => {
       }
     })
 
-    expect(serviceMock.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ promptLibrary: [] }))
+    const request = serviceMock.sendMessage.mock.calls[serviceMock.sendMessage.mock.calls.length - 1]?.[0]
+    expect(request).not.toHaveProperty('promptLibrary')
+    expect(request).not.toHaveProperty('promptRetrieval')
   })
 
-  it('sends a bounded Prompt Library snapshot only in retrieval mode', async () => {
+  it('sends only a bounded retrieval query in Prompt Library mode', async () => {
     await useAgentStore.getState().sendMessage('查找建筑风格 Prompt', promptLibraryPresets(254), {
       sessionKey: 'workspace:free-canvas:project-1',
       mode: 'free-canvas-workspace',
@@ -280,8 +281,51 @@ describe('agent store', () => {
     })
 
     const request = serviceMock.sendMessage.mock.calls[serviceMock.sendMessage.mock.calls.length - 1]?.[0]
-    expect(request.promptLibrary).toHaveLength(200)
-    expect(request.promptLibrary[0].meta.media[0].id).toBe('media-0')
+    expect(request).not.toHaveProperty('promptLibrary')
+    expect(request.promptRetrieval).toEqual({
+      query: '查找建筑风格 Prompt', types: [], categories: [], exactCodes: [], limit: 10
+    })
+  })
+
+  it('does not request Prompt retrieval in experimental chat', async () => {
+    await useAgentStore.getState().sendMessage('讨论已有提示词', promptLibraryPresets(2), {
+      sessionKey: 'workspace:free-canvas:project-1',
+      permissionScope: 'prompt-library-agent',
+      interactionMode: 'chat-experimental'
+    })
+
+    const request = serviceMock.sendMessage.mock.calls[serviceMock.sendMessage.mock.calls.length - 1]?.[0]
+    expect(request).not.toHaveProperty('promptLibrary')
+    expect(request).not.toHaveProperty('promptRetrieval')
+  })
+
+  it('persists bounded Prompt citations on the assistant message', async () => {
+    serviceMock.sendMessage.mockResolvedValueOnce({
+      threadId: 'thread-rag', text: 'Use the cited prompt.', proposals: [], canvasEdits: [],
+      diagnostics: {
+        promptRetrieval: {
+          degraded: false, resultCount: 1, staleRejectedCount: 0, auditId: 'audit-1',
+          citations: [{
+            referenceCode: 'PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV', title: 'Rainy city', revision: 3,
+            digest: `sha256:${'a'.repeat(64)}`
+          }]
+        }
+      }
+    })
+
+    await useAgentStore.getState().sendMessage('查找雨夜城市', [], {
+      sessionKey: 'prompt-library:global', permissionScope: 'prompt-library-agent'
+    })
+
+    const messages = useAgentStore.getState().getAgentSession('prompt-library:global').messages
+    const assistant = messages[messages.length - 1]
+    expect(assistant?.citations).toEqual([{
+      referenceCode: 'PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV', title: 'Rainy city', revision: 3,
+      digest: `sha256:${'a'.repeat(64)}`
+    }])
+    expect(assistant?.promptRetrieval).toEqual({
+      degraded: false, resultCount: 1, staleRejectedCount: 0, auditId: 'audit-1'
+    })
   })
 
   it('keeps Agent panel and project chat sessions isolated', async () => {

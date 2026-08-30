@@ -19,12 +19,29 @@ export type AgentAuthStatus =
   | 'unauthenticated'
   | 'authenticated'
 
+export interface AgentPromptCitation {
+  referenceCode: string
+  title: string
+  revision: number
+  digest: string
+}
+
+export interface AgentPromptRetrievalState {
+  degraded: boolean
+  resultCount: number
+  staleRejectedCount: number
+  auditId?: string
+  errorCode?: string
+}
+
 export interface AgentMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
   createdAt: number
   documentAttachments?: AgentDocumentAttachmentAudit[]
+  citations?: AgentPromptCitation[]
+  promptRetrieval?: AgentPromptRetrievalState
 }
 
 export type DocumentContentType =

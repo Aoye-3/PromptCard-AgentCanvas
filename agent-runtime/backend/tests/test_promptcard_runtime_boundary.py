@@ -1152,6 +1152,143 @@ async def test_persistent_message_loads_history_skills_and_saves_turn(monkeypatc
 
 
 @pytest.mark.anyio
+async def test_prompt_library_rag_uses_storage_evidence_and_returns_citations(monkeypatch):
+    calls = []
+
+    async def fake_storage(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if method == "POST" and path == "/api/prompt-retrieval/search":
+            assert kwargs["json"] == {
+                "query": "rainy city",
+                "types": [],
+                "categories": ["shot"],
+                "limit": 10,
+                "callerKind": "local-agent",
+                "callerId": "prompt-library:global",
+            }
+            return {
+                "queryDigest": "sha256:" + "a" * 64,
+                "auditId": "audit-1",
+                "degraded": False,
+                "staleRejectedCount": 0,
+                "results": [{
+                    "reference": {"namespace": "promptBundle", "code": "PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+                    "revision": 2,
+                    "digest": "sha256:" + "b" * 64,
+                    "title": "Rainy city",
+                    "summary": "A rainy neon city at night.",
+                    "type": "storyboard",
+                    "category": "shot",
+                    "matchedFields": ["label", "content"],
+                    "score": 1.0,
+                    "scoreComponents": {"lexical": 1.0, "usage": 0.0},
+                    "reason": "Matched label, content",
+                    "media": [],
+                }],
+            }
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_invoke(payload):
+        assert "promptLibrary" in payload
+        assert len(payload["promptLibrary"]) == 1
+        assert "preset-internal" not in str(payload)
+        evidence = payload["promptLibrary"][0]
+        assert evidence["referenceCode"] == "PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        assert evidence["revision"] == 2
+        return {"threadId": "thread-1", "text": "Found it", "proposals": [], "diagnostics": {}}
+
+    monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", fake_storage)
+    monkeypatch.setattr("app.gateway.promptcard_runtime._invoke_text_agent", fake_invoke)
+    monkeypatch.setattr("app.gateway.promptcard_runtime.resolve_text_model", lambda _: {
+        "connectionId": "connection-1", "providerId": "deepseek",
+        "model": {"id": "deepseek-chat", "displayName": "DeepSeek Chat", "capabilities": {"input": ["text"]}},
+    })
+    body = PromptCardRuntimeMessageRequest.model_validate({
+        "content": "Use relevant examples",
+        "permissionScope": "prompt-library-agent",
+        "sessionKey": "prompt-library:global",
+        "promptRetrieval": {
+            "query": "rainy city", "types": [], "categories": ["shot"],
+            "exactCodes": [], "limit": 10,
+        },
+    })
+
+    result = await promptcard_runtime.runtime_service.send_message(body, None)
+
+    retrieval = result["diagnostics"]["promptRetrieval"]
+    assert retrieval["auditId"] == "audit-1"
+    assert retrieval["citations"] == [{
+        "referenceCode": "PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "title": "Rainy city",
+        "revision": 2,
+        "digest": "sha256:" + "b" * 64,
+    }]
+
+
+@pytest.mark.anyio
+async def test_prompt_library_rag_degrades_without_blocking_other_agent_work(monkeypatch):
+    async def unavailable_storage(*_args, **_kwargs):
+        raise HTTPException(status_code=503, detail="storage_unavailable")
+
+    async def fake_invoke(payload):
+        assert payload["promptLibrary"] == []
+        return {"threadId": "thread-1", "text": "Continued without retrieval", "proposals": [], "diagnostics": {}}
+
+    monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", unavailable_storage)
+    monkeypatch.setattr("app.gateway.promptcard_runtime._invoke_text_agent", fake_invoke)
+    monkeypatch.setattr("app.gateway.promptcard_runtime.resolve_text_model", lambda _: {
+        "connectionId": "connection-1", "providerId": "deepseek",
+        "model": {"id": "deepseek-chat", "displayName": "DeepSeek Chat", "capabilities": {"input": ["text"]}},
+    })
+    body = PromptCardRuntimeMessageRequest.model_validate({
+        "content": "Continue even if retrieval is down",
+        "permissionScope": "prompt-library-agent",
+        "sessionKey": "prompt-library:global",
+        "promptRetrieval": {
+            "query": "rainy city", "types": [], "categories": [],
+            "exactCodes": [], "limit": 10,
+        },
+    })
+
+    result = await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert result["text"] == "Continued without retrieval"
+    assert result["diagnostics"]["promptRetrieval"] == {
+        "auditId": None,
+        "queryDigest": None,
+        "degraded": True,
+        "staleRejectedCount": 0,
+        "resultCount": 0,
+        "errorCode": "prompt_retrieval_unavailable",
+        "citations": [],
+    }
+
+
+@pytest.mark.anyio
+async def test_experimental_chat_rejects_prompt_retrieval_before_storage_or_model(monkeypatch):
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("retrieval or model must not run")
+
+    monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", forbidden)
+    monkeypatch.setattr("app.gateway.promptcard_runtime._invoke_text_agent", forbidden)
+    body = PromptCardRuntimeMessageRequest.model_validate({
+        "content": "Do not retrieve",
+        "permissionScope": "workspace-chatbot-agent",
+        "interactionMode": "chat-experimental",
+        "promptRetrieval": {
+            "query": "secret document", "types": [], "categories": [],
+            "exactCodes": [], "limit": 10,
+        },
+    })
+
+    with pytest.raises(HTTPException) as caught:
+        await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert caught.value.status_code == 422
+    assert caught.value.detail == "prompt_retrieval_scope_invalid"
+
+
+@pytest.mark.anyio
 async def test_rejected_canvas_edit_does_not_claim_that_a_modification_was_generated(monkeypatch):
     async def fake_storage(method, path, **kwargs):
         if method == "GET":

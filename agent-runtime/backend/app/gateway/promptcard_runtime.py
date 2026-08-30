@@ -131,8 +131,48 @@ class DocumentInvocationRegistry:
 _document_invocations = DocumentInvocationRegistry()
 
 
+class PromptCardPromptRetrievalRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    query: str = Field(min_length=1, max_length=256)
+    types: list[str] = Field(default_factory=list, max_length=16)
+    categories: list[str] = Field(default_factory=list, max_length=16)
+    exact_codes: list[str] = Field(default_factory=list, alias="exactCodes", max_length=20)
+    limit: int = Field(default=10, ge=1, le=20)
+
+    @field_validator("query")
+    @classmethod
+    def normalize_query(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("prompt_retrieval_query_invalid")
+        return normalized
+
+    @field_validator("types", "categories")
+    @classmethod
+    def validate_filters(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if (
+            len(normalized) != len(set(normalized))
+            or any(not item or len(item) > 80 for item in normalized)
+        ):
+            raise ValueError("prompt_retrieval_filter_invalid")
+        return normalized
+
+    @field_validator("exact_codes")
+    @classmethod
+    def validate_exact_codes(cls, value: list[str]) -> list[str]:
+        normalized = [item.upper() for item in value]
+        if len(normalized) != len(set(normalized)) or any(
+            re.fullmatch(r"PLP-[0-7][0-9A-HJKMNP-TV-Z]{25}", item) is None
+            for item in normalized
+        ):
+            raise ValueError("prompt_retrieval_exact_code_invalid")
+        return normalized
+
+
 class PromptCardRuntimeMessageRequest(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     thread_id: str | None = Field(default=None, alias="threadId")
     conversation_id: str | None = Field(default=None, alias="conversationId")
@@ -149,10 +189,9 @@ class PromptCardRuntimeMessageRequest(BaseModel):
         default=None,
         alias="workspaceContext",
     )
-    prompt_library: list[dict[str, Any]] = Field(
-        default_factory=list,
-        alias="promptLibrary",
-        max_length=200,
+    prompt_retrieval: PromptCardPromptRetrievalRequest | None = Field(
+        default=None,
+        alias="promptRetrieval",
     )
     selected_skill_ids: list[str] = Field(
         default_factory=list,
@@ -328,6 +367,17 @@ class PromptCardRuntimeService:
         body: PromptCardRuntimeMessageRequest,
         request: Request,
     ) -> dict[str, Any]:
+        if body.prompt_retrieval is not None and not (
+            body.interaction_mode == "prompt-edit"
+            and (
+                body.permission_scope == "prompt-library-agent"
+                or (
+                    isinstance(body.canvas_node_context, dict)
+                    and body.canvas_node_context.get("mode") == "prompt-library"
+                )
+            )
+        ):
+            raise HTTPException(status_code=422, detail="prompt_retrieval_scope_invalid")
         if len(body.explicit_document_node_ids) != len(
             set(body.explicit_document_node_ids)
         ):
@@ -339,6 +389,7 @@ class PromptCardRuntimeService:
         payload.pop("documentResourceIds", None)
         payload.pop("explicitDocumentNodeIds", None)
         payload.pop("documentWriteContext", None)
+        payload.pop("promptRetrieval", None)
         resolved_canvas_context: dict[str, Any] | None = None
         conversation_id = body.conversation_id
         model_binding: dict[str, Any] | None = None
@@ -478,6 +529,15 @@ class PromptCardRuntimeService:
             resolved_canvas_context = _resolve_canvas_node_context(body)
         payload["canvasNodeContext"] = resolved_canvas_context
         payload["interactionMode"] = interaction_mode
+        prompt_retrieval_diagnostics: dict[str, Any] | None = None
+        if body.prompt_retrieval is not None:
+            prompt_evidence, prompt_retrieval_diagnostics = await _prompt_retrieval_evidence(
+                body.prompt_retrieval,
+                caller_id=conversation_id or body.session_key or "local-agent",
+            )
+            payload["promptLibrary"] = prompt_evidence
+        else:
+            payload["promptLibrary"] = []
         if any(asset.content_type == "application/pdf" for asset in document_assets):
             try:
                 require_pdf_text_model(model_binding)
@@ -523,6 +583,11 @@ class PromptCardRuntimeService:
             if document_handle is not None:
                 _document_invocations.discard(document_handle)
         raw_canvas_edits = response.get("canvasEdits")
+        if prompt_retrieval_diagnostics is not None:
+            response["diagnostics"] = {
+                **(response.get("diagnostics") or {}),
+                "promptRetrieval": prompt_retrieval_diagnostics,
+            }
         raw_canvas_edits = raw_canvas_edits if isinstance(raw_canvas_edits, list) else []
         validation_permission_scope = (
             "chat-experimental"
@@ -667,6 +732,11 @@ class PromptCardRuntimeService:
                                 }
                             }
                             if isinstance((response.get("diagnostics") or {}).get("promptHandoffValidation"), dict)
+                            else {}
+                        ),
+                        **(
+                            {"promptRetrieval": prompt_retrieval_diagnostics}
+                            if prompt_retrieval_diagnostics is not None
                             else {}
                         ),
                     },
@@ -3585,6 +3655,150 @@ def _current_skill_revision(detail: dict[str, Any]) -> dict[str, Any] | None:
         "digest": str(revision["digest"]),
         "instructions": str(revision.get("instructions") or ""),
         "references": list(revision.get("references") or []),
+    }
+
+
+async def _prompt_retrieval_evidence(
+    request: PromptCardPromptRetrievalRequest,
+    *,
+    caller_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    try:
+        search = await _storage_request(
+            "POST",
+            "/api/prompt-retrieval/search",
+            json={
+                "query": request.query,
+                "types": request.types,
+                "categories": request.categories,
+                "limit": request.limit,
+                "callerKind": "local-agent",
+                "callerId": caller_id[:128],
+            },
+        )
+        exact_results = []
+        for code in request.exact_codes:
+            try:
+                exact_results.append(
+                    await _storage_request(
+                        "GET",
+                        f"/api/prompt-library/references/{quote(code, safe='')}",
+                    )
+                )
+            except HTTPException as exc:
+                if exc.status_code == 404:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="prompt_retrieval_exact_code_not_found",
+                    ) from None
+                raise
+    except HTTPException as exc:
+        if exc.status_code == 422:
+            raise
+        return [], {
+            "auditId": None,
+            "queryDigest": None,
+            "degraded": True,
+            "staleRejectedCount": 0,
+            "resultCount": 0,
+            "errorCode": "prompt_retrieval_unavailable",
+            "citations": [],
+        }
+
+    evidence: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    evidence_chars = 0
+    for raw in [*_exact_prompt_evidence(exact_results), *(search.get("results") or [])]:
+        item = _normalize_prompt_evidence(raw)
+        if item is None or item["referenceCode"] in seen:
+            continue
+        next_chars = len(item["label"]) + len(item["content"])
+        if evidence_chars + next_chars > 12_000:
+            break
+        evidence.append(item)
+        seen.add(item["referenceCode"])
+        evidence_chars += next_chars
+        if len(evidence) == request.limit:
+            break
+    citations = [
+        {
+            "referenceCode": item["referenceCode"],
+            "title": item["label"],
+            "revision": item["revision"],
+            "digest": item["digest"],
+        }
+        for item in evidence
+    ]
+    return evidence, {
+        "auditId": search.get("auditId"),
+        "queryDigest": search.get("queryDigest"),
+        "degraded": bool(search.get("degraded")),
+        "staleRejectedCount": int(search.get("staleRejectedCount") or 0),
+        "resultCount": len(evidence),
+        "citations": citations,
+    }
+
+
+def _exact_prompt_evidence(resolved: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    evidence = []
+    for item in resolved:
+        prompt = item.get("prompt")
+        if not isinstance(prompt, dict):
+            continue
+        evidence.append({
+            "reference": {
+                "namespace": "promptBundle",
+                "code": prompt.get("referenceCode"),
+            },
+            "revision": prompt.get("revision"),
+            "digest": prompt.get("digest"),
+            "title": prompt.get("label"),
+            "summary": str(prompt.get("content") or "")[:600],
+            "type": prompt.get("type"),
+            "category": prompt.get("category"),
+            "matchedFields": ["content"],
+            "score": 0,
+            "scoreComponents": {"lexical": 0, "usage": 0},
+            "reason": "Explicit reference",
+            "media": [],
+        })
+    return evidence
+
+
+def _normalize_prompt_evidence(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    reference = value.get("reference")
+    code = reference.get("code") if isinstance(reference, dict) else None
+    revision = value.get("revision")
+    digest = value.get("digest")
+    if (
+        not isinstance(code, str)
+        or re.fullmatch(r"PLP-[0-7][0-9A-HJKMNP-TV-Z]{25}", code) is None
+        or type(revision) is not int
+        or revision < 1
+        or not isinstance(digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+    ):
+        return None
+    title = value.get("title")
+    summary = value.get("summary")
+    prompt_type = value.get("type")
+    category = value.get("category")
+    if not all(isinstance(item, str) for item in (title, summary, prompt_type, category)):
+        return None
+    return {
+        "referenceCode": code,
+        "revision": revision,
+        "digest": digest,
+        "label": title[:500],
+        "content": summary[:600],
+        "type": prompt_type[:80],
+        "category": category[:80],
+        "matchedFields": list(value.get("matchedFields") or [])[:4],
+        "score": value.get("score", 0),
+        "reason": str(value.get("reason") or "")[:200],
+        "media": list(value.get("media") or [])[:8],
     }
 
 

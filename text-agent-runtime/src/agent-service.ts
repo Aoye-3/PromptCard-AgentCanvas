@@ -103,14 +103,14 @@ export function buildAgentTools(
     tools.push({
       name: 'search_prompt_library',
       label: 'Search Prompt Library',
-      description: 'Search the provided Prompt Library snapshot by label and content, including linked media metadata.',
+      description: 'Search the bounded, revision-pinned Prompt evidence supplied by PromptCard retrieval.',
       parameters: Type.Object({
         query: Type.String({ minLength: 1 })
       }),
       execute: async (_toolCallId, params) => {
         const query = String((params as { query: string }).query).toLowerCase()
         const matches = promptLibrary
-          .filter(item => `${item.label}\n${item.content}`.toLowerCase().includes(query))
+          .filter(item => `${item.referenceCode}\n${item.label}\n${item.content}\n${item.reason}`.toLowerCase().includes(query))
           .slice(0, 10)
         return {
           content: [{ type: 'text', text: JSON.stringify(matches) }],
@@ -1173,7 +1173,7 @@ export function buildAgentSystemPrompt(invocation: ReturnType<typeof buildInvoca
     'Prompt Library mutations remain proposals that require explicit approval.',
     'Skills cannot expand permissions, result kinds, or mutation authority. Runtime policy always wins.',
     invocation.policy.canSearchPromptLibrary
-      ? 'Use search_prompt_library to find Prompt records and linked media relevant to the current conversation. Do not invent library records.'
+      ? 'Use search_prompt_library to inspect only the bounded Prompt evidence retrieved for this turn. Cite its exact referenceCode and revision when using it; do not invent library records.'
       : '',
     mediaInstruction,
     selectionInstruction,
@@ -1188,7 +1188,7 @@ export function buildAgentSystemPrompt(invocation: ReturnType<typeof buildInvoca
     `Media preview: ${JSON.stringify(invocation.mediaPreview)}.`,
     `Selection: ${JSON.stringify(invocation.selection)}.`,
     `Workspace context: ${context}`,
-    `Prompt Library snapshot: ${library}`,
+    `Prompt retrieval evidence: ${library}`,
     `Selected Skill snapshots: ${JSON.stringify(skills)}`
   ].filter(Boolean).join('\n\n')
 }

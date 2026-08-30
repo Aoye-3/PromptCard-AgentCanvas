@@ -18,7 +18,7 @@ from .assets import (
     DEFAULT_MAX_ASSET_BYTES,
     IMAGE_CONTENT_TYPES,
     AssetStore,
-    AssetValidationError,
+    AssetValidationError as AssetValidationError,
     DeletedAssetLookup,
     prepare_provider_image,
 )
@@ -344,6 +344,7 @@ class SqliteStore:
                 "prompt": {
                     "referenceCode": projected["referenceCode"],
                     "revision": projected["revision"],
+                    "digest": _prompt_retrieval_digest(prompt),
                     "type": projected["type"],
                     "category": projected["category"],
                     "label": projected["label"],

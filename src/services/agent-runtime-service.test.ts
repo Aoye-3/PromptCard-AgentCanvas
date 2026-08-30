@@ -94,6 +94,45 @@ afterEach(() => {
 })
 
 describe('agent runtime message contract', () => {
+  it('serializes only a bounded Prompt retrieval request and rejects browser snapshots', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(successfulMessageResponse())
+    vi.stubGlobal('fetch', fetchMock)
+
+    await agentRuntimeService.sendMessage({
+      content: 'Find a rainy city prompt',
+      promptRetrieval: {
+        query: ' rainy city ', types: ['shot'], categories: ['cinematic'],
+        exactCodes: ['PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV'], limit: 10
+      }
+    })
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    expect(body.promptRetrieval).toEqual({
+      query: 'rainy city', types: ['shot'], categories: ['cinematic'],
+      exactCodes: ['PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV'], limit: 10
+    })
+    expect(body).not.toHaveProperty('promptLibrary')
+
+    await expect(agentRuntimeService.sendMessage({
+      content: 'Do not accept a browser snapshot', promptLibrary: []
+    } as unknown as Parameters<typeof agentRuntimeService.sendMessage>[0]))
+      .rejects.toThrow('Invalid agent runtime message request.')
+  })
+
+  it.each([
+    ['an empty query', { query: '', types: [], categories: [], exactCodes: [], limit: 10 }],
+    ['duplicate filters', { query: 'city', types: ['shot', 'shot'], categories: [], exactCodes: [], limit: 10 }],
+    ['an internal id', { query: 'city', types: [], categories: [], exactCodes: ['preset-1'], limit: 10 }],
+    ['an excessive limit', { query: 'city', types: [], categories: [], exactCodes: [], limit: 21 }]
+  ])('rejects Prompt retrieval containing %s before fetch', async (_label, promptRetrieval) => {
+    const fetchMock = vi.fn().mockResolvedValue(successfulMessageResponse())
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(agentRuntimeService.sendMessage({ content: 'Find it', promptRetrieval }))
+      .rejects.toThrow('Invalid promptRetrieval.')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('serializes only project document and explicit Document node IDs', async () => {
     const fetchMock = vi.fn().mockResolvedValue(successfulMessageResponse())
     vi.stubGlobal('fetch', fetchMock)

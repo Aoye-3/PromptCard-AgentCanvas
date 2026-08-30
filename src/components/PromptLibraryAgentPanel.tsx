@@ -37,6 +37,8 @@ export function PromptLibraryAgentPanel() {
   const selectedPendingCount = selectedProposalIds.filter(id =>
     pendingCreateProposals.some(proposal => proposal.id === id)
   ).length
+  const latestCitations = [...session.messages].reverse().find(message => message.citations?.length)?.citations || []
+  const latestRetrieval = [...session.messages].reverse().find(message => message.promptRetrieval)?.promptRetrieval
 
   const handleSend = async () => {
     if (!draft.trim() || running) return
@@ -115,6 +117,25 @@ export function PromptLibraryAgentPanel() {
           <div className="mb-4 rounded-2xl bg-violet-50 px-4 py-3 text-sm leading-6 text-gray-700">
             Agent 只能生成新增入库提案。所有提案都需要你同意后才会写入 Prompt 库。
           </div>
+
+          {latestCitations.length > 0 && (
+            <div data-testid="prompt-library-retrieval-citations" className="mb-4 rounded-2xl border border-violet-100 bg-white px-4 py-3">
+              <div className="text-xs font-black text-violet-700">本轮检索证据</div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {latestCitations.map(citation => (
+                  <span key={`${citation.referenceCode}:${citation.revision}`} title={citation.digest} className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-bold text-violet-700">
+                    {citation.referenceCode} · r{citation.revision} · {citation.title}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {latestRetrieval?.degraded && (
+            <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-800">
+              Prompt 检索当前不可用，本轮没有向 Agent 注入库内容；你仍可继续使用其他功能。
+            </div>
+          )}
 
           <div className="mb-4 rounded-2xl border border-violet-100 bg-violet-50/70 px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
