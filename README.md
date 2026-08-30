@@ -16,7 +16,7 @@
   <a href="#技术架构">技术架构</a>
 </p>
 
-PMAgent-Canvas 是面向 AIGC 创作者的本地桌面 Agent 画布。它把参考素材、Prompt、Agent 对话、图片生成、二次编辑和复盘结果放进同一个项目，让创作资料不再散落在聊天记录、生成平台和临时文件夹中。
+PMAgent-Canvas 是面向 AIGC 创作者的本地桌面创作上下文环境。它让参考素材、Prompt、剧本与分镜、Agent 对话、生成结果、修改决策和复盘经验以可携带的项目资产持续沉淀，而不是散落在聊天记录、生成平台和临时文件夹中。画布是人和 Agent 共同操作这些上下文的工作台，不是产品要与生成平台竞争的终点。
 
 > [!WARNING]
 > 当前 `main` 为 **开发版本：不稳定，处于功能测试中**，不建议作为生产稳定版部署。需要稳定基线时请使用 Git tag `stable-2026-08-25`。
@@ -37,7 +37,7 @@ PMAgent-Canvas 是面向 AIGC 创作者的本地桌面 Agent 画布。它把参�
 
 ## 产品总览
 
-画布是 PMAgent-Canvas 的中心层。左侧管理项目主体与素材，中间组织文本、参考图和生成结果，右侧在 Agent、图片生成与 Prompt 库之间切换。三部分围绕同一个项目上下文协作，而不是各自保存一份孤立数据。
+PMAgent-Canvas 的中心是项目上下文，而不是画布本身。左侧管理项目主体与素材，中间以画布呈现文本、分镜、参考图和生成结果，右侧在 Agent、图片生成与 Prompt 库之间切换。人、外部 Agent 和外部创作工具围绕同一份项目状态协作，而不是各自保存一份孤立数据。
 
 <p align="center">
   <img src="./assets/readme/screenshots/canvas-overview.jpg" width="100%" alt="PMAgent-Canvas 画布三栏与主交互流程：Agent 编辑、图片生成和 Prompt 库协作">
@@ -45,13 +45,13 @@ PMAgent-Canvas 是面向 AIGC 创作者的本地桌面 Agent 画布。它把参�
 
 ## 一条完整的本地创作链路
 
-从参考素材进入项目，到 Agent 辅助编写提示词，再到图片生成、二次编辑和资产归档，所有关键上下文都留在本地项目中。
+从参考素材和剧本进入项目，到 Agent 形成结构化创作资产，再到图片生成、二次编辑和资产归档，所有关键上下文都留在本地项目中。用户可以把确定的镜头、参考图和执行说明带到外部创作工具，再把结果回挂到原项目继续审阅和迭代。
 
 <p align="center">
   <img src="./assets/readme/workflow.svg" width="100%" alt="PMAgent-Canvas 从项目素材到 Prompt、图片生成、编辑标注和资产沉淀的工作流">
 </p>
 
-PMAgent-Canvas 不试图替代每一个外部生成或剪辑平台。它更关注生成前后的生产资料：参考图、分镜、Prompt、模型参数、生成结果、修改方向和复盘经验，让这些内容可以被继续搜索、复用和交付。
+PMAgent-Canvas 不试图替代每一个外部生成、剪辑或 3D 平台，也不把模型聚合当作核心竞争。它更关注生成前后的生产资料：参考图、分镜、Prompt、模型参数、生成结果、修改方向和复盘经验，让这些内容能被人和外部 Agent 精确读取、审阅、复用和交付。
 
 ## 核心功能
 
@@ -260,6 +260,16 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 ## 规划中功能
 
+### 可携带的跨平台创作上下文
+
+产品方向是把 PMAgent-Canvas 建设为连接创作者、外部 Agent 与外部创作工具的上下文层。项目中的剧本、角色与场景设定、参考素材、结构化分镜、镜头执行信息、生成结果、批注和版本决策应当保持可定位、可审阅、可复用，而不是被锁在某一个聊天客户端或生成平台里。
+
+- **当前优先级：稳定 Local Agent Bridge / MCP。** 外部 Agent 通过受控的本地 Bridge 读取、创建和更新明确的项目对象，并返回用户可预览、可采纳的变更提案；它不依赖嵌入某一家 Agent 聊天界面。
+- **首个产品闭环：剧本与参考 → 结构化分镜 → 人工定点审阅与修改 → 可执行镜头资产包。** 镜头是下一阶段重点收敛的创作对象，用于连接剧本文段、角色/场景、参考图、提示词、生成结果、批注与版本，但不授权泛化的 Canvas 更新接口。
+- **后续资产出口：Asset Shelf（创作资产架）与连接器。** 用户继续使用现有浏览器和外部创作工具；PMAgent-Canvas 在旁边提供可检索的项目资产，优先支持可靠的文件/图片拖出、文本复制和执行包导出，再针对少量高价值平台渐进式提供填入与结果回流。
+
+完整的分期与决策记录会随当前功能分支在完成验证后合入；在此之前，本 README 只陈述已经确认的产品方向与近期优先级。
+
 ### PromptCard Local Agent Bridge 与 Prompt 库 RAG
 
 当前已经完成 Skill Hub 管理工作流和宿主中立的 Bridge v2 合同边界。后续将分别为项目、Prompt 库 Prompt、Prompt 库媒体、画布文本节点、画布媒体和画布选区提供稳定、可复制的引用编码。用户既可以复制精确编码，也可以先给出项目编码，让已授权的 Agent 应用在项目画布与 Prompt 库两个独立索引中查找候选内容，再通过本地受控接口交付提示词或图片。
@@ -273,7 +283,7 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 - Skill 导入只读取与校验包，不执行其中的脚本、安装器、hook 或依赖；本地 Agent 只读取受限的指令与文本参考资料。
 - Canvas 已使用“复制 Agent/MCP 上下文”这一宿主中立入口；Task 16 的 Gateway bridge router、CLI 和 MCP server 尚未开始。
 
-本地 Agent 的 Prompt 库手动搜索后续将升级为有界、可引用、可审计的 RAG 检索。当前执行暂停在 Task 15.5 用户验收点；详见 [Plan 008 执行台账](./docs/superpowers/plans/2026-08-22-plan-008-execution.md)、[ADR-019](./docs/decisions/ADR-019-generic-local-agent-bridge-boundary.md) 与 [Task 15.5 技术验收包](./docs/reviews/2026-08-24-task-15-5-technical-acceptance.md)。
+本地 Agent 的 Prompt 库手动搜索后续将升级为有界、可引用、可审计的 RAG 检索。Plan 008 的 Tasks 15.6–15.10 已完成技术验收，当前暂停在 Checkpoint 3.5 的人工验收；Task 16（受控的只读 Gateway/CLI 基础）尚未开始。详见 [Plan 008 执行台账](./docs/superpowers/plans/2026-08-22-plan-008-execution.md)、[ADR-019](./docs/decisions/ADR-019-generic-local-agent-bridge-boundary.md) 与 [Checkpoint 3.5 技术验收包](./docs/reviews/2026-08-27-task-15-10-technical-acceptance.md)。
 
 ## 未来设想（暂无计划）
 
@@ -287,7 +297,7 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 1. **357 头身角色基膜库**：围绕 3、5、7 头身比例组织可复用的角色基膜，为角色设定、姿态设计和后续视觉生成提供一致起点。
 2. **基于前端 3D 代码的线稿风格场景生成**：使用前端 3D 代码搭建和调整场景结构，再将视角、构图与空间关系转换为可继续创作的线稿风格场景结果。
-3. **浏览器插件节点**：可在画布中展开浏览器视图，由用户登录模型官网，并将画布中的资产和提示词直接拖入网页应用的可接收区域，减少跨应用复制、下载和重复上传。登录状态、网站兼容性与拖放权限边界将在进入正式 Plan 后单独定义。
+3. **Asset Shelf 与浏览器连接器**：作为外部工具旁的资产架，优先让用户拖出文件/图片、复制结构化文本或导出镜头执行包；只在有明确价值和兼容性验证的平台提供渐进式填入与结果回流。它不内嵌或接管浏览器，也不承诺对任意网页可靠地拖放文本。登录状态、网站兼容性与权限边界将在进入正式连接器 Plan 后单独定义。
 
 ### 编剧 Agent Skill 与情绪曲线脚本工作台
 
@@ -295,4 +305,4 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 ## 当前状态
 
-PMAgent-Canvas 仍处于活跃开发阶段。当前重点是稳定自由画布、图片生成与编辑、Prompt/媒体资产沉淀、Agent 会话隔离和本地桌面启动链路。对外使用前请以仓库中的实际实现和技术文档为准。
+PMAgent-Canvas 仍处于活跃开发阶段。当前重点是完成 Checkpoint 3.5 的人工验收，并稳定受控的 Local Agent Bridge / MCP 基础；自由画布、图片生成与编辑、Prompt/媒体资产沉淀和 Agent 会话隔离继续作为项目上下文能力的组成部分。浏览器连接器与 Asset Shelf 尚未排期实现。对外使用前请以仓库中的实际实现和技术文档为准。
