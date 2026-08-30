@@ -17,6 +17,7 @@ from promptcard_storage.store import SCHEMA_VERSION, DuplicateItem, JsonCollecti
 
 
 SKILL_CODE = re.compile(r"^SKL-[0-7][0-9A-HJKMNP-TV-Z]{25}$")
+TEST_ROOT = Path("F:/.Agent-PromptCardManager/PromptCard-Manager/.test-tmp/skill-packages-v13")
 
 
 def package_entry(entry_type: str, path: str, content: bytes, content_type: str) -> dict:
@@ -86,8 +87,10 @@ def downgrade_skill_schema_to_v12(database: Path) -> None:
 
 class SkillPackagesV13Tests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.data_dir = Path(self.temp_dir.name)
+        TEST_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp_dir = tempfile.TemporaryDirectory(dir=TEST_ROOT)
+        self.data_dir = Path(self.temp_dir.name, "data")
+        self.data_dir.mkdir()
         self.store = JsonCollectionStore(self.data_dir)
 
     def tearDown(self) -> None:

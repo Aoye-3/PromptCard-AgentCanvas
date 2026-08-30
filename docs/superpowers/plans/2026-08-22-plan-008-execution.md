@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Tasks 16-22 complete on the feature branch; Task 23 profile-scoped delivery ledger is next; final real-Codex closed-loop gate remains the merge condition`
+- Status: `Tasks 16-23 complete on the feature branch; Task 24 typed Prompt proposal delivery is next; final real-Codex closed-loop gate remains the merge condition`
 - Date: `2026-08-30`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -795,13 +795,19 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Persist trusted `profileId`, operation, `clientRequestId`, normalized digest, exact target/source manifest, `promptcard-bridge` provenance, state, result, and timestamps before implementing Prompt or image delivery. Client name/version remain audit-only.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). Storage schema v19 owns one durable ledger for preview, commit, and staging operations; it does not yet create or apply a Canvas proposal.
+
 **Acceptance criteria:**
 
-- [ ] Same key plus same digest returns the first result/status.
-- [ ] Same key plus different digest returns `delivery_conflict`.
-- [ ] Validation failures before processing do not create a completed operation; crash recovery can reconcile `processing`.
-- [ ] Replay/conflict keys are isolated by trusted profile; the same request ID in two profiles never collides.
-- [ ] Requests cannot submit or replace their trusted profile or delivery scopes.
+- [x] Same key plus same digest returns the first result/status.
+- [x] Same key plus different digest returns `delivery_conflict`.
+- [x] Validation failures before processing do not create a completed operation; crash recovery can reconcile `processing`.
+- [x] Replay/conflict keys are isolated by trusted profile; the same request ID in two profiles never collides.
+- [x] Requests cannot submit or replace their trusted profile or delivery scopes.
+
+**Implementation evidence:** `bridge_delivery_ledger` persists the trusted profile/scopes/client audit context separately from the untrusted request. Its `(profile_id, client_request_id)` primary key provides long-term deduplication. New writes atomically reject missing, revoked, unavailable, or project-revision-stale CVCs before insert; completed rows remain replayable after later revocation. Internal-token-only Storage routes expose begin, finish, status, and bounded interrupted-operation reconciliation for the Gateway adapter.
+
+**Verification evidence:** focused ledger `6 passed`; ledger/schema/retrieval focus `43 passed`; full Storage `358 passed, 3 skipped`; schema-launcher contract `17 passed`; configured Python Ruff, Agent Runtime check, and text-runtime typecheck pass. Coverage includes same-digest restart replay, different-digest conflict, cross-profile isolation, forged authority, stale/revoked context, v18-to-v19 migration/rollback, authenticated API access, terminal replay, and interrupted `processing` recovery. The full Storage gate also exposed and fixed a pre-existing global system-temp backup-test collision by moving that fixture into a unique project-local test directory.
 
 **Verification:** Storage state-machine tests cover replay, conflict, crash, retry, stale/revoked CVC, and long-term deduplication.
 

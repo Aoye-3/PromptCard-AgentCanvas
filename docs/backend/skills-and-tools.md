@@ -21,7 +21,7 @@ Prompt and Prompt Library proposal tools create pending proposals. Document/Stor
 
 ## Skill snapshots
 
-PromptCard Storage schema v18 is the canonical source for canonical Skill packages, exact-revision trust reviews, independent host pins, and bounded Prompt retrieval evidence. Each run receives the exact enabled local-Agent pin as a bounded snapshot rather than an editable package copy:
+PromptCard Storage schema v19 is the canonical source for canonical Skill packages, exact-revision trust reviews, independent host pins, bounded Prompt retrieval evidence, and the profile-scoped Bridge delivery ledger. Each run receives the exact enabled local-Agent pin as a bounded snapshot rather than an editable package copy:
 
 ```json
 {

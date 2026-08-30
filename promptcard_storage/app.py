@@ -17,6 +17,7 @@ from .document_resources import (
     DocumentValidationError,
     document_size_limit,
 )
+from .delivery_ledger import BridgeDeliveryConflict, BridgeDeliveryValidationError
 from .reference_codes import ReferenceCodeError
 from .remote_images import RemoteImage, RemoteImageError, fetch_remote_image
 from .skill_importer import SkillPackageImportError, SkillPackageImportService
@@ -92,6 +93,24 @@ class PromptRetrievalPayload(BaseModel):
     limit: int = Field(default=8, ge=1, le=20)
     callerKind: Literal["bridge", "local-agent", "maintenance"]
     callerId: str = Field(min_length=1, max_length=128)
+
+
+class BridgeDeliveryBeginPayload(BaseModel):
+    operationContext: dict[str, Any]
+    operation: Literal["delivery.preview", "delivery.commit", "asset.stage"]
+    deliveryRequest: dict[str, Any]
+
+
+class BridgeDeliveryFinishPayload(BaseModel):
+    profileId: str
+    normalizedRequestDigest: str
+    state: Literal["previewed", "pending_review", "accepted", "rejected", "failed"]
+    result: dict[str, Any]
+
+
+class BridgeDeliveryRecoveryPayload(BaseModel):
+    staleBeforeMs: int = Field(ge=0)
+    limit: int = Field(default=100, ge=1, le=500)
 
 
 class RecentCaptureRegistrationPayload(BaseModel):
@@ -665,6 +684,57 @@ def create_app(
             },
         )
 
+    @application.post("/api/internal/bridge-deliveries/begin")
+    def begin_bridge_delivery(
+        payload: BridgeDeliveryBeginPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.begin_bridge_delivery(
+            payload.operationContext,
+            payload.operation,
+            payload.deliveryRequest,
+        ))
+
+    @application.post(
+        "/api/internal/bridge-deliveries/{client_request_id}/finish"
+    )
+    def finish_bridge_delivery(
+        client_request_id: str,
+        payload: BridgeDeliveryFinishPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.finish_bridge_delivery(
+            payload.profileId,
+            client_request_id,
+            payload.normalizedRequestDigest,
+            payload.state,
+            payload.result,
+        ))
+
+    @application.get("/api/internal/bridge-deliveries/{client_request_id}")
+    def get_bridge_delivery(
+        client_request_id: str,
+        profileId: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(
+            lambda: storage.get_bridge_delivery(profileId, client_request_id)
+        )
+
+    @application.post("/api/internal/bridge-deliveries/reconcile")
+    def reconcile_bridge_deliveries(
+        payload: BridgeDeliveryRecoveryPayload,
+        request: Request,
+    ) -> dict[str, int]:
+        _require_internal_auth(request)
+        return _handle(lambda: {
+            "recovered": storage.reconcile_bridge_deliveries(
+                payload.staleBeforeMs, limit=payload.limit
+            )
+        })
     @application.get("/api/context-packs/{cvc_code}")
     def inspect_context_pack(cvc_code: str) -> dict[str, Any]:
         return _handle(lambda: storage.inspect_context_pack(cvc_code))
@@ -1048,6 +1118,16 @@ def _handle(callback: Callable[[], Any]) -> Any:
             exc.message,
             {"reference": exc.reference},
         ) from exc
+    except BridgeDeliveryConflict as exc:
+        raise _http_error(
+            409,
+            exc.code,
+            "Bridge delivery request conflicts with an existing request",
+            {"existingRequestDigest": exc.existing_digest},
+        ) from exc
+    except BridgeDeliveryValidationError as exc:
+        status = 410 if exc.code == "context_revoked" else 409 if exc.code == "context_stale" else 400
+        raise _http_error(status, exc.code, "Bridge delivery request is invalid") from exc
     except ReferenceCodeError as exc:
         raise _http_error(400, exc.code, "Invalid public reference code") from exc
     except MissingItem as exc:

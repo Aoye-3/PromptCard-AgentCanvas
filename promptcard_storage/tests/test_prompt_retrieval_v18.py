@@ -48,7 +48,7 @@ class PromptRetrievalV18Test(unittest.TestCase):
         )
 
     def test_schema_v18_indexes_english_and_chinese_with_stable_bounded_results(self):
-        self.assertEqual(SCHEMA_VERSION, 18)
+        self.assertEqual(SCHEMA_VERSION, 19)
         first = self.store.create_preset(
             prompt("p1", "Neon opening", "A rainy neon city at night")
         )
@@ -178,8 +178,9 @@ class PromptRetrievalV18Test(unittest.TestCase):
             connection.execute("DROP TABLE prompt_retrieval_fts")
             connection.execute("DROP TABLE prompt_retrieval_audits")
             connection.execute("DROP TABLE prompt_retrieval_documents")
+            connection.execute("DROP TABLE bridge_delivery_ledger")
             connection.execute(
-                "UPDATE schema_migrations SET version=17, name='fixture-v17' WHERE version=18"
+                "UPDATE schema_migrations SET version=17, name='fixture-v17' WHERE version=19"
             )
             connection.commit()
 
@@ -192,7 +193,7 @@ class PromptRetrievalV18Test(unittest.TestCase):
         try:
             self.assertEqual(
                 connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
-                18,
+                19,
             )
         finally:
             connection.close()

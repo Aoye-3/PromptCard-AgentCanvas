@@ -139,4 +139,4 @@ Neither path requires a Canvas contract change or an image-generation adapter ch
 
 The manifest includes `textAgentUrl` and `textAgentHealthUrl` in addition to the existing frontend, Gateway, and Storage URLs.
 
-The runtime-manifest schema and Storage schema are independent. PromptCard Storage currently reports schema v18. Direct Storage/Gateway test gates use the v18 implementation, including the transactional Prompt retrieval index and audit surface.
+The runtime-manifest schema and Storage schema are independent. PromptCard Storage currently reports schema v19. Direct Storage/Gateway test gates use the v18 transactional Prompt retrieval index/audit surface plus the v19 profile-scoped Bridge delivery ledger.

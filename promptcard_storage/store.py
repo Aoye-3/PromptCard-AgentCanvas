@@ -23,6 +23,7 @@ from .assets import (
     prepare_provider_image,
 )
 from .backup import BackupManager
+from .delivery_ledger import BridgeDeliveryLedger, create_bridge_delivery_schema
 from .document_resources import DocumentResourceStore
 from .image_runs import (
     decode_cursor,
@@ -62,7 +63,7 @@ from .skill_packages import (
 
 Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 DATABASE_NAME = "promptcard.sqlite3"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE = " \t\n\v\f\r"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
@@ -201,6 +202,9 @@ class SqliteStore:
         self._prompt_retrieval = PromptRetrievalRepository(
             self.data_dir, self._connect, self._transaction, now_ms
         )
+        self._bridge_deliveries = BridgeDeliveryLedger(
+            self._transaction, self._connect, now_ms
+        )
         self._backups = BackupManager(
             self.database_path,
             self.assets_dir,
@@ -238,6 +242,7 @@ class SqliteStore:
                 "skillHub": True,
                 "contextPacks": True,
                 "promptRetrieval": True,
+                "bridgeDeliveryLedger": True,
             },
         }
 
@@ -888,6 +893,48 @@ class SqliteStore:
             "contentType": asset[2],
             "size": asset[3],
         }
+
+    def begin_bridge_delivery(
+        self,
+        operation_context: dict[str, Any],
+        operation: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_deliveries.begin(operation_context, operation, request)
+
+    def finish_bridge_delivery(
+        self,
+        profile_id: str,
+        client_request_id: str,
+        normalized_request_digest: str,
+        state: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return self._bridge_deliveries.finish(
+                profile_id,
+                client_request_id,
+                normalized_request_digest,
+                state,
+                result,
+            )
+        except KeyError as exc:
+            raise MissingItem(client_request_id) from exc
+
+    def get_bridge_delivery(
+        self, profile_id: str, client_request_id: str
+    ) -> dict[str, Any]:
+        record = self._bridge_deliveries.get(profile_id, client_request_id)
+        if record is None:
+            raise MissingItem(client_request_id)
+        return record
+
+    def reconcile_bridge_deliveries(
+        self, stale_before_ms: int, *, limit: int = 100
+    ) -> int:
+        return self._bridge_deliveries.reconcile_processing(
+            stale_before_ms, limit=limit
+        )
 
     def inspect_context_pack(self, cvc_code: str) -> dict[str, Any]:
         parsed = parse_reference_code(
@@ -4041,6 +4088,19 @@ class SqliteStore:
                 except Exception:
                     connection.rollback()
                     raise
+            if current_version == 18:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    create_bridge_delivery_schema(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (19, "add-profile-scoped-bridge-delivery-ledger", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 19
+                except Exception:
+                    connection.rollback()
+                    raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
             connection.execute("BEGIN IMMEDIATE")
@@ -4048,6 +4108,7 @@ class SqliteStore:
                 drop_prompt_retrieval_preset_triggers(connection)
                 ensure_prompt_retrieval_digest_column(connection)
                 create_prompt_retrieval_schema(connection)
+                create_bridge_delivery_schema(connection)
                 self._harden_weak_public_references_v10_schema(connection)
                 self._migrate_agent_conversation_interaction_metadata(connection)
                 self._seed_builtin_skills(connection)
@@ -4101,6 +4162,7 @@ class SqliteStore:
         self._create_document_resources_v16_schema(connection)
         self._create_creative_references_v17_schema(connection)
         create_prompt_retrieval_schema(connection)
+        create_bridge_delivery_schema(connection)
 
     @staticmethod
     def _create_creative_references_v17_schema(connection: sqlite3.Connection) -> None:

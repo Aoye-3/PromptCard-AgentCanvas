@@ -2,7 +2,7 @@
 
 ## Status
 
-Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-22 are implemented on `feat/skill-document-storyboard-loop`; the next slice is the profile-scoped delivery ledger and typed writeback runtime.
+Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-23 are implemented on `feat/skill-document-storyboard-loop`; the next slice is typed Prompt proposal delivery through the profile-scoped ledger.
 
 ## Current Normative Boundary
 
@@ -138,7 +138,7 @@ The maintained runtime also has important boundaries that this plan preserves:
 - the pi text Agent has no direct filesystem, Storage, or Canvas write access;
 - current provider image generation is independent from text-Agent sessions.
 
-The current left navigation includes the complete Task 15 Skill Hub management surface. PromptCard Storage schema v18 owns canonical Skill packages, immutable revisions and digests, provenance, lifecycle, exact-revision trust reviews, independent host pins, typed creative references, and transactional Prompt retrieval/audit records. Skill Hub supports inert folder/archive inspection, structured findings, import, history/diff, archive/restore, exact review, Codex/local-Agent controls, projection health, and explicit owned-drift repair. The Gateway continues to supply exact bounded snapshots to the local text Agent without expanding Runtime permissions.
+The current left navigation includes the complete Task 15 Skill Hub management surface. PromptCard Storage schema v19 owns canonical Skill packages, immutable revisions and digests, provenance, lifecycle, exact-revision trust reviews, independent host pins, typed creative references, transactional Prompt retrieval/audit records, and the profile-scoped Bridge delivery ledger. Skill Hub supports inert folder/archive inspection, structured findings, import, history/diff, archive/restore, exact review, Codex/local-Agent controls, projection health, and explicit owned-drift repair. The Gateway continues to supply exact bounded snapshots to the local text Agent without expanding Runtime permissions.
 
 Codex `.agents/skills` is a derived native projection, not the canonical store. Canonical revision updates do not move either host pin. Skill scripts, hooks, installers, automatic semantic matching, and MCP Skill resources remain unimplemented. Task 16's host-neutral read surface resolves Codex pins only through a trusted profile repository scope; Task 18 Prompt search remains discovery-only and requires an explicit `CVC-*`.
 

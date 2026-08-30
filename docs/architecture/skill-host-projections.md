@@ -1,6 +1,6 @@
 # Skill Host Pins And Projections
 
-PromptCard Storage schema v14 defines Skill host pins and projections; schema v15 adds exact-revision trust reviews and their management operations, schema v16 adds bounded document-resource/provider-cleanup durability, schema v17 adds typed creative references, and schema v18 adds Prompt retrieval documents/audits without changing host-pin semantics. Storage remains the authority for host activation. A host never follows a Skill's mutable `currentRevision`: every activation pins one immutable revision and its canonical digest.
+PromptCard Storage schema v14 defines Skill host pins and projections; schema v15 adds exact-revision trust reviews and their management operations, schema v16 adds bounded document-resource/provider-cleanup durability, schema v17 adds typed creative references, schema v18 adds Prompt retrieval documents/audits, and schema v19 adds the Bridge delivery ledger without changing host-pin semantics. Storage remains the authority for host activation. A host never follows a Skill's mutable `currentRevision`: every activation pins one immutable revision and its canonical digest.
 
 ## Ownership Model
 

@@ -184,6 +184,7 @@ class SqliteStoreTest(unittest.TestCase):
         self.assertTrue(health["capabilities"]["agentConversations"])
         self.assertTrue(health["capabilities"]["skillHub"])
         self.assertTrue(health["capabilities"]["projectDocumentResources"])
+        self.assertTrue(health["capabilities"]["bridgeDeliveryLedger"])
         self.assertIsInstance(health["pid"], int)
 
         connection = sqlite3.connect(self.data_dir / "promptcard.sqlite3")
@@ -193,10 +194,10 @@ class SqliteStoreTest(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_fresh_schema_v18_contains_document_creative_and_retrieval_tables(self) -> None:
+    def test_fresh_schema_v19_contains_retrieval_and_delivery_tables(self) -> None:
         store = JsonCollectionStore(self.data_dir)
 
-        self.assertEqual(SCHEMA_VERSION, 18)
+        self.assertEqual(SCHEMA_VERSION, 19)
         connection = sqlite3.connect(store.database_path)
         try:
             tables = {
@@ -220,8 +221,9 @@ class SqliteStoreTest(unittest.TestCase):
         self.assertIn("prompt_retrieval_documents", tables)
         self.assertIn("prompt_retrieval_fts", tables)
         self.assertIn("prompt_retrieval_audits", tables)
+        self.assertIn("bridge_delivery_ledger", tables)
         self.assertIn("retrieval_digest", preset_columns)
-        self.assertEqual(migration, [(18, "json-v1-to-sqlite")])
+        self.assertEqual(migration, [(19, "json-v1-to-sqlite")])
 
     def test_v15_migrates_both_v16_tables_and_then_repairs_conversation_columns(self) -> None:
         store = JsonCollectionStore(self.data_dir)
@@ -268,6 +270,7 @@ class SqliteStoreTest(unittest.TestCase):
                 (16, "add-project-document-resources-and-provider-file-cleanup"),
                 (17, "add-creative-object-references"),
                 (18, "add-transactional-prompt-retrieval"),
+                (19, "add-profile-scoped-bridge-delivery-ledger"),
             ],
         )
 

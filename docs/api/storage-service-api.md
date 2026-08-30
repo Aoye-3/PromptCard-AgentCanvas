@@ -351,6 +351,12 @@ The following routes are internal-token-only Gateway/Storage coordination and ar
 - `GET /api/internal/provider-file-cleanup/due?now=&limit=`
 - `POST /api/internal/provider-file-cleanup/succeeded`
 - `POST /api/internal/provider-file-cleanup/retry`
+- `POST /api/internal/bridge-deliveries/begin`
+- `POST /api/internal/bridge-deliveries/{clientRequestId}/finish`
+- `GET /api/internal/bridge-deliveries/{clientRequestId}?profileId=`
+- `POST /api/internal/bridge-deliveries/reconcile`
+
+The Bridge delivery routes implement the schema v19 profile-scoped idempotency ledger. `begin` receives trusted operation context separately from the untrusted delivery request; requests containing `profileId`, scopes, client identity, or an operation context are rejected. Only new operations require a current active CVC; replay and status return the first durable result without repeating the mutation. `finish` is compare-by-profile/request/digest, and recovery converts bounded stale `processing` rows to a durable redacted failure. These are coordination routes for Gateway only and do not constitute a browser or MCP write surface by themselves.
 
 For Ark PDF input, Gateway uploads a remote file for one invocation and deletes it in `finally`. A failed remote deletion is stored as a redacted cleanup row and retried on Gateway startup with bounded backoff. Public responses and diagnostics expose counts/safe error codes only; remote file IDs are never returned to the browser.
 
