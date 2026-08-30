@@ -117,7 +117,7 @@ class BridgePromptDeliveryService:
             profile_id = record["operationContext"]["profileId"]
             proposal_id = (record.get("result") or {}).get("proposalId")
             preview = self._ledger.find_preview(profile_id, proposal_id)
-            if preview is None:
+            if preview is None or preview["request"].get("kind") != "prompt.create":
                 continue
             result.append(_delivery_view(record, preview["request"]))
         return result
@@ -142,6 +142,11 @@ class BridgePromptDeliveryService:
         if len(matches) != 1:
             raise BridgeDeliveryValidationError("delivery_proposal_not_found")
         record = matches[0]
+        preview = self._ledger.find_preview(
+            record["operationContext"]["profileId"], proposal_id
+        )
+        if preview is None or preview["request"].get("kind") != "prompt.create":
+            raise BridgeDeliveryValidationError("delivery_proposal_not_found")
         normalized_codes = _result_codes(result_codes, decision)
         updated = self._ledger.transition(
             record["operationContext"]["profileId"],
@@ -152,12 +157,8 @@ class BridgePromptDeliveryService:
             "Prompt proposal was accepted by the user."
             if decision == "accepted"
             else "Prompt proposal was rejected by the user.",
+            expected_result_namespace="CVT",
         )
-        preview = self._ledger.find_preview(
-            record["operationContext"]["profileId"], proposal_id
-        )
-        if preview is None:
-            raise BridgeDeliveryValidationError("delivery_preview_unavailable")
         return _delivery_view(updated, preview["request"])
 
 

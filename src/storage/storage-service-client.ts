@@ -667,6 +667,65 @@ export interface BridgePromptDelivery {
   }
 }
 
+export interface BridgeImageDelivery {
+  operationContext: {
+    profileId: string
+    scopes: string[]
+    provenance: 'promptcard-bridge'
+    clientInfo?: { name: string; version: string }
+  }
+  request: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    kind: 'image.place'
+    target: {
+      cvcCode: string
+      storyboardCode?: string
+      baseRevision?: number
+      baseDigest?: string
+      shotOrdinal?: number
+    }
+    sourceCodes: string[]
+    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    rationale: string
+    provenance: 'promptcard-bridge'
+    payload: { stagedAssetHandle: string; altText?: string }
+  }
+  proposalId: string
+  state: BridgeDeliveryState
+  disposition: 'original' | 'replay' | 'conflict'
+  resultCodes: string[]
+  message: string
+  createdAt: string
+  updatedAt: string
+  visualProposal: {
+    kind: 'free_canvas_image_place'
+    id: string
+    agentName: string
+    title: string
+    altText: string
+    assetId: string
+    contentType: 'image/png' | 'image/jpeg' | 'image/webp'
+    width: number
+    height: number
+    rationale: string
+    status: 'pending' | 'approved' | 'rejected'
+    createdAt: number
+    bridgeDelivery: {
+      profileId: string
+      cvcCode: string
+      clientRequestId: string
+      normalizedRequestDigest: string
+      sourceCodes: string[]
+      skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+      target: BridgeImageDelivery['request']['target']
+      stagedAssetHandle: string
+    }
+  }
+}
+
+export type BridgeDelivery = BridgePromptDelivery | BridgeImageDelivery
+
 const parseProjectDocumentResource = (value: unknown): ProjectDocumentResource => {
   if (!value || typeof value !== 'object') {
     throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid document resource.')
@@ -1199,7 +1258,7 @@ export const storageServiceClient = {
     }
   },
   bridgeDeliveries: {
-    async list(cvcCode: string, state: BridgeDeliveryState = 'pending_review'): Promise<BridgePromptDelivery[]> {
+    async list(cvcCode: string, state: BridgeDeliveryState = 'pending_review'): Promise<BridgeDelivery[]> {
       const code = requireContextPackCode(cvcCode)
       const payload = await request<{ deliveries?: unknown[] }>(
         `/storage-api/context-packs/${encodeURIComponent(code)}/bridge-deliveries?state=${encodeURIComponent(state)}`
@@ -1207,19 +1266,19 @@ export const storageServiceClient = {
       if (!Array.isArray(payload.deliveries)) {
         throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge delivery list.')
       }
-      return payload.deliveries.map(parseBridgePromptDelivery)
+      return payload.deliveries.map(parseBridgeDelivery)
     },
     async decide(
       cvcCode: string,
       proposalId: string,
       decision: 'accepted' | 'rejected',
       resultCodes: string[]
-    ): Promise<BridgePromptDelivery> {
+    ): Promise<BridgeDelivery> {
       const code = requireContextPackCode(cvcCode)
       if (!/^DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(proposalId)) {
         throw new StorageHttpError(400, 'invalid_delivery_proposal', 'Bridge proposal code is invalid.')
       }
-      return parseBridgePromptDelivery(await request<unknown>(
+      return parseBridgeDelivery(await request<unknown>(
         `/storage-api/context-packs/${encodeURIComponent(code)}/bridge-deliveries/${encodeURIComponent(proposalId)}/decision`,
         { method: 'POST', body: JSON.stringify({ decision, resultCodes }) }
       ))
@@ -1734,6 +1793,127 @@ const parseBridgePromptDelivery = (value: unknown): BridgePromptDelivery => {
     || !value.visualProposal.bridgeDelivery.skillPins.every(isBridgeSkillPin)
   ) return invalid()
   return value as unknown as BridgePromptDelivery
+}
+
+const parseBridgeDelivery = (value: unknown): BridgeDelivery => {
+  if (!isRecord(value) || !isRecord(value.request)) {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge delivery.')
+  }
+  if (value.request.kind === 'prompt.create') return parseBridgePromptDelivery(value)
+  if (value.request.kind === 'image.place') return parseBridgeImageDelivery(value)
+  throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge delivery.')
+}
+
+const parseBridgeImageDelivery = (value: unknown): BridgeImageDelivery => {
+  const invalid = (): never => {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge image delivery.')
+  }
+  if (!isClosedRecord(value, [
+    'operationContext', 'request', 'proposalId', 'state', 'disposition', 'resultCodes',
+    'message', 'createdAt', 'updatedAt', 'visualProposal'
+  ])) return invalid()
+  if (
+    !isRecord(value.operationContext)
+    || !isClosedRecord(value.request, [
+      'clientRequestId', 'normalizedRequestDigest', 'kind', 'target', 'sourceCodes',
+      'skillPins', 'rationale', 'provenance', 'payload'
+    ])
+    || !isRecord(value.request.target)
+    || !isRecord(value.request.payload)
+    || !isClosedRecord(value.visualProposal, [
+      'kind', 'id', 'agentName', 'title', 'altText', 'assetId', 'contentType',
+      'width', 'height', 'rationale', 'status', 'createdAt', 'bridgeDelivery'
+    ])
+    || !isClosedRecord(value.visualProposal.bridgeDelivery, [
+      'profileId', 'cvcCode', 'clientRequestId', 'normalizedRequestDigest',
+      'sourceCodes', 'skillPins', 'target', 'stagedAssetHandle'
+    ])
+  ) return invalid()
+  if (
+    !isRecord(value.operationContext)
+    || !hasOnlyKeys(value.operationContext, ['profileId', 'scopes', 'provenance'], ['clientInfo'])
+    || typeof value.operationContext.profileId !== 'string'
+    || !Array.isArray(value.operationContext.scopes)
+    || !value.operationContext.scopes.every(scope => typeof scope === 'string')
+    || value.operationContext.provenance !== 'promptcard-bridge'
+    || (value.operationContext.clientInfo !== undefined && (
+      !isClosedRecord(value.operationContext.clientInfo, ['name', 'version'])
+      || typeof value.operationContext.clientInfo.name !== 'string'
+      || typeof value.operationContext.clientInfo.version !== 'string'
+    ))
+    || !isClosedRecord(value.request, [
+      'clientRequestId', 'normalizedRequestDigest', 'kind', 'target', 'sourceCodes',
+      'skillPins', 'rationale', 'provenance', 'payload'
+    ])
+    || typeof value.request.clientRequestId !== 'string'
+    || !isSha256(value.request.normalizedRequestDigest)
+    || value.request.kind !== 'image.place'
+    || !isBridgeImageTarget(value.request.target)
+    || !Array.isArray(value.request.sourceCodes)
+    || !value.request.sourceCodes.every(code => typeof code === 'string')
+    || !Array.isArray(value.request.skillPins)
+    || !value.request.skillPins.every(isBridgeSkillPin)
+    || typeof value.request.rationale !== 'string'
+    || value.request.provenance !== 'promptcard-bridge'
+    || !hasOnlyKeys(value.request.payload, ['stagedAssetHandle'], ['altText'])
+    || typeof value.request.payload.stagedAssetHandle !== 'string'
+    || !/^AST-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value.request.payload.stagedAssetHandle)
+    || (value.request.payload.altText !== undefined && typeof value.request.payload.altText !== 'string')
+    || typeof value.proposalId !== 'string'
+    || !/^DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value.proposalId)
+    || !['previewed', 'pending_review', 'accepted', 'rejected', 'failed'].includes(String(value.state))
+    || !['original', 'replay', 'conflict'].includes(String(value.disposition))
+    || !Array.isArray(value.resultCodes)
+    || !value.resultCodes.every(code => typeof code === 'string')
+    || typeof value.message !== 'string'
+    || typeof value.createdAt !== 'string'
+    || typeof value.updatedAt !== 'string'
+    || !isClosedRecord(value.visualProposal, [
+      'kind', 'id', 'agentName', 'title', 'altText', 'assetId', 'contentType',
+      'width', 'height', 'rationale', 'status', 'createdAt', 'bridgeDelivery'
+    ])
+    || value.visualProposal.kind !== 'free_canvas_image_place'
+    || value.visualProposal.id !== value.proposalId
+    || typeof value.visualProposal.agentName !== 'string'
+    || typeof value.visualProposal.title !== 'string'
+    || typeof value.visualProposal.altText !== 'string'
+    || typeof value.visualProposal.assetId !== 'string'
+    || !['image/png', 'image/jpeg', 'image/webp'].includes(String(value.visualProposal.contentType))
+    || !isPositiveInteger(value.visualProposal.width)
+    || !isPositiveInteger(value.visualProposal.height)
+    || typeof value.visualProposal.rationale !== 'string'
+    || !['pending', 'approved', 'rejected'].includes(String(value.visualProposal.status))
+    || typeof value.visualProposal.createdAt !== 'number'
+    || !isClosedRecord(value.visualProposal.bridgeDelivery, [
+      'profileId', 'cvcCode', 'clientRequestId', 'normalizedRequestDigest',
+      'sourceCodes', 'skillPins', 'target', 'stagedAssetHandle'
+    ])
+    || value.visualProposal.bridgeDelivery.profileId !== value.operationContext.profileId
+    || value.visualProposal.bridgeDelivery.cvcCode !== value.request.target.cvcCode
+    || value.visualProposal.bridgeDelivery.clientRequestId !== value.request.clientRequestId
+    || value.visualProposal.bridgeDelivery.normalizedRequestDigest !== value.request.normalizedRequestDigest
+    || value.visualProposal.bridgeDelivery.stagedAssetHandle !== value.request.payload.stagedAssetHandle
+    || !Array.isArray(value.visualProposal.bridgeDelivery.sourceCodes)
+    || !Array.isArray(value.visualProposal.bridgeDelivery.skillPins)
+    || !value.visualProposal.bridgeDelivery.skillPins.every(isBridgeSkillPin)
+    || !isBridgeImageTarget(value.visualProposal.bridgeDelivery.target)
+  ) return invalid()
+  return value as unknown as BridgeImageDelivery
+}
+
+const isBridgeImageTarget = (value: unknown): boolean => {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['cvcCode'],
+    ['storyboardCode', 'baseRevision', 'baseDigest', 'shotOrdinal']
+  ) || !validatePublicReferenceCode(value.cvcCode, 'CVC')) return false
+  const optional = [value.storyboardCode, value.baseRevision, value.baseDigest, value.shotOrdinal]
+  if (optional.every(item => item === undefined)) return true
+  return validatePublicReferenceCode(value.storyboardCode, 'CVS') !== null
+    && isNonNegativeInteger(value.baseRevision)
+    && isSha256(value.baseDigest)
+    && isNonNegativeInteger(value.shotOrdinal)
+    && Number(value.shotOrdinal) <= 199
 }
 
 const isBridgeSkillPin = (value: unknown): boolean => (

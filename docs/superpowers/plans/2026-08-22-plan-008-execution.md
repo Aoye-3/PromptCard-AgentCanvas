@@ -4,8 +4,8 @@
 
 ## Status
 
-- Status: `Tasks 16-24 complete on the feature branch; Task 25 typed image staging/delivery is next; final real-Codex closed-loop gate remains the merge condition`
-- Date: `2026-08-30`
+- Status: `Tasks 16-25 complete on the feature branch; Task 26 MCP delivery/status exposure is next; final real-Codex closed-loop gate remains the merge condition`
+- Date: `2026-08-31`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
 - Plan 007 prerequisite: manual acceptance confirmed by the user on `2026-08-22`
@@ -845,11 +845,17 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Accept multipart bytes through the bridge Gateway router, validate/localize with the existing asset pipeline, and create a host-neutral pending placement using the existing save-before-placed protocol.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). Gateway accepts only bounded multipart image bytes plus closed metadata, Storage localizes the validated image under a deterministic content-addressed asset, and Free Canvas applies a reviewable ordinary image only after an explicit user decision.
+
 **Acceptance criteria:**
 
-- [ ] Gateway rejects paths/URLs, MIME spoofing, oversized images, wrong context, and missing scope before placement.
-- [ ] Asset/DB partial failures remain durable and recoverable without duplicate assets/nodes.
-- [ ] New provenance is `promptcard-bridge`; v1 `codex-harness` is compatibility-read-only and no provider generation run is created.
+- [x] Gateway rejects paths/URLs, MIME spoofing, oversized images, wrong context, and missing scope before placement.
+- [x] Asset/DB partial failures remain durable and recoverable without duplicate assets/nodes.
+- [x] New provenance is `promptcard-bridge`; v1 `codex-harness` is compatibility-read-only and no provider generation run is created.
+
+**Implementation evidence:** `POST /api/promptcard/bridge/v3/assets/stage` checks `bridge:deliver:image` before reading the upload, accepts only PNG/JPEG/WebP, enforces a 30 MB budget, verifies multipart MIME, filename, declared byte length, SHA-256 digest, and a normalized workspace-relative path, then forwards bytes to the internal-token Storage route. Storage reuses the existing decoded-image validation/preparation pipeline, records `asset.stage` in the profile-scoped v19 ledger, stores the prepared bytes under a deterministic content-addressed ID, and returns only an opaque `AST-*` handle across the external Bridge boundary. `image.place` preview/commit consumes that handle, rechecks its profile/CVC and optional exact `CVS` revision/digest/shot ordinal, and emits a visual proposal. The browser saves one deterministic ordinary image node with complete `promptcard-bridge` provenance, requires the resulting same-project `CVM-*`, and only then records acceptance. Retry/restart reuses the stage, proposal, and node; no image-generation run is created.
+
+**Verification evidence:** the combined Storage/Gateway gate passes 854 tests, 344 subtests, and 3 intentional skips; the four-shard frontend gate passes 1,394 tests. Focused coverage includes stage replay, crash-after-file recovery, source/CVC/profile isolation, path/MIME/size/digest/decoded-image rejection, internal-token isolation, proposal routing, strict typed parsing, image preview, durable acceptance, deterministic node identity, altered-marker rejection, and zero provider runs/generation metadata. Bridge v1/v2/v3 contracts pass 52 tests, Bridge CLI and MCP pass 7 tests each, all app/Text Agent/CLI/MCP TypeScript checks pass, touched Python passes Ruff, touched frontend passes zero-warning ESLint, and the production build passes with only the repository's pre-existing CSS-minifier, dynamic-import, and bundle-size warnings.
 
 **Verification:** Multipart, asset, Storage, frontend recovery, replay, crash, and source-manifest tests pass.
 

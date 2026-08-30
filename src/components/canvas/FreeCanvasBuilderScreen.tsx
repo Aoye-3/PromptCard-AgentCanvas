@@ -45,6 +45,11 @@ import { CanvasNodeContextMenu } from '@/components/canvas/image-actions/CanvasN
 import { CanvasProjectReferenceCodeAction } from '@/components/canvas/image-actions/CanvasReferenceCodeAction'
 import { CopyCodexContext } from '@/components/canvas/context-packs/CopyCodexContext'
 import { BridgeDeliveryInbox } from '@/components/canvas/bridge/BridgeDeliveryInbox'
+import {
+  createBridgeImageApplication,
+  createBridgeImageNode,
+  inspectBridgeImageApplication
+} from '@/components/canvas/bridge/bridge-image-application'
 import { CanvasUnsupportedNodeContextMenu } from '@/components/canvas/image-actions/CanvasUnsupportedNodeContextMenu'
 import {
   CanvasTextNodeContextMenu,
@@ -176,6 +181,8 @@ import {
 } from '@/services/image-generation-client'
 import {
   storageServiceClient,
+  type BridgeDelivery,
+  type BridgeImageDelivery,
   type BridgePromptDelivery,
   type ImageGenerationConversationSummary,
   type ImageGenerationRun,
@@ -3307,6 +3314,70 @@ const FreeCanvasBuilderInner = ({
     return []
   }
 
+  const handleAcceptBridgeImageDelivery = async (
+    delivery: BridgeImageDelivery
+  ): Promise<string[]> => {
+    const scope = activeProjectScopeRef.current
+    if (!onPersistCanvas || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+    const application = await createBridgeImageApplication(delivery)
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const baseCanvas = freeCanvasRef.current
+      const existing = inspectBridgeImageApplication(baseCanvas, application)
+      if (existing.status === 'conflict') {
+        window.alert('外部 Agent 图片标记完整性校验失败，无法应用。')
+        return []
+      }
+      if (existing.status === 'exact') {
+        const saved = baseCanvas.nodes.find(node => node.id === application.nodeId && node.kind === 'image')
+        return saved?.referenceCode ? [saved.referenceCode] : []
+      }
+      const node = createBridgeImageNode(
+        delivery,
+        application,
+        nextNodePosition(reactFlow, baseCanvas.nodes.length)
+      )
+      const requestedCanvas = {
+        ...baseCanvas,
+        selectedNodeId: node.id,
+        nodes: [...baseCanvas.nodes, node]
+      }
+      let receipt: boolean | FreeCanvasPersistReceipt = false
+      try {
+        receipt = await onPersistCanvas(requestedCanvas)
+      } catch {
+        receipt = false
+      }
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+      const winningCanvas = authoritativePersistedCanvas(receipt)
+      if (!winningCanvas) return []
+      const winning = inspectBridgeImageApplication(winningCanvas, application)
+      const liveCanvas = freeCanvasRef.current
+      const liveChanged = canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(baseCanvas)
+        && canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(winningCanvas)
+      if (winning.status === 'exact' && !liveChanged) {
+        const saved = winningCanvas.nodes.find(candidate => (
+          candidate.id === application.nodeId && candidate.kind === 'image'
+        ))
+        if (!saved?.referenceCode) return []
+        commitCanvasSelection(winningCanvas, application.nodeId)
+        return [saved.referenceCode]
+      }
+      if (winning.status === 'conflict') {
+        window.alert('持久化返回的外部 Agent 图片标记完整性校验失败。')
+        return []
+      }
+      freeCanvasRef.current = liveChanged ? liveCanvas : winningCanvas
+    }
+    window.alert('Canvas 在保存期间持续变化，请重试外部 Agent 图片提案。')
+    return []
+  }
+
+  const handleAcceptBridgeDelivery = async (delivery: BridgeDelivery): Promise<string[]> => (
+    isBridgePromptDelivery(delivery)
+      ? handleAcceptBridgePromptDelivery(delivery)
+      : handleAcceptBridgeImageDelivery(delivery as BridgeImageDelivery)
+  )
+
   const handleApplyAgentProposal = async (proposal: AgentWorkspaceProposal | AgentCanvasEdit) => {
     if (
       proposal.kind === 'document_create'
@@ -4395,7 +4466,7 @@ const FreeCanvasBuilderInner = ({
             <div className="flex min-h-0 flex-1 flex-col">
               <BridgeDeliveryInbox
                 cvcCode={activeBridgeCvcCode}
-                onAccept={handleAcceptBridgePromptDelivery}
+                onAccept={handleAcceptBridgeDelivery}
               />
               <div className="min-h-0 flex-1">
                 <AIChatbotBox
@@ -6833,6 +6904,10 @@ const createBridgePromptApplication = async (
     provenance
   }
 }
+
+const isBridgePromptDelivery = (
+  delivery: BridgeDelivery
+): delivery is BridgePromptDelivery => delivery.request.kind === 'prompt.create'
 
 const promptHandoffSourceIsCurrent = (
   canvas: IFreeCanvasProject,

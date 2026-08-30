@@ -212,6 +212,24 @@ class BridgeDeliveryLedger:
             ).fetchone()
         return _record(row, disposition="original") if row is not None else None
 
+    def find_stage(self, profile_id: str, staged_asset_handle: str) -> dict[str, Any] | None:
+        profile = _normalize_profile_id(profile_id)
+        handle = _normalize_stage_handle(staged_asset_handle)
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT profile_id, client_request_id, operation,
+                          normalized_request_digest, cvc_code,
+                          operation_context_json, request_json,
+                          target_manifest_json, source_manifest_json,
+                          provenance, state, result_json, created_at, updated_at
+                   FROM bridge_delivery_ledger
+                   WHERE profile_id=? AND operation='asset.stage'
+                     AND json_extract(result_json, '$.stagedAssetHandle')=?
+                   LIMIT 1""",
+                (profile, handle),
+            ).fetchone()
+        return _record(row, disposition="original") if row is not None else None
+
     def list_records(
         self,
         cvc_code: str,
@@ -258,6 +276,8 @@ class BridgeDeliveryLedger:
         state: str,
         result_codes: list[str],
         message: str,
+        *,
+        expected_result_namespace: str,
     ) -> dict[str, Any]:
         profile = _normalize_profile_id(profile_id)
         request_id = _normalize_request_id(client_request_id)
@@ -285,7 +305,10 @@ class BridgeDeliveryLedger:
                 raise BridgeDeliveryValidationError("delivery_not_pending")
             if state == "accepted":
                 _require_result_codes_in_context(
-                    connection, existing[4], result_codes
+                    connection,
+                    existing[4],
+                    result_codes,
+                    expected_result_namespace,
                 )
             timestamp = max(self._now_ms(), existing[13])
             result.update({
@@ -496,7 +519,10 @@ def _require_result_codes_in_context(
     connection: sqlite3.Connection,
     cvc_code: str,
     result_codes: list[str],
+    expected_namespace: str,
 ) -> None:
+    if expected_namespace not in {"CVT", "CVM", "CVD", "CVS"}:
+        raise BridgeDeliveryValidationError("delivery_result_codes_invalid")
     for code in result_codes:
         row = connection.execute(
             """SELECT 1
@@ -506,9 +532,9 @@ def _require_result_codes_in_context(
                 AND project.namespace='PRJ' AND project.owner_scope=''
                JOIN public_references AS result
                  ON result.owner_scope=project.internal_id
-                AND result.namespace='CVT'
+                AND result.namespace=?
                WHERE context.cvc_code=? AND result.public_code=?""",
-            (cvc_code, code),
+            (expected_namespace, cvc_code, code),
         ).fetchone()
         if row is None:
             raise BridgeDeliveryValidationError("delivery_result_code_unavailable")
@@ -544,6 +570,15 @@ def _normalize_proposal_id(value: Any) -> str:
         or re.fullmatch(r"DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}", value) is None
     ):
         raise BridgeDeliveryValidationError("delivery_proposal_invalid")
+    return value
+
+
+def _normalize_stage_handle(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"AST-[0-7][0-9A-HJKMNP-TV-Z]{25}", value) is None
+    ):
+        raise BridgeDeliveryValidationError("staged_asset_handle_invalid")
     return value
 
 

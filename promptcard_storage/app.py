@@ -770,6 +770,68 @@ def create_app(
             payload.operationContext, payload.deliveryRequest
         ))
 
+    @application.post("/api/internal/bridge-image-assets/stage")
+    async def stage_bridge_image_asset(request: Request) -> dict[str, Any]:
+        _require_internal_auth(request)
+        metadata_header = request.headers.get("x-promptcard-stage-metadata", "")
+        if len(metadata_header.encode("utf-8")) > 8192:
+            raise _http_error(
+                400, "asset_stage_request_invalid", "Stage metadata is invalid"
+            )
+        try:
+            metadata = json.loads(metadata_header)
+        except json.JSONDecodeError as exc:
+            raise _http_error(
+                400, "asset_stage_request_invalid", "Stage metadata is invalid"
+            ) from exc
+        if not isinstance(metadata, dict) or set(metadata) != {
+            "operationContext", "stageRequest"
+        }:
+            raise _http_error(
+                400, "asset_stage_request_invalid", "Stage metadata is invalid"
+            )
+        chunks = bytearray()
+        async for chunk in request.stream():
+            chunks.extend(chunk)
+            if len(chunks) > MAX_IMAGE_IMPORT_BYTES:
+                raise _http_error(
+                    413, "asset_size_invalid", "Bridge image exceeds 30 MB"
+                )
+        return _handle(lambda: storage.stage_bridge_image(
+            metadata["operationContext"], metadata["stageRequest"], bytes(chunks)
+        ))
+
+    @application.post("/api/internal/bridge-image-deliveries/preview")
+    def preview_bridge_image_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.preview_bridge_image_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.post("/api/internal/bridge-image-deliveries/commit")
+    def commit_bridge_image_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.commit_bridge_image_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.get("/api/internal/bridge-delivery-proposals/{proposal_id}")
+    def inspect_bridge_delivery_proposal(
+        proposal_id: str,
+        profileId: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.inspect_bridge_delivery_proposal(
+            profileId, proposal_id
+        ))
+
     @application.get("/api/internal/bridge-prompt-deliveries/{client_request_id}")
     def get_bridge_prompt_delivery(
         client_request_id: str,

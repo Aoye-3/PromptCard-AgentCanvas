@@ -39,6 +39,8 @@ Reusing internal Canvas node IDs, UI focus, fuzzy titles, or arbitrary filesyste
 
 Task 24 implements the `prompt.create` vertical slice. Preview and commit are separate profile-scoped ledger operations; commit creates only a pending visual proposal. Free Canvas persists a deterministic all-`user` Prompt and receives its Storage-owned `CVT-*` before the delivery can become `accepted`. A failed save or failed acknowledgement leaves the proposal pending and retryable, while an existing exact marker is reused after restart. The selected CVC is explicit UI state and local preference only; it never replaces Storage validation or Bridge profile authority.
 
+Task 25 implements the `image.place` vertical slice without borrowing provider-generation identity. The external host uploads bounded multipart bytes and closed metadata; Gateway validates scope, path shape, MIME, filename, size, and digest before Storage mutation. Storage validates and prepares the image with the existing asset pipeline, records an idempotent `asset.stage`, and exposes only an opaque `AST-*` handle externally. Preview/commit produces a visual placement proposal, while Free Canvas saves a deterministic ordinary image carrying `promptcard-bridge` provenance and acknowledges acceptance only with the resulting same-project `CVM-*`. A crash after file creation, lost response, restart, or repeated acceptance converges on the same asset and node and never creates an image-generation run.
+
 ## Alternatives Considered
 
 ### Extend Bridge v2 In Place

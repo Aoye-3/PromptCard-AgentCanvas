@@ -161,6 +161,75 @@ class AssetStore:
             raise
         return {"id": asset_id, "filename": Path(filename).name or asset_id, "contentType": normalized_content_type, "size": len(content)}
 
+    def save_idempotent(
+        self,
+        asset_id: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        max_bytes: int = MAX_IMAGE_IMPORT_BYTES,
+    ) -> dict[str, Any]:
+        normalized_content_type = content_type.lower()
+        extension = ASSET_EXTENSIONS.get(normalized_content_type)
+        if (
+            extension is None
+            or normalized_content_type not in IMAGE_CONTENT_TYPES
+            or Path(asset_id).name != asset_id
+            or not asset_id.endswith(extension)
+        ):
+            raise AssetValidationError("Bridge asset identity is invalid")
+        if not content or len(content) > max_bytes:
+            raise AssetValidationError("Image asset must be between 1 byte and 30 MB")
+        if not is_valid_image_signature(normalized_content_type, content):
+            raise AssetValidationError("Image bytes do not match the declared type")
+        stored_filename = Path(filename).name or asset_id
+        self.assets_dir.mkdir(parents=True, exist_ok=True)
+        final_path = self.assets_dir / asset_id
+        with self._transaction() as connection:
+            row = connection.execute(
+                """SELECT original_filename, relative_path, content_type, size
+                   FROM assets WHERE asset_id=?""",
+                (asset_id,),
+            ).fetchone()
+            if row is not None:
+                if row[2] != normalized_content_type or row[3] != len(content):
+                    raise AssetValidationError("Bridge asset replay does not match stored metadata")
+                existing_path = self.data_dir / row[1]
+                if existing_path.is_file() and existing_path.read_bytes() != content:
+                    raise AssetValidationError("Bridge asset replay does not match stored bytes")
+                if not existing_path.is_file():
+                    _write_asset_file(existing_path, content)
+                return {
+                    "id": asset_id,
+                    "filename": row[0],
+                    "contentType": row[2],
+                    "size": row[3],
+                }
+            if final_path.is_file() and final_path.read_bytes() != content:
+                raise AssetValidationError("Bridge asset file conflicts with staged bytes")
+            if not final_path.is_file():
+                _write_asset_file(final_path, content)
+            connection.execute(
+                """INSERT INTO assets(
+                       asset_id, original_filename, relative_path,
+                       content_type, size, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    asset_id,
+                    stored_filename,
+                    f"assets/{asset_id}",
+                    normalized_content_type,
+                    len(content),
+                    self._now_ms(),
+                ),
+            )
+        return {
+            "id": asset_id,
+            "filename": stored_filename,
+            "contentType": normalized_content_type,
+            "size": len(content),
+        }
+
     def get(self, asset_id: str) -> tuple[Path, str]:
         candidate = Path(asset_id)
         if candidate.name != asset_id:
@@ -231,6 +300,19 @@ def is_valid_video_signature(content_type: str, content: bytes) -> bool:
     if content_type == "video/webm":
         return content.startswith(b"\x1a\x45\xdf\xa3")
     return False
+
+
+def _write_asset_file(path: Path, content: bytes) -> None:
+    fd, temp_name = tempfile.mkstemp(prefix=".asset-", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except Exception:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
 
 
 def _collect_asset_ids(value: Any) -> set[str]:

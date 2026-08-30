@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 import httpx
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 
 from app.gateway.bridge_auth import BridgePrincipal, require_bridge_scope
 from app.gateway.internal_auth import create_internal_auth_headers
@@ -31,6 +31,7 @@ _BRIDGE_ASSET_CONTENT_TYPES = {
     "video/webm",
 }
 MAX_BRIDGE_ASSET_READ_BYTES = 5 * 1024 * 1024
+MAX_BRIDGE_ASSET_STAGE_BYTES = 30 * 1024 * 1024
 _BOOTSTRAP_TEXT = """# PromptCard Bootstrap
 
 PromptCard is a portable creative-context environment. Start with
@@ -263,13 +264,25 @@ async def delivery_preview(
     request: dict[str, Any],
 ) -> dict[str, Any]:
     kind = request.get("kind")
-    if kind != "prompt.create":
+    kind_routes = {
+        "prompt.create": (
+            "bridge:deliver:prompt",
+            "/api/internal/bridge-prompt-deliveries/preview",
+        ),
+        "image.place": (
+            "bridge:deliver:image",
+            "/api/internal/bridge-image-deliveries/preview",
+        ),
+    }
+    route = kind_routes.get(kind)
+    if route is None:
         raise HTTPException(status_code=422, detail={"code": "delivery_kind_unavailable"})
-    require_bridge_scope(principal, "bridge:deliver:prompt")
+    scope, path = route
+    require_bridge_scope(principal, scope)
     request = await _validate_delivery_sources_and_skills(principal, request)
     record = await _storage_request(
         "POST",
-        "/api/internal/bridge-prompt-deliveries/preview",
+        path,
         json={
             "operationContext": principal.operation_context(),
             "deliveryRequest": request,
@@ -357,21 +370,95 @@ async def _validate_delivery_sources_and_skills(
                 or approved["digest"] != pin.get("digest")
             ):
                 raise HTTPException(status_code=409, detail={"code": "skill_pin_stale"})
+    normalized_target = dict(target)
+    normalized_target["cvcCode"] = cvc_code
     return {
         **request,
-        "target": {"cvcCode": cvc_code},
+        "target": normalized_target,
         "sourceCodes": canonical_sources,
     }
+
+
+async def asset_stage(
+    principal: BridgePrincipal,
+    request: dict[str, Any],
+    upload: UploadFile,
+) -> dict[str, Any]:
+    require_bridge_scope(principal, "bridge:deliver:image")
+    normalized = dict(request)
+    normalized["cvcCode"] = _canonical_reference(request.get("cvcCode"), "CVC")
+    workspace_path = request.get("workspaceRelativePath")
+    if not isinstance(workspace_path, str):
+        raise HTTPException(status_code=422, detail={"code": "workspace_path_invalid"})
+    workspace_path = workspace_path.replace("\\", "/")
+    path_parts = workspace_path.split("/")
+    if (
+        workspace_path.startswith("/")
+        or ":" in workspace_path
+        or any(part in {"", ".", ".."} for part in path_parts)
+    ):
+        raise HTTPException(status_code=422, detail={"code": "workspace_path_invalid"})
+    normalized["workspaceRelativePath"] = workspace_path
+    if upload.content_type != normalized.get("mediaType"):
+        raise HTTPException(status_code=422, detail={"code": "asset_media_type_mismatch"})
+    uploaded_name = (upload.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    if uploaded_name != path_parts[-1]:
+        raise HTTPException(status_code=422, detail={"code": "asset_filename_mismatch"})
+    content = bytearray()
+    while True:
+        chunk = await upload.read(1024 * 1024)
+        if not chunk:
+            break
+        content.extend(chunk)
+        if len(content) > MAX_BRIDGE_ASSET_STAGE_BYTES:
+            raise HTTPException(status_code=413, detail={"code": "asset_stage_too_large"})
+    if len(content) != normalized.get("byteLength"):
+        raise HTTPException(status_code=422, detail={"code": "asset_size_mismatch"})
+    actual_digest = "sha256:" + hashlib.sha256(content).hexdigest()
+    if actual_digest != normalized.get("contentDigest"):
+        raise HTTPException(status_code=422, detail={"code": "asset_digest_mismatch"})
+    record = await _storage_stage_request(
+        principal.operation_context(), normalized, bytes(content)
+    )
+    required = (
+        "operationContext", "request", "state", "disposition",
+        "stagedAssetHandle", "contentType", "size", "width", "height",
+        "contentDigest", "preparedDigest", "createdAt", "updatedAt",
+    )
+    if not isinstance(record, dict) or any(key not in record for key in required):
+        raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+    # Internal asset identifiers never cross the external Bridge boundary.
+    return {key: record[key] for key in required}
 
 
 async def delivery_commit(
     principal: BridgePrincipal,
     request: dict[str, Any],
 ) -> dict[str, Any]:
-    require_bridge_scope(principal, "bridge:deliver:prompt")
+    proposal = await _storage_request(
+        "GET",
+        f"/api/internal/bridge-delivery-proposals/{quote(request['proposalId'], safe='')}",
+        params={"profileId": principal.profile_id},
+    )
+    kind = proposal.get("kind")
+    routes = {
+        "prompt.create": (
+            "bridge:deliver:prompt",
+            "/api/internal/bridge-prompt-deliveries/commit",
+        ),
+        "image.place": (
+            "bridge:deliver:image",
+            "/api/internal/bridge-image-deliveries/commit",
+        ),
+    }
+    route = routes.get(kind)
+    if route is None:
+        raise HTTPException(status_code=422, detail={"code": "delivery_kind_unavailable"})
+    scope, path = route
+    require_bridge_scope(principal, scope)
     record = await _storage_request(
         "POST",
-        "/api/internal/bridge-prompt-deliveries/commit",
+        path,
         json={
             "operationContext": principal.operation_context(),
             "deliveryRequest": request,
@@ -552,6 +639,50 @@ async def _storage_request(
                 params=params,
                 json=json,
                 headers=create_internal_auth_headers(),
+            )
+    except httpx.HTTPError:
+        raise HTTPException(
+            status_code=503, detail={"code": "storage_unavailable"}
+        ) from None
+    try:
+        payload = response.json()
+    except ValueError:
+        raise HTTPException(
+            status_code=502, detail={"code": "storage_response_invalid"}
+        ) from None
+    if response.status_code >= 400:
+        _raise_storage_error(response.status_code, payload)
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=502, detail={"code": "storage_response_invalid"}
+        )
+    return payload
+
+
+async def _storage_stage_request(
+    operation_context: dict[str, Any],
+    stage_request: dict[str, Any],
+    content: bytes,
+) -> dict[str, Any]:
+    base_url = os.getenv("PROMPTCARD_STORAGE_URL", "http://127.0.0.1:8002").rstrip("/")
+    metadata = json.dumps(
+        {"operationContext": operation_context, "stageRequest": stage_request},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if len(metadata.encode("utf-8")) > 8192:
+        raise HTTPException(status_code=422, detail={"code": "asset_stage_request_invalid"})
+    headers = {
+        **create_internal_auth_headers(),
+        "Content-Type": "application/octet-stream",
+        "X-PromptCard-Stage-Metadata": metadata,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{base_url}/api/internal/bridge-image-assets/stage",
+                content=content,
+                headers=headers,
             )
     except httpx.HTTPError:
         raise HTTPException(

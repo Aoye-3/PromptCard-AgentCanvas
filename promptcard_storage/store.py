@@ -23,7 +23,12 @@ from .assets import (
     prepare_provider_image,
 )
 from .backup import BackupManager
-from .delivery_ledger import BridgeDeliveryLedger, create_bridge_delivery_schema
+from .delivery_ledger import (
+    BridgeDeliveryLedger,
+    BridgeDeliveryValidationError,
+    create_bridge_delivery_schema,
+)
+from .image_delivery import BridgeImageDeliveryService
 from .prompt_delivery import BridgePromptDeliveryService
 from .document_resources import DocumentResourceStore
 from .image_runs import (
@@ -184,6 +189,7 @@ class SqliteStore:
             + [entry["payload"] for entry in self.list_preset_trash()]
             + self._successful_image_run_payloads()
             + self._image_asset_derivation_payloads()
+            + self._bridge_stage_asset_payloads()
             + self._project_resource_asset_payloads(),
             now_ms,
         )
@@ -208,6 +214,11 @@ class SqliteStore:
         )
         self._bridge_prompt_deliveries = BridgePromptDeliveryService(
             self._bridge_deliveries
+        )
+        self._bridge_image_deliveries = BridgeImageDeliveryService(
+            self._bridge_deliveries,
+            self.save_bridge_staged_image,
+            self.resolve_context_pack,
         )
         self._backups = BackupManager(
             self.database_path,
@@ -962,6 +973,42 @@ class SqliteStore:
         except KeyError as exc:
             raise MissingItem(client_request_id) from exc
 
+    def inspect_bridge_delivery_proposal(
+        self, profile_id: str, proposal_id: str
+    ) -> dict[str, Any]:
+        preview = self._bridge_deliveries.find_preview(profile_id, proposal_id)
+        if preview is None:
+            raise MissingItem(proposal_id)
+        return {
+            "proposalId": proposal_id,
+            "kind": preview["request"].get("kind"),
+            "state": preview["state"],
+        }
+
+    def stage_bridge_image(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+        content: bytes,
+    ) -> dict[str, Any]:
+        return self._bridge_image_deliveries.stage(
+            operation_context, request, content
+        )
+
+    def preview_bridge_image_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_image_deliveries.preview(operation_context, request)
+
+    def commit_bridge_image_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_image_deliveries.commit(operation_context, request)
+
     def list_bridge_deliveries(
         self,
         cvc_code: str,
@@ -969,8 +1016,14 @@ class SqliteStore:
         state: str | None = None,
         profile_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        return self._bridge_prompt_deliveries.list(
+        deliveries = self._bridge_prompt_deliveries.list(
             cvc_code, state=state, profile_id=profile_id
+        ) + self._bridge_image_deliveries.list(
+            cvc_code, state=state, profile_id=profile_id
+        )
+        return sorted(
+            deliveries,
+            key=lambda item: (item["createdAt"], item["proposalId"]),
         )
 
     def decide_bridge_delivery(
@@ -980,7 +1033,14 @@ class SqliteStore:
         decision: str,
         result_codes: list[str],
     ) -> dict[str, Any]:
-        return self._bridge_prompt_deliveries.decide(
+        try:
+            return self._bridge_prompt_deliveries.decide(
+                cvc_code, proposal_id, decision, result_codes
+            )
+        except BridgeDeliveryValidationError as exc:
+            if exc.code != "delivery_proposal_not_found":
+                raise
+        return self._bridge_image_deliveries.decide(
             cvc_code, proposal_id, decision, result_codes
         )
 
@@ -3317,6 +3377,14 @@ class SqliteStore:
             for row in rows
         ]
 
+    def _bridge_stage_asset_payloads(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT result_json FROM bridge_delivery_ledger
+                   WHERE operation='asset.stage' AND result_json IS NOT NULL"""
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
     def import_image_asset(
         self,
         filename: str,
@@ -3360,6 +3428,35 @@ class SqliteStore:
             "width": prepared["width"],
             "height": prepared["height"],
             "derivations": [preview, provider],
+        }
+
+    def save_bridge_staged_image(
+        self,
+        filename: str,
+        content_type: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        try:
+            prepared = self._prepare_provider_image(content_type, content)
+        except AssetValidationError as exc:
+            raise BridgeDeliveryValidationError("asset_image_invalid") from exc
+        extension = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+        }[prepared["contentType"]]
+        prepared_digest = hashlib.sha256(prepared["content"]).hexdigest()
+        asset = self._assets.save_idempotent(
+            f"bridge-{prepared_digest}{extension}",
+            filename,
+            prepared["contentType"],
+            prepared["content"],
+        )
+        return {
+            "asset": asset,
+            "width": prepared["width"],
+            "height": prepared["height"],
+            "preparedDigest": f"sha256:{prepared_digest}",
         }
 
     def create_image_asset_derivation(self, item: dict[str, Any]) -> dict[str, Any]:

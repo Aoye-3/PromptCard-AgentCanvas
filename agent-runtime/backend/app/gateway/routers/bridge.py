@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.gateway.bridge import (
     asset_read,
+    asset_stage,
     delivery_commit,
     delivery_preview,
     delivery_status,
@@ -53,7 +54,7 @@ class PromptCreatePayload(BaseModel):
     userText: str = Field(min_length=1, max_length=100_000)
 
 
-class DeliveryPreviewPayload(BaseModel):
+class PromptDeliveryPreviewPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     clientRequestId: str = Field(min_length=1, max_length=128)
@@ -65,6 +66,70 @@ class DeliveryPreviewPayload(BaseModel):
     rationale: str = Field(min_length=1, max_length=4000)
     provenance: Literal["promptcard-bridge"]
     payload: PromptCreatePayload
+
+
+class ImagePlacementTargetPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cvcCode: str
+    storyboardCode: str | None = None
+    baseRevision: int | None = Field(default=None, ge=0)
+    baseDigest: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    shotOrdinal: int | None = Field(default=None, ge=0, le=199)
+
+    @model_validator(mode="after")
+    def validate_storyboard_target(self):
+        values = (
+            self.storyboardCode,
+            self.baseRevision,
+            self.baseDigest,
+            self.shotOrdinal,
+        )
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError("storyboard target fields must be supplied together")
+        return self
+
+
+class ImagePlacementPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stagedAssetHandle: str = Field(pattern=r"^AST-[0-7][0-9A-HJKMNP-TV-Z]{25}$")
+    altText: str = Field(default="", max_length=1000)
+
+
+class ImageDeliveryPreviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    clientRequestId: str = Field(min_length=1, max_length=128)
+    normalizedRequestDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    kind: Literal["image.place"]
+    target: ImagePlacementTargetPayload
+    sourceCodes: list[str] = Field(max_length=32)
+    skillPins: list[SkillPinPayload] = Field(max_length=8)
+    rationale: str = Field(min_length=1, max_length=4000)
+    provenance: Literal["promptcard-bridge"]
+    payload: ImagePlacementPayload
+
+
+DeliveryPreviewPayload = Annotated[
+    PromptDeliveryPreviewPayload | ImageDeliveryPreviewPayload,
+    Field(discriminator="kind"),
+]
+
+
+class AssetStagePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    clientRequestId: str = Field(min_length=1, max_length=128)
+    cvcCode: str
+    workspaceRelativePath: str = Field(min_length=1, max_length=1024)
+    contentDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    mediaType: Literal["image/png", "image/jpeg", "image/webp"]
+    byteLength: int = Field(ge=1, le=30 * 1024 * 1024)
 
 
 class DeliveryCommitPayload(BaseModel):
@@ -151,6 +216,23 @@ async def preview_delivery(
 ):
     _reject_extra_query(request, set())
     return await delivery_preview(principal, payload.model_dump())
+
+
+@router.post("/assets/stage")
+async def stage_asset(
+    request: Request,
+    principal: Principal,
+    metadata: Annotated[str, Form(min_length=2, max_length=8192)],
+    file: Annotated[UploadFile, File()],
+):
+    _reject_extra_query(request, set())
+    try:
+        payload = AssetStagePayload.model_validate_json(metadata)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail={"code": "asset_stage_request_invalid"}
+        ) from exc
+    return await asset_stage(principal, payload.model_dump(), file)
 
 
 @router.post("/delivery/commit")

@@ -195,6 +195,19 @@ describe('storageServiceClient', () => {
     ])
   })
 
+  test('parses a typed bridge image placement without exposing it as a Prompt', async () => {
+    const delivery = bridgeImageDelivery()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ deliveries: [delivery] })))
+
+    const result = await storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )
+
+    expect(result).toEqual([delivery])
+    expect(result[0].request.kind).toBe('image.place')
+    expect(result[0].visualProposal.kind).toBe('free_canvas_image_place')
+  })
+
   test('reports storage health without throwing', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -1207,6 +1220,60 @@ const bridgePromptDelivery = () => ({
       normalizedRequestDigest: `sha256:${'a'.repeat(64)}`,
       sourceCodes: [],
       skillPins: []
+    }
+  }
+})
+
+const bridgeImageDelivery = () => ({
+  operationContext: {
+    profileId: 'codex-local',
+    scopes: ['bridge:deliver:image'],
+    provenance: 'promptcard-bridge',
+    clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'image-preview-1',
+    normalizedRequestDigest: `sha256:${'c'.repeat(64)}`,
+    kind: 'image.place',
+    target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+    sourceCodes: [],
+    skillPins: [],
+    rationale: 'Place a frame.',
+    provenance: 'promptcard-bridge',
+    payload: {
+      stagedAssetHandle: 'AST-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      altText: 'Opening frame'
+    }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAX',
+  state: 'pending_review',
+  disposition: 'original',
+  resultCodes: [],
+  message: 'waiting',
+  createdAt: '2026-08-30T00:00:00.000Z',
+  updatedAt: '2026-08-30T00:00:00.000Z',
+  visualProposal: {
+    kind: 'free_canvas_image_place',
+    id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAX',
+    agentName: 'codex',
+    title: 'opening.png',
+    altText: 'Opening frame',
+    assetId: 'bridge-image.png',
+    contentType: 'image/png',
+    width: 640,
+    height: 360,
+    rationale: 'Place a frame.',
+    status: 'pending',
+    createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local',
+      cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      clientRequestId: 'image-preview-1',
+      normalizedRequestDigest: `sha256:${'c'.repeat(64)}`,
+      sourceCodes: [],
+      skillPins: [],
+      target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+      stagedAssetHandle: 'AST-01ARZ3NDEKTSV4RRFFQ69G5FAV'
     }
   }
 })

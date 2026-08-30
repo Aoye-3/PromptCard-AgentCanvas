@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import httpx
@@ -557,6 +558,9 @@ def test_prompt_delivery_preview_commit_and_status_use_trusted_profile(client, m
             assert kwargs["json"]["operationContext"]["profileId"] == "codex-local"
             assert "profileId" not in kwargs["json"]["deliveryRequest"]
             return _delivery_record(preview_request, proposal_id, "previewed")
+        if path.endswith(proposal_id):
+            assert kwargs["params"] == {"profileId": "codex-local"}
+            return {"proposalId": proposal_id, "kind": "prompt.create", "state": "previewed"}
         if path.endswith("/commit"):
             assert kwargs["json"]["deliveryRequest"] == {
                 "clientRequestId": "commit-1",
@@ -594,7 +598,153 @@ def test_prompt_delivery_preview_commit_and_status_use_trusted_profile(client, m
     assert commit.status_code == 200
     assert status.status_code == 200
     assert status.json()["state"] == "pending_review"
-    assert len(calls) == 3
+    assert len(calls) == 4
+
+
+def test_image_stage_validates_multipart_and_hides_internal_asset_id(client, monkeypatch):
+    content = b"\x89PNG\r\n\x1a\nbridge-image"
+    metadata = {
+        "clientRequestId": "stage-1",
+        "cvcCode": CVC.lower(),
+        "workspaceRelativePath": "outputs/opening.png",
+        "contentDigest": "sha256:" + hashlib.sha256(content).hexdigest(),
+        "mediaType": "image/png",
+        "byteLength": len(content),
+    }
+    calls = []
+
+    async def fake_stage(operation_context, stage_request, uploaded):
+        calls.append((operation_context, stage_request, uploaded))
+        assert operation_context["profileId"] == "codex-local"
+        assert stage_request["cvcCode"] == CVC
+        assert uploaded == content
+        return {
+            "operationContext": operation_context,
+            "request": stage_request,
+            "state": "accepted",
+            "disposition": "original",
+            "stagedAssetHandle": "AST-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "assetId": "internal-asset-id",
+            "contentType": "image/png",
+            "size": len(content),
+            "width": 640,
+            "height": 360,
+            "contentDigest": metadata["contentDigest"],
+            "preparedDigest": metadata["contentDigest"],
+            "createdAt": "2026-08-30T00:00:00.000Z",
+            "updatedAt": "2026-08-30T00:00:00.000Z",
+        }
+
+    monkeypatch.setattr("app.gateway.bridge._storage_stage_request", fake_stage)
+    response = client.post(
+        "/api/promptcard/bridge/v3/assets/stage",
+        data={"metadata": json.dumps(metadata)},
+        files={"file": ("opening.png", content, "image/png")},
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["stagedAssetHandle"].startswith("AST-")
+    assert "assetId" not in response.json()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("metadata_update", "filename", "content_type", "expected_code"),
+    [
+        ({"workspaceRelativePath": "../secret.png"}, "secret.png", "image/png", "workspace_path_invalid"),
+        ({"contentDigest": DIGEST}, "opening.png", "image/png", "asset_digest_mismatch"),
+        ({"byteLength": 999}, "opening.png", "image/png", "asset_size_mismatch"),
+        ({}, "opening.png", "image/jpeg", "asset_media_type_mismatch"),
+        ({}, "other.png", "image/png", "asset_filename_mismatch"),
+    ],
+)
+def test_image_stage_rejects_untrusted_bytes_before_storage(
+    client, monkeypatch, metadata_update, filename, content_type, expected_code
+):
+    content = b"\x89PNG\r\n\x1a\nbridge-image"
+    metadata = {
+        "clientRequestId": "stage-invalid",
+        "cvcCode": CVC,
+        "workspaceRelativePath": "outputs/opening.png",
+        "contentDigest": "sha256:" + hashlib.sha256(content).hexdigest(),
+        "mediaType": "image/png",
+        "byteLength": len(content),
+        **metadata_update,
+    }
+    called = False
+
+    async def fake_stage(*_args):
+        nonlocal called
+        called = True
+        raise AssertionError("invalid upload must not reach Storage")
+
+    monkeypatch.setattr("app.gateway.bridge._storage_stage_request", fake_stage)
+    response = client.post(
+        "/api/promptcard/bridge/v3/assets/stage",
+        data={"metadata": json.dumps(metadata)},
+        files={"file": (filename, content, content_type)},
+        headers=auth_headers(),
+    )
+
+    assert response.status_code in {413, 422}
+    assert response.json()["detail"]["code"] == expected_code
+    assert called is False
+
+
+def test_image_preview_and_commit_route_by_proposal_kind(client, monkeypatch):
+    proposal_id = "DVP-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    request = {
+        "clientRequestId": "image-preview-1",
+        "normalizedRequestDigest": DIGEST,
+        "kind": "image.place",
+        "target": {"cvcCode": CVC},
+        "sourceCodes": [],
+        "skillPins": [],
+        "rationale": "Place the staged image.",
+        "provenance": "promptcard-bridge",
+        "payload": {
+            "stagedAssetHandle": "AST-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "altText": "Opening frame",
+        },
+    }
+    paths = []
+
+    async def fake_storage(method, path, **kwargs):
+        paths.append(path)
+        if path.endswith("/preview"):
+            assert path == "/api/internal/bridge-image-deliveries/preview"
+            return _delivery_record(request, proposal_id, "previewed")
+        if path.endswith(proposal_id):
+            return {"proposalId": proposal_id, "kind": "image.place", "state": "previewed"}
+        if path.endswith("/commit"):
+            assert path == "/api/internal/bridge-image-deliveries/commit"
+            return _delivery_record(request, proposal_id, "pending_review")
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    preview = client.post(
+        "/api/promptcard/bridge/v3/delivery/preview",
+        json=request,
+        headers=auth_headers(),
+    )
+    commit = client.post(
+        "/api/promptcard/bridge/v3/delivery/commit",
+        json={
+            "clientRequestId": "image-commit-1",
+            "normalizedRequestDigest": "sha256:" + "b" * 64,
+            "proposalId": proposal_id,
+        },
+        headers=auth_headers(),
+    )
+
+    assert preview.status_code == 200
+    assert commit.status_code == 200
+    assert paths == [
+        "/api/internal/bridge-image-deliveries/preview",
+        f"/api/internal/bridge-delivery-proposals/{proposal_id}",
+        "/api/internal/bridge-image-deliveries/commit",
+    ]
 
 
 def test_prompt_delivery_rejects_forged_authority_and_missing_scope(client, monkeypatch):

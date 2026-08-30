@@ -285,7 +285,7 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 - 左侧全局 **Skill Hub** 已支持惰性导入预审、结构化发现、revision 历史与 diff、精确 revision 信任审阅、archive/restore，以及 Codex/local-Agent 独立 pin 和显式投影修复。
 - Codex `.agents/skills` 是一个准确命名的具体 Host Adapter；canonical revision 更新不会自动移动 Codex 或 local-Agent pin。
 - Skill 导入只读取与校验包，不执行其中的脚本、安装器、hook 或依赖；本地 Agent 只读取受限的指令与文本参考资料。
-- Canvas 已使用“复制 Agent/MCP 上下文”这一宿主中立入口；当前功能分支已完成只读 Gateway、Storage v18 检索、local-Agent RAG、repository JSON CLI、同一 Gateway 之上的六工具 MCP、Storage v19 统一写回账本，以及第一条 `prompt.create` 可视化闭环。外部 Agent 的 preview/commit 只产生待审阅提案；用户接受后先通过现有项目保存协调器写入一个全 `user` Prompt 并取得 `CVT-*`，再确认 delivery，保存失败可重试且不会重复建节点。下一步按 Plan 008 完成图片 staging/delivery，再扩展 Document 与 Storyboard 的 typed writeback。
+- Canvas 已使用“复制 Agent/MCP 上下文”这一宿主中立入口；当前功能分支已完成只读 Gateway、Storage v18 检索、local-Agent RAG、repository JSON CLI、同一 Gateway 之上的六工具 MCP、Storage v19 统一写回账本，以及 `prompt.create` 与 `image.place` 两条可视化闭环。外部 Agent 的 preview/commit 只产生待审阅提案；Prompt 接受后先保存全 `user` 节点并取得 `CVT-*`，图片则先经 30 MB、MIME、摘要和路径边界校验进入不透明 `AST-*` staging，再由 Canvas 保存普通图片节点并取得 `CVM-*` 后确认。两类流程都可安全重试，不重复建节点；图片写回不会伪造 provider generation run。下一步按 Plan 008 把 delivery/status 暴露到 MCP，再扩展 Document 与 Storyboard typed writeback。
 
 本地 Agent 与 MCP 现已复用同一个有界、可引用、可审计 Prompt 检索核心，但保持会话、身份与权限隔离。Plan 008 的 Tasks 15.6–15.10 自动化结果保留为回归基线，Task 19 已再次确认连续消息、丢失响应重放和重启 hydration；原 Checkpoint 3.5 人工探针已并入最终真实 Codex 闭环。详见 [Plan 008 执行台账](./docs/superpowers/plans/2026-08-22-plan-008-execution.md)、[ADR-023](./docs/decisions/ADR-023-typed-creative-writeback-and-agent-workspace.md) 与 [Plan 009](./docs/Plan/009-portable-creative-context-environment.md)。
 
