@@ -283,7 +283,7 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 - Skill 导入只读取与校验包，不执行其中的脚本、安装器、hook 或依赖；本地 Agent 只读取受限的指令与文本参考资料。
 - Canvas 已使用“复制 Agent/MCP 上下文”这一宿主中立入口；当前功能分支已完成只读 Gateway、Storage v18 检索核心与 repository JSON CLI。local-Agent RAG、MCP、写回账本和可视化 Agent 工作环境仍按 Plan 008 顺序推进。
 
-本地 Agent 的 Prompt 库手动搜索后续将升级为有界、可引用、可审计的 RAG 检索。Plan 008 的 Tasks 15.6–15.10 自动化结果保留为回归基线，原 Checkpoint 3.5 人工探针已并入最终真实 Codex 闭环，不再单独阻塞 Task 16。详见 [Plan 008 执行台账](./docs/superpowers/plans/2026-08-22-plan-008-execution.md)、[ADR-023](./docs/decisions/ADR-023-typed-creative-writeback-and-agent-workspace.md) 与 [Plan 009](./docs/Plan/009-portable-creative-context-environment.md)。
+本地 Agent 的 Prompt 库手动搜索下一步将接入已完成的有界、可引用、可审计检索核心。Plan 008 的 Tasks 15.6–15.10 自动化结果保留为回归基线，Task 19 已再次确认连续消息、丢失响应重放和重启 hydration；原 Checkpoint 3.5 人工探针已并入最终真实 Codex 闭环。详见 [Plan 008 执行台账](./docs/superpowers/plans/2026-08-22-plan-008-execution.md)、[ADR-023](./docs/decisions/ADR-023-typed-creative-writeback-and-agent-workspace.md) 与 [Plan 009](./docs/Plan/009-portable-creative-context-environment.md)。
 
 ## 未来设想（暂无计划）
 

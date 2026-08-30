@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Tasks 16-18 implemented on the feature branch; Task 19 durability regression confirmation in progress; final real-Codex closed-loop gate remains the merge condition`
+- Status: `Tasks 16-19 complete on the feature branch; Task 20 local-Agent RAG integration is next; final real-Codex closed-loop gate remains the merge condition`
 - Date: `2026-08-30`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -682,14 +682,18 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Re-run the consecutive-message, response-loss replay, and restart-hydration evidence first delivered by Task 15.7 before changing Prompt retrieval. Make no second durability implementation unless these regression tests expose a new RAG-specific failure.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). Existing persistence behavior passed unchanged, so no production durability code was added.
+
 **Acceptance criteria:**
 
-- [ ] Two consecutive messages reuse one Storage conversation.
-- [ ] Retrying a lost response can reuse the original request ID and returns the saved turn.
-- [ ] Ordinary failure behavior and existing conversation hydration remain compatible.
-- [ ] `chat-experimental` persistence remains isolated from Prompt Library RAG modes and does not cause full Document content to enter retrieval requests.
+- [x] Two consecutive messages reuse one Storage conversation.
+- [x] Retrying a lost response can reuse the original request ID and returns the saved turn.
+- [x] Ordinary failure behavior and existing conversation hydration remain compatible.
+- [x] `chat-experimental` persistence remains isolated from Prompt Library RAG modes; the pre-RAG baseline transports no retrieval evidence or full Document snapshot.
 
 **Verification:** Focused store/UI/Gateway tests pass before and after any correction.
+
+**Evidence:** Gateway/runtime plus Storage durability suite `78 passed`; frontend Agent store and collaboration hydration suite `74 passed` (`16` store, `58` panel). Coverage includes saved-turn replay before model/provider resolution, stable request-ID retry, per-session thread reuse, experimental mode/Skill hydration, and ordinary error behavior.
 
 **Dependencies:** Before Task 20.
 
