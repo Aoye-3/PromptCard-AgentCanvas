@@ -113,7 +113,7 @@ function isProcessRunning(pid: number) {
   })
 }
 
-function startHealthyServer(schemaVersion = 16) {
+function startHealthyServer(schemaVersion = 17) {
   const server = createServer((_, response) => {
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({

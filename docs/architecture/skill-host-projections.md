@@ -1,6 +1,6 @@
 # Skill Host Pins And Projections
 
-PromptCard Storage schema v14 defines Skill host pins and projections; schema v15 adds exact-revision trust reviews and their management operations, and schema v16 adds bounded document-resource/provider-cleanup durability for temporary attachment flows. Storage remains the authority for host activation. A host never follows a Skill's mutable `currentRevision`: every activation pins one immutable revision and its canonical digest.
+PromptCard Storage schema v14 defines Skill host pins and projections; schema v15 adds exact-revision trust reviews and their management operations, schema v16 adds bounded document-resource/provider-cleanup durability, and schema v17 adds typed creative references without changing host-pin semantics. Storage remains the authority for host activation. A host never follows a Skill's mutable `currentRevision`: every activation pins one immutable revision and its canonical digest.
 
 ## Ownership Model
 
@@ -60,4 +60,4 @@ The Gateway independently treats the Storage response as untrusted input. Before
 
 ## Delivery Boundary
 
-Task 14 provides the Storage host-pin API, Codex filesystem projection, recovery, health reporting, and Gateway local-Agent snapshot validation. Task 15 adds the Skill Hub management UI, exact-revision review, history/diff, archive/restore, independent host controls, and explicit Codex repair. Task 15.5 freezes the host-neutral Bridge v2 contract in ADR-019. Task 16's bridge router, credentials, broader Gateway read surface, CLI, and MCP server remain unimplemented.
+Task 14 provides the Storage host-pin API, Codex filesystem projection, recovery, health reporting, and Gateway local-Agent snapshot validation. Task 15 adds the Skill Hub management UI, exact-revision review, history/diff, archive/restore, independent host controls, and explicit Codex repair. Task 15.5 freezes the host-neutral Bridge v2 contract in ADR-019. Task 16's dedicated Bridge credential/router and exact read surface are in progress; Codex Skill reads use only the repository scope fixed by the trusted profile. CLI and MCP remain later Plan 008 slices.

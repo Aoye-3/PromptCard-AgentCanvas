@@ -1,10 +1,16 @@
 # Storage Service API
 
-The local storage service is the durable source of truth for projects, Prompt Library presets, asset metadata/bytes, Recent Capture metadata, image-generation conversations/runs, canvas placements, project document resources, provider-file cleanup retries, public references, context packs, canonical Skill packages, and Skill host pins. The frontend reaches it through the Vite proxy prefix `/storage-api/*`; the service itself exposes `/api/*` on the runtime-selected Storage port (the legacy default is `8002`).
+The local storage service is the durable source of truth for projects, Prompt Library presets, asset metadata/bytes, Recent Capture metadata, image-generation conversations/runs, canvas placements, project document resources, provider-file cleanup retries, public references, typed creative references, context packs, canonical Skill packages, and Skill host pins. The frontend reaches it through the Vite proxy prefix `/storage-api/*`; the service itself exposes `/api/*` on the runtime-selected Storage port (the legacy default is `8002`).
 
 ## Health
 
-`GET /health` returns `serviceVersion`, `schemaVersion`, `storage`, `database`, `pid`, and capabilities including `sqlite`, `assets`, `presetBatch`, `browserImportIdempotency`, `backup`, `recentCaptures`, `projectResources`, `projectDocumentResources`, `agentConversations`, `skillHub`, and `contextPacks`. The current service reports schema version `16`. Versions 10–16 add public reference codes, immutable Canvas context packs, canonical Skill packages, independent Skill host pins, exact-revision trust reviews, project document resources, and durable remote-file cleanup retries; see [Schema Notes](../database/schema-notes.md).
+`GET /health` returns `serviceVersion`, `schemaVersion`, `storage`, `database`, `pid`, and capabilities including `sqlite`, `assets`, `presetBatch`, `browserImportIdempotency`, `backup`, `recentCaptures`, `projectResources`, `projectDocumentResources`, `agentConversations`, `skillHub`, and `contextPacks`. The current service reports schema version `17`. Versions 10–17 add public reference codes, immutable Canvas context packs, canonical Skill packages, independent Skill host pins, exact-revision trust reviews, project document resources, durable remote-file cleanup retries, and typed creative references; see [Schema Notes](../database/schema-notes.md).
+
+## Typed Creative References
+
+- `GET /api/projects/references/{projectReferenceCode}/creative/{creativeReferenceCode}`
+
+`creativeReferenceCode` must be an exact `CVD-*` or `CVS-*` code belonging to the exact active `PRJ-*`. Document responses expose the editor-neutral AST, revision and digest. Storyboard responses expose the sequence fields and ordered rows, replacing internal row identities with `rowOrdinal` and replacing an available source Document node identity with its `CVD-*` code. Internal Canvas IDs, row IDs, coordinates, model/connection data, arbitrary metadata, and local paths are never returned. Unknown, cross-project, retired, malformed, or no-longer-referenceable objects fail with structured lifecycle/reference errors.
 
 - `GET /health`
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Implementation status: Tasks 15.6-15.10 implemented and technically accepted with documented baseline gate residuals; Checkpoint 3.5 user acceptance remains pending. Task 16 has not started.
+Accepted. Implementation status: Tasks 15.6-15.10 implemented and technically accepted as the regression baseline; Checkpoint 3.5 manual probes are merged into final real-Codex acceptance and Task 16 is in progress.
 
 ## Date
 

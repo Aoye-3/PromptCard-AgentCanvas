@@ -20,7 +20,7 @@ npm.cmd run dev
 
 `dev:with-agent` allocates local ports and writes `logs/dev-runtime.json`. The manifest contains frontend, Storage, Python Gateway, and pi text Agent URLs.
 
-Both `start.bat` and the desktop launcher ultimately use `scripts/start-dev-with-agent.ps1` for service readiness. That launcher requires Storage `serviceVersion: 2.0.0` and `schemaVersion: 16`; this is separate from the runtime manifest's own schema version 2. A schema mismatch is treated as an incompatible stale service and startup stops instead of opening the frontend against it.
+Both `start.bat` and the desktop launcher ultimately use `scripts/start-dev-with-agent.ps1` for service readiness. That launcher requires Storage `serviceVersion: 2.0.0` and `schemaVersion: 17`; this is separate from the runtime manifest's own schema version 2. A schema mismatch is treated as an incompatible stale service and startup stops instead of opening the frontend against it.
 
 ## Environment Overrides
 

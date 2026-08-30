@@ -34,6 +34,8 @@ The split is deliberate:
 - PromptCard Storage is the sole durable authority for project Agent conversations, messages, proposal status, and Skill revision audit records.
 - Image generation remains an independent Gateway module and does not depend on pi.
 
+The Local Agent Bridge is an additional Gateway boundary, not another Agent runtime. Its independent Bearer profile supplies fixed scopes and an optional configured Codex repository scope. An external host starts with runtime discovery, then reads one user-selected `PRJ-*`/`CVC-*`; it cannot derive authority from UI focus, its claimed client name, an internal node ID, a fuzzy title, or a search result. Gateway resolves all exact references through Storage and returns bounded projections. The future CLI and MCP transports must call this same service layer rather than SQLite or project files directly.
+
 ## Minimal Closed Loop
 
 The first product milestone is:
@@ -135,4 +137,4 @@ Neither path requires a Canvas contract change or an image-generation adapter ch
 
 The manifest includes `textAgentUrl` and `textAgentHealthUrl` in addition to the existing frontend, Gateway, and Storage URLs.
 
-The runtime-manifest schema and Storage schema are independent. PromptCard Storage currently reports schema v16. Direct Storage/Gateway test gates use the v16 implementation.
+The runtime-manifest schema and Storage schema are independent. PromptCard Storage currently reports schema v17. Direct Storage/Gateway test gates use the v17 implementation.

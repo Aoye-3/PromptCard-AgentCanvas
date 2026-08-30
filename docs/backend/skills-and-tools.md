@@ -21,7 +21,7 @@ Prompt and Prompt Library proposal tools create pending proposals. Document/Stor
 
 ## Skill snapshots
 
-PromptCard Storage schema v16 is the canonical source for canonical Skill packages, exact-revision trust reviews, and independent host pins. Each run receives the exact enabled local-Agent pin as a bounded snapshot rather than an editable package copy:
+PromptCard Storage schema v17 is the canonical source for canonical Skill packages, exact-revision trust reviews, and independent host pins. Each run receives the exact enabled local-Agent pin as a bounded snapshot rather than an editable package copy:
 
 ```json
 {
@@ -43,7 +43,7 @@ In `prompt-edit`, external Skills are explicitly selected by the user for the ne
 
 Skill instructions never grant permissions. Storage rechecks enabled state, active lifecycle, trust, snapshot size, and declared capabilities on every read. The Gateway then independently validates the public `SKL` identity, digest, instruction/reference budgets, content types and paths, and declared capabilities. Declared tools must be a subset of the exact tool set already allowed by `permissionScope`; non-tool capabilities and missing, unavailable, malformed, or over-privileged selections fail before model invocation. System rules, proposal validation, tool schemas, and user approval outrank Skill content.
 
-The model-facing snapshot exposes only root `SKILL.md` instructions and bounded UTF-8 `references/*` text. Canonically stored scripts/assets are never exposed or executed. Skill Hub now exposes inert folder/archive inspection and import, structured findings, revision history/diff, exact-revision trust review, archive/restore, independent host pins, Codex projection health, and explicit repair. Hooks/package installers, automatic semantic matching, the Task 16 bridge router, CLI, and MCP server remain unimplemented.
+The model-facing snapshot exposes only root `SKILL.md` instructions and bounded UTF-8 `references/*` text. Canonically stored scripts/assets are never exposed or executed. Skill Hub now exposes inert folder/archive inspection and import, structured findings, revision history/diff, exact-revision trust review, archive/restore, independent host pins, Codex projection health, and explicit repair. Task 16's read-only Bridge router is in progress and reads only an exact enabled/trusted Codex pin from the trusted profile's configured repository scope. Hooks/package installers, automatic semantic matching, CLI, and MCP server remain unimplemented.
 
 See [Skill Host Pins And Projections](../architecture/skill-host-projections.md) for the projection ownership, health, recovery, and budget contract.
 

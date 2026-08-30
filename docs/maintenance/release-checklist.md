@@ -20,8 +20,8 @@
 - Confirm update apply rejects a dirty Git worktree before running `git merge --ff-only FETCH_HEAD`
 - Confirm a SQLite/assets backup under `backups/` succeeds before source files are changed
 - Confirm incomplete capabilities are labeled as roadmap or not yet implemented
-- Confirm PromptCard Storage health reports schema v16, including `agentConversations`, `projectDocumentResources`, `providerFileCleanup`, `skillHub`, `contextPacks`, canonical Skill packages, exact-revision trust reviews, and independent host pins, before enabling the current application surface
-- Confirm `agent:check` and `start-dev-with-agent.ps1` enforce the current Storage schema v16 contract (no legacy v9 gates) before release.
+- Confirm PromptCard Storage health reports schema v17, including `agentConversations`, `projectDocumentResources`, `providerFileCleanup`, `skillHub`, `contextPacks`, typed creative references, canonical Skill packages, exact-revision trust reviews, and independent host pins, before enabling the current application surface
+- Confirm `agent:check` and `start-dev-with-agent.ps1` enforce the current Storage schema v17 contract (no legacy v9 gates) before release.
 - Confirm `npm.cmd run test:e2e` owns its real SQLite Storage, Fake Runtime, and Vite service processes, refuses preoccupied ports, and releases ports `38100–38102` after success, failure, timeout, and no-match exits
 - Confirm the image-generation Playwright configuration passes through the same owned-service runner without an existing service on ports `38100–38102`
 - Confirm JPEG/PNG/WebP direct input plus BMP/TIFF/GIF/HEIC/HEIF original-and-derivative import

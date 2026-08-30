@@ -6,6 +6,19 @@ The maintained frontend contract is the PromptCard Runtime Boundary. In developm
 /agent-api/* -> ${PROMPTCARD_AGENT_URL}/api/*
 ```
 
+## Local Agent Bridge v3 (implementation in progress)
+
+The external-Agent surface is separate from the browser Runtime boundary and uses `/api/promptcard/bridge/v3/*`. It accepts only `Authorization: Bearer <bridge-token>` backed by `PROMPTCARD_BRIDGE_PROFILES_JSON`; the internal Runtime token and browser session do not authorize it, and a Bridge credential cannot call internal-chat, model-management, or image-generation routes.
+
+Each trusted profile declares fixed scopes and may bind one configured Codex `repositoryScope`. Neither `profileId`, scopes, client identity, nor repository scope is accepted from a Tool request. The current read-only slice exposes:
+
+- `GET /api/promptcard/bridge/v3/runtime`
+- `GET /api/promptcard/bridge/v3/workspace?projectCode=PRJ-...&cvcCode=CVC-...`
+- `GET /api/promptcard/bridge/v3/reference?cvcCode=CVC-...&code=...`
+- `GET /api/promptcard/bridge/v3/skill?skillCode=SKL-...&revision=...&digest=sha256:...`
+
+`workspace` requires an explicit project/context pair, lists only objects snapshotted into that CVC, and resolves only active, trusted, enabled exact Codex Skill pins in the profile's configured repository scope. `reference` refuses codes outside the CVC. Storage error codes and safe public references are preserved while paths, internal IDs, credentials, and unrestricted metadata are redacted. Search, asset read, delivery, staging and status remain advertised by the frozen v3 contract but are enabled only as their Plan 008 slices land.
+
 ## PromptCard Runtime Boundary
 
 Authenticated browser mutations are protected by the Runtime CSRF middleware. The maintained frontend client sends the session cookie with `credentials: "include"`, reads the CSRF cookie, and copies it to `X-CSRF-Token`. Direct callers that omit or mismatch the token receive a structured rejection before model, keyring, Storage, or provider work begins.

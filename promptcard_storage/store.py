@@ -54,7 +54,7 @@ from .skill_packages import (
 
 Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 DATABASE_NAME = "promptcard.sqlite3"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE = " \t\n\v\f\r"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
@@ -470,6 +470,97 @@ class SqliteStore:
                 "node": self._resolved_canvas_node(node, parsed_node.code),
             }
 
+    def resolve_creative_reference(
+        self,
+        project_reference_code: str,
+        creative_reference_code: str,
+    ) -> dict[str, Any]:
+        parsed_project = parse_reference_code(
+            project_reference_code,
+            expected_namespace=ReferenceNamespace.PROJECT,
+        )
+        parsed_creative = parse_reference_code(creative_reference_code)
+        if parsed_creative.namespace not in {
+            ReferenceNamespace.CANVAS_DOCUMENT,
+            ReferenceNamespace.CANVAS_STORYBOARD,
+        }:
+            raise ReferenceCodeError("reference_namespace_mismatch")
+        namespace_name = (
+            "canvasDocument"
+            if parsed_creative.namespace is ReferenceNamespace.CANVAS_DOCUMENT
+            else "canvasStoryboard"
+        )
+        project_reference = {"namespace": "project", "code": parsed_project.code}
+        creative_reference = {
+            "namespace": namespace_name,
+            "code": parsed_creative.code,
+        }
+        with self._connect() as connection:
+            project_registry = connection.execute(
+                """SELECT internal_id FROM public_references
+                   WHERE public_code=? AND namespace='PRJ' AND owner_scope=''""",
+                (parsed_project.code,),
+            ).fetchone()
+            if project_registry is None:
+                self._raise_canvas_reference_error(
+                    "project_reference_not_found", project_reference, status_code=404
+                )
+            creative_registry = connection.execute(
+                """SELECT project_id, node_id FROM creative_references
+                   WHERE public_code=? AND namespace=?""",
+                (parsed_creative.code, parsed_creative.namespace.value),
+            ).fetchone()
+            if creative_registry is None:
+                self._raise_canvas_reference_error(
+                    "canvas_node_reference_not_found",
+                    creative_reference,
+                    status_code=404,
+                )
+            project_id = project_registry[0]
+            if creative_registry[0] != project_id:
+                self._raise_canvas_reference_error(
+                    "canvas_reference_project_mismatch",
+                    creative_reference,
+                    status_code=409,
+                )
+            project_row = connection.execute(
+                "SELECT revision, status, payload_json FROM projects WHERE id=?",
+                (project_id,),
+            ).fetchone()
+            if project_row is None:
+                self._raise_canvas_reference_error(
+                    "project_missing", project_reference, status_code=410
+                )
+            if project_row[1] == "trash":
+                self._raise_canvas_reference_error(
+                    "project_trashed", project_reference, status_code=410
+                )
+            project = json.loads(project_row[2])
+            node = self._resolve_current_canvas_node(
+                project,
+                creative_registry[1],
+                parsed_creative.namespace,
+                creative_reference,
+            )
+            document_codes = {
+                row[1]: row[0]
+                for row in connection.execute(
+                    """SELECT public_code, node_id FROM creative_references
+                       WHERE project_id=? AND namespace='CVD'""",
+                    (project_id,),
+                )
+            }
+            return {
+                "reference": creative_reference,
+                "project": {
+                    "referenceCode": parsed_project.code,
+                    "revision": project_row[0],
+                },
+                "node": self._resolved_creative_node(
+                    node, parsed_creative.code, document_codes
+                ),
+            }
+
     def create_context_pack(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("Context pack payload must be an object")
@@ -499,6 +590,8 @@ class SqliteStore:
             if parsed.namespace not in {
                 ReferenceNamespace.CANVAS_TEMPLATE,
                 ReferenceNamespace.CANVAS_MEDIA,
+                ReferenceNamespace.CANVAS_DOCUMENT,
+                ReferenceNamespace.CANVAS_STORYBOARD,
             }:
                 raise ReferenceCodeError("reference_namespace_mismatch")
             parsed_nodes.append(parsed)
@@ -544,17 +637,28 @@ class SqliteStore:
             source_codes: list[str] = []
             source_boundaries: list[dict[str, Any]] = []
             for parsed_node in parsed_nodes:
-                namespace_name = (
-                    "canvasTemplate"
-                    if parsed_node.namespace is ReferenceNamespace.CANVAS_TEMPLATE
-                    else "canvasMedia"
-                )
+                namespace_name = {
+                    ReferenceNamespace.CANVAS_TEMPLATE: "canvasTemplate",
+                    ReferenceNamespace.CANVAS_MEDIA: "canvasMedia",
+                    ReferenceNamespace.CANVAS_DOCUMENT: "canvasDocument",
+                    ReferenceNamespace.CANVAS_STORYBOARD: "canvasStoryboard",
+                }[parsed_node.namespace]
                 node_reference = {"namespace": namespace_name, "code": parsed_node.code}
-                registry_row = connection.execute(
-                    """SELECT owner_scope, internal_id FROM public_references
-                       WHERE public_code=? AND namespace=?""",
-                    (parsed_node.code, parsed_node.namespace.value),
-                ).fetchone()
+                if parsed_node.namespace in {
+                    ReferenceNamespace.CANVAS_DOCUMENT,
+                    ReferenceNamespace.CANVAS_STORYBOARD,
+                }:
+                    registry_row = connection.execute(
+                        """SELECT project_id, node_id FROM creative_references
+                           WHERE public_code=? AND namespace=?""",
+                        (parsed_node.code, parsed_node.namespace.value),
+                    ).fetchone()
+                else:
+                    registry_row = connection.execute(
+                        """SELECT owner_scope, internal_id FROM public_references
+                           WHERE public_code=? AND namespace=?""",
+                        (parsed_node.code, parsed_node.namespace.value),
+                    ).fetchone()
                 if registry_row is None:
                     self._raise_context_pack_error(
                         "canvas_node_reference_not_found", node_reference, status_code=404
@@ -3788,6 +3892,20 @@ class SqliteStore:
                 except Exception:
                     connection.rollback()
                     raise
+            if current_version == 16:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self._create_creative_references_v17_schema(connection)
+                    self._reconcile_creative_references(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (17, "add-creative-object-references", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 17
+                except Exception:
+                    connection.rollback()
+                    raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
             connection.execute("BEGIN IMMEDIATE")
@@ -3798,6 +3916,7 @@ class SqliteStore:
                 self._seed_builtin_skill_host_pins_v14(connection)
                 self._seed_skill_reviews_v15(connection)
                 self._reconcile_public_references(connection)
+                self._reconcile_creative_references(connection)
                 connection.commit()
             except Exception:
                 connection.rollback()
@@ -3842,6 +3961,29 @@ class SqliteStore:
         self._create_skill_hosts_v14_schema(connection)
         self._create_skill_reviews_v15_schema(connection)
         self._create_document_resources_v16_schema(connection)
+        self._create_creative_references_v17_schema(connection)
+
+    @staticmethod
+    def _create_creative_references_v17_schema(connection: sqlite3.Connection) -> None:
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS creative_references(
+                public_code TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
+                namespace TEXT NOT NULL CHECK(namespace IN ('CVD','CVS')),
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                node_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL CHECK(created_at >= 0),
+                CHECK((public_code COLLATE BINARY) = upper(public_code)),
+                CHECK(length(public_code) = 30),
+                CHECK(substr(public_code, 1, 4) = namespace || '-'),
+                CHECK(substr(public_code, 5, 1) BETWEEN '0' AND '7'),
+                CHECK(substr(public_code, 5, 26)
+                    NOT GLOB '*[^0123456789ABCDEFGHJKMNPQRSTVWXYZ]*'),
+                CHECK(length(node_id) > 0),
+                UNIQUE(namespace, project_id, node_id)
+            );
+            CREATE INDEX IF NOT EXISTS creative_references_project_namespace
+                ON creative_references(project_id, namespace, public_code);
+        """)
 
     @staticmethod
     def _create_document_resources_v16_schema(connection: sqlite3.Connection) -> None:
@@ -4337,7 +4479,10 @@ class SqliteStore:
                 ):
                     continue
                 namespace = self._canvas_node_namespace(node)
-                if namespace is not None:
+                if namespace in {
+                    ReferenceNamespace.CANVAS_TEMPLATE,
+                    ReferenceNamespace.CANVAS_MEDIA,
+                }:
                     candidates.add((namespace.value, project_id, node_id))
 
         for preset_id, payload_json in connection.execute(
@@ -4364,6 +4509,66 @@ class SqliteStore:
                 internal_id,
                 owner_scope=owner_scope,
             )
+
+    def _reconcile_creative_references(self, connection: sqlite3.Connection) -> None:
+        for project_id, payload_json in connection.execute(
+            "SELECT id, payload_json FROM projects ORDER BY id"
+        ):
+            project = json.loads(payload_json)
+            nodes = self._project_canvas_nodes(project)
+            node_id_counts = self._canvas_node_id_counts(nodes)
+            for node in nodes:
+                node_id = node.get("id")
+                namespace = self._canvas_node_namespace(node)
+                if (
+                    namespace
+                    not in {
+                        ReferenceNamespace.CANVAS_DOCUMENT,
+                        ReferenceNamespace.CANVAS_STORYBOARD,
+                    }
+                    or not isinstance(node_id, str)
+                    or node_id_counts.get(node_id) != 1
+                ):
+                    continue
+                self._ensure_creative_reference(
+                    connection, namespace, project_id, node_id
+                )
+
+    @staticmethod
+    def _ensure_creative_reference(
+        connection: sqlite3.Connection,
+        namespace: ReferenceNamespace,
+        project_id: str,
+        node_id: str,
+    ) -> str:
+        if namespace not in {
+            ReferenceNamespace.CANVAS_DOCUMENT,
+            ReferenceNamespace.CANVAS_STORYBOARD,
+        }:
+            raise ValueError("Creative reference namespace is invalid")
+        row = connection.execute(
+            """SELECT public_code FROM creative_references
+               WHERE namespace=? AND project_id=? AND node_id=?""",
+            (namespace.value, project_id, node_id),
+        ).fetchone()
+        if row is not None:
+            return row[0]
+        public_code = generate_reference_code(
+            namespace,
+            timestamp_ms=now_ms(),
+            collision_predicate=lambda candidate: connection.execute(
+                "SELECT 1 FROM creative_references WHERE public_code=?",
+                (candidate,),
+            ).fetchone()
+            is not None,
+        )
+        connection.execute(
+            """INSERT INTO creative_references(
+                   public_code, namespace, project_id, node_id, created_at
+               ) VALUES (?, ?, ?, ?, ?)""",
+            (public_code, namespace.value, project_id, node_id, now_ms()),
+        )
+        return public_code
 
     def _ensure_public_reference(
         self,
@@ -4452,12 +4657,20 @@ class SqliteStore:
             namespace = self._canvas_node_namespace(node)
             if namespace is None:
                 continue
-            self._ensure_public_reference(
-                connection,
-                namespace,
-                node["id"],
-                owner_scope=project_id,
-            )
+            if namespace in {
+                ReferenceNamespace.CANVAS_DOCUMENT,
+                ReferenceNamespace.CANVAS_STORYBOARD,
+            }:
+                self._ensure_creative_reference(
+                    connection, namespace, project_id, node["id"]
+                )
+            else:
+                self._ensure_public_reference(
+                    connection,
+                    namespace,
+                    node["id"],
+                    owner_scope=project_id,
+                )
 
     def _with_project_public_references(
         self,
@@ -4485,11 +4698,21 @@ class SqliteStore:
                 continue
             if node_id_counts.get(node_id) != 1:
                 continue
-            node_row = connection.execute(
-                """SELECT public_code FROM public_references
-                   WHERE namespace=? AND owner_scope=? AND internal_id=?""",
-                (namespace.value, project_id, node_id),
-            ).fetchone()
+            if namespace in {
+                ReferenceNamespace.CANVAS_DOCUMENT,
+                ReferenceNamespace.CANVAS_STORYBOARD,
+            }:
+                node_row = connection.execute(
+                    """SELECT public_code FROM creative_references
+                       WHERE namespace=? AND project_id=? AND node_id=?""",
+                    (namespace.value, project_id, node_id),
+                ).fetchone()
+            else:
+                node_row = connection.execute(
+                    """SELECT public_code FROM public_references
+                       WHERE namespace=? AND owner_scope=? AND internal_id=?""",
+                    (namespace.value, project_id, node_id),
+                ).fetchone()
             if node_row is not None:
                 node["referenceCode"] = node_row[0]
         return projected
@@ -4521,6 +4744,18 @@ class SqliteStore:
                 "canvas_node_invalid", reference, status_code=410
             )
         node = matching[0]
+        if expected_namespace in {
+            ReferenceNamespace.CANVAS_DOCUMENT,
+            ReferenceNamespace.CANVAS_STORYBOARD,
+        }:
+            if (
+                not self._is_referenceable_creative_node(node)
+                or self._canvas_node_namespace(node) is not expected_namespace
+            ):
+                self._raise_canvas_reference_error(
+                    "canvas_node_invalid", reference, status_code=410
+                )
+            return node
         try:
             _validate_canvas_node(node)
             if not isinstance(node.get("title"), str):
@@ -4538,6 +4773,117 @@ class SqliteStore:
                 "canvas_node_detached", reference, status_code=410
             )
         return node
+
+    @staticmethod
+    def _resolved_creative_node(
+        node: dict[str, Any],
+        reference_code: str,
+        document_codes: dict[str, str],
+    ) -> dict[str, Any]:
+        title = str(node.get("title") or "")[:_PROJECT_REFERENCE_TITLE_LIMIT]
+        if node.get("kind") == "document":
+            document = node["document"]
+            return {
+                "referenceCode": reference_code,
+                "kind": "document",
+                "title": title,
+                "revision": document["revision"],
+                "digest": document["digest"],
+                "document": {
+                    "version": document["version"],
+                    "blocks": deepcopy(document["blocks"]),
+                    "revision": document["revision"],
+                    "digest": document["digest"],
+                    "suggestions": deepcopy(document.get("suggestions", [])),
+                },
+            }
+        sequence = node["sequence"]
+        source = node.get("source") if isinstance(node.get("source"), dict) else {}
+        rows = []
+        for ordinal, row in enumerate(sequence.get("rows", [])):
+            if not isinstance(row, dict):
+                continue
+            rows.append(
+                {
+                    "ordinal": ordinal,
+                    **{
+                        field: str(row.get(field) or "")
+                        for field in (
+                            "cutLabel",
+                            "timeRange",
+                            "subject",
+                            "action",
+                            "scene",
+                            "camera",
+                            "lighting",
+                            "audio",
+                            "duration",
+                        )
+                    },
+                }
+            )
+        source_document_node_id = source.get("documentNodeId")
+        source_summary = {
+            "documentRevision": source.get("documentRevision"),
+            "documentDigest": source.get("documentDigest"),
+            "documentResourceDigests": list(source.get("documentResourceDigests") or [])[:5],
+            "skills": [
+                {
+                    "skillCode": item.get("skillId"),
+                    "revision": item.get("revision"),
+                    "digest": item.get("digest"),
+                }
+                for item in (source.get("skills") or [])[:8]
+                if isinstance(item, dict)
+                and isinstance(item.get("skillId"), str)
+                and item["skillId"].startswith("SKL-")
+            ],
+        }
+        if isinstance(source_document_node_id, str) and source_document_node_id in document_codes:
+            source_summary["documentCode"] = document_codes[source_document_node_id]
+        row_ordinals = {
+            row.get("id"): ordinal
+            for ordinal, row in enumerate(sequence.get("rows", []))
+            if isinstance(row, dict) and isinstance(row.get("id"), str)
+        }
+        pending_changes = []
+        for change in node.get("pendingFieldChanges") or []:
+            if not isinstance(change, dict):
+                continue
+            sanitized = {
+                key: change[key]
+                for key in (
+                    "id",
+                    "editId",
+                    "scope",
+                    "field",
+                    "previousValue",
+                    "newValue",
+                )
+                if key in change
+            }
+            if change.get("scope") == "row":
+                ordinal = row_ordinals.get(change.get("rowId"))
+                if ordinal is None:
+                    continue
+                sanitized["rowOrdinal"] = ordinal
+            pending_changes.append(sanitized)
+        return {
+            "referenceCode": reference_code,
+            "kind": "storyboard",
+            "title": title,
+            "revision": node["revision"],
+            "digest": node["digest"],
+            "sequence": {
+                "name": str(sequence.get("name") or ""),
+                "description": str(sequence.get("description") or ""),
+                "style": str(sequence.get("style") or ""),
+                "constraints": str(sequence.get("constraints") or ""),
+                "rows": rows,
+            },
+            "source": source_summary,
+            "pendingFieldChanges": pending_changes,
+        }
 
     @staticmethod
     def _resolved_canvas_node(node: dict[str, Any], reference_code: str) -> dict[str, Any]:
@@ -4583,6 +4929,8 @@ class SqliteStore:
             if parsed.namespace not in {
                 ReferenceNamespace.CANVAS_TEMPLATE,
                 ReferenceNamespace.CANVAS_MEDIA,
+                ReferenceNamespace.CANVAS_DOCUMENT,
+                ReferenceNamespace.CANVAS_STORYBOARD,
             }:
                 raise ReferenceCodeError("reference_namespace_mismatch")
             canonical.append(parsed.code)
@@ -4603,7 +4951,7 @@ class SqliteStore:
                 "title": title,
                 "truncated": len(text) > _CANVAS_REFERENCE_TEXT_LIMIT,
             }
-        else:
+        elif node["kind"] == "image":
             content = {
                 "height": node["height"],
                 "kind": "image",
@@ -4615,6 +4963,54 @@ class SqliteStore:
             size = node.get("size")
             if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
                 content["size"] = size
+        elif node["kind"] == "document":
+            document = node["document"]
+            content = {
+                "kind": "document",
+                "title": title,
+                "revision": document["revision"],
+                "digest": document["digest"],
+                "document": {
+                    "version": document["version"],
+                    "blocks": document["blocks"],
+                    "suggestions": document.get("suggestions", []),
+                },
+            }
+        else:
+            sequence = node["sequence"]
+            content = {
+                "kind": "storyboard",
+                "title": title,
+                "revision": node["revision"],
+                "digest": node["digest"],
+                "sequence": {
+                    "name": sequence.get("name", ""),
+                    "description": sequence.get("description", ""),
+                    "style": sequence.get("style", ""),
+                    "constraints": sequence.get("constraints", ""),
+                    "rows": [
+                        {
+                            "ordinal": ordinal,
+                            **{
+                                field: row.get(field, "")
+                                for field in (
+                                    "cutLabel",
+                                    "timeRange",
+                                    "subject",
+                                    "action",
+                                    "scene",
+                                    "camera",
+                                    "lighting",
+                                    "audio",
+                                    "duration",
+                                )
+                            },
+                        }
+                        for ordinal, row in enumerate(sequence.get("rows", []))
+                        if isinstance(row, dict)
+                    ],
+                },
+            }
         return _canonical_json(content)
 
     def _context_source_boundary(
@@ -4886,6 +5282,10 @@ class SqliteStore:
         self, node: dict[str, Any]
     ) -> ReferenceNamespace | None:
         kind = node.get("kind")
+        if kind == "document" and self._is_referenceable_creative_node(node):
+            return ReferenceNamespace.CANVAS_DOCUMENT
+        if kind == "storyboard" and self._is_referenceable_creative_node(node):
+            return ReferenceNamespace.CANVAS_STORYBOARD
         try:
             _validate_canvas_node(node)
         except ValueError:
@@ -4895,6 +5295,33 @@ class SqliteStore:
         if kind == "image" and self._is_stable_canvas_image(node):
             return ReferenceNamespace.CANVAS_MEDIA
         return None
+
+    @staticmethod
+    def _is_referenceable_creative_node(node: dict[str, Any]) -> bool:
+        node_id = node.get("id")
+        title = node.get("title")
+        revision = (
+            node.get("document", {}).get("revision")
+            if node.get("kind") == "document" and isinstance(node.get("document"), dict)
+            else node.get("revision")
+        )
+        digest = (
+            node.get("document", {}).get("digest")
+            if node.get("kind") == "document" and isinstance(node.get("document"), dict)
+            else node.get("digest")
+        )
+        return (
+            isinstance(node_id, str)
+            and bool(node_id)
+            and isinstance(title, str)
+            and isinstance(revision, int)
+            and not isinstance(revision, bool)
+            and revision >= 0
+            and isinstance(digest, str)
+            and len(digest) == 71
+            and digest.startswith("sha256:")
+            and all(character in "0123456789abcdef" for character in digest[7:])
+        )
 
     def _ensure_preset_public_references(
         self,

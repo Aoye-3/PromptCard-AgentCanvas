@@ -249,7 +249,7 @@ Free Canvas loading normalizes missing project data by creating an empty `freeCa
 
 ## Roadmap / Not Yet Implemented
 
-- There is no production multi-user server database; the local Storage service and SQLite schema v16 are the durable authority.
+- There is no production multi-user server database; the local Storage service and SQLite schema v17 are the durable authority.
 - SQLite migrations are owned by Storage. Frontend normalization remains responsible only for versioned project JSON and legacy browser-data compatibility.
-- Skill script execution, hooks/installers, automatic semantic matching, general Canvas update/delete tools, local OCR, asset-card/plugin nodes, the Task 16 bridge router, CLI, and MCP server remain unimplemented. Document/Storyboard tools exist only behind an explicit `chat-experimental` planning-write context.
+- Skill script execution, hooks/installers, automatic semantic matching, general Canvas update/delete tools, local OCR, asset-card/plugin nodes, CLI, and MCP server remain unimplemented. Task 16's bounded read-only Bridge router is in progress; Document/Storyboard tools otherwise remain behind explicit proposal/write contexts.
 - The completed Skill Hub management workflow is documented in [Skill Host Pins And Projections](../architecture/skill-host-projections.md) and the [Task 15.5 acceptance package](../reviews/2026-08-24-task-15-5-technical-acceptance.md).

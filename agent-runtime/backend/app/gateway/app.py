@@ -17,7 +17,7 @@ from app.gateway.provider_file_cleanup import (
     DEFAULT_CLEANUP_BATCH_BUDGET_SECONDS,
     retry_provider_file_cleanup,
 )
-from app.gateway.routers import image_generation, model_management, promptcard_runtime
+from app.gateway.routers import bridge, image_generation, model_management, promptcard_runtime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -127,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(promptcard_runtime.router)
     app.include_router(model_management.router)
     app.include_router(image_generation.router)
+    app.include_router(bridge.router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict[str, str]:

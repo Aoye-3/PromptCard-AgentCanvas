@@ -25,7 +25,16 @@ Core frontend schemas:
 - `ImageGenerationCanvasPlacement`
 - `ImageAssetDerivation`
 
-Schema changes should be documented with migration or normalization behavior. The current PromptCard Storage schema is v16. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
+Schema changes should be documented with migration or normalization behavior. The current PromptCard Storage schema is v17. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
+
+## Typed Creative References
+
+Storage schema v17 adds `creative_references`, a dedicated stable-reference registry for current Canvas planning objects:
+
+- `CVD-*` identifies an active Canvas Document;
+- `CVS-*` identifies an active Canvas Storyboard.
+
+The table binds one namespace/project/node tuple to one public code without writing that code into project JSON. Fresh databases reconcile supported nodes on startup, and the v16-to-v17 migration creates then reconciles the table transactionally. Resolution is project-scoped and returns only a bounded typed projection: Document AST plus revision/digest, or Storyboard sequence/rows with public source references and row ordinals. Canvas node IDs, row IDs, model bindings, coordinates, arbitrary metadata, and filesystem paths are not exposed. Context packs may snapshot these two namespaces as immutable typed entries; the public code remains stable across project reload and process restart.
 
 ## Three-stage Project Shape
 

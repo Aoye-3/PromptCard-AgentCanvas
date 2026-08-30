@@ -763,6 +763,19 @@ def create_app(
             )
         )
 
+    @application.get(
+        "/api/projects/references/{project_reference_code}/creative/{creative_reference_code}"
+    )
+    def resolve_creative_reference(
+        project_reference_code: str,
+        creative_reference_code: str,
+    ) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.resolve_creative_reference(
+                project_reference_code, creative_reference_code
+            )
+        )
+
     @application.get("/api/presets")
     def list_presets() -> dict[str, Any]:
         return {"presets": storage.list_presets()}

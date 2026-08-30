@@ -138,9 +138,9 @@ The maintained runtime also has important boundaries that this plan preserves:
 - the pi text Agent has no direct filesystem, Storage, or Canvas write access;
 - current provider image generation is independent from text-Agent sessions.
 
-The current left navigation includes the complete Task 15 Skill Hub management surface. PromptCard Storage schema v16 owns canonical Skill packages, immutable revisions and digests, provenance, lifecycle, exact-revision trust reviews, and independent host pins. Skill Hub supports inert folder/archive inspection, structured findings, import, history/diff, archive/restore, exact review, Codex/local-Agent controls, projection health, and explicit owned-drift repair. The Gateway continues to supply exact bounded snapshots to the local text Agent without expanding Runtime permissions.
+The current left navigation includes the complete Task 15 Skill Hub management surface. PromptCard Storage schema v17 owns canonical Skill packages, immutable revisions and digests, provenance, lifecycle, exact-revision trust reviews, independent host pins, and typed creative references. Skill Hub supports inert folder/archive inspection, structured findings, import, history/diff, archive/restore, exact review, Codex/local-Agent controls, projection health, and explicit owned-drift repair. The Gateway continues to supply exact bounded snapshots to the local text Agent without expanding Runtime permissions.
 
-Codex `.agents/skills` is a derived native projection, not the canonical store. Canonical revision updates do not move either host pin. Skill scripts, hooks, installers, automatic semantic matching, MCP Skill resources, and Task 16's host-neutral read surface remain unimplemented.
+Codex `.agents/skills` is a derived native projection, not the canonical store. Canonical revision updates do not move either host pin. Skill scripts, hooks, installers, automatic semantic matching, and MCP Skill resources remain unimplemented. Task 16's host-neutral read surface is in progress and resolves Codex pins only through a trusted profile repository scope.
 
 The current Canvas Agent `prompt-library` mode is still request-snapshot based: the browser may serialize up to 200 Prompt records, the pi Runtime keeps at most 100, and `search_prompt_library` searches only that array. This avoids ambient library access but scales request and context size with the library, cannot provide maintained semantic retrieval, and cannot durably explain why a Prompt was selected. The shared RAG track below replaces this transport while keeping Agent and MCP permissions separate.
 
@@ -459,15 +459,15 @@ Codex and the local Agent share package identity and revision content, but not t
 
 The audit trail records which host resolved which `SKL` revision and digest, without storing model secrets or unbounded conversation content.
 
-## Local Agent Creative Document Loop (Planned, Not Implemented)
+## Local Agent Creative Document Loop (Implemented regression baseline)
 
-Before the external Bridge work begins, Checkpoint 3.5 adds a project-local creative planning loop for the existing text Agent. The detailed design is frozen by [ADR-020](../decisions/ADR-020-separate-planning-documents-from-prompt-execution.md), [ADR-021](../decisions/ADR-021-project-document-resources-and-ephemeral-provider-files.md), and the [implementation plan](../superpowers/plans/2026-08-27-skill-conversation-document-storyboard.md).
+Checkpoint 3.5 added a project-local creative planning loop for the existing text Agent. Its automated tests are the regression baseline, while its remaining manual probes are part of final real-Codex acceptance. The detailed design is frozen by [ADR-020](../decisions/ADR-020-separate-planning-documents-from-prompt-execution.md), [ADR-021](../decisions/ADR-021-project-document-resources-and-ephemeral-provider-files.md), and the [implementation plan](../superpowers/plans/2026-08-27-skill-conversation-document-storyboard.md).
 
 The loop introduces a top-level **对话模式【测试中】** that can keep explicitly selected local-Agent Skills bound across turns, accept project-scoped TXT/Markdown/PDF/DOCX attachments, and directly create or revise a long-form Document working draft. Document is a separate Canvas node and storage domain: it does not reuse Prompt segments and never enters Prompt Library, Prompt RAG, Prompt compilation, image-generation inputs, or ambient full-body workspace context.
 
 Document changes use inline suggestion review while their proposed state is the effective working draft. The user must explicitly invoke `Document -> Storyboard`; later Storyboard changes use per-field differences. Moving selected Document text or a Storyboard shot into Prompt content is another explicit action that creates a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node; it cannot update an existing Prompt or read/write Prompt Library.
 
-This project-local loop does not use MCP, Bridge credentials/profiles, or the Bridge delivery ledger. Skills remain inert bounded instruction/reference packages; each turn revalidates the current local-Agent pin, trust, lifecycle, exact revision/digest, and tool dependencies. Task 16 remains unimplemented until Checkpoint 3.5 receives technical and user acceptance.
+This project-local loop does not use MCP, Bridge credentials/profiles, or the Bridge delivery ledger. Skills remain inert bounded instruction/reference packages; each turn revalidates the current local-Agent pin, trust, lifecycle, exact revision/digest, and tool dependencies. The user authorized Task 16 on 2026-08-30 and merged Checkpoint 3.5 manual acceptance into the final external-Agent closed-loop gate.
 
 ## MCP Boundary
 
@@ -686,7 +686,7 @@ Additional rules:
 **Goal:** Complete a recoverable local Skill conversation -> file -> Document -> Storyboard -> explicit Prompt proposal loop without changing Prompt or external Bridge semantics.
 
 - [ ] Add `chat-experimental` as a conversation mode separate from Prompt edit modes, with persistent conversation-scoped Skill binding and per-turn pin/trust/tool revalidation.
-- [ ] Add Storage schema v16 project document resources for TXT/Markdown/PDF/DOCX; keep image project resources unchanged.
+- [x] Add Storage schema v16 project document resources for TXT/Markdown/PDF/DOCX; keep image project resources unchanged.
 - [ ] Use local safe text/DOCX extraction and an isolated Ark Files/Responses path for PDF, with per-invocation remote deletion and durable cleanup retry.
 - [ ] Add isolated Document and Storyboard Canvas nodes, explicit kind dispatch, bounded context resolution, persistence, command history, and old-project compatibility.
 - [ ] Apply Agent Document suggestions and Storyboard field differences through typed operations, frontend persistence acknowledgement, rollback, and idempotent restart reconciliation.

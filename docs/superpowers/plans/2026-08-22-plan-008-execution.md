@@ -623,6 +623,15 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Estimated scope:** Medium.
 
+**2026-08-30 implementation progress:**
+
+- [x] Freeze the v3 discovery/writeback contract without modifying v1/v2.
+- [x] Add a separate Bearer profile parser with fixed scopes and a trusted Codex `repositoryScope`; request fields and claimed client identity cannot widen either.
+- [x] Add the bounded runtime/workspace/exact-reference/exact-Skill Gateway reads and cross-router credential isolation.
+- [x] Add Storage schema v17 `CVD-*` / `CVS-*` registries, bounded creative resolution, context-pack snapshots, migration/restart/backup compatibility, and launcher schema gates.
+- [x] Record focused and full evidence: Bridge Gateway `10 passed`; full Gateway `467 passed`; full Storage `342 passed, 3 skipped, 338 subtests passed`; Bridge contracts `50 passed`; launcher schema tests `17 passed`.
+- [ ] Add bounded Prompt search and asset read after the shared retrieval/asset authorization slices land; until then the v3 runtime descriptor advertises them as planned capabilities rather than callable Gateway routes.
+
 ### Task 17: Add deterministic repository JSON CLI
 
 **Description:** Build a Node/TypeScript CLI that invokes the Gateway read contracts and emits exactly one JSON result to stdout, diagnostics to stderr, and stable exit codes.
