@@ -4,10 +4,11 @@
 
 ## Status
 
-- Status: `Tasks 16-26C complete; real Codex first-contact discovery passed; the final four-kind closed loop remains the merge condition`
-- Date: `2026-08-31`
-- Planning update branch: `docs/document-skill-loop-plan`
-- Active execution branch: `feat/skill-document-storyboard-loop`
+- Status: `Complete; the four-kind real Codex loop, restart/replay, adversarial, packaging, and full release gates passed and were merged to main`
+- Date: `2026-09-01`
+- Historical planning branch: `docs/document-skill-loop-plan`
+- Completed execution branch: `feat/skill-document-storyboard-loop`
+- Initial merge commit on `main`: `7b64cf8 merge: complete external Agent creative loop`
 - Plan 007 prerequisite: manual acceptance confirmed by the user on `2026-08-22`
 - Paid live-provider evaluation remains independent and does not block this plan
 
@@ -892,7 +893,7 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Implement `document.create` and `document.change` on the same preview/commit/status ledger, resolving only exact CVC/CVD/revision/digest targets. Reuse the editor-neutral AST, suggestion rendering, conflict checks, save coordinator, and single/all accept/reject mechanisms already implemented for the local Agent.
 
-**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). The real Gateway → Storage → browser/Canvas create/change/review/replay path and a two-process-run restart/recovery probe pass. This checkpoint unlocked Task 26B; the later final-loop restart/replay checkpoint also passes. `main` remains unchanged pending Phase 6 and final release gates.
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). The real Gateway → Storage → browser/Canvas create/change/review/replay path and a two-process-run restart/recovery probe pass. This checkpoint unlocked Task 26B; the later final-loop restart/replay checkpoint also passes. At this historical checkpoint `main` remained unchanged; Phase 6 and the final release gates subsequently passed and the work is now on `main`.
 
 **Checkpoint evidence:** Storage now validates the closed v3 create/change request shapes, canonicalizes public references and NFC text, checks exact `CVC/CVD/revision/digest` plus per-leaf digest/UTF-8 boundaries before `ledger.begin`, rejects pending-suggestion and overlapping-range conflicts, persists deterministic visual proposals, and routes terminal decisions through same-project `CVD-*` validation. Preview, commit, replay, pending-review listing, rejection/acceptance, and process restart all use the existing profile-scoped v19 ledger. Focused Document plus Prompt/Image regression passes 15 tests and 4 subtests; touched Python passes Ruff.
 
@@ -917,7 +918,7 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Implement `storyboard.create` and `storyboard.change` through the same ledger. Resolve exact CVS/revision/digest targets, compile ordinal-addressed external changes into the existing structured sequence proposal, and reuse per-shot/per-field review rather than creating another editor.
 
-**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). Storage, Gateway, strict browser parsing, native Canvas persistence, per-field review, replay, and two-process restart recovery pass. This checkpoint unlocked Task 26C; the later final-loop restart/replay checkpoint also passes. `main` remains unchanged pending Phase 6 and final release gates. See the [Task 26B completion checkpoint](../../reviews/2026-08-31-task-26b-complete-checkpoint.md); the earlier foundation note remains historical evidence.
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). Storage, Gateway, strict browser parsing, native Canvas persistence, per-field review, replay, and two-process restart recovery pass. This checkpoint unlocked Task 26C; the later final-loop restart/replay checkpoint also passes. At this historical checkpoint `main` remained unchanged; Phase 6 and the final release gates subsequently passed and the work is now on `main`. See the [Task 26B completion checkpoint](../../reviews/2026-08-31-task-26b-complete-checkpoint.md); the earlier foundation note remains historical evidence.
 
 **Implementation evidence:** Storyboard create proves the exact source `CVD/revision/digest` inside the selected CVC and deterministically creates one native sequence with Bridge/Skill/source provenance. Storyboard change proves exact `CVS/revision/digest`, accepts only bounded external row ordinals, and compiles them into the existing native `pendingFieldChanges` review model. CVC projection exposes only pending-field identities (`scope`, optional `rowOrdinal`, `field`), so a field already under review is rejected before ledger creation without leaking internal IDs or values. Browser normalization now preserves the Storage-owned `CVS-*`; this defect was exposed by the real acceptance loop and fixed with a focused regression.
 
@@ -956,7 +957,7 @@ Task 26C is complete. At this checkpoint the final real-Codex acceptance was sti
 
 **Final-loop restart/replay checkpoint (2026-08-31):** the same persisted real-Codex project has now passed the remaining delivery checkpoint. `npm.cmd run test:e2e:real-codex-restart` first prepared the complete Document create/change, Storyboard create/change, Prompt create, real Codex image stage/place, and native visual acceptance loop in 8.1 minutes. The runner then stopped and restarted Storage, Gateway, Vite, and the external host. A newly connected, schema-naive Codex repeated runtime/workspace/Skill/reference discovery, resolved the exact four-object CVC, replayed the identical image-staging request and all six delivery preview/commit/status triplets, and received the existing accepted results without creating a second `CVD-*`, `CVS-*`, `CVT-*`, `CVM-*`, or asset. A direct same-key/different-digest probe returned HTTP 409 `delivery_conflict`; a new browser restored all four accepted objects, provenance, versions, and image placement, while Storage still reported zero provider generation runs. The recover phase passed in 1.9 minutes after the real process boundary.
 
-The bounded final selection also exposed a product-level review defect: the legacy 20×16 global placement offset allowed the larger Bridge-created Document and Storyboard nodes to overlap and intercept user review. External Bridge create/place paths now use a conservative collision-free three-column slot allocator; ordinary manual Canvas placement is unchanged. Its test was written RED first and the focused Document/Storyboard/image/placement suite passes 9 tests. This checkpoint closes the real four-kind behavioral delivery gate and unlocks Task 27, but it does not move `main`; the full Phase 6 adversarial, packaging, regression, build, browser, and documentation gates remain.
+The bounded final selection also exposed a product-level review defect: the legacy 20×16 global placement offset allowed the larger Bridge-created Document and Storyboard nodes to overlap and intercept user review. External Bridge create/place paths now use a conservative collision-free three-column slot allocator; ordinary manual Canvas placement is unchanged. Its test was written RED first and the focused Document/Storyboard/image/placement suite passes 9 tests. This checkpoint closed the real four-kind behavioral delivery gate and unlocked Task 27; at that point it did not move `main`. The later Phase 6 adversarial, packaging, regression, build, browser, and documentation gates all passed before merge.
 
 **Dependencies:** Tasks 16-26B.
 
@@ -975,7 +976,7 @@ The bounded final selection also exposed a product-level review defect: the lega
 
 ### Task 27: Run the adversarial boundary suite
 
-**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). The repository now owns one repeatable `npm.cmd run test:bridge-adversarial` gate spanning contracts, CLI, both MCP transports, MCP-absent ordinary workflows, Storage/CVC/Skill/delivery kernels, Gateway/profile/retrieval/redaction adapters, and a real Gateway attack chain. The first real run exposed unstructured missing-credential text; the middleware now returns stable redacted `bridge_credential_required` / `bridge_configuration_invalid` codes. Task 28 is unlocked; `main` remains unchanged.
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). The repository now owns one repeatable `npm.cmd run test:bridge-adversarial` gate spanning contracts, CLI, both MCP transports, MCP-absent ordinary workflows, Storage/CVC/Skill/delivery kernels, Gateway/profile/retrieval/redaction adapters, and a real Gateway attack chain. The first real run exposed unstructured missing-credential text; the middleware now returns stable redacted `bridge_credential_required` / `bridge_configuration_invalid` codes. This checkpoint unlocked Task 28 while `main` still remained unchanged; the final release gate later passed and the work was merged.
 
 **Description:** Add end-to-end negative coverage across reference, Skill, retrieval, MCP, multipart, and delivery boundaries.
 
@@ -997,7 +998,7 @@ The bounded final selection also exposed a product-level review defect: the lega
 
 ### Task 28: Package and document the optional bridge
 
-**Status:** Implementation and focused checkpoint complete on `feat/skill-document-storyboard-loop` (2026-09-01). The optional package now owns a PowerShell 5.1-compatible locked launcher for STDIO/loopback HTTP, redacted offline/live diagnostics, least-authority and full-review Gateway profile examples, a current Codex TOML example, and a clearly unverified TRAE candidate. The maintained operations guide covers first contact, explicit scope upgrade, six failure layers, provenance/cost, removal, host claims, and contributor verification. Task 28 does not move `main`; the repository-wide build/regression/browser/security/documentation matrix remains the final release gate.
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-09-01) and merged to `main` after the repository-wide release matrix passed. The optional package owns a PowerShell 5.1-compatible locked launcher for STDIO/loopback HTTP, redacted offline/live diagnostics, least-authority and full-review Gateway profile examples, a current Codex TOML example, and a clearly unverified TRAE candidate. The maintained operations guide covers first contact, explicit scope upgrade, six failure layers, provenance/cost, removal, host claims, and contributor verification.
 
 **Description:** Add locked launchers, Codex/TRAE configuration templates, diagnostics, verified/candidate host documentation, provenance/cost caveats, and contributor verification commands. Doubao web/desktop and MarsCode remain “待验证” until backed by official MCP-host evidence and a real smoke test.
 
