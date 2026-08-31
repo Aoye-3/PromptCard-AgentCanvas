@@ -8,10 +8,12 @@ import {
   syncThreeStageLegacyFields
 } from '@/domain/three-stage/three-stage-pages'
 import { freeCanvasPresetText, freeCanvasTextDisplay, freeCanvasUserText } from '@/domain/free-canvas/free-canvas-project'
+import { planningDocumentEffectiveText } from '@/domain/documents/planning-document'
 
 const MAX_TEXT_LENGTH = 1200
 const MAX_CARDS = 60
 const MAX_ROWS = 40
+const MAX_DOCUMENT_EXCERPT_LENGTH = 240
 
 const compactText = (value: string | undefined) => {
   const text = String(value || '').replace(/\s+/g, ' ').trim()
@@ -248,19 +250,24 @@ export function buildFreeCanvasWorkspaceContext({
   activeProject: IPromptProject
   freeCanvas: IFreeCanvasProject
 }): AgentWorkspaceContext {
-  const selectedNode = freeCanvas.nodes.find(node => node.id === freeCanvas.selectedNodeId) || null
+  const workspaceNodes = freeCanvas.nodes.filter(isWorkspaceFreeCanvasNode)
+  const snapshotNodes = workspaceNodes.slice(0, MAX_CARDS)
+  const snapshotNodeIds = new Set(snapshotNodes.map(node => node.id))
+  const selectedNode = workspaceNodes.find(node => node.id === freeCanvas.selectedNodeId) || null
 
   return {
-    contextId: `free-canvas:${activeProject.id}:${freeCanvas.selectedNodeId || 'canvas'}`,
+    contextId: `free-canvas:${activeProject.id}:${selectedNode?.id || 'canvas'}`,
     mode: 'free-canvas-workspace',
     projectId: activeProject.id,
     projectTitle: activeProject.title,
     snapshot: {
       projectType: activeProject.type,
-      selectedNodeId: freeCanvas.selectedNodeId || null,
+      selectedNodeId: selectedNode?.id || null,
       selectedNode: selectedNode ? compactFreeCanvasNode(selectedNode) : null,
-      nodes: freeCanvas.nodes.slice(0, MAX_CARDS).map(compactFreeCanvasNode),
-      edges: freeCanvas.edges.slice(0, MAX_CARDS).map(edge => ({
+      nodes: snapshotNodes.map(compactFreeCanvasNode),
+      edges: freeCanvas.edges
+        .filter(edge => snapshotNodeIds.has(edge.source) && snapshotNodeIds.has(edge.target))
+        .slice(0, MAX_CARDS).map(edge => ({
         id: edge.id,
         source: edge.source,
         target: edge.target,
@@ -281,17 +288,47 @@ function compactThreeStageSection(section: IThreeStageSectionLike) {
 
 type IThreeStageSectionLike = IThreeStageProject['character']
 
-function compactFreeCanvasNode(node: IFreeCanvasNode) {
+type IWorkspaceFreeCanvasNode = Exclude<IFreeCanvasNode, { kind: 'unsupported' }>
+
+function isWorkspaceFreeCanvasNode(node: IFreeCanvasNode): node is IWorkspaceFreeCanvasNode {
+  if (node.kind === 'text') return true
+  if (node.kind === 'image') return true
+  if (node.kind === 'arrow') return true
+  if (node.kind === 'image-generator') return true
+  if (node.kind === 'document') return true
+  if (node.kind === 'storyboard') return true
+  if (node.kind === 'unsupported') return false
+  const exhaustiveNode: never = node
+  return exhaustiveNode
+}
+
+function compactFreeCanvasNode(node: IWorkspaceFreeCanvasNode) {
   if (node.kind === 'text') {
     return compactFreeCanvasTextNode(node)
   }
-  return {
+  const identity = {
     id: node.id,
     kind: node.kind,
-    title: compactText(node.title),
-    assetId: node.kind === 'image' ? node.assetId || null : undefined,
-    text: node.kind === 'arrow' ? compactText(node.text) : undefined
+    title: compactText(node.title)
   }
+  if (node.kind === 'image') {
+    return { ...identity, assetId: node.assetId || null }
+  }
+  if (node.kind === 'arrow') {
+    return { ...identity, text: compactText(node.text) }
+  }
+  if (node.kind === 'document') {
+    return {
+      ...identity,
+      revision: node.document.revision,
+      digest: node.document.digest,
+      excerpt: planningDocumentEffectiveText(node.document).slice(0, MAX_DOCUMENT_EXCERPT_LENGTH)
+    }
+  }
+  if (node.kind === 'storyboard') return identity
+  if (node.kind === 'image-generator') return identity
+  const exhaustiveNode: never = node
+  return exhaustiveNode
 }
 
 function compactFreeCanvasTextNode(node: IFreeCanvasTextNode) {

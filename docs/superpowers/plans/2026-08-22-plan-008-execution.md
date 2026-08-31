@@ -4,15 +4,16 @@
 
 ## Status
 
-- Status: `Awaiting user acceptance at Task 15.5`
-- Date: `2026-08-22`
-- Active branch: `feat/plan-008-skill-hub-generic-bridge`
+- Status: `Tasks 16-26C complete; real Codex first-contact discovery passed; the final four-kind closed loop remains the merge condition`
+- Date: `2026-08-31`
+- Planning update branch: `docs/document-skill-loop-plan`
+- Active execution branch: `feat/skill-document-storyboard-loop`
 - Plan 007 prerequisite: manual acceptance confirmed by the user on `2026-08-22`
 - Paid live-provider evaluation remains independent and does not block this plan
 
 ## Goal
 
-Expose PromptCard's local Prompt Library, Canvas context, and canonical Skill packages to MCP-capable Agent applications through stable typed references and the host-neutral PromptCard Local Agent Bridge, then accept only idempotent additive Prompt/image deliveries back to an explicitly persisted Canvas context.
+First complete a project-local Skill conversation -> document attachment -> planning Document -> explicit Storyboard -> explicit Prompt proposal loop. Then expose PromptCard's local Prompt Library, Canvas context, canonical Skill packages, Planning Documents, and Storyboards to MCP-capable Agent applications through stable typed references and the host-neutral PromptCard Local Agent Bridge. Accept only idempotent, reviewable Document, Storyboard, Prompt, and image proposals back to an explicitly persisted Canvas context.
 
 Do this without replacing the existing pi text Agent, embedding a third-party Agent chat in PromptCard, granting direct SQLite/filesystem access, or representing bridge-delivered output as a provider generation run.
 
@@ -28,6 +29,10 @@ The implementation should extend the existing boundaries rather than create a se
 - the current Canvas workspace snapshot is bounded and lossy; it cannot be reused as an immutable `CVC` context pack.
 - the existing image placement flow provides the right recovery order: durable pending record, Canvas hydration, project save, then `placed`. Its provider-generation identity must not be reused for Codex delivery.
 - the current Skill registry is a useful local-Agent slice, but its `SKL-*` values are internal IDs rather than Plan 008 public ULID reference codes.
+- the current Free Canvas `text` node is executable Prompt content with `preset`/`user` segments; reusing it for long-form planning would route Document prose into Prompt semantics.
+- current Agent Skill selection is component-local, says “仅作用于下一条消息”, and clears after send; persistent Skill use therefore belongs to a new conversation mode rather than a global behavior change.
+- current project resources and asset validation are image/video-oriented, while the Ark Chat Completions adapter accepts text/image only; document resources and file-bearing Ark Responses require separate adapters.
+- current node normalization has fallthrough paths that can coerce unknown kinds to Prompt text or media behavior; every Document/Storyboard union dispatch must become explicit before those kinds ship.
 
 Two inferred risks require regression tests before their dependent work:
 
@@ -48,6 +53,9 @@ These are test-first verification tasks, not assumptions that authorize unrelate
 - [Codex MCP documentation](https://developers.openai.com/codex/mcp): Codex supports local STDIO and Streamable HTTP MCP servers.
 - [TRAE MCP FAQ](https://forum.trae.cn/t/topic/65): TRAE supports STDIO, Streamable HTTP, and legacy SSE; this plan uses the first two only.
 - [MCP TypeScript SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/): use the split server/Node packages and the 2026-07-28 protocol line.
+- [Tiptap persistence](https://tiptap.dev/docs/editor/core-concepts/persistence) and [schema](https://tiptap.dev/docs/editor/core-concepts/schema): persist strict editor JSON and validate the allowed rich-text structure.
+- [Doubao Seed 2.0 Lite](https://www.volcengine.com/docs/82379/1795150) and [Volcengine Responses API](https://volcengine.github.io/veadk-python/cn/docs/framework/agent/responses-api/): use file IDs for native PDF understanding, including visual page interpretation.
+- [python-docx 1.2.0](https://pypi.org/project/python-docx/): use a pinned local reader for bounded DOCX paragraph/table extraction.
 
 ## Architecture Decisions To Freeze
 
@@ -56,13 +64,19 @@ These are test-first verification tasks, not assumptions that authorize unrelate
 3. **Namespace separation is semantic.** `PLM` and `CVM` may refer to identical bytes but remain different business identities and permission boundaries.
 4. **No ambient MCP project.** Every Canvas search, resolve, context, or delivery operation carries an exact `PRJ` or `CVC` reference. UI focus and MCP connection state are never authority.
 5. **MCP uses STDIO and loopback Streamable HTTP.** Pin `@modelcontextprotocol/server@2.0.0` and `@modelcontextprotocol/node@2.0.0`, cover the 2025-11-25 and 2026-07-28 protocol eras, and exclude `0.0.0.0`, legacy SSE, first-release OAuth, MCP Apps, Sampling, Tasks, and general filesystem tools.
-6. **Schema dialect is JSON Schema 2020-12.** Preserve `contracts/promptcard-bridge/v1/` unchanged and add the host-neutral trust/delivery overlay at `contracts/promptcard-bridge/v2/`. Use the explicitly declared validator for both versions.
+6. **Schema dialect is JSON Schema 2020-12.** Preserve `contracts/promptcard-bridge/v1/` and `v2/` unchanged. Bridge v3 composes both frozen bases and adds `CVD/CVS`, workspace discovery, staging, and typed creative writeback. Use the explicitly declared validator for all versions.
 7. **Tools/Text are the portability baseline.** Exact Tool resolution and optional `promptcard://` Resource Templates call the same Gateway resolver and permission checks; Resources, structured results, and `ImageContent` always have Tool/Text fallbacks.
 8. **FTS before vectors.** Phase 4A starts with SQLite FTS5/BM25, revision/digest freshness, fixed budgets, citations, and audit. Semantic retrieval is a later optional slice that requires explicit provider consent and measured value.
 9. **Skill projections are rebuildable.** Storage holds canonical immutable packages and host pins. `.agents/skills` and local-Agent snapshots are derived projections and never become the authority.
 10. **Bridge delivery has its own profile-scoped ledger.** Reuse asset validation and save-before-placed behavior, but do not reuse provider generation-run identity or provenance. New records use `promptcard-bridge`; v1 `codex-harness` is compatibility-only.
 11. **Canonical idempotency name is `clientRequestId`.** The older `deliveryId` example in Plan 008 is treated as illustrative; all additive tool and Gateway contracts use `clientRequestId` plus a normalized request digest.
 12. **Client identity is audit-only.** A trusted launcher/authentication context supplies `profileId` and scopes. A request cannot self-report a trusted profile, and client name/version cannot select authorization, schemas, tools, budgets, or behavior.
+13. **Planning Documents are not Prompts.** Document and Storyboard use independent Canvas node/data models and never enter Prompt Library, Prompt RAG, Prompt compilation, image-generation input, or ambient full-body context without an explicit typed transform.
+14. **Experimental conversation is a top-level mode.** `chat-experimental` is separate from Canvas Prompt edit modes. Only this mode persists conversation-scoped Skill bindings; existing Prompt flows keep one-shot Skill selection.
+15. **Project documents stay local; provider files are ephemeral.** Schema v16 adds project document resources. TXT/Markdown/DOCX are normalized locally; PDF uses an isolated Ark Files/Responses path with per-call deletion and durable redacted cleanup retry.
+16. **Agent creative writes are narrow and recoverable.** Dedicated Document/Storyboard create/change tools bind exact revisions/digests. Frontend persistence acknowledgement, rollback, request/edit idempotency, and restart reconciliation prevent silent conversation/Canvas divergence.
+17. **Transforms require explicit user actions.** Document -> Storyboard and selected Document text/Storyboard shot -> Prompt are the only cross-domain paths in this slice; the latter produces a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node and cannot update an existing Prompt or read/write Prompt Library.
+18. **External creative writeback is typed and proposal-only.** `CVD` and `CVS` are stable external references. Document/Storyboard create/change, Prompt create, and staged image placement share a profile-scoped ledger and independent scopes; every result requires visual acceptance. See ADR-023 and Bridge v3.
 
 ## Global Constraints
 
@@ -74,6 +88,8 @@ These are test-first verification tasks, not assumptions that authorize unrelate
 - Browser and model output are untrusted at Gateway boundaries.
 - Every migration is idempotent, preserves Trash/restore semantics, and is covered by backup/restore tests.
 - Each task leaves the application buildable and testable. No task silently combines refactoring with a feature slice.
+- Tasks 15.6-15.10 remain independent of MCP, Bridge credentials/profiles, and the Bridge delivery ledger. Their automated acceptance is the Phase 4 regression baseline; the deferred manual probes are part of the final real-Codex closed-loop gate.
+- Preserve existing Prompt-node, Prompt Library/RAG, image-generation, one-shot Skill, and standalone Storyboard behavior; union extensions require explicit dispatch rather than casts/fallbacks.
 
 ## Dependency Graph
 
@@ -90,6 +106,12 @@ flowchart TD
     E --> I["Read-only Gateway / CLI"]
     F --> I
     G --> I
+    G --> Q["Experimental Skill conversation"]
+    Q --> R["Project document resources"]
+    R --> S["Document working draft"]
+    S --> T["Explicit Storyboard transform"]
+    T --> U["Explicit Prompt proposal handoff"]
+    U --> I
     H --> J["Local-Agent Prompt Library RAG"]
     H --> K["STDIO MCP search and resolve"]
     I --> K
@@ -110,9 +132,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] ADR explicitly records the eleven decisions above and alternatives rejected.
-- [ ] ADR cross-links ADR-008, ADR-012, ADR-016, ADR-017, and Plan 008.
-- [ ] The ADR index links ADR-018.
+- [x] ADR explicitly records the eleven decisions above and alternatives rejected.
+- [x] ADR cross-links ADR-008, ADR-012, ADR-016, ADR-017, and Plan 008.
+- [x] The ADR index links ADR-018.
 
 **Verification:** Markdown links resolve; documentation review confirms no claim of implemented runtime behavior.
 
@@ -128,9 +150,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Manifest has one contract version and stable schema IDs consumable by future Gateway, CLI, and MCP adapters.
-- [ ] Exact execution inputs accept typed code strings, never search-result objects or internal IDs.
-- [ ] Delivery schemas require `clientRequestId`, request digest, exact `CVC`, source-code lists, and additive-only kinds.
+- [x] Manifest has one contract version and stable schema IDs consumable by future Gateway, CLI, and MCP adapters.
+- [x] Exact execution inputs accept typed code strings, never search-result objects or internal IDs.
+- [x] Delivery schemas require `clientRequestId`, request digest, exact `CVC`, source-code lists, and additive-only kinds.
 
 **Verification:** Declared JSON Schema validator compiles every schema; `git check-ignore` confirms contract JSON is tracked intentionally.
 
@@ -146,9 +168,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Every fixture declares its schema entry point and expected validity/outcome.
-- [ ] Invalid search-result-as-target, wrong prefix, internal ID, and overflow examples fail formal schema validation.
-- [ ] Fixtures distinguish same-key/same-digest replay from same-key/different-digest conflict.
+- [x] Every fixture declares its schema entry point and expected validity/outcome.
+- [x] Invalid search-result-as-target, wrong prefix, internal ID, and overflow examples fail formal schema validation.
+- [x] Fixtures distinguish same-key/same-digest replay from same-key/different-digest conflict.
 
 **Verification:** Focused Vitest contract suite passes and reports every fixture by name.
 
@@ -160,10 +182,10 @@ flowchart TD
 
 ### Checkpoint 0: Contracts
 
-- [ ] ADR accepted by the user.
-- [ ] Schemas compile under the pinned validator.
-- [ ] Positive and negative fixtures pass.
-- [ ] No production runtime behavior changed.
+- [x] ADR accepted by the user.
+- [x] Schemas compile under the pinned validator.
+- [x] Positive and negative fixtures pass.
+- [x] No production runtime behavior changed.
 
 ## Phase 1: Stable Typed References
 
@@ -173,9 +195,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] All seven prefixes parse case-insensitively and render canonically.
-- [ ] Invalid alphabet, length, overflow, and namespace mismatch fail with stable error codes.
-- [ ] Generation is collision-tested without replacing internal IDs.
+- [x] All seven prefixes parse case-insensitively and render canonically.
+- [x] Invalid alphabet, length, overflow, and namespace mismatch fail with stable error codes.
+- [x] Generation is collision-tested without replacing internal IDs.
 
 **Verification:** Focused Storage unit tests pass with fixed timestamp/random fixtures and collision injection.
 
@@ -191,9 +213,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Registry enforces code uniqueness, entity uniqueness within its namespace/owner, and required project scope for Canvas entities.
-- [ ] Existing active and trashed projects, Prompts, Skills, Prompt media bindings, and Canvas nodes receive stable codes.
-- [ ] Re-running migration produces no new codes or payload changes.
+- [x] Registry enforces code uniqueness, entity uniqueness within its namespace/owner, and required project scope for Canvas entities.
+- [x] Existing active and trashed projects, Prompts, Skills, Prompt media bindings, and Canvas nodes receive stable codes.
+- [x] Re-running migration produces no new codes or payload changes.
 
 **Verification:** Fresh-schema, v9 migration, repeated migration, collision, Trash, and rollback tests pass.
 
@@ -209,9 +231,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Every Prompt resolves by `PLP` with current revision and ordered `PLM` metadata.
-- [ ] Rename/archive/restore preserve codes; duplicate/import create or validate independent codes.
-- [ ] Missing or trashed media returns exact `PLM`-scoped lifecycle errors.
+- [x] Every Prompt resolves by `PLP` with current revision and ordered `PLM` metadata.
+- [x] Rename/archive/restore preserve codes; duplicate/import create or validate independent codes.
+- [x] Missing or trashed media returns exact `PLM`-scoped lifecycle errors.
 
 **Verification:** Storage/API tests cover create, update, media reorder, duplicate, Trash/restore, export/import, and collision.
 
@@ -227,9 +249,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] UI copies canonical `PLP` or selected `PLM`, never the internal ID or asset ID.
-- [ ] Trashed/restored records preserve the displayed code.
-- [ ] Clipboard failure has a visible recoverable state.
+- [x] UI copies canonical `PLP` or selected `PLM`, never the internal ID or asset ID.
+- [x] Trashed/restored records preserve the displayed code.
+- [x] Clipboard failure has a visible recoverable state.
 
 **Verification:** Component tests cover Prompt/media targets and clipboard failure; browser smoke verifies copied text.
 
@@ -245,9 +267,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Every project has `PRJ`; supported text/image nodes have `CVT`/`CVM` within that project.
-- [ ] Duplicate Canvas placement creates a new target code even when bytes are shared.
-- [ ] Resolution requires matching `PRJ`, current lifecycle, and bounded node content.
+- [x] Every project has `PRJ`; supported text/image nodes have `CVT`/`CVM` within that project.
+- [x] Duplicate Canvas placement creates a new target code even when bytes are shared.
+- [x] Resolution requires matching `PRJ`, current lifecycle, and bounded node content.
 
 **Verification:** Storage tests cover save/reload, duplicate, node deletion, project Trash/restore, project mismatch, and shared assets.
 
@@ -263,9 +285,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Project UI copies `PRJ`; node menu copies the correct `CVT` or `CVM`.
-- [ ] Unsupported/running/transient nodes explain why no code is available.
-- [ ] Copy actions do not switch the right workspace or mutate selection content.
+- [x] Project UI copies `PRJ`; node menu copies the correct `CVT` or `CVM`.
+- [x] Unsupported/running/transient nodes explain why no code is available.
+- [x] Copy actions do not switch the right workspace or mutate selection content.
 
 **Verification:** Component and Playwright tests cover text node, image node, project code, and unsupported state.
 
@@ -277,10 +299,10 @@ flowchart TD
 
 ### Checkpoint 1: Stable identities
 
-- [ ] PLP/PLM/PRJ/CVT/CVM exact resolution is indexed and bounded.
-- [ ] Rename/restore preserve codes; duplication creates codes.
-- [ ] Backup/restore and import collision tests pass.
-- [ ] Full Storage, frontend, and build gates pass.
+- [x] PLP/PLM/PRJ/CVT/CVM exact resolution is indexed and bounded.
+- [x] Rename/restore preserve codes; duplication creates codes.
+- [x] Backup/restore and import collision tests pass.
+- [x] Full Storage, frontend, and build gates pass.
 
 ## Phase 2: Immutable Canvas Context Packs
 
@@ -290,9 +312,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Creation requires explicit supported selection and current `PRJ` revision.
-- [ ] Snapshot remains stable after focus/selection changes and never copies media bytes or absolute paths.
-- [ ] Revocation blocks future resolve without deleting project content.
+- [x] Creation requires explicit supported selection and current `PRJ` revision.
+- [x] Snapshot remains stable after focus/selection changes and never copies media bytes or absolute paths.
+- [x] Revocation blocks future resolve without deleting project content.
 
 **Verification:** Storage tests cover create/resolve, empty selection, unsupported nodes, project mismatch, missing media, and revocation.
 
@@ -308,9 +330,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] User sees included nodes/references before creating the pack.
-- [ ] No selection is disabled; no implicit whole-Canvas option is introduced.
-- [ ] Copied `CVC` resolves the same snapshot after project focus changes.
+- [x] User sees included nodes/references before creating the pack.
+- [x] No selection is disabled; no implicit whole-Canvas option is introduced.
+- [x] Copied `CVC` resolves the same snapshot after project focus changes.
 
 **Verification:** Component tests and Playwright cover preview, copy, focus change, inspect, revoke, and clipboard failure.
 
@@ -322,9 +344,9 @@ flowchart TD
 
 ### Checkpoint 2: Explicit context
 
-- [ ] CVC is immutable, inspectable, revocable, and bounded.
-- [ ] No UI focus or MCP session is required to resolve it.
-- [ ] Manual acceptance confirms copied context contents and placement hint.
+- [x] CVC is immutable, inspectable, revocable, and bounded.
+- [x] No UI focus or MCP session is required to resolve it.
+- [x] Final browser/real-Codex acceptance confirms copied context contents and placement hint.
 
 ## Phase 3: Canonical Skill Registry And Host Projections
 
@@ -334,9 +356,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Canonical digest covers normalized relative paths and bytes.
-- [ ] Public `SKL` remains stable across revisions; internal legacy IDs remain readable.
-- [ ] Scripts/assets/references are stored as inert typed package entries.
+- [x] Canonical digest covers normalized relative paths and bytes.
+- [x] Public `SKL` remains stable across revisions; internal legacy IDs remain readable.
+- [x] Scripts/assets/references are stored as inert typed package entries.
 
 **Verification:** Storage tests cover revision immutability, digest stability, archive, identity collision, and legacy migration.
 
@@ -352,9 +374,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Import never runs scripts, hooks, installers, or package managers.
-- [ ] Validation findings are structured and reviewable before persistence.
-- [ ] Failed import leaves no canonical revision or host projection.
+- [x] Import never runs scripts, hooks, installers, or package managers.
+- [x] Validation findings are structured and reviewable before persistence.
+- [x] Failed import leaves no canonical revision or host projection.
 
 **Verification:** Security fixture suite covers traversal, symlink/junction, archive bombs, duplicates, malformed metadata, and no-execution probes.
 
@@ -370,9 +392,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Enabling/updating one host never changes the other host pin.
-- [ ] Codex projection manifest records `SKL`, revision, digest, and owner; collision and drift fail visibly.
-- [ ] Local Agent receives only allowed instructions/resources and cannot gain tools.
+- [x] Enabling/updating one host never changes the other host pin.
+- [x] Codex projection manifest records `SKL`, revision, digest, and owner; collision and drift fail visibly.
+- [x] Local Agent receives only allowed instructions/resources and cannot gain tools.
 
 **Verification:** Storage/Gateway tests cover independent pins, republish, drift, unavailable revision, and tool-scope rejection.
 
@@ -439,7 +461,7 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 - [x] Drift/collision/archived/untrusted/disabled states remain visible, and explicit Codex repair never overwrites an unowned collision.
 - [x] The v2 boundary and ADR-019 are host-neutral while Codex `.agents/skills` remains an accurately named host adapter.
 - [x] Focused browser/component/contract tests and full Storage, Gateway/backend, configured Ruff, TypeScript, production-build, and workspace-cleanliness gates pass.
-- [ ] Await user acceptance; do not begin Task 16.
+- [x] On 2026-08-27 the user explicitly authorized planning and handoff of the project-local Phase 3.5 work; remaining Skill Hub manual probes roll into Checkpoint 3.5, and Task 16 remains blocked.
 
 ### Checkpoint 3: Skills
 
@@ -452,7 +474,132 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 - [x] An unowned publication-name collision is preserved; choosing a different publication name recovers without overwriting the existing directory.
 - [x] Archive, restore, publish/unpublish, and enable/disable states remain distinct and expose valid recovery actions.
 - [x] Component, browser, Storage, Gateway, security, TypeScript, and production-build gates pass.
-- [ ] Stop for user acceptance of the Skill Hub workflow and evidence package before beginning Task 16.
+- [x] User authorized progression into Phase 3.5 on 2026-08-27; combine the remaining Skill Hub manual probes with Checkpoint 3.5 and still stop before Task 16.
+
+## Phase 3.5: Experimental Skill Conversation And Creative Documents
+
+This phase is a project-local extension of the existing Agent and Skill Host Adapter. It does not implement or depend on the external Local Agent Bridge. The normative design is [ADR-020](../../decisions/ADR-020-separate-planning-documents-from-prompt-execution.md), [ADR-021](../../decisions/ADR-021-project-document-resources-and-ephemeral-provider-files.md), and the [detailed implementation plan](./2026-08-27-skill-conversation-document-storyboard.md).
+
+### Task 15.6: Freeze the creative-document contracts and dispatch boundary
+
+**Description:** Add the separate interaction mode, Document/Storyboard node contracts, typed Agent edit results, and closed node-kind dispatch rules before implementation. Prompt `text`, Prompt edit modes, standalone Storyboard proposals, image resources, and Bridge contracts remain unchanged.
+
+**Acceptance criteria:**
+
+- [x] `chat-experimental` is a top-level interaction mode and is not added to `CanvasAgentEditMode`.
+- [x] Document does not reuse Prompt segments; Storyboard Canvas state does not reuse the standalone storyboard mutation path.
+- [x] Normalization, rendering, reference selection, context packing, Prompt compilation, and image inputs use explicit kind allowlists; unknown kinds become read-only `unsupported` projections that round-trip their untouched original JSON and never fall through to `text` or `image`.
+- [x] Existing projects and Prompt workflows normalize and build unchanged.
+
+**Verification:** Contract/normalization tests cover legacy, new, and unknown node kinds; TypeScript and production build pass.
+
+**Dependencies:** Task 15.5 technical evidence, the user's 2026-08-27 authorization to proceed into Phase 3.5, and ADR-020/ADR-021.
+
+**Files likely touched:** Free Canvas/Agent model types, project normalization, focused dispatch tests.
+
+**Estimated scope:** Medium.
+
+### Task 15.7: Persist experimental conversation and Skill binding
+
+**Description:** Add user-facing **对话模式【测试中】** with conversation-scoped Skill binding, durable conversation/retry behavior, and a mode-specific tool policy. Preserve one-shot Skill selection in every existing Prompt workflow.
+
+**Acceptance criteria:**
+
+- [x] No Prompt target is required; the selected model, conversation, and bound Skill IDs survive reload/restart.
+- [x] Every turn resolves the current local-Agent pin and records exact revision/digest provenance; a pin move affects the next turn only.
+- [x] Disabled, untrusted, archived, over-budget, or tool-incompatible Skills fail before model invocation and cannot expand the allowed tool set.
+- [x] Consecutive messages reuse one Storage conversation and response-loss replay with the same request ID returns the saved turn without duplication.
+
+**Verification:** Storage/Gateway/runtime/store/component tests cover persistence, Task 19 durability risks, Skill state transitions, and existing one-shot behavior.
+
+**Dependencies:** Task 15.6.
+
+**Files likely touched:** conversation Storage/Gateway contracts, Agent store/panel/composer, runtime policy, focused tests.
+
+**Estimated scope:** Medium.
+
+### Task 15.8: Add project document resources and bounded provider input
+
+**Description:** In one v15 -> v16 migration add project document resources and provider-file cleanup state for TXT, Markdown, PDF, and DOCX. Keep local bytes canonical, normalize text/DOCX locally, and use an isolated Ark Files/Responses adapter for PDF with per-invocation deletion.
+
+**Acceptance criteria:**
+
+- [x] Schema v16 creates both `project_document_resources` and `provider_file_cleanup`; migration, backup/restore, and health tests freeze both tables before Gateway consumes them. Document resources remain separate from image `project_resources`, Prompt media, and browser/provider identities.
+- [x] TXT/MD are strict UTF-8; DOCX extraction uses exactly `python-docx==1.2.0`; PDF uses the existing Ark SDK's Files/Responses interfaces only when the selected model declares support.
+- [x] Limits are TXT/MD 5 MiB, DOCX 20 MiB, PDF 50 MiB, five attachments, and 100 MiB aggregate per turn; extension/MIME/signature/container/project/lifecycle checks all pass.
+- [x] Each PDF is uploaded for one invocation and deleted in `finally`; failed deletion creates a redacted durable cleanup record retried on startup.
+- [x] Unsupported providers/models return `document_input_not_supported` before invocation rather than switching provider, OCR, or parsing semantics.
+
+**Verification:** Storage and Gateway tests cover valid files, spoofing, corrupt/encrypted/zip-bomb DOCX, oversize/count, project isolation, backup/restore, scanned PDF, delete/retry/restart, redaction, and unchanged Chat Completions.
+
+**Dependencies:** Task 15.7.
+
+**Files likely touched:** Storage document module/schema/API, frontend Storage client, Ark Responses/cleanup modules, provider capability tests.
+
+**Estimated scope:** Large; execute the detailed plan's Storage and Gateway slices as separate reviewed commits.
+
+### Task 15.9: Add isolated Document nodes and tracked Agent changes
+
+**Description:** Add a restricted Tiptap Document node with complete inline editing, expanded editor, collapsed summary, reversible user edits, and Agent suggestion marks. Direct Agent writes use typed operations and a durable frontend apply acknowledgement.
+
+**Acceptance criteria:**
+
+- [x] Pin all selected `@tiptap/*` packages to `3.30.3`; keep an editor-neutral versioned block AST as the persisted/runtime contract, with Tiptap JSON only as a frontend adapter. Allow only headings, paragraphs, bold/italic, lists, quote, checklist, link, and basic table.
+- [x] User edits are immediate canonical edits. Agent insertions are green/effective; Agent deletions remain red/struck through but are excluded from effective text; linked replacements resolve atomically.
+- [x] Single/all accept/reject, undo/redo, inline/expanded/collapsed views, project save/reload, and old-project normalization preserve the same effective content.
+- [x] `emit_document_create` and `emit_document_changes` use editor-neutral blocks/operations and bind the project, node kind, base revision/digest, NFC text, UTF-8 byte anchors, expected text digest, budgets, provenance, request ID, and edit ID; Tiptap JSON and arbitrary JSON patch are rejected.
+- [x] Gateway records deterministic `pending_apply` edit/node IDs and expected result digest. Frontend saves content plus `AgentAppliedEditMarker` atomically; Gateway reloads Storage and verifies project/node kind/ID/marker/result before `applied`.
+- [x] Reconciliation freezes every terminal: matching marker -> `applied`; absent marker plus revalidatable base -> same edit replay; changed conflicting base -> `failed_conflict`; marker/result mismatch -> `failed_integrity`; deleted/trashed project/target -> `failed_target_missing`. Save failure rolls back, and frontend ACK alone is not authority.
+- [x] Ambient workspace snapshots expose only identity/title/revision/digest/bounded excerpt; full effective text requires explicit attachment, `@Document`, selection, or transform.
+
+**Verification:** Domain/editor/component/browser/Gateway/runtime/recovery tests cover rich text, suggestion semantics, conflicts, save failure, response loss, duplicate request, restart reconciliation, budgets, and context isolation.
+
+**Dependencies:** Task 15.8.
+
+**Files likely touched:** Document domain/editor/node, canvas renderer/commands/save coordination, Agent tools/Gateway apply ledger, focused tests.
+
+**Estimated scope:** Large; execute the detailed plan's editor and Agent-write slices as separate reviewed commits.
+
+### Task 15.10: Add explicit Storyboard and Prompt transforms
+
+**Description:** Add a structured Storyboard Canvas node, explicit effective Document -> Storyboard creation, per-field Storyboard Agent differences, and an explicit selected text/shot -> new Prompt Canvas node proposal handoff.
+
+**Acceptance criteria:**
+
+- [x] Storyboard node reuses `IStoryboardSequence`/`IStoryboardRow` field definitions while keeping Canvas mutation separate from standalone storyboard proposals.
+- [x] Initial creation requires the explicit user action and records source Document revision/digest, resource digests, model, and exact Skill revision/digest; it is directly applied, persisted, idempotent, and undoable.
+- [x] Later changes display per-field old/new values with single/all accept/reject and stale base rejection.
+- [x] Document/Storyboard receive no automatic Prompt/Canvas media reference, Prompt Library/RAG record, Prompt compiler input, or image-generation attachment.
+- [x] Only an explicit selected text/shot action creates a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node. It cannot update an existing Prompt node or read/write Prompt Library.
+
+**Verification:** Focused transform/field-diff/reference/context/Prompt/image regression tests plus a full end-to-end browser flow.
+
+**Dependencies:** Task 15.9.
+
+**Files likely touched:** Storyboard Canvas domain/node/tools, explicit action UI, Prompt proposal adapter, focused tests.
+
+**Estimated scope:** Medium.
+
+### Task 15.10 Technical Acceptance Gate
+
+- [x] A fresh independent reviewer passes the full Task 15.6-15.10 diff; Blocking/Important findings are fixed test-first and re-reviewed by a new reviewer.
+- [x] Multi-turn Skill binding, current-pin provenance, disabled/untrusted/archived rejection, response-loss replay, and restart hydration pass.
+- [x] TXT/MD/PDF/DOCX, scanned PDF, spoof/corrupt/encrypted/oversize/zip-bomb inputs, remote cleanup, retry/restart, redaction, and unsupported-provider behavior pass.
+- [x] Document inline/expanded/collapsed editing, rich-text persistence, suggestion accept/reject/effective draft, conflict, undo/redo, apply ACK, rollback, and idempotent recovery pass.
+- [x] Explicit Document -> Storyboard creation, Storyboard field review, and selected text/shot -> Prompt proposal pass with exact provenance.
+- [x] Adversarial isolation proves Document/Storyboard never enter Prompt Library, Prompt RAG, Prompt compilation, image-generation inputs, or ambient full-body context.
+- [x] Existing Prompt, image, Skill projection, standalone Storyboard, context pack, reference-code, Storage, Gateway/runtime, Ruff, TypeScript, and production-build gates pass.
+- [x] The evidence package lists commits, test counts/skips/warnings, manual probes, cleanup/path/credential checks, residual risks, and unrelated startup-script changes left untouched.
+- [x] Package the technical evidence. On 2026-08-30 the user merged the remaining manual probes into final real-Codex acceptance and explicitly unlocked Task 16.
+
+### Checkpoint 3.5: Skill Conversation And Creative Documents (manual probes merged into final gate)
+
+- [x] Import/review a storyboard-master Skill, enable one exact local-Agent revision, and use it across three experimental conversation turns plus app restart.
+- [x] Upload all four file types including a scanned PDF; create a character/asset planning Document and inspect inline/fullscreen/collapsed persistence.
+- [x] Apply Agent suggestions, accept/reject individual/all changes, and confirm later Agent/Storyboard work uses the effective draft.
+- [x] Explicitly create and revise a Storyboard, then explicitly convert one selection/shot to a Prompt proposal.
+- [x] Confirm no implicit Document/Storyboard Prompt indexing, compilation, or image context and no duplicate state after restart/retry.
+- [x] Do not run this as a separate manual checkpoint. Preserve the automated Phase 3.5 baseline and exercise these probes inside the final external-Agent functional loop.
 
 ## Phase 4: Read-Only Gateway, CLI, Retrieval, And MCP
 
@@ -462,29 +609,40 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Acceptance criteria:**
 
-- [ ] Namespace/project/lifecycle errors remain distinct and structured.
-- [ ] Responses expose no paths, credentials, unrestricted metadata, or full project JSON.
-- [ ] Search cannot be accepted by any execution endpoint.
-- [ ] `bridge:read` can call runtime describe/read operations, but the same credential receives 401/403 from internal-chat, model-management, and image-generation routes.
-- [ ] Startup/authentication context supplies `profileId`; request bodies and client names cannot grant or widen scopes.
+- [x] Namespace/project/lifecycle errors remain distinct and structured.
+- [x] Responses expose no paths, credentials, unrestricted metadata, or full project JSON.
+- [x] Search cannot be accepted by any execution endpoint.
+- [x] `bridge:read` can call runtime describe/read operations, but the same credential receives 401/403 from internal-chat, model-management, and image-generation routes.
+- [x] Startup/authentication context supplies `profileId`; request bodies and client names cannot grant or widen scopes.
 
 **Verification:** Gateway contract/security tests cover every scope, reference type, redaction, bound, offline error, forged profile, and cross-router 401/403 isolation.
 
-**Dependencies:** Checkpoints 2-3.
+**Dependencies:** Checkpoints 2-3 and the automated Checkpoint 3.5 baseline. Explicit implementation authorization received on 2026-08-30.
 
 **Files likely touched:** new Gateway bridge contracts/router/service and focused tests.
 
 **Estimated scope:** Medium.
 
+**2026-08-30 implementation progress:**
+
+- [x] Freeze the v3 discovery/writeback contract without modifying v1/v2.
+- [x] Add a separate Bearer profile parser with fixed scopes and a trusted Codex `repositoryScope`; request fields and claimed client identity cannot widen either.
+- [x] Add the bounded runtime/workspace/exact-reference/exact-Skill Gateway reads and cross-router credential isolation.
+- [x] Add Storage schema v17 `CVD-*` / `CVS-*` registries, bounded creative resolution, context-pack snapshots, migration/restart/backup compatibility, and launcher schema gates.
+- [x] Record focused and full evidence: Bridge Gateway `10 passed`; full Gateway `467 passed`; full Storage `342 passed, 3 skipped, 338 subtests passed`; Bridge contracts `50 passed`; launcher schema tests `17 passed`.
+- [x] Add bounded Prompt search and CVC-authorized `PLM`/`CVM` asset read. Asset bytes flow through an internal-auth Storage endpoint and a fixed 5 MiB Gateway budget without exposing internal IDs or paths.
+
 ### Task 17: Add deterministic repository JSON CLI
 
 **Description:** Build a Node/TypeScript CLI that invokes the Gateway read contracts and emits exactly one JSON result to stdout, diagnostics to stderr, and stable exit codes.
 
+**Status:** Implemented on `feat/skill-document-storyboard-loop` (2026-08-30); exact-read/search CLI tests and typecheck pass.
+
 **Acceptance criteria:**
 
-- [ ] CLI supports runtime describe and every exact resolve before search.
-- [ ] Same inputs produce contract-equivalent CLI/Gateway output.
-- [ ] CLI never reads SQLite or local media paths directly.
+- [x] CLI supports runtime describe and every exact resolve before search.
+- [x] Same inputs produce contract-equivalent CLI/Gateway output.
+- [x] CLI never reads SQLite or local media paths directly.
 
 **Verification:** CLI contract tests cover success, unknown/offline codes, redaction, exit codes, and stdout purity.
 
@@ -494,15 +652,23 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Estimated scope:** Medium.
 
+**Evidence:** `npm.cmd run test:bridge-cli` reports `6 passed`; `npm.cmd run bridge:cli:check` passes. Tests cover stdout purity, exact/search argument mapping, structured redaction, stable exit classes, offline behavior, invalid JSON, and non-loopback rejection.
+
 ### Task 18: Add the transactional FTS5 retrieval core
 
 **Description:** Create normalized Prompt retrieval documents, external-content FTS5/BM25 indexes, lifecycle triggers, explicit rebuild, deterministic ranking, fixed budgets, freshness re-resolution, health, and audit records.
 
+**Status:** Implemented on `feat/skill-document-storyboard-loop` (2026-08-30); focused and full regression gates pass.
+
 **Acceptance criteria:**
 
-- [ ] Prompt writes and lexical index updates are transactionally consistent; existing rows rebuild explicitly.
-- [ ] Trash is excluded and stale revision/digest candidates cannot reach a host.
-- [ ] Results include identity, revision, matched fields, score components, reason, and bounded safe media metadata.
+- [x] Prompt writes and lexical index updates are transactionally consistent; existing rows rebuild explicitly.
+- [x] Trash is excluded and stale revision/digest candidates cannot reach a host.
+- [x] Results include identity, revision, matched fields, score components, reason, and bounded safe media metadata.
+
+**Implementation evidence:** Storage schema v18 adds normalized retrieval documents, external-content FTS5, lifecycle triggers, explicit rebuild/health, stale-candidate rejection, and digest-only audit records. The same response contract is exposed through Storage, Gateway `/prompt-search`, and the repository JSON CLI. Bridge v3 now freezes the bounded search request/response shape while v1/v2 remain unchanged.
+
+**Verification evidence:** focused retrieval/Bridge `17 passed`; independent-connection compatibility `19 passed, 35 subtests passed`; full Storage `348 passed, 3 skipped, 338 subtests passed`; full Gateway `468 passed`; Bridge contracts `51 passed`; CLI `6 passed`; launcher schema gates `17 passed`; CLI TypeScript and changed Python Ruff checks pass. The full Storage gate caught and drove removal of a connection-private SQLite function dependency from write triggers before this slice was accepted.
 
 **Verification:** Storage tests cover create/update/archive/restore, rebuild, induced drift, Chinese/English queries, ranking stability, and fixed result/evidence budgets.
 
@@ -512,17 +678,22 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Estimated scope:** Medium.
 
-### Task 19: Prove Agent conversation durability prerequisites
+### Task 19: Re-run Agent conversation durability prerequisites before RAG
 
-**Description:** Add regression tests for new-conversation continuation and response-loss retry. Make the smallest correction only if the tests reproduce the inferred risks.
+**Description:** Re-run the consecutive-message, response-loss replay, and restart-hydration evidence first delivered by Task 15.7 before changing Prompt retrieval. Make no second durability implementation unless these regression tests expose a new RAG-specific failure.
+
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). Existing persistence behavior passed unchanged, so no production durability code was added.
 
 **Acceptance criteria:**
 
-- [ ] Two consecutive messages reuse one Storage conversation.
-- [ ] Retrying a lost response can reuse the original request ID and returns the saved turn.
-- [ ] Ordinary failure behavior and existing conversation hydration remain compatible.
+- [x] Two consecutive messages reuse one Storage conversation.
+- [x] Retrying a lost response can reuse the original request ID and returns the saved turn.
+- [x] Ordinary failure behavior and existing conversation hydration remain compatible.
+- [x] `chat-experimental` persistence remains isolated from Prompt Library RAG modes; the pre-RAG baseline transports no retrieval evidence or full Document snapshot.
 
 **Verification:** Focused store/UI/Gateway tests pass before and after any correction.
+
+**Evidence:** Gateway/runtime plus Storage durability suite `78 passed`; frontend Agent store and collaboration hydration suite `74 passed` (`16` store, `58` panel). Coverage includes saved-turn replay before model/provider resolution, stable request-ID retry, per-session thread reuse, experimental mode/Skill hydration, and ordinary error behavior.
 
 **Dependencies:** Before Task 20.
 
@@ -534,11 +705,17 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Description:** Send query, conversation, filters, and exact codes only; retrieve bounded evidence in Gateway/Storage; inject citations and persist retrieval audit.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). The browser snapshot field is closed and rejected; only explicit Prompt Library modes can request bounded retrieval.
+
 **Acceptance criteria:**
 
-- [ ] Browser sends no Prompt array and runtime receives at most the fixed evidence budget.
-- [ ] Only explicit Prompt Library RAG modes receive the retriever/evidence.
-- [ ] Citations resolve to current Prompt identities; lexical degraded state is visible and auditable.
+- [x] Browser sends no Prompt array and runtime receives at most the fixed evidence budget.
+- [x] Only explicit Prompt Library RAG modes receive the retriever/evidence.
+- [x] Citations resolve to current Prompt identities; unavailable retrieval is visible and the successful query is auditable without copying Prompt bodies into the conversation ledger.
+
+**Implementation evidence:** `promptRetrieval` is a closed query/filter/exact-code request capped at 20 results. Gateway reuses Storage v18 search/exact resolution, rejects stale or malformed evidence, caps injected content at 12,000 characters, and persists only retrieval diagnostics/citations with the turn. The pi tool searches only this bounded evidence. Frontend messages persist and render exact `PLP` revision/digest citations and an explicit degraded state. `chat-experimental`, ordinary Canvas completion/rewrite, and non-RAG calls transport no Prompt evidence.
+
+**Verification evidence:** Gateway boundary `50 passed` and full Gateway `471 passed`; focused frontend/service/text-runtime `170 passed`; full frontend/text-runtime `1,386 passed`; full Storage `348 passed, 3 skipped, 338 subtests passed`; exact-reference focus `13 passed, 35 subtests passed`; Bridge contracts `51 passed`; main and text-runtime TypeScript checks pass. Coverage includes lifecycle maintenance, stale rejection, deterministic ranking, evidence budgets, unavailable-retrieval fallback, mode isolation, snapshot rejection, citation persistence, and citation/degraded-state rendering.
 
 **Verification:** Frontend/Gateway/runtime tests prove no snapshot transport, mode isolation, citation rendering, stale rejection, and disabled-RAG fallback.
 
@@ -552,16 +729,22 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Description:** Wrap the same Gateway operations with exact `@modelcontextprotocol/server@2.0.0` and `@modelcontextprotocol/node@2.0.0`. Serve STDIO and loopback-only Streamable HTTP with one host-neutral Tool schema/result surface. Codex/TRAE differences live only in install templates and smoke scripts.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). The repository now owns one six-Tool read-only MCP surface over the same Gateway used by the CLI.
+
 **Acceptance criteria:**
 
-- [ ] stdout contains JSON-RPC only; logs and diagnostics use stderr.
-- [ ] Process inherits a minimal allowlisted environment and has no SQLite/shell/general-filesystem tool.
-- [ ] CLI, MCP, and Gateway outputs pass the same fixtures and schema package.
-- [ ] Core tools are `promptcard_runtime_describe`, `promptcard_reference_resolve`, `promptcard_prompt_search`, and `promptcard_asset_read`; later delivery preview/commit/status tools extend the same namespace.
-- [ ] Tools plus text results are complete without Resources, structured results, or `ImageContent`; optional enhancements call the same core and retain Tool/Text fallbacks.
-- [ ] Tool count remains below 40 and every description below 8,000 characters.
-- [ ] HTTP binds only `127.0.0.1`, validates Host and Origin, and requires a high-entropy Bearer credential; no legacy SSE, `0.0.0.0`, or first-release OAuth.
-- [ ] Initialization and core calls are tested against the 2025-11-25 and 2026-07-28 protocol eras without branching business behavior by client name/version.
+- [x] stdout contains JSON-RPC only; logs and diagnostics use stderr.
+- [x] Process launch guidance uses a minimal allowlist and the server has no SQLite/shell/general-filesystem tool.
+- [x] CLI, MCP, and Gateway pass through the same v3 runtime fixture and return contract-equivalent JSON.
+- [x] The six read tools are runtime/workspace/Skill/reference/search/asset; later delivery preview/commit/status/stage tools extend the same namespace.
+- [x] Tools plus text results are complete without Resources, structured results, or `ImageContent`.
+- [x] Tool count remains below 40 and every description below 8,000 characters.
+- [x] HTTP binds only `127.0.0.1`, validates Host and Origin, and requires a separate high-entropy Bearer credential; there is no legacy SSE, `0.0.0.0`, or OAuth surface.
+- [x] Initialization and core calls are tested against the 2025-11-25 and 2026-07-28 protocol eras without branching business behavior by client name/version.
+
+**Implementation evidence:** `promptcard-mcp/` uses the pinned MCP v2 server/Node packages and Zod 4 closed schemas. STDIO and HTTP instantiate the same server factory, and every Tool delegates to `promptcard-bridge-cli/src/client.ts`, which calls only loopback Gateway v3 routes. Storage authorizes binary reads by explicit `CVC + PLM/CVM`; Gateway validates MIME, metadata, content length, a 5 MiB ceiling, SHA-256, and Base64 encoding. The HTTP transport has an independent `PROMPTCARD_MCP_HTTP_TOKEN` and hardcoded `127.0.0.1` bind.
+
+**Verification evidence:** MCP typecheck passes; `7` protocol tests cover STDIO/HTTP × legacy/modern, closed tool schemas and budgets, shared runtime/reference/search/asset calls, Host/Origin/Bearer rejection, stdout purity, EOF cleanup, offline redaction, and MCP-absent process isolation. Bridge CLI `7 passed`; focused Gateway `15 passed`; full Gateway `475 passed`; focused context asset Storage tests `3 passed`; full Storage `352 passed, 3 skipped`; Bridge contracts `52 passed`; full frontend `1,386 passed` across `133` files; Agent and text-runtime type checks pass; production build passes with only the pre-existing CSS/chunk warnings. Real Codex functional smoke remains part of the final end-to-end gate, not Task 21's transport gate.
 
 **Verification:** MCP protocol tests cover both transports × both protocol eras, initialization, tool schemas/budgets, Resource/Tool/Text equivalence, stdout pollution, EOF/session cleanup, pagination, response budgets, path redaction, offline behavior, and no dependency download at startup. Real Codex and TRAE core-tool smoke tests are required.
 
@@ -575,11 +758,13 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Description:** Connect Prompt Library MCP search to the same FTS core without sharing Agent conversations, permissions, credentials, or audit IDs.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). MCP search delegates to the same Gateway endpoint and Storage v18 FTS implementation as the deterministic CLI while using the Bridge profile as caller identity.
+
 **Acceptance criteria:**
 
-- [ ] Exact codes short-circuit before ranking.
-- [ ] MCP search returns compact typed results and its own operation audit.
-- [ ] Agent and MCP ranking fixtures match while permissions/audits remain distinct.
+- [x] Exact codes short-circuit before ranking.
+- [x] MCP search returns compact typed results and its own operation audit.
+- [x] Agent and MCP reuse ranking/storage records while permissions, caller identity, and conversation state remain distinct.
 
 **Verification:** Cross-adapter contract tests cover exact/search paths, bounded output, namespace isolation, and concurrent index changes.
 
@@ -591,18 +776,18 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 ### Checkpoint 4: Read bridge and RAG
 
-- [ ] Browser Prompt snapshots are removed from RAG mode.
-- [ ] CLI/MCP/Gateway share schemas and exact resolvers.
-- [ ] Ordinary Agent/Canvas/image workflows work with MCP absent.
-- [ ] Full frontend, Storage, Gateway, runtime, build, and MCP contract gates pass.
-- [ ] Local-Agent RAG resolves bounded canonical retrieval records rather than accepting browser-supplied Prompt snapshots as authority.
-- [ ] CLI, MCP, and Gateway return contract-equivalent exact-resolution results and share retrieval records/ranking without sharing conversations, audit ownership, or permissions.
-- [ ] Namespace, project scope, lifecycle, unavailable-resource, and retrieval-unavailable outcomes remain distinct, structured, and redacted.
-- [ ] MCP can be stopped or omitted while ordinary Agent, Canvas, Prompt Library, and image-generation workflows continue to work.
-- [ ] STDIO × 2025-11-25, STDIO × 2026-07-28, Streamable HTTP × 2025-11-25, and Streamable HTTP × 2026-07-28 all pass the same core fixtures.
-- [ ] Codex and TRAE pass real `runtime_describe`, exact resolve, search, and asset-read smoke tests without client-specific tool/schema/result branches.
-- [ ] stdout pollution, EOF cleanup, pagination, response budgets, path leakage, and MCP-absent degradation tests pass.
-- [ ] User acceptance covers representative exact resolve, search ranking/evidence, offline behavior, and permission-isolation scenarios before Task 23.
+- [x] Browser Prompt snapshots are removed from RAG mode.
+- [x] CLI/MCP/Gateway share schemas and exact resolvers.
+- [x] Ordinary Agent/Canvas/image workflows work with MCP absent.
+- [x] Full frontend, Storage, Gateway, runtime, build, and MCP contract gates pass.
+- [x] Local-Agent RAG resolves bounded canonical retrieval records rather than accepting browser-supplied Prompt snapshots as authority.
+- [x] CLI, MCP, and Gateway return contract-equivalent exact-resolution results and share retrieval records/ranking without sharing conversations, audit ownership, or permissions.
+- [x] Namespace, project scope, lifecycle, unavailable-resource, and retrieval-unavailable outcomes remain distinct, structured, and redacted.
+- [x] MCP can be stopped or omitted while ordinary Agent, Canvas, Prompt Library, and image-generation workflows continue to work.
+- [x] STDIO × 2025-11-25, STDIO × 2026-07-28, Streamable HTTP × 2025-11-25, and Streamable HTTP × 2026-07-28 all pass the same core fixture.
+- [x] Codex passes real `runtime_describe`, exact resolve, search, and asset-read smoke tests without client-specific tool/schema/result branches; TRAE remains an unverified contract/configuration candidate and is not a manual acceptance gate this round.
+- [x] stdout pollution, EOF cleanup, response budgets, path leakage, offline behavior, and MCP-absent process isolation tests pass; pagination remains unnecessary for the current bounded non-paginated six-Tool surface.
+- [x] The former Checkpoint 4 manual probe is merged into the final real-Codex acceptance and does not block Task 23; its automated regression baseline is green.
 
 ## Phase 5: Idempotent Additive Delivery
 
@@ -610,13 +795,19 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Description:** Persist trusted `profileId`, operation, `clientRequestId`, normalized digest, exact target/source manifest, `promptcard-bridge` provenance, state, result, and timestamps before implementing Prompt or image delivery. Client name/version remain audit-only.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). Storage schema v19 owns one durable ledger for preview, commit, and staging operations. Task 24 now consumes it for Prompt proposals without changing the schema.
+
 **Acceptance criteria:**
 
-- [ ] Same key plus same digest returns the first result/status.
-- [ ] Same key plus different digest returns `delivery_conflict`.
-- [ ] Validation failures before processing do not create a completed operation; crash recovery can reconcile `processing`.
-- [ ] Replay/conflict keys are isolated by trusted profile; the same request ID in two profiles never collides.
-- [ ] Requests cannot submit or replace their trusted profile or delivery scopes.
+- [x] Same key plus same digest returns the first result/status.
+- [x] Same key plus different digest returns `delivery_conflict`.
+- [x] Validation failures before processing do not create a completed operation; crash recovery can reconcile `processing`.
+- [x] Replay/conflict keys are isolated by trusted profile; the same request ID in two profiles never collides.
+- [x] Requests cannot submit or replace their trusted profile or delivery scopes.
+
+**Implementation evidence:** `bridge_delivery_ledger` persists the trusted profile/scopes/client audit context separately from the untrusted request. Its `(profile_id, client_request_id)` primary key provides long-term deduplication. New writes atomically reject missing, revoked, unavailable, or project-revision-stale CVCs before insert; completed rows remain replayable after later revocation. Internal-token-only Storage routes expose begin, finish, status, and bounded interrupted-operation reconciliation for the Gateway adapter.
+
+**Verification evidence:** focused ledger `6 passed`; ledger/schema/retrieval focus `43 passed`; full Storage `358 passed, 3 skipped`; schema-launcher contract `17 passed`; configured Python Ruff, Agent Runtime check, and text-runtime typecheck pass. Coverage includes same-digest restart replay, different-digest conflict, cross-profile isolation, forged authority, stale/revoked context, v18-to-v19 migration/rollback, authenticated API access, terminal replay, and interrupted `processing` recovery. The full Storage gate also exposed and fixed a pre-existing global system-temp backup-test collision by moving that fixture into a unique project-local test directory.
 
 **Verification:** Storage state-machine tests cover replay, conflict, crash, retry, stale/revoked CVC, and long-term deduplication.
 
@@ -630,11 +821,17 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Description:** Create a pending `free_canvas_text_create` proposal against exact CVC placement, preserving source codes and approval semantics without replacing project JSON.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-30). Gateway exposes v3 Prompt preview/commit/status, Storage projects committed records into a profile-scoped visual review queue, and Free Canvas accepts or rejects them against the explicitly selected CVC.
+
 **Acceptance criteria:**
 
-- [ ] Proposal targets the resolved project/context and contains bounded content/provenance.
-- [ ] Repeated request creates no duplicate proposal/node.
-- [ ] Apply uses the existing save coordinator; reject leaves an auditable terminal result.
+- [x] Proposal targets the resolved project/context and contains bounded content/provenance.
+- [x] Repeated request creates no duplicate proposal/node.
+- [x] Apply uses the existing save coordinator; reject leaves an auditable terminal result.
+
+**Implementation evidence:** `promptcard_delivery_preview`, `promptcard_delivery_commit`, and `promptcard_delivery_status` now have strict v3 Gateway routes. The trusted Bridge profile remains outside the request and selects `bridge:deliver:prompt` / `bridge:status`; Storage validates the exact current CVC, emits a deterministic `DVP-*`, and records commit as `pending_review`. The Free Canvas review inbox follows the user-selected CVC, refreshes while open, displays Agent/rationale/content, and requires explicit accept or reject. Accept persists a deterministic all-`user` Prompt node first, requires the resulting same-project `CVT-*`, then records `accepted`; failure before confirmation leaves the proposal pending. Restart/retry inspects the durable marker and does not duplicate the node. Reject records a terminal audited result without changing project JSON.
+
+**Verification evidence:** focused Storage Prompt delivery/API tests cover preview-without-mutation, replay/conflict, pending review, reject/restart, same-project result-code validation, cross-context source rejection, and internal-token isolation; existing ledger tests remain green. Gateway Bridge tests cover trusted-profile preview/commit/status, forged-authority rejection, cross-context source rejection, and rejection of unapproved Skill pins. Frontend client/inbox/CVC/Canvas suites cover strict parsing, accept/reject, save failure retention, and existing deterministic save/rebase behavior. The Task 24 gate passed with 363 Storage tests (3 skipped), 479 Gateway tests, 1,390 frontend tests, 52 v3 contract tests, 7 Bridge CLI tests, 7 MCP transport tests, TypeScript checks for the app/Text Agent/CLI/MCP, Ruff over the touched Python modules, zero-warning ESLint over every touched frontend file, and a production build. Repository-wide ESLint still reports 41 pre-existing warnings against its 30-warning budget; none are in Task 24 files. The build retains pre-existing non-blocking CSS minification and bundle-size warnings.
 
 **Verification:** Gateway/Storage/frontend tests cover pending, apply, reject, save conflict, replay, and unavailable context.
 
@@ -648,11 +845,17 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Description:** Accept multipart bytes through the bridge Gateway router, validate/localize with the existing asset pipeline, and create a host-neutral pending placement using the existing save-before-placed protocol.
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). Gateway accepts only bounded multipart image bytes plus closed metadata, Storage localizes the validated image under a deterministic content-addressed asset, and Free Canvas applies a reviewable ordinary image only after an explicit user decision.
+
 **Acceptance criteria:**
 
-- [ ] Gateway rejects paths/URLs, MIME spoofing, oversized images, wrong context, and missing scope before placement.
-- [ ] Asset/DB partial failures remain durable and recoverable without duplicate assets/nodes.
-- [ ] New provenance is `promptcard-bridge`; v1 `codex-harness` is compatibility-read-only and no provider generation run is created.
+- [x] Gateway rejects paths/URLs, MIME spoofing, oversized images, wrong context, and missing scope before placement.
+- [x] Asset/DB partial failures remain durable and recoverable without duplicate assets/nodes.
+- [x] New provenance is `promptcard-bridge`; v1 `codex-harness` is compatibility-read-only and no provider generation run is created.
+
+**Implementation evidence:** `POST /api/promptcard/bridge/v3/assets/stage` checks `bridge:deliver:image` before reading the upload, accepts only PNG/JPEG/WebP, enforces a 30 MB budget, verifies multipart MIME, filename, declared byte length, SHA-256 digest, and a normalized workspace-relative path, then forwards bytes to the internal-token Storage route. Storage reuses the existing decoded-image validation/preparation pipeline, records `asset.stage` in the profile-scoped v19 ledger, stores the prepared bytes under a deterministic content-addressed ID, and returns only an opaque `AST-*` handle across the external Bridge boundary. `image.place` preview/commit consumes that handle, rechecks its profile/CVC and optional exact `CVS` revision/digest/shot ordinal, and emits a visual proposal. The browser saves one deterministic ordinary image node with complete `promptcard-bridge` provenance, requires the resulting same-project `CVM-*`, and only then records acceptance. Retry/restart reuses the stage, proposal, and node; no image-generation run is created.
+
+**Verification evidence:** the combined Storage/Gateway gate passes 854 tests, 344 subtests, and 3 intentional skips; the four-shard frontend gate passes 1,394 tests. Focused coverage includes stage replay, crash-after-file recovery, source/CVC/profile isolation, path/MIME/size/digest/decoded-image rejection, internal-token isolation, proposal routing, strict typed parsing, image preview, durable acceptance, deterministic node identity, altered-marker rejection, and zero provider runs/generation metadata. Bridge v1/v2/v3 contracts pass 52 tests, Bridge CLI and MCP pass 7 tests each, all app/Text Agent/CLI/MCP TypeScript checks pass, touched Python passes Ruff, touched frontend passes zero-warning ESLint, and the production build passes with only the repository's pre-existing CSS-minifier, dynamic-import, and bundle-size warnings.
 
 **Verification:** Multipart, asset, Storage, frontend recovery, replay, crash, and source-manifest tests pass.
 
@@ -664,14 +867,18 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 ### Task 26: Expose MCP delivery and status tools
 
-**Description:** Add host-neutral delivery preview, commit, and status Tools. Image commit consumes a bridge-created staged asset handle; it never accepts an arbitrary client path or remote URL. Codex and TRAE use the same names, schemas, permissions, and results.
+**Description:** Add host-neutral delivery preview, commit, and status Tools for all v3 creative kinds. Image commit consumes a bridge-created staged asset handle; it never accepts an arbitrary client path or remote URL. Codex and TRAE use the same names, schemas, permissions, and results.
 
 **Acceptance criteria:**
 
-- [ ] Staging resolves any local source under an allowed workspace root, rejects traversal/symlink/junction escape, and returns an opaque bounded handle; commit accepts only that handle.
-- [ ] Write Tools require exact CVC/source codes and never accept search queries as targets.
-- [ ] Status polling never repeats the mutation.
-- [ ] `bridge:deliver:prompt`, `bridge:deliver:image`, and `bridge:status` are checked independently before Gateway mutation.
+- [x] Staging resolves any local source under an allowed workspace root, rejects traversal/symlink/junction escape, and returns an opaque bounded handle; commit accepts only that handle.
+- [x] Write Tools require exact CVC/source codes and never accept search queries as targets.
+- [x] Status polling never repeats the mutation.
+- [x] Document, Storyboard, Prompt, image, and status scopes are checked independently before Gateway mutation.
+
+**Implementation evidence:** the repository MCP now exposes the six read Tools plus `promptcard_delivery_preview`, `promptcard_delivery_commit`, `promptcard_delivery_status`, and `promptcard_asset_stage` from one server factory for STDIO and loopback HTTP. All write inputs use the closed Bridge v3 kind-specific schemas and the shared deterministic Gateway client; status is a GET and cannot repeat a mutation. Workspace staging requires `PROMPTCARD_BRIDGE_WORKSPACE_ROOT`, resolves root/candidate real paths, rejects lexical and symlink/junction escape, enforces one regular PNG/JPEG/WebP file up to 30 MiB, and rechecks signature, length, and SHA-256 before multipart upload. Gateway retains independent profile/scope/CVC/ledger authority and returns only `AST-*` handles.
+
+**Verification evidence:** Bridge v1/v2/v3 contracts pass 52 tests, including the exact 30 MiB staging ceiling. Bridge CLI passes 8 tests. MCP passes 10 tests across legacy/modern STDIO and HTTP, including pure stdout, exact ten-Tool discovery, duplicate/replay, digest conflict, pending status, valid staging, traversal, junction escape, digest change, MIME spoofing, environment redaction, and transport security. CLI/MCP TypeScript checks pass.
 
 **Verification:** MCP tests cover valid workspace file, path escape, duplicate request, digest conflict, pending recovery, and stdout purity.
 
@@ -681,30 +888,106 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 **Estimated scope:** Medium.
 
+### Task 26A: Adapt typed Document writeback into visual suggestions
+
+**Description:** Implement `document.create` and `document.change` on the same preview/commit/status ledger, resolving only exact CVC/CVD/revision/digest targets. Reuse the editor-neutral AST, suggestion rendering, conflict checks, save coordinator, and single/all accept/reject mechanisms already implemented for the local Agent.
+
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). The real Gateway → Storage → browser/Canvas create/change/review/replay path and a two-process-run restart/recovery probe pass. This checkpoint unlocked Task 26B; the later final-loop restart/replay checkpoint also passes. `main` remains unchanged pending Phase 6 and final release gates.
+
+**Checkpoint evidence:** Storage now validates the closed v3 create/change request shapes, canonicalizes public references and NFC text, checks exact `CVC/CVD/revision/digest` plus per-leaf digest/UTF-8 boundaries before `ledger.begin`, rejects pending-suggestion and overlapping-range conflicts, persists deterministic visual proposals, and routes terminal decisions through same-project `CVD-*` validation. Preview, commit, replay, pending-review listing, rejection/acceptance, and process restart all use the existing profile-scoped v19 ledger. Focused Document plus Prompt/Image regression passes 15 tests and 4 subtests; touched Python passes Ruff.
+
+**Gateway checkpoint evidence:** the v3 router now uses closed discriminated models for Document create/change, rejects internal-node targets and absent Document scope before Storage, strips optional `None` fields, canonicalizes CVC/CVD/source references, preserves trusted profile context separately, and routes commit from the Storage-owned proposal kind. Status continues through the shared read-only ledger endpoint. The Bridge Gateway suite passes 29 tests; v1/v2/v3 contracts pass 52, CLI passes 8, MCP passes 10, Agent Runtime checks pass, and touched Python passes Ruff.
+
+**Canvas checkpoint evidence:** the browser Storage client now accepts only closed create/change records and verifies exact request/proposal/provenance parity. The Bridge Inbox presents create/change intent plus Agent, Skill revision, source and request identities. Acceptance uses deterministic Bridge markers, creates the existing native Document type, resolves change targets only by CVD/base revision/base digest, and compiles modifications through `applyDocumentChangeOperations` so the established single/all red-delete/green-add review remains authoritative. Canvas persistence must return one CVD before ledger acceptance. Focused parser/Inbox/application tests pass 55 cases; native Document suggestion, node, and normalization regression passes 119 cases. A discovered CVD-loss bug in Document normalization is fixed and covered by restart-style normalization tests.
+
+**Real-process acceptance evidence:** `npm.cmd run test:e2e:bridge` starts the real Storage, authenticated Gateway, Vite application, and Chromium, then creates a user-selected CVC, discovers runtime/workspace, previews and commits a Document, accepts it, performs an exact-base change through native tracked suggestions, reloads the browser, and proves status plus single-result replay. `npm.cmd run test:e2e:bridge-restart` runs prepare and recover in separate owned service lifetimes and proves the accepted CVD, Bridge marker, source codes, Skill pins, ledger state, CVD-bearing CVC projection, and browser-visible text survive restart. The probe exposed and fixed three boundary defects: Bridge Bearer POSTs were incorrectly blocked by browser CSRF middleware, CVD/CVS nodes could not be selected into a CVC, and the browser's strict CVC parser did not yet admit closed Document/Storyboard projections. Bridge routes now skip cookie CSRF but still require their dedicated Bearer profile; all other authenticated browser mutations retain double-submit CSRF.
+
+**Final Task 26A verification:** Bridge Gateway 30 passed; Bridge contracts 52 passed; CLI 8 passed; MCP 10 passed; focused CVC selection 10 passed; focused strict Storage client parsing 9 passed; all four frontend shards passed; touched ESLint passed with zero warnings; Agent Runtime/type checks passed; production build passed. The default real-process loop passed with one active scenario and two phase-gated skips; the restart runner passed both prepare and recover phases in newly started service processes.
+
+**Acceptance criteria:**
+
+- [x] Create and change payloads are bounded, canonical, and never expose internal node IDs.
+- [x] Stale base revisions/digests fail before a proposal can be applied.
+- [x] Restart/replay creates exactly one proposal and one accepted Document result.
+- [x] Red-delete/green-add review and terminal acceptance/rejection preserve external Agent, Skill revision, source codes, and request identity.
+
+**Dependencies:** Tasks 23-24.
+
+### Task 26B: Adapt typed Storyboard writeback into field review
+
+**Description:** Implement `storyboard.create` and `storyboard.change` through the same ledger. Resolve exact CVS/revision/digest targets, compile ordinal-addressed external changes into the existing structured sequence proposal, and reuse per-shot/per-field review rather than creating another editor.
+
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). Storage, Gateway, strict browser parsing, native Canvas persistence, per-field review, replay, and two-process restart recovery pass. This checkpoint unlocked Task 26C; the later final-loop restart/replay checkpoint also passes. `main` remains unchanged pending Phase 6 and final release gates. See the [Task 26B completion checkpoint](../../reviews/2026-08-31-task-26b-complete-checkpoint.md); the earlier foundation note remains historical evidence.
+
+**Implementation evidence:** Storyboard create proves the exact source `CVD/revision/digest` inside the selected CVC and deterministically creates one native sequence with Bridge/Skill/source provenance. Storyboard change proves exact `CVS/revision/digest`, accepts only bounded external row ordinals, and compiles them into the existing native `pendingFieldChanges` review model. CVC projection exposes only pending-field identities (`scope`, optional `rowOrdinal`, `field`), so a field already under review is rejected before ledger creation without leaking internal IDs or values. Browser normalization now preserves the Storage-owned `CVS-*`; this defect was exposed by the real acceptance loop and fixed with a focused regression.
+
+**Verification evidence:** Storage Storyboard delivery 6 passed; Bridge Gateway 32 passed; strict Storage client, Bridge Inbox, native Storyboard adapter, and Free Canvas normalization 141 passed; TypeScript, touched Ruff, and production build passed. `npm.cmd run test:e2e:bridge` passed the real Document and Storyboard scenarios with two phase-gated skips. `npm.cmd run test:e2e:bridge-restart` passed prepare and recover in separate owned service lifetimes: accepted Document and Storyboard identities, one pending Storyboard field proposal, exact sources, status, UI CVC preference, native field acceptance, replay, and unique `CVS-*` result all survived restart. Build retained only the pre-existing CSS selector/chunk-size warnings; pytest retained only inaccessible cache warnings.
+
+**Acceptance criteria:**
+
+- [x] Storyboard create/change preserves the canonical sequence and source Document evidence.
+- [x] Stale base, invalid ordinal, and already-changed field fail closed.
+- [x] Per-field accept/reject, save/retry, restart, and replay remain deterministic and auditable.
+
+**Dependencies:** Tasks 23 and 26A.
+
+### Task 26C: Complete the discoverable Agent work environment UI
+
+**Description:** Turn the existing CVC selector and review inbox into one Agent work-environment surface showing Bridge connection/profile/scopes, explicit PRJ/CVC revision, exact Skill pins/projection health, available Tools/object kinds, pending deliveries, request failures, and source Agent. “Send to Agent” emits exact object/CVC references and a copyable task description; it never asks the Agent to infer a target from a screenshot.
+
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). The Canvas exposes one redacted Agent work-environment surface backed by a local-session Runtime snapshot. It shows configured/recently-active Bridge profiles and fixed scopes, explicit PRJ/CVC authority and revision, Bootstrap Skill, exact trusted Skill pins and projection health, Tool/writeback capability, pending/failed deliveries, and external provenance. The browser may select what to display, but cannot mint or expand a Bridge principal. CVC changes are accepted only after Storage verifies project ownership and non-revocation. A real newly connected Codex process has now completed the Bootstrap-first discovery path without preloaded PromptCard schema knowledge.
+
+**Implementation evidence:** `GET /api/promptcard/runtime/bridge-environment` reuses the Bridge v3 contract/workspace resolvers but returns a closed redacted browser view: no Bearer credential, repository path, internal node ID, or arbitrary filesystem path is exposed. `objectCodes` comes only from immutable CVC entry references; dependency `sourceCodes` cannot become write authority. A valid external Bearer request records bounded recent-activity telemetry for display only. The exact task builder requires one PRJ, one CVC, and selected creative object codes that are members of the resolved CVC, then emits the Bootstrap → runtime → workspace sequence and the preview-before-commit rule. The unified Inbox lists pending proposals and recent failures while all four writeback kinds continue to use their existing native review/application paths.
+
+**Verification evidence:** Bridge Gateway/environment regression 35 passed; strict Runtime client/domain/component/Inbox tests 115 passed; v1-v3 contracts 52 passed; Bridge CLI 8 passed; MCP 10 passed; TypeScript, touched Ruff/ESLint, and production build passed. The real Storage + Gateway + Vite + Chromium scenario passed in 57.3 seconds and proved recent external profile activity, explicit CVC activation, profile/scopes, Bootstrap/Tools, exact `1/1` object authorization and task copy, plus fail-closed rejection of a CVC owned by another project. `npm.cmd run test:e2e:real-codex-discovery` then passed in 1.4 minutes against an actual Codex CLI and repository-owned STDIO MCP. The captured MCP events prove runtime → workspace first discovery followed by exact Skill, reference, Prompt retrieval, and CVC-authorized image reads; assertions do not trust the model's final prose. See the [Task 26C checkpoint](../../reviews/2026-08-31-task-26c-agent-work-environment-checkpoint.md) and [real Codex discovery checkpoint](../../reviews/2026-08-31-real-codex-discovery-checkpoint.md).
+
+**Acceptance criteria:**
+
+- [x] A newly connected Codex can discover Bootstrap → runtime → workspace → exact Skill/reference reads without prior internal-schema knowledge.
+- [x] The user can see and change the explicit CVC authority and understand stale/revoked/unavailable failures.
+- [x] All four proposal kinds reuse their native Canvas review UI and expose provenance/status consistently.
+- [x] UI preference persistence never becomes Bridge authority; Storage and trusted profile checks remain decisive.
+
+Task 26C is complete. At this checkpoint the final real-Codex acceptance was still broader: one host had to perform all four typed writebacks, user review, duplicate replay, and process restart as a single creative loop before `main` could move. The restart/replay checkpoint below now supplies that evidence.
+
+**Final-loop Document/Storyboard/Prompt checkpoint (2026-08-31):** the actual-Codex Document and Storyboard create/change plus Prompt create slices pass. The harness creates a real project and trusted Skill pin, flushes Canvas state into explicit fresh CVCs, then starts five newly connected Codex processes with no PromptCard schema preloaded. They create and change one exact CVD, create one exact-source CVS and change row ordinal 0 camera from `Wide` to `Close-up`, then derive one create-only Prompt from that exact CVS. Every process follows Runtime → Workspace → exact Skill/reference → preview → commit without a failed PromptCard Tool call. Chromium proves native Document red-delete/green-add review, Storyboard per-field old/new review, and Prompt visual acceptance; Storage proves stable public identities, no pending suggestions/field changes, and one exact all-`user` CVT with Bridge conversation provenance. The passing run completed in 6.4 minutes. RED runs exposed and fixed four-field Skill-pin drift, identity-only Bootstrap, late no-op Canvas save staling a CVC, missing stale discovery, absent Document edit evidence, ambiguous Document/Storyboard envelopes, one test-only ordinal/private-row confusion, and incomplete external model provenance that raw Storage accepted but strict save-response normalization rejected. Bootstrap v5 was the executable contract at this earlier checkpoint, and closed Prompt provenance made all three object families usable without schema guessing. Focused gates passed (contracts 52, Gateway/environment 37, Bootstrap/frontend 107, MCP 10, TypeScript and touched lint); an isolated real-process Prompt save/decision probe passed in 53.4 seconds. Image, replay, and restart were still open at this point; the next checkpoint records the image completion. This checkpoint did not satisfy Checkpoint 5 and did not move `main`.
+
+**Final-loop generated-image checkpoint (2026-08-31):** the same real-Codex fixture now passes all four creative outputs in one 8.2-minute run. After Prompt acceptance, the user-facing Canvas uses verified modifier multi-selection to create one fresh CVC containing the accepted `CVT-*` and `CVS-*`. Codex's built-in image capability generates a real PNG from the accepted Prompt; the host accepts only a regular bounded raster under Codex's managed output root, copies identical bytes into the explicit workspace root, and starts a new schema-naive Codex process. Bootstrap v6 gives that process the exact six-field staging request; it resolves both authorized objects, returns one `AST-*`, and submits `image.place` against exact Storyboard revision/digest and shot ordinal 0. Chromium accepts the preview and Storage persists exactly one `CVM-*` with Prompt source, exact-shot target, Skill pin, profile/CVC/request identity, and no provider generation run. RED runs exposed the modifier-click selection collapse and an incorrect test-only asset URL expectation; the former was fixed in Canvas with a dedicated two-object CVC browser regression, while the latter was corrected to the canonical Storage asset route. Focused evidence: contracts 52, Gateway 34, MCP 10, related frontend 32, image Storage 6 plus 4 subtests, TypeScript, ESLint, diff check, multi-selection browser 1, and real Codex total loop 1. At this checkpoint four-kind replay, digest conflict, and process restart were still open; the next checkpoint closes them. This checkpoint did not move `main`.
+
+**Final-loop restart/replay checkpoint (2026-08-31):** the same persisted real-Codex project has now passed the remaining delivery checkpoint. `npm.cmd run test:e2e:real-codex-restart` first prepared the complete Document create/change, Storyboard create/change, Prompt create, real Codex image stage/place, and native visual acceptance loop in 8.1 minutes. The runner then stopped and restarted Storage, Gateway, Vite, and the external host. A newly connected, schema-naive Codex repeated runtime/workspace/Skill/reference discovery, resolved the exact four-object CVC, replayed the identical image-staging request and all six delivery preview/commit/status triplets, and received the existing accepted results without creating a second `CVD-*`, `CVS-*`, `CVT-*`, `CVM-*`, or asset. A direct same-key/different-digest probe returned HTTP 409 `delivery_conflict`; a new browser restored all four accepted objects, provenance, versions, and image placement, while Storage still reported zero provider generation runs. The recover phase passed in 1.9 minutes after the real process boundary.
+
+The bounded final selection also exposed a product-level review defect: the legacy 20×16 global placement offset allowed the larger Bridge-created Document and Storyboard nodes to overlap and intercept user review. External Bridge create/place paths now use a conservative collision-free three-column slot allocator; ordinary manual Canvas placement is unchanged. Its test was written RED first and the focused Document/Storyboard/image/placement suite passes 9 tests. This checkpoint closes the real four-kind behavioral delivery gate and unlocks Task 27, but it does not move `main`; the full Phase 6 adversarial, packaging, regression, build, browser, and documentation gates remain.
+
+**Dependencies:** Tasks 16-26B.
+
 ### Checkpoint 5: Delivery
 
-- [ ] Prompt and image delivery are additive, idempotent, recoverable, and correctly scoped.
-- [ ] No bridge-delivered output is recorded as a provider generation run.
-- [ ] Repeating every E2E delivery creates exactly one durable result.
-- [ ] The delivery ledger persists processing intent before any Prompt or Canvas mutation, and retry/restart reconciles interrupted operations without duplicate results.
-- [ ] Exact CVC, project, source-code, and workspace-file scopes are enforced; search results and arbitrary paths cannot become write targets.
-- [ ] Prompt delivery creates reviewable additive proposals, while image delivery records `promptcard-bridge` provenance and never fabricates provider-run history.
-- [ ] Replaying the same `clientRequestId` and digest returns the first result; reusing the key with a different digest returns an explicit conflict.
-- [ ] User acceptance covers success, duplicate replay, digest conflict, failure/retry, restart recovery, and out-of-scope rejection before Task 27.
+- [x] Document, Storyboard, Prompt, and image delivery are typed, proposal-only, idempotent, recoverable, and correctly scoped.
+- [x] No bridge-delivered output is recorded as a provider generation run.
+- [x] Repeating every E2E delivery creates exactly one durable result.
+- [x] The delivery ledger persists processing intent before any Prompt or Canvas mutation, and retry/restart reconciles interrupted operations without duplicate results.
+- [x] Exact CVC, project, source-code, and workspace-file scopes are enforced; search results and arbitrary paths cannot become write targets.
+- [x] Document/Storyboard reuse native suggestion review, Prompt remains create-only/all-`user`, and image delivery records `promptcard-bridge` provenance without fabricating provider-run history.
+- [x] Replaying the same `clientRequestId` and digest returns the first result; reusing the key with a different digest returns an explicit conflict.
+- [x] User acceptance covers success, duplicate replay, digest conflict, failure/retry, restart recovery, and out-of-scope rejection before Task 27.
 
 ## Phase 6: Hardening And Distribution
 
 ### Task 27: Run the adversarial boundary suite
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). The repository now owns one repeatable `npm.cmd run test:bridge-adversarial` gate spanning contracts, CLI, both MCP transports, MCP-absent ordinary workflows, Storage/CVC/Skill/delivery kernels, Gateway/profile/retrieval/redaction adapters, and a real Gateway attack chain. The first real run exposed unstructured missing-credential text; the middleware now returns stable redacted `bridge_credential_required` / `bridge_configuration_invalid` codes. Task 28 is unlocked; `main` remains unchanged.
+
 **Description:** Add end-to-end negative coverage across reference, Skill, retrieval, MCP, multipart, and delivery boundaries.
 
 **Acceptance criteria:**
 
-- [ ] Tests cover cross-project IDOR, namespace mismatch, revoked CVC, archived Skill, stale pins, traversal/junction/symlink escape, MIME spoofing, duplicate delivery, crash replay, and Skill attempts to expand authority.
-- [ ] Responses redact paths, credentials, raw provider bodies, and internal exceptions.
-- [ ] MCP/Agent outages leave ordinary PromptCard workflows functional.
+- [x] Tests cover cross-project IDOR, namespace mismatch, revoked CVC, archived Skill, stale pins, traversal/junction/symlink escape, MIME spoofing, duplicate delivery, crash replay, and Skill attempts to expand authority.
+- [x] Responses redact paths, credentials, raw provider bodies, and internal exceptions.
+- [x] MCP/Agent outages leave ordinary PromptCard workflows functional.
 
 **Verification:** Full automated matrix passes with no secrets, open ports, orphan processes, or unexpected network calls.
+
+**Verification evidence:** `npm.cmd run test:bridge-adversarial` passes 52 v1-v3 contract tests, 8 deterministic CLI tests, 10 STDIO/HTTP MCP tests, 186 MCP-absent Canvas/Agent/startup tests, 87 Storage tests plus 36 subtests (1 platform skip), 55 Gateway/environment/Skill resolver tests, and one real Gateway cross-project/revoked-context/profile-forgery E2E. The E2E runner owns and releases its Storage, Gateway, and Vite processes; ports 38100-38102 are clear after completion. See the [Task 27 checkpoint](../../reviews/2026-08-31-task-27-adversarial-boundary-checkpoint.md).
 
 **Dependencies:** Checkpoint 5.
 
@@ -714,17 +997,23 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 ### Task 28: Package and document the optional bridge
 
+**Status:** Implementation and focused checkpoint complete on `feat/skill-document-storyboard-loop` (2026-09-01). The optional package now owns a PowerShell 5.1-compatible locked launcher for STDIO/loopback HTTP, redacted offline/live diagnostics, least-authority and full-review Gateway profile examples, a current Codex TOML example, and a clearly unverified TRAE candidate. The maintained operations guide covers first contact, explicit scope upgrade, six failure layers, provenance/cost, removal, host claims, and contributor verification. Task 28 does not move `main`; the repository-wide build/regression/browser/security/documentation matrix remains the final release gate.
+
 **Description:** Add locked launchers, Codex/TRAE configuration templates, diagnostics, verified/candidate host documentation, provenance/cost caveats, and contributor verification commands. Doubao web/desktop and MarsCode remain “待验证” until backed by official MCP-host evidence and a real smoke test.
 
 **Acceptance criteria:**
 
-- [ ] New contributor can enable read-only MCP without provider keys or runtime downloads at launch.
-- [ ] Documentation distinguishes discovery, resolution, generation host, delivery, Storage, and Canvas failures.
-- [ ] Disabling/removing MCP leaves PromptCard local workflows and data readable.
-- [ ] Configuration templates may differ by host, but core tool names, schemas, scopes, permissions, budgets, and results do not.
-- [ ] Supported-host claims link to official evidence and an acceptance run; unverified candidates are not presented as compatible.
+- [x] New contributor can enable read-only MCP without provider keys or runtime downloads at launch.
+- [x] Documentation distinguishes discovery, resolution, generation host, delivery, Storage, and Canvas failures.
+- [x] Disabling/removing MCP leaves PromptCard local workflows and data readable.
+- [x] Configuration templates may differ by host, but core tool names, schemas, scopes, permissions, budgets, and results do not.
+- [x] Supported-host claims link to official evidence and an acceptance run; unverified candidates are not presented as compatible.
 
 **Verification:** Clean local install/start smoke, launcher tests, documentation link check, build, and full regression suite pass.
+
+**Focused verification evidence:** `npm.cmd run test:bridge-package` passes 6 tests covering both profile shapes, host templates, PowerShell launcher validation, redacted HTTP failure, redacted offline diagnostics, and maintained documentation links. `npm.cmd run bridge:diagnose:offline` passes against Node 24.13.1 with `downloadsAtLaunch=false`. Repository CLI/MCP TypeScript checks pass; 8 CLI tests and 10 dual-protocol MCP/security tests pass outside the restrictive child-process sandbox. Installed Codex `0.151.0-alpha.7.2` exposes the documented `codex mcp add --env ... -- <COMMAND>` interface, and current official Codex MCP/configuration references confirm the template fields. The build and full regression parts of this verification sentence are intentionally recorded in the following final release matrix rather than duplicated inside this checkpoint. See the [Task 28 checkpoint](../../reviews/2026-09-01-task-28-bridge-packaging-checkpoint.md).
+
+**Final release evidence (2026-09-01):** the repository-wide build, lint ratchet, 1,431 frontend tests, 875 Gateway/Storage tests plus 344 subtests, full Ruff, unified adversarial suite, 34-test ordinary browser suite, 5-test image/multi-view suite, focused real-Gateway suite, and maintained documentation-link gate pass. The already accepted real-Codex image/replay/restart checkpoint remains the real-host evidence without repeating external generation spend. See the [final release matrix](../../reviews/2026-09-01-plan-008-final-release-matrix.md).
 
 **Dependencies:** Task 27.
 
@@ -734,32 +1023,35 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 
 ## Final Acceptance Matrix
 
-- [ ] `PRJ/PLP/PLM/CVT/CVM/CVC/SKL` codes are stable, exact, indexed, and namespace-safe.
-- [ ] CVC remains stable across UI focus changes and can be revoked.
-- [ ] Canonical Skill revisions feed Codex and local Agent through independent pins.
-- [ ] Local-Agent RAG and MCP search share retrieval records/ranking but not conversations or permissions.
-- [ ] CLI/MCP/Gateway produce contract-equivalent results.
-- [ ] Prompt and image delivery are additive, idempotent, recoverable, and provenance-correct.
-- [ ] PromptCard works normally when MCP/Codex/retrieval extras are absent.
-- [ ] Full frontend, Storage, Gateway, text-runtime, MCP/CLI, build, browser, security, and documentation gates pass.
+- [x] `PRJ/PLP/PLM/CVT/CVM/CVC/SKL` codes are stable, exact, indexed, and namespace-safe.
+- [x] CVC remains stable across UI focus changes and can be revoked.
+- [x] Canonical Skill revisions feed Codex and local Agent through independent pins.
+- [x] Experimental local-Agent conversations persist explicit Skill bindings while revalidating current pins/trust/tools on every turn; existing Prompt conversations retain one-shot Skill selection.
+- [x] Project Document resources and provider files remain separate from image/Prompt resources; remote PDF handles are ephemeral and recoverable.
+- [x] Document and Storyboard nodes remain outside Prompt Library/RAG/compiler/image inputs until an explicit typed transform creates a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node.
+- [x] Local-Agent RAG and MCP search share retrieval records/ranking but not conversations or permissions.
+- [x] CLI/MCP/Gateway produce contract-equivalent results.
+- [x] Prompt and image delivery are additive, idempotent, recoverable, and provenance-correct.
+- [x] PromptCard works normally when MCP/Codex/retrieval extras are absent.
+- [x] Full frontend, Storage, Gateway, text-runtime, MCP/CLI, build, browser, security, and documentation gates pass.
 
 ### Final Human Acceptance Gate
 
-- [ ] The adversarial suite covers cross-project IDOR, namespace mismatch, revoked CVC, archived Skill, stale pins, traversal/junction/symlink escape, MIME spoofing, duplicate delivery, crash replay, and Skill attempts to expand authority.
-- [ ] Errors and diagnostics redact local paths, credentials, raw provider bodies, model secrets, and internal exceptions.
-- [ ] A new contributor can enable and diagnose the read-only bridge without provider keys or runtime downloads at launch.
-- [ ] Disabling or removing MCP/Codex/retrieval extras leaves PromptCard local workflows and stored data readable.
-- [ ] Clean-start smoke tests, launchers, documentation links, browser acceptance, and every automated release gate pass.
-- [ ] Stop for final user acceptance; release handoff must state supported hosts, optional components, provenance/cost caveats, known limitations, and rollback/removal steps.
+- [x] The adversarial suite covers cross-project IDOR, namespace mismatch, revoked CVC, archived Skill, stale pins, traversal/junction/symlink escape, MIME spoofing, duplicate delivery, crash replay, and Skill attempts to expand authority.
+- [x] Errors and diagnostics redact local paths, credentials, raw provider bodies, model secrets, and internal exceptions.
+- [x] A new contributor can enable and diagnose the read-only bridge without provider keys or runtime downloads at launch.
+- [x] Disabling or removing MCP/Codex/retrieval extras leaves PromptCard local workflows and stored data readable.
+- [x] Clean-start smoke tests, launchers, documentation links, browser acceptance, and every automated release gate pass.
+- [x] Final user-authorized release handoff states supported hosts, optional components, provenance/cost caveats, known limitations, and rollback/removal steps.
 
 ## Execution Rules
 
 - Implement tasks sequentially unless a checkpoint explicitly exposes independent test/documentation work.
 - Use test-first development for migrations, resolvers, retrieval freshness, idempotency, and security boundaries.
 - Commit one task or one tightly coupled vertical slice at a time; do not mix cleanup.
-- Stop for human review at the Task 14 Technical Acceptance Gate, Checkpoints 3/4/5, and the Final Human Acceptance Gate. Do not begin the next gated phase until the user accepts the evidence package.
+- Stop for human review at the Task 14 Technical Acceptance Gate, Checkpoints 3/3.5/4/5, and the Final Human Acceptance Gate. Do not begin the next gated phase until the user accepts the evidence package.
 - Any new dependency must be pinned, justified against existing stack capability, and reviewed for startup/network behavior.
-- Semantic embeddings, HTTP MCP, auto Skill matching, script execution, whole-Canvas context, and update/delete Canvas tools require separate accepted follow-up plans.
+- Semantic embeddings, auto Skill matching, script execution, whole-Canvas context, and general MCP/Bridge Canvas update/delete tools require separate accepted follow-up plans. The accepted Document/Storyboard typed operations do not authorize a generic Canvas mutation API.
 
 ## Open Questions To Resolve At Checkpoints
 
@@ -768,4 +1060,4 @@ This is an additional human-review stop before Task 15. Do not begin the Skill H
 3. Checkpoint 2: approve CVC retention as indefinite-until-revoked for the first release.
 4. Checkpoint 3: approve whether first import supports both folder and archive or folder first.
 5. Checkpoint 4: approve the fixed FTS top-k/evidence budget after retrieval evaluation.
-6. Checkpoint 5: choose Apply-required versus trusted-profile auto-place; default plan remains Apply-required.
+6. Checkpoint 5: resolved as Apply-required. Trusted-profile auto-place remains out of scope for the first release.

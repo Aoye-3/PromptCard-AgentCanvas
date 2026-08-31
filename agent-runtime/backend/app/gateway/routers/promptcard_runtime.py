@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import StreamingResponse
 
@@ -15,6 +15,7 @@ from app.gateway.internal_auth import (
 from app.gateway.model_management.connection_store import ModelManagementError
 from app.gateway.model_management.credential_store import CredentialStoreError
 from app.gateway.promptcard_runtime import (
+    PromptCardAgentEditAckRequest,
     PromptCardConversationModelRequest,
     PromptCardInternalChatRequest,
     PromptCardMediaAnalysisRequest,
@@ -42,6 +43,18 @@ class PromptCardRuntimeMessageResponse(BaseModel):
 @router.get("/status")
 async def status(request: Request) -> dict[str, Any]:
     return await runtime_service.status(request)
+
+
+@router.get("/bridge-environment")
+async def bridge_environment(
+    request: Request,
+    project_code: str | None = Query(default=None, alias="projectCode"),
+    cvc_code: str | None = Query(default=None, alias="cvcCode"),
+    profile_id: str | None = Query(default=None, alias="profileId"),
+) -> dict[str, Any]:
+    return await runtime_service.bridge_environment(
+        request, project_code, cvc_code, profile_id
+    )
 
 
 @router.post("/bootstrap")
@@ -103,6 +116,36 @@ async def update_conversation_model(
         )
     except (ModelManagementError, CredentialStoreError, OSError) as exc:
         raise _model_http_error(exc) from None
+
+
+@router.post(
+    "/projects/{project_id}/conversations/{conversation_id}/edits/{edit_id}/ack"
+)
+async def acknowledge_document_edit(
+    project_id: str,
+    conversation_id: str,
+    edit_id: str,
+    body: PromptCardAgentEditAckRequest,
+) -> dict[str, Any]:
+    return await runtime_service.ack_document_edit(
+        project_id,
+        conversation_id,
+        edit_id,
+        body,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/conversations/{conversation_id}/edits/reconcile"
+)
+async def reconcile_document_edits(
+    project_id: str,
+    conversation_id: str,
+) -> dict[str, Any]:
+    return await runtime_service.reconcile_document_edits(
+        project_id,
+        conversation_id,
+    )
 
 
 @router.post("/media-analysis", response_model=PromptCardRuntimeMessageResponse)

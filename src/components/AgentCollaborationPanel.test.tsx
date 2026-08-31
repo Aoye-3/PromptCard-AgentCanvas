@@ -1,7 +1,26 @@
+import { startTransition } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentMessage, AgentWorkspaceContext, AgentWorkspaceProposal } from '@/models/Agent.model'
+import type { AgentCanvasEdit, AgentDocumentAttachment, AgentMessage, AgentWorkspaceContext, AgentWorkspaceProposal } from '@/models/Agent.model'
+import { sha256Utf8 } from '@/domain/documents/planning-document'
+
+const DOCUMENT_RESOURCE_A = 'a'.repeat(32)
+const DOCUMENT_RESOURCE_B = 'b'.repeat(32)
+
+const settleConversationSelection = async (renderer: ReactTestRenderer, ariaLabel = '加载实验会话') => {
+  await act(async () => {
+    renderer.root.findByProps({ 'aria-label': ariaLabel }).props.onClick()
+    for (let index = 0; index < 8; index += 1) await Promise.resolve()
+  })
+}
+
+const proposalApplyButton = (renderer: ReactTestRenderer) => (
+  renderer.root.findAllByType('button').find(button => button.children.includes('Apply'))!
+)
+const proposalRejectButton = (renderer: ReactTestRenderer) => (
+  renderer.root.findAllByType('button').find(button => button.children.includes('Reject'))!
+)
 
 const mocks = vi.hoisted(() => ({
   checkRuntime: vi.fn(),
@@ -9,8 +28,25 @@ const mocks = vi.hoisted(() => ({
   markProposalStatus: vi.fn(),
   init: vi.fn(),
   sessionError: undefined as string | undefined,
+  sessionConversationId: undefined as string | undefined,
+  retryRequest: undefined as undefined | {
+    requestId: string
+    content: string
+    conversationId: string
+    documentResourceIds: string[]
+    explicitDocumentNodeIds: string[]
+    documentAttachments: AgentDocumentAttachment[]
+  },
   messages: [] as AgentMessage[],
-  proposals: [] as AgentWorkspaceProposal[]
+  proposals: [] as AgentWorkspaceProposal[],
+  storedMessages: [] as Array<Record<string, unknown>>,
+  storedProposals: [] as unknown[],
+  storedTurns: [] as Array<Record<string, unknown>>,
+  hydrateSession: vi.fn(),
+  updateInteraction: vi.fn(),
+  updateProposal: vi.fn(),
+  reconcileDocumentEdits: vi.fn(),
+  updateConversationModel: vi.fn()
 }))
 
 vi.mock('@/stores/agent.store', () => ({
@@ -22,7 +58,9 @@ vi.mock('@/stores/agent.store', () => ({
       messages: mocks.messages,
       proposals: mocks.proposals,
       running: false,
-      runtimeError: mocks.sessionError
+      runtimeError: mocks.sessionError,
+      conversationId: mocks.sessionConversationId,
+      retryRequest: mocks.retryRequest
     }),
     skills: [{ id: 'SKL-tone', name: 'Tone Helper', source: 'external', trustState: 'trusted', toolDependencies: [] }],
     models: [{
@@ -38,8 +76,58 @@ vi.mock('@/stores/agent.store', () => ({
     checkRuntime: mocks.checkRuntime,
     sendMessage: mocks.sendMessage,
     markProposalStatus: mocks.markProposalStatus,
-    hydrateSession: vi.fn()
+    hydrateSession: mocks.hydrateSession
   })
+}))
+
+vi.mock('@/components/agent/AgentConversationMenu', () => ({
+  AgentConversationMenu: ({
+    activeConversationId,
+    onConversationChange
+  }: {
+    activeConversationId?: string
+    onConversationChange: (value: Record<string, unknown>) => void
+  }) => (
+    <div data-active-conversation-id={activeConversationId || ''}>
+      {[
+        ['conversation-experimental', '加载实验会话'],
+        ['conversation-b', '加载会话 B']
+      ].map(([id, label]) => (
+        <button
+          key={id}
+          type="button"
+          aria-label={label}
+          onClick={() => onConversationChange({
+            id, projectId: 'project-a',
+            entrypoint: 'workspace-chatbot-agent', mode: 'free-canvas-workspace', title: id,
+            status: 'active', createdAt: 1, updatedAt: 2,
+            modelBinding: {
+              connectionId: 'connection-chat', providerId: 'volcengine-ark', modelId: 'doubao-seed-2-0-lite-260215'
+            },
+            interactionMode: 'chat-experimental', boundSkillIds: ['SKL-tone'], revision: 4,
+            messages: mocks.storedMessages, proposals: mocks.storedProposals, turns: mocks.storedTurns
+          })}
+        >{label}</button>
+      ))}
+    </div>
+  )
+}))
+
+vi.mock('@/storage/storage-service-client', () => ({
+  storageServiceClient: {
+    agentConversations: {
+      updateProposal: mocks.updateProposal,
+      updateInteraction: mocks.updateInteraction
+    }
+  }
+}))
+
+vi.mock('@/services/agent-runtime-service', async importOriginal => ({
+  ...await importOriginal<typeof import('@/services/agent-runtime-service')>(),
+  agentRuntimeService: {
+    reconcileDocumentEdits: mocks.reconcileDocumentEdits,
+    updateConversationModel: mocks.updateConversationModel
+  }
 }))
 
 vi.mock('@/stores/preset.store', () => ({
@@ -51,6 +139,8 @@ vi.mock('@/stores/preset.store', () => ({
 }))
 
 import { AgentCollaborationPanel } from './AgentCollaborationPanel'
+import { AgentDocumentAttachments } from './agent/AgentDocumentAttachments'
+import { CanvasAgentComposer } from './agent/CanvasAgentComposer'
 
 const workspaceContext: AgentWorkspaceContext = {
   contextId: 'canvas-context',
@@ -65,12 +155,52 @@ const workspaceContext: AgentWorkspaceContext = {
   }
 }
 
+const promptHandoffProposal = (
+  id = 'handoff-1'
+): Extract<AgentWorkspaceProposal, { kind: 'free_canvas_text_create' }> => ({
+  kind: 'free_canvas_text_create', id, agentName: 'PromptCard Agent', status: 'pending',
+  createdAt: 1, title: 'Agent Prompt', userText: 'cinematic portrait', rationale: 'explicit handoff',
+  provenance: {
+    model: {
+      connectionId: 'connection-chat', providerId: 'volcengine-ark', modelId: 'doubao-seed-2-0-lite-260215',
+      displayName: 'Doubao Seed 2.0 Lite', capabilities: { input: ['text'], toolCalling: true }
+    },
+    skills: [{ skillId: 'SKL-tone', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
+  },
+  handoffBasis: {
+    kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 3,
+    storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1',
+    shotDigest: `sha256:${sha256Utf8('{"id":"shot-1"}')}`, shotText: '{"id":"shot-1"}'
+  }
+})
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 describe('AgentCollaborationPanel dense embedded mode', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.sessionError = undefined
+    mocks.sessionConversationId = undefined
+    mocks.retryRequest = undefined
     mocks.messages = []
     mocks.proposals = []
+    mocks.storedMessages = []
+    mocks.storedProposals = []
+    mocks.storedTurns = []
+    mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'idle', canvasEdits: [] })
+    mocks.updateConversationModel.mockResolvedValue({})
+    mocks.hydrateSession.mockImplementation((_sessionKey, session) => {
+      if (session.messages) mocks.messages = session.messages
+      if (session.proposals) mocks.proposals = session.proposals
+    })
   })
 
   it('uses a compact context strip and inline composer without the full-width send bar', () => {
@@ -96,6 +226,831 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     expect(markup).toContain('aria-label="对话模型"')
     expect(markup).toContain('Doubao Seed 2.0 Lite')
     expect(markup).not.toContain('>发送给 Agent</button>')
+  })
+
+  it('hydrates the experimental mode and persistent Skill binding copy', () => {
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByProps({ 'aria-label': 'Skill 选择' }).props.onClick())
+
+    expect(renderer.root.findByProps({ 'aria-label': 'Agent 交互模式' }).props.value)
+      .toBe('chat-experimental')
+    expect(JSON.stringify(renderer.toJSON())).toContain('对话模式【测试中】')
+    expect(JSON.stringify(renderer.toJSON())).toContain('本对话持续启用')
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('仅作用于下一条消息')
+    expect(mocks.hydrateSession).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        interactionMode: 'chat-experimental', boundSkillIds: ['SKL-tone'], revision: 4
+      })
+    )
+  })
+
+  it('filters malformed or legacy Prompt creates during experimental Storage hydration', async () => {
+    const valid = promptHandoffProposal('handoff-valid')
+    mocks.storedProposals = [
+      valid,
+      { ...valid, id: 'handoff-extra', browserTrusted: true },
+      { ...valid, id: 'handoff-missing', handoffBasis: undefined },
+      {
+        ...valid, id: 'handoff-basis-extra',
+        handoffBasis: { ...valid.handoffBasis!, browserTrusted: true }
+      },
+      {
+        ...valid, id: 'handoff-rewrite', handoffBasis: undefined, sourceNodeId: 'text-1',
+        basis: { baseNodeRevision: 1, templateDigest: `sha256:${'c'.repeat(64)}`, baseSegmentsDigest: `sha256:${'d'.repeat(64)}` }
+      }
+    ]
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    const calls = mocks.hydrateSession.mock.calls
+    expect(calls[calls.length - 1]?.[1].proposals)
+      .toEqual([expect.objectContaining({ id: 'handoff-valid' })])
+    expect(renderer.root.findAllByType('button').filter(button => button.children.includes('Apply'))).toHaveLength(1)
+  })
+
+  it('allows only one in-flight approval per conversation proposal and disables its button', async () => {
+    const pending = deferred<boolean | void>()
+    mocks.storedProposals = [promptHandoffProposal()]
+    const apply = vi.fn(() => pending.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={apply} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    const button = proposalApplyButton(renderer)
+    let first!: Promise<void>
+    await act(async () => {
+      first = button.props.onClick()
+      button.props.onClick()
+      await Promise.resolve()
+    })
+    expect(apply).toHaveBeenCalledOnce()
+    expect(proposalApplyButton(renderer).props.disabled).toBe(true)
+
+    await act(async () => {
+      pending.resolve(true)
+      await first
+    })
+    expect(mocks.updateProposal).toHaveBeenCalledOnce()
+  })
+
+  it('releases a failed approval guard for retry without leaking it to another conversation', async () => {
+    const first = deferred<boolean | void>()
+    mocks.storedProposals = [promptHandoffProposal('same-id')]
+    const apply = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={apply} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    const firstAttempt = proposalApplyButton(renderer).props.onClick()
+    await act(async () => {
+      first.reject(new Error('persist failed'))
+      await firstAttempt
+    })
+    expect(proposalApplyButton(renderer).props.disabled).toBe(false)
+    await act(async () => proposalApplyButton(renderer).props.onClick())
+    expect(apply).toHaveBeenCalledTimes(2)
+
+    await settleConversationSelection(renderer, '加载会话 B')
+    expect(proposalApplyButton(renderer).props.disabled).toBe(false)
+    await act(async () => proposalApplyButton(renderer).props.onClick())
+    expect(apply).toHaveBeenCalledTimes(3)
+  })
+
+  it('retries only the approval PATCH after Canvas persistence already succeeded', async () => {
+    mocks.storedProposals = [promptHandoffProposal('patch-retry')]
+    mocks.updateProposal
+      .mockRejectedValueOnce(new Error('PATCH failed'))
+      .mockResolvedValueOnce(undefined)
+    const apply = vi.fn().mockResolvedValue(true)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={apply} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    await act(async () => proposalApplyButton(renderer).props.onClick())
+    expect(proposalApplyButton(renderer).props.disabled).toBe(false)
+    await act(async () => proposalApplyButton(renderer).props.onClick())
+
+    expect(apply).toHaveBeenCalledOnce()
+    expect(mocks.updateProposal).toHaveBeenCalledTimes(2)
+    expect(mocks.markProposalStatus).toHaveBeenCalledOnce()
+  })
+
+  it('blocks Apply synchronously while Reject is in flight, then releases the terminal guard after rejection PATCH fails', async () => {
+    const rejecting = deferred<void>()
+    mocks.storedProposals = [promptHandoffProposal('reject-mutex')]
+    mocks.updateProposal.mockImplementationOnce(() => rejecting.promise)
+    const apply = vi.fn().mockResolvedValue(true)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={apply} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    const rejectingAttempt = proposalRejectButton(renderer).props.onClick()
+    proposalApplyButton(renderer).props.onClick()
+    expect(apply).not.toHaveBeenCalled()
+    expect(proposalApplyButton(renderer).props.disabled).toBe(true)
+    await act(async () => {
+      rejecting.reject(new Error('PATCH failed'))
+      await rejectingAttempt
+    })
+    expect(proposalApplyButton(renderer).props.disabled).toBe(false)
+  })
+
+  it('keeps Reject terminally blocked after Canvas persistence when approval PATCH fails', async () => {
+    mocks.storedProposals = [promptHandoffProposal('apply-mutex')]
+    mocks.updateProposal.mockRejectedValueOnce(new Error('PATCH failed'))
+    const apply = vi.fn().mockResolvedValue(true)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={apply} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    const staleReject = proposalRejectButton(renderer).props.onClick
+    await act(async () => proposalApplyButton(renderer).props.onClick())
+    expect(proposalRejectButton(renderer).props.disabled).toBe(true)
+    await act(async () => staleReject())
+    expect(mocks.updateProposal).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not let a stale Apply handler reverse a completed rejection', async () => {
+    mocks.storedProposals = [promptHandoffProposal('rejected-terminal')]
+    mocks.updateProposal.mockResolvedValueOnce(undefined)
+    const apply = vi.fn().mockResolvedValue(true)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(<AgentCollaborationPanel
+        title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+        onApplyWorkspaceProposal={apply} embedded
+      />)
+    })
+    await settleConversationSelection(renderer)
+    const staleApply = proposalApplyButton(renderer).props.onClick
+    await act(async () => proposalRejectButton(renderer).props.onClick())
+    await act(async () => staleApply())
+    expect(apply).not.toHaveBeenCalled()
+    expect(mocks.updateProposal).toHaveBeenCalledOnce()
+  })
+
+  it('forwards the explicit Storyboard transform selector only with the submitted experimental turn', async () => {
+    let renderer!: ReactTestRenderer
+    const props = {
+      title: 'Free Canvas Agent', mode: 'free-canvas-workspace' as const, workspaceContext,
+      onApplyWorkspaceProposal: vi.fn(), embedded: true
+    }
+    act(() => { renderer = create(<AgentCollaborationPanel {...props} />) })
+    await settleConversationSelection(renderer)
+    act(() => renderer.update(<AgentCollaborationPanel {...props} draftRequest={{
+      id: 'storyboard-create-document-1', content: 'Create a storyboard',
+      documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
+    }} />))
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Create a storyboard', [])
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      'Create a storyboard', [],
+      expect.objectContaining({
+        interactionMode: 'chat-experimental',
+        documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
+      })
+    )
+  })
+
+  it('forwards an explicit Prompt handoff only in the persisted experimental mode and consumes its authority once', async () => {
+    let renderer!: ReactTestRenderer
+    const props = {
+      title: 'Free Canvas Agent', mode: 'free-canvas-workspace' as const, workspaceContext,
+      onApplyWorkspaceProposal: vi.fn(), embedded: true
+    }
+    const basis = {
+      kind: 'storyboard-shot' as const, nodeId: 'storyboard-1', storyboardRevision: 3,
+      storyboardDigest: `sha256:${'a'.repeat(64)}`, rowId: 'shot-1', shotDigest: `sha256:${'b'.repeat(64)}`
+    }
+    act(() => { renderer = create(<AgentCollaborationPanel {...props} />) })
+    await settleConversationSelection(renderer)
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.update(<AgentCollaborationPanel {...props} draftRequest={{
+      id: 'prompt-handoff-shot-1', content: 'Create Prompt proposal',
+      documentWriteContext: { operationKind: 'prompt_handoff', basis }
+    }} />))
+    expect(renderer.root.findByProps({ 'aria-label': 'Agent 交互模式' }).props.value).toBe('chat-experimental')
+    await act(async () => renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Create Prompt proposal', []))
+    expect(mocks.sendMessage).toHaveBeenLastCalledWith(
+      'Create Prompt proposal', [],
+      expect.objectContaining({ interactionMode: 'chat-experimental', documentWriteContext: { operationKind: 'prompt_handoff', basis } })
+    )
+    await act(async () => renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Next turn', []))
+    expect(mocks.sendMessage.mock.calls[mocks.sendMessage.mock.calls.length - 1]?.[2])
+      .not.toHaveProperty('documentWriteContext')
+  })
+
+  it('replaces a one-draft Storyboard authority with a newer external draft that has no write context', async () => {
+    const baseProps = {
+      title: 'Free Canvas Agent', mode: 'free-canvas-workspace' as const, workspaceContext,
+      onApplyWorkspaceProposal: vi.fn(), embedded: true
+    }
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(<AgentCollaborationPanel {...baseProps} draftRequest={{
+        id: 'draft-with-authority', content: 'Create storyboard',
+        documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
+      }} />)
+    })
+    await settleConversationSelection(renderer)
+    act(() => renderer.update(<AgentCollaborationPanel {...baseProps} draftRequest={{
+      id: 'newer-plain-draft', content: 'Plain follow-up'
+    }} />))
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Plain follow-up', [])
+    })
+
+    expect(mocks.sendMessage.mock.calls[mocks.sendMessage.mock.calls.length - 1]?.[2])
+      .not.toHaveProperty('documentWriteContext')
+  })
+
+  it('clears one-turn write authority on session identity changes and after a failed send', async () => {
+    const props = {
+      title: 'Free Canvas Agent', mode: 'free-canvas-workspace' as const, workspaceContext,
+      onApplyWorkspaceProposal: vi.fn(), embedded: true,
+      draftRequest: {
+        id: 'draft-session-authority', content: 'Create storyboard',
+        documentWriteContext: { operationKind: 'storyboard_create' as const, documentNodeId: 'document-1' }
+      }
+    }
+    let renderer!: ReactTestRenderer
+    act(() => { renderer = create(<AgentCollaborationPanel {...props} sessionKey="session-a" />) })
+    await settleConversationSelection(renderer)
+    act(() => renderer.update(<AgentCollaborationPanel {...props} sessionKey="session-b" />))
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('After session switch', [])
+    })
+    expect(mocks.sendMessage.mock.calls[mocks.sendMessage.mock.calls.length - 1]?.[2])
+      .not.toHaveProperty('documentWriteContext')
+
+    act(() => renderer.update(<AgentCollaborationPanel {...props} sessionKey="session-b" draftRequest={{
+      ...props.draftRequest, id: 'draft-failing-authority'
+    }} />))
+    mocks.sendMessage.mockRejectedValueOnce(new Error('runtime failed'))
+    await act(async () => {
+      try {
+        await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Fail once', [])
+      } catch {
+        // The one-turn authority must be consumed even when the runtime rejects.
+      }
+    })
+    mocks.sendMessage.mockResolvedValueOnce({ proposals: [], canvasEdits: [] })
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Retry without stale authority', [])
+    })
+    expect(mocks.sendMessage.mock.calls[mocks.sendMessage.mock.calls.length - 1]?.[2])
+      .not.toHaveProperty('documentWriteContext')
+  })
+
+  it('reconciles one pending Document edit on conversation hydration and locks send until apply settles', async () => {
+    const pendingApply = deferred<boolean>()
+    const edit = {
+      kind: 'document_create' as const,
+      id: 'edit-reconcile', editId: 'edit-reconcile', conversationId: 'conversation-experimental',
+      requestId: 'request-reconcile', nodeId: 'document-reconcile',
+      expectedResultDigest: `sha256:${'a'.repeat(64)}`,
+      base: { projectRevision: 1 },
+      payload: { title: 'Recovered', blocks: [], linkedDocumentResourceIds: [] },
+      rationale: 'Recover the saved turn.'
+    }
+    mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'pending_apply', canvasEdits: [edit] })
+    const onApplyCanvasEdit = vi.fn(() => pendingApply.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={onApplyCanvasEdit} embedded
+        />
+      )
+    })
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(mocks.reconcileDocumentEdits).toHaveBeenCalledWith('project-a', 'conversation-experimental')
+    expect(onApplyCanvasEdit).toHaveBeenCalledWith(edit)
+    expect(renderer.root.findByType(CanvasAgentComposer).props.disabled).toBe(true)
+
+    await act(async () => { pendingApply.resolve(true); await pendingApply.promise })
+    expect(renderer.root.findByType(CanvasAgentComposer).props.disabled).toBe(false)
+  })
+
+  it('holds the target reconciliation barrier from the request through the recovered apply', async () => {
+    const pendingReconcile = deferred<{
+      status: 'pending_apply'
+      canvasEdits: AgentCanvasEdit[]
+    }>()
+    const pendingApply = deferred<boolean>()
+    const edit = {
+      kind: 'document_changes' as const,
+      id: 'edit-reconcile-barrier', editId: 'edit-reconcile-barrier',
+      conversationId: 'conversation-experimental', requestId: 'request-reconcile-barrier',
+      nodeId: 'document-reconcile', expectedResultDigest: `sha256:${'b'.repeat(64)}`,
+      base: { projectRevision: 1, nodeRevision: 2, nodeDigest: `sha256:${'a'.repeat(64)}` },
+      payload: { operations: [] }, rationale: 'Recover the saved edit before local changes.'
+    }
+    mocks.reconcileDocumentEdits.mockReturnValue(pendingReconcile.promise)
+    const onApplyCanvasEdit = vi.fn(() => pendingApply.promise)
+    const onDocumentReconcileStateChange = vi.fn()
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={onApplyCanvasEdit}
+          onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+        />
+      )
+    })
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: true
+    }))
+    expect(renderer.root.findByType(CanvasAgentComposer).props.disabled).toBe(true)
+    expect(onApplyCanvasEdit).not.toHaveBeenCalled()
+
+    await act(async () => {
+      pendingReconcile.resolve({ status: 'pending_apply', canvasEdits: [edit] })
+      await pendingReconcile.promise
+      await Promise.resolve()
+    })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: true, nodeId: 'document-reconcile'
+    }))
+    expect(onApplyCanvasEdit).toHaveBeenCalledWith(edit)
+
+    await act(async () => { pendingApply.resolve(true); await pendingApply.promise })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: false
+    }))
+  })
+
+  it('awaits the unique pending Document ledger target barrier before reconciliation starts', async () => {
+    const barrier = deferred<void>()
+    mocks.storedTurns = [
+      {
+        requestId: 'request-applied',
+        applyEdit: {
+          status: 'applied', kind: 'document_changes', nodeId: 'document-history',
+          conversationId: 'conversation-experimental', requestId: 'request-applied', editId: 'edit-applied',
+          expectedResultDigest: `sha256:${'a'.repeat(64)}`
+        }
+      },
+      {
+        requestId: 'request-pending',
+        applyEdit: {
+          status: 'pending_apply', kind: 'document_changes', nodeId: 'document-ledger-target',
+          conversationId: 'conversation-experimental', requestId: 'request-pending', editId: 'edit-pending',
+          expectedResultDigest: `sha256:${'b'.repeat(64)}`
+        }
+      }
+    ]
+    const onDocumentReconcileStateChange = vi.fn((state: {
+      projectId: string
+      conversationId: string
+      leaseId: string
+      pending: boolean
+      nodeId?: string
+    }) => state.pending ? barrier.promise : Promise.resolve())
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={vi.fn()}
+          onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+        />
+      )
+    })
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: true, nodeId: 'document-ledger-target'
+    }))
+    expect(mocks.reconcileDocumentEdits).not.toHaveBeenCalled()
+
+    await act(async () => {
+      barrier.resolve()
+      await barrier.promise
+      await Promise.resolve()
+    })
+    expect(mocks.reconcileDocumentEdits).toHaveBeenCalledWith('project-a', 'conversation-experimental')
+  })
+
+  it('releases the old conversation barrier when hydration switches during reconciliation', async () => {
+    const pendingOldReconcile = deferred<{ status: 'idle'; canvasEdits: [] }>()
+    mocks.reconcileDocumentEdits
+      .mockReturnValueOnce(pendingOldReconcile.promise)
+      .mockResolvedValueOnce({ status: 'idle', canvasEdits: [] })
+    const onDocumentReconcileStateChange = vi.fn()
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={vi.fn()}
+          onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+        />
+      )
+    })
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: true
+    }))
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载会话 B' }).props.onClick()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: false
+    }))
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-b',
+      leaseId: expect.any(String), pending: true
+    }))
+    expect(onDocumentReconcileStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-b',
+      leaseId: expect.any(String), pending: false
+    }))
+  })
+
+  it('keeps the old target locked when conversation switches after recovered apply starts', async () => {
+    const pendingApply = deferred<boolean>()
+    const edit = {
+      kind: 'document_changes' as const,
+      id: 'edit-switch-apply', editId: 'edit-switch-apply',
+      conversationId: 'conversation-experimental', requestId: 'request-switch-apply',
+      nodeId: 'document-reconcile', expectedResultDigest: `sha256:${'b'.repeat(64)}`,
+      base: { projectRevision: 1, nodeRevision: 2, nodeDigest: `sha256:${'a'.repeat(64)}` },
+      payload: { operations: [] }, rationale: 'Recover before switching.'
+    }
+    mocks.reconcileDocumentEdits
+      .mockResolvedValueOnce({ status: 'pending_apply', canvasEdits: [edit] })
+      .mockResolvedValueOnce({ status: 'idle', canvasEdits: [] })
+    const onDocumentReconcileStateChange = vi.fn()
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={() => pendingApply.promise}
+          onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+        />
+      )
+    })
+
+    await settleConversationSelection(renderer)
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: true, nodeId: 'document-reconcile'
+    }))
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '加载会话 B' }).props.onClick()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(onDocumentReconcileStateChange).not.toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental', pending: false
+    }))
+
+    await act(async () => {
+      pendingApply.resolve(true)
+      await pendingApply.promise
+      await Promise.resolve()
+    })
+    expect(onDocumentReconcileStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-a', conversationId: 'conversation-experimental',
+      leaseId: expect.any(String), pending: false
+    }))
+  })
+
+  it('keeps a reselected conversation generation leased until that generation finishes', async () => {
+    const firstApply = deferred<boolean>()
+    const secondApply = deferred<boolean>()
+    const edit = {
+      kind: 'document_changes' as const,
+      id: 'edit-reselected', editId: 'edit-reselected',
+      conversationId: 'conversation-experimental', requestId: 'request-reselected',
+      nodeId: 'document-reconcile', expectedResultDigest: `sha256:${'b'.repeat(64)}`,
+      base: { projectRevision: 1, nodeRevision: 2, nodeDigest: `sha256:${'a'.repeat(64)}` },
+      payload: { operations: [] }, rationale: 'Recover each selected generation safely.'
+    }
+    mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'pending_apply', canvasEdits: [edit] })
+    const onApplyCanvasEdit = vi.fn()
+      .mockReturnValueOnce(firstApply.promise)
+      .mockReturnValueOnce(secondApply.promise)
+    const activeLeases = new Set<string>()
+    const states: Array<Record<string, unknown>> = []
+    const onDocumentReconcileStateChange = vi.fn((state: Record<string, unknown>) => {
+      states.push(state)
+      if (state.pending) activeLeases.add(String(state.leaseId))
+      else activeLeases.delete(String(state.leaseId))
+    })
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={onApplyCanvasEdit}
+          onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+        />
+      )
+    })
+
+    await settleConversationSelection(renderer)
+    await settleConversationSelection(renderer)
+
+    expect(mocks.reconcileDocumentEdits).toHaveBeenCalledTimes(2)
+    const targetLeases = states.filter(state => state.pending && state.nodeId === 'document-reconcile')
+    expect(targetLeases).toHaveLength(2)
+    expect(targetLeases[0].leaseId).not.toBe(targetLeases[1].leaseId)
+    expect(targetLeases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ projectId: 'project-a', conversationId: 'conversation-experimental' })
+    ]))
+
+    await act(async () => { firstApply.resolve(true); await firstApply.promise; await Promise.resolve() })
+    expect(activeLeases).toEqual(new Set([targetLeases[1].leaseId as string]))
+
+    await act(async () => { secondApply.resolve(true); await secondApply.promise; await Promise.resolve() })
+    expect(activeLeases).toEqual(new Set())
+  })
+
+  it('never reconciles an active conversation against a different project and resumes its project lease on return', async () => {
+    const pendingProjectAApply = deferred<boolean>()
+    mocks.storedTurns = [{
+      requestId: 'request-project-a',
+      applyEdit: {
+        status: 'pending_apply', kind: 'document_changes', nodeId: 'document-reconcile',
+        conversationId: 'conversation-experimental', requestId: 'request-project-a',
+        editId: 'edit-project-a', expectedResultDigest: `sha256:${'b'.repeat(64)}`
+      }
+    }]
+    const edit = {
+      kind: 'document_changes' as const,
+      id: 'edit-project-a', editId: 'edit-project-a',
+      conversationId: 'conversation-experimental', requestId: 'request-project-a',
+      nodeId: 'document-reconcile', expectedResultDigest: `sha256:${'b'.repeat(64)}`,
+      base: { projectRevision: 1, nodeRevision: 2, nodeDigest: `sha256:${'a'.repeat(64)}` },
+      payload: { operations: [] }, rationale: 'Keep this edit scoped to project A.'
+    }
+    mocks.reconcileDocumentEdits
+      .mockResolvedValueOnce({ status: 'pending_apply', canvasEdits: [edit] })
+      .mockResolvedValueOnce({ status: 'idle', canvasEdits: [] })
+    const states: Array<Record<string, unknown>> = []
+    const onDocumentReconcileStateChange = vi.fn((state: Record<string, unknown>) => { states.push(state) })
+    const renderPanel = (context: AgentWorkspaceContext) => (
+      <AgentCollaborationPanel
+        title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={context}
+        onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={() => pendingProjectAApply.promise}
+        onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+      />
+    )
+    let renderer!: ReactTestRenderer
+    act(() => { renderer = create(renderPanel(workspaceContext)) })
+    await settleConversationSelection(renderer)
+
+    const projectBContext = { ...workspaceContext, projectId: 'project-b', projectTitle: 'Project B' }
+    await act(async () => {
+      renderer.update(renderPanel(projectBContext))
+      for (let index = 0; index < 4; index += 1) await Promise.resolve()
+    })
+    expect(mocks.reconcileDocumentEdits).not.toHaveBeenCalledWith('project-b', 'conversation-experimental')
+
+    await act(async () => {
+      renderer.update(renderPanel(workspaceContext))
+      for (let index = 0; index < 4; index += 1) await Promise.resolve()
+    })
+    expect(mocks.reconcileDocumentEdits.mock.calls).toEqual([
+      ['project-a', 'conversation-experimental'],
+      ['project-a', 'conversation-experimental']
+    ])
+    expect(states.filter(state => state.pending)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ projectId: 'project-a', conversationId: 'conversation-experimental' })
+    ]))
+    const projectATargetLeases = states.filter(state => (
+      state.pending && state.projectId === 'project-a' && state.nodeId === 'document-reconcile'
+    ))
+    expect(new Set(projectATargetLeases.map(state => state.leaseId)).size).toBe(2)
+
+    await act(async () => {
+      pendingProjectAApply.resolve(true)
+      await pendingProjectAApply.promise
+      await Promise.resolve()
+    })
+  })
+
+  it('keeps reconcile lease tokens unique across Panel remounts', async () => {
+    const firstApply = deferred<boolean>()
+    const secondApply = deferred<boolean>()
+    const edit = {
+      kind: 'document_changes' as const,
+      id: 'edit-remount', editId: 'edit-remount',
+      conversationId: 'conversation-experimental', requestId: 'request-remount',
+      nodeId: 'document-reconcile', expectedResultDigest: `sha256:${'b'.repeat(64)}`,
+      base: { projectRevision: 1, nodeRevision: 2, nodeDigest: `sha256:${'a'.repeat(64)}` },
+      payload: { operations: [] }, rationale: 'Keep remounted Panel generations independent.'
+    }
+    mocks.reconcileDocumentEdits.mockResolvedValue({ status: 'pending_apply', canvasEdits: [edit] })
+    const onApplyCanvasEdit = vi.fn()
+      .mockReturnValueOnce(firstApply.promise)
+      .mockReturnValueOnce(secondApply.promise)
+    const activeLeases = new Set<string>()
+    const targetLeaseIds: string[] = []
+    const onDocumentReconcileStateChange = vi.fn((state: Record<string, unknown>) => {
+      const leaseId = String(state.leaseId)
+      if (state.pending) activeLeases.add(leaseId)
+      else activeLeases.delete(leaseId)
+      if (state.pending && state.nodeId === 'document-reconcile' && !targetLeaseIds.includes(leaseId)) {
+        targetLeaseIds.push(leaseId)
+      }
+    })
+    const panel = (
+      <AgentCollaborationPanel
+        title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+        onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={onApplyCanvasEdit}
+        onDocumentReconcileStateChange={onDocumentReconcileStateChange} embedded
+      />
+    )
+    let firstRenderer!: ReactTestRenderer
+    act(() => { firstRenderer = create(panel) })
+    await settleConversationSelection(firstRenderer)
+    act(() => firstRenderer.unmount())
+
+    let secondRenderer!: ReactTestRenderer
+    act(() => { secondRenderer = create(panel) })
+    await settleConversationSelection(secondRenderer)
+
+    expect(targetLeaseIds).toHaveLength(2)
+    expect(targetLeaseIds[0]).not.toBe(targetLeaseIds[1])
+    await act(async () => { firstApply.resolve(true); await firstApply.promise; await Promise.resolve() })
+    expect(activeLeases).toEqual(new Set([targetLeaseIds[1]]))
+
+    await act(async () => { secondApply.resolve(true); await secondApply.promise; await Promise.resolve() })
+    expect(activeLeases).toEqual(new Set())
+    act(() => secondRenderer.unmount())
+  })
+
+  it('does not expose a failed conversation retry after switching conversations', () => {
+    mocks.sessionError = 'response lost'
+    mocks.retryRequest = {
+      requestId: 'request-a', content: 'continue A', conversationId: 'conversation-a',
+      documentResourceIds: [], explicitDocumentNodeIds: [], documentAttachments: []
+    }
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('使用原请求重试')
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('reuses the failed turn request ID and explicit Document identities', async () => {
+    mocks.retryRequest = {
+      requestId: 'request-document',
+      content: 'Discuss the document',
+      conversationId: 'conversation-experimental',
+      documentResourceIds: [DOCUMENT_RESOURCE_A],
+      explicitDocumentNodeIds: ['document-node-1'],
+      documentAttachments: [{
+        resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown',
+        size: 7, sha256: 'a'.repeat(64)
+      }]
+    }
+    const documentContext: AgentWorkspaceContext = {
+      ...workspaceContext,
+      snapshot: {
+        nodes: [{
+          id: 'document-node-1', kind: 'document', title: 'Creative brief', revision: 4, digest: 'digest-1'
+        }]
+      }
+    }
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={documentContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '使用原请求重试' }).props.onClick()
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      'Discuss the document',
+      [],
+      expect.objectContaining({
+        requestId: 'request-document',
+        documentResourceIds: [DOCUMENT_RESOURCE_A],
+        explicitDocumentNodeIds: ['document-node-1']
+      })
+    )
   })
 
   it('renders assistant Markdown as semantic conversation content', () => {
@@ -494,5 +1449,876 @@ describe('AgentCollaborationPanel dense embedded mode', () => {
     })
 
     expect(JSON.stringify(renderer.toJSON())).toContain('TXT-ABC123')
+  })
+
+  it('sends current document and explicit Document node IDs, clearing them only after success', async () => {
+    const documentContext: AgentWorkspaceContext = {
+      ...workspaceContext,
+      snapshot: {
+        nodes: [
+          ...(workspaceContext.snapshot.nodes as Array<Record<string, unknown>>),
+          { id: 'document-node-1', kind: 'document', title: 'Creative brief', revision: 4, digest: 'digest-1' }
+        ]
+      }
+    }
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={documentContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    const attachment = {
+      resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown' as const,
+      size: 7, sha256: 'a'.repeat(64)
+    }
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([attachment]))
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit(
+        'Discuss @Creative brief',
+        [{ nodeId: 'document-node-1', label: 'Creative brief' }]
+      )
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      'Discuss @Creative brief',
+      [],
+      expect.objectContaining({
+        documentResourceIds: [DOCUMENT_RESOURCE_A],
+        explicitDocumentNodeIds: ['document-node-1'],
+        documentAttachments: [attachment]
+      })
+    )
+    expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([])
+  })
+
+  it('retains current document selection after a failed send', async () => {
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    const attachment = {
+      resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown' as const,
+      size: 7, sha256: 'a'.repeat(64)
+    }
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([attachment]))
+    mocks.sessionError = 'runtime failed'
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Discuss the plan', [])
+    })
+
+    expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([attachment])
+  })
+
+  it('hydrates durable attachment audit as read-only history without preselecting it', () => {
+    mocks.storedMessages = [{
+      id: 'stored-user-message', role: 'user', text: 'Discuss the plan', createdAt: 1,
+      documentAttachments: [{
+        resourceId: DOCUMENT_RESOURCE_A, name: 'historic-plan.md', contentType: 'text/markdown', size: 7
+      }]
+    }]
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('historic-plan.md')
+    expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([])
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('does not carry a current document selection into another project identity', () => {
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([{
+      resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown',
+      size: 7, sha256: 'a'.repeat(64)
+    }]))
+
+    act(() => renderer.update(
+      <AgentCollaborationPanel
+        title="Free Canvas Agent"
+        mode="free-canvas-workspace"
+        workspaceContext={{ ...workspaceContext, projectId: 'project-b', projectTitle: 'Project B' }}
+        onApplyWorkspaceProposal={vi.fn()}
+        embedded
+      />
+    ))
+
+    expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([])
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [1, 'single-file upload'],
+    [3, 'batch upload']
+  ] as const)('disables and guards send during a %i-file upload (%s)', async (uploadingCount, _label) => {
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onUploadingChange(uploadingCount))
+
+    expect(renderer.root.findByType(CanvasAgentComposer).props.disabled).toBe(true)
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Do not send yet', [])
+    })
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('freezes an empty retry document snapshot instead of falling back to the current selection', async () => {
+    mocks.sessionError = 'response lost'
+    mocks.retryRequest = {
+      requestId: 'request-empty-documents',
+      content: 'Retry without documents',
+      conversationId: 'conversation-experimental',
+      documentResourceIds: [],
+      explicitDocumentNodeIds: [],
+      documentAttachments: []
+    }
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([{
+      resourceId: DOCUMENT_RESOURCE_B, name: 'current.md', contentType: 'text/markdown',
+      size: 8, sha256: 'b'.repeat(64)
+    }]))
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '使用原请求重试' }).props.onClick()
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      'Retry without documents',
+      [],
+      expect.objectContaining({
+        requestId: 'request-empty-documents',
+        documentResourceIds: [],
+        explicitDocumentNodeIds: [],
+        documentAttachments: []
+      })
+    )
+  })
+
+  it('deduplicates explicit Document mentions in first-use order and caps them at five', async () => {
+    const documentNodes = Array.from({ length: 6 }, (_, index) => ({
+      id: `document-node-${index + 1}`,
+      kind: 'document',
+      title: `Document ${index + 1}`,
+      revision: 1,
+      digest: `digest-${index + 1}`
+    }))
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={{ ...workspaceContext, snapshot: { nodes: documentNodes } }}
+          onApplyWorkspaceProposal={vi.fn()}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载实验会话' }).props.onClick())
+    const mentions = [
+      documentNodes[0], documentNodes[0], documentNodes[1], documentNodes[2],
+      documentNodes[3], documentNodes[4], documentNodes[5]
+    ].map(node => ({ nodeId: node.id, label: node.title }))
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Discuss documents', mentions)
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      'Discuss documents',
+      [],
+      expect.objectContaining({
+        explicitDocumentNodeIds: documentNodes.slice(0, 5).map(node => node.id)
+      })
+    )
+  })
+
+  it('shows a fixed post-send error without restoring attachments or runtime retry when Canvas apply throws', async () => {
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [],
+      canvasEdits: [{ id: 'edit-1', kind: 'free_canvas_text_create' }]
+    })
+    const applyCanvasEdit = vi.fn().mockRejectedValue(new Error('apply failed'))
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    act(() => renderer.root.findByType(AgentDocumentAttachments).props.onChange([{
+      resourceId: DOCUMENT_RESOURCE_A, name: 'plan.md', contentType: 'text/markdown',
+      size: 7, sha256: 'a'.repeat(64)
+    }]))
+    const composer = renderer.root.findByProps({ 'data-agent-composer': true })
+    act(() => composer.props.onInput({ currentTarget: { textContent: 'Apply edit' } }))
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+    })
+
+    expect(renderer.root.findByType(AgentDocumentAttachments).props.attachments).toEqual([])
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1)
+    expect(mocks.retryRequest).toBeUndefined()
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('使用原请求重试')
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('shows the post-send apply error when the explicit Storyboard direct-send handler returns false', async () => {
+    const storyboardEdit: AgentCanvasEdit = {
+      id: 'storyboard-edit-terminal', editId: 'storyboard-edit-terminal',
+      kind: 'storyboard_create', conversationId: 'conversation-experimental',
+      requestId: 'request-storyboard-terminal', nodeId: 'storyboard-terminal',
+      expectedResultDigest: `sha256:${'a'.repeat(64)}`, base: { projectRevision: 3 },
+      payload: {
+        title: 'Opening',
+        sequence: {
+          id: 'sequence-1', name: 'Opening', description: '', style: '', constraints: '',
+          rows: [{
+            id: 'row-1', cutLabel: '1', timeRange: '0-1s', subject: '', action: '', scene: '',
+            camera: '', lighting: '', audio: '', duration: '1s', createdAt: 1, updatedAt: 1
+          }],
+          createdAt: 1, updatedAt: 1, meta: {}
+        },
+        source: {
+          documentNodeId: 'document-1', documentRevision: 2,
+          documentDigest: `sha256:${'b'.repeat(64)}`, documentResourceDigests: [],
+          model: {
+            connectionId: 'connection-chat', providerId: 'volcengine-ark',
+            modelId: 'doubao-seed-2-0-lite-260215', displayName: 'Doubao Seed 2.0 Lite', capabilities: {}
+          },
+          skills: []
+        }
+      },
+      rationale: 'Explicit transform'
+    }
+    mocks.sendMessage.mockResolvedValueOnce({ proposals: [], canvasEdits: [storyboardEdit] })
+    const applyCanvasEdit = vi.fn().mockResolvedValue(false)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={applyCanvasEdit} embedded
+          draftRequest={{
+            id: 'storyboard-direct-terminal', content: 'Create storyboard',
+            documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: 'document-1' }
+          }}
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Create storyboard', [])
+    })
+
+    expect(applyCanvasEdit).toHaveBeenCalledWith(storyboardEdit)
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('does not treat an ordinary non-applicable Canvas edit as a terminal post-send failure', async () => {
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [], canvasEdits: [{ id: 'edit-not-applicable', kind: 'free_canvas_text_create' }]
+    })
+    const applyCanvasEdit = vi.fn().mockResolvedValue(false)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent" mode="free-canvas-workspace" workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()} onApplyCanvasEdit={applyCanvasEdit} embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    await act(async () => {
+      await renderer.root.findByType(CanvasAgentComposer).props.onSubmit('Try ordinary edit', [])
+    })
+
+    expect(applyCanvasEdit).toHaveBeenCalledOnce()
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('shows the same fixed post-send error when automatic workspace apply throws', async () => {
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [{
+        id: 'proposal-1', kind: 'workspace_card_update', agentName: 'PromptCard Agent',
+        updates: [{ cardId: 'card-1', content: 'Updated' }], rationale: 'Apply update',
+        status: 'pending', createdAt: 1
+      }],
+      canvasEdits: []
+    })
+    const applyWorkspaceProposal = vi.fn().mockRejectedValue(new Error('workspace apply failed'))
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={applyWorkspaceProposal}
+          autoApplyWorkspaceChanges
+          embedded
+        />
+      )
+    })
+    const composer = renderer.root.findByProps({ 'data-agent-composer': true })
+    act(() => composer.props.onInput({ currentTarget: { textContent: 'Apply workspace proposal' } }))
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+    })
+
+    expect(applyWorkspaceProposal).toHaveBeenCalledOnce()
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1)
+    expect(mocks.retryRequest).toBeUndefined()
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('使用原请求重试')
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('contains a rejected post-send apply from the actual retry button without another runtime turn', async () => {
+    mocks.retryRequest = {
+      requestId: 'request-apply-retry', content: 'Retry and apply',
+      conversationId: 'conversation-experimental', documentResourceIds: [],
+      explicitDocumentNodeIds: [], documentAttachments: []
+    }
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [],
+      canvasEdits: [{ id: 'edit-retry', kind: 'free_canvas_text_create' }]
+    })
+    const applyCanvasEdit = vi.fn().mockRejectedValue(new Error('retry apply failed'))
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '使用原请求重试' }).props.onClick()
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('does not show conversation A Canvas apply failure after switching to conversation B', async () => {
+    const pendingApply = deferred<boolean | void>()
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [],
+      canvasEdits: [{ id: 'edit-conversation-a', kind: 'free_canvas_text_create' }]
+    })
+    const applyCanvasEdit = vi.fn(() => pendingApply.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    const composer = renderer.root.findByProps({ 'data-agent-composer': true })
+    act(() => composer.props.onInput({ currentTarget: { textContent: 'Apply in conversation A' } }))
+    let submission!: Promise<void>
+    await act(async () => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(applyCanvasEdit).toHaveBeenCalledOnce()
+
+    await settleConversationSelection(renderer, '加载会话 B')
+    await act(async () => {
+      pendingApply.reject(new Error('conversation A apply failed'))
+      await submission
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('does not show conversation A workspace apply failure after switching to conversation B', async () => {
+    const pendingApply = deferred<boolean | void>()
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [{
+        id: 'proposal-conversation-a', kind: 'workspace_card_update', agentName: 'PromptCard Agent',
+        updates: [{ cardId: 'card-1', content: 'Updated' }], rationale: 'Apply update',
+        status: 'pending', createdAt: 1
+      }],
+      canvasEdits: []
+    })
+    const applyWorkspaceProposal = vi.fn(() => pendingApply.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={applyWorkspaceProposal}
+          autoApplyWorkspaceChanges
+          embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    const composer = renderer.root.findByProps({ 'data-agent-composer': true })
+    act(() => composer.props.onInput({ currentTarget: { textContent: 'Apply workspace in conversation A' } }))
+    let submission!: Promise<void>
+    await act(async () => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(applyWorkspaceProposal).toHaveBeenCalledOnce()
+
+    await settleConversationSelection(renderer, '加载会话 B')
+    await act(async () => {
+      pendingApply.reject(new Error('conversation A workspace apply failed'))
+      await submission
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('does not let an older apply failure overwrite a newer successful attempt in the same conversation', async () => {
+    const firstApply = deferred<boolean | void>()
+    mocks.sendMessage
+      .mockResolvedValueOnce({
+        proposals: [],
+        canvasEdits: [{ id: 'edit-old-attempt', kind: 'free_canvas_text_create' }]
+      })
+      .mockResolvedValueOnce({
+        proposals: [],
+        canvasEdits: [{ id: 'edit-new-attempt', kind: 'free_canvas_text_create' }]
+      })
+    const applyCanvasEdit = vi.fn()
+      .mockImplementationOnce(() => firstApply.promise)
+      .mockResolvedValueOnce(true)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Start old apply' }
+    }))
+    let firstSubmission!: Promise<void>
+    await act(async () => {
+      firstSubmission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(applyCanvasEdit).toHaveBeenCalledTimes(1)
+
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Start newer apply' }
+    }))
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+    })
+    expect(applyCanvasEdit).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      firstApply.reject(new Error('old apply failed'))
+      await firstSubmission
+    })
+
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('keeps the current Canvas apply attempt valid when the active conversation is reselected', async () => {
+    const pendingApply = deferred<boolean | void>()
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [],
+      canvasEdits: [{ id: 'edit-reselected-conversation', kind: 'free_canvas_text_create' }]
+    })
+    const applyCanvasEdit = vi.fn(() => pendingApply.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Apply after reselecting this conversation' }
+    }))
+    let submission!: Promise<void>
+    await act(async () => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(applyCanvasEdit).toHaveBeenCalledOnce()
+
+    await settleConversationSelection(renderer)
+    await act(async () => {
+      pendingApply.reject(new Error('current conversation Canvas apply failed'))
+      await submission
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('keeps the current workspace apply attempt valid when the active conversation is reselected', async () => {
+    const pendingApply = deferred<boolean | void>()
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [{
+        id: 'proposal-reselected-conversation', kind: 'workspace_card_update', agentName: 'PromptCard Agent',
+        updates: [{ cardId: 'card-1', content: 'Updated' }], rationale: 'Apply update',
+        status: 'pending', createdAt: 1
+      }],
+      canvasEdits: []
+    })
+    const applyWorkspaceProposal = vi.fn(() => pendingApply.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={applyWorkspaceProposal}
+          autoApplyWorkspaceChanges
+          embedded
+        />
+      )
+    })
+    await settleConversationSelection(renderer)
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Apply workspace after reselecting this conversation' }
+    }))
+    let submission!: Promise<void>
+    await act(async () => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(applyWorkspaceProposal).toHaveBeenCalledOnce()
+
+    await settleConversationSelection(renderer)
+    await act(async () => {
+      pendingApply.reject(new Error('current conversation workspace apply failed'))
+      await submission
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('drops an old apply failure after a new project and session identity commits', async () => {
+    const pendingApply = deferred<boolean | void>()
+    mocks.sendMessage.mockResolvedValueOnce({
+      proposals: [],
+      canvasEdits: [{ id: 'edit-old-committed-identity', kind: 'free_canvas_text_create' }]
+    })
+    const applyCanvasEdit = vi.fn(() => pendingApply.promise)
+    const changedWorkspaceContext: AgentWorkspaceContext = {
+      ...workspaceContext,
+      contextId: 'canvas-context-b',
+      projectId: 'project-b',
+      projectTitle: 'Project B'
+    }
+    const panel = (sessionKey: string, context: AgentWorkspaceContext) => (
+      <AgentCollaborationPanel
+        title="Free Canvas Agent"
+        mode="free-canvas-workspace"
+        sessionKey={sessionKey}
+        workspaceContext={context}
+        onApplyWorkspaceProposal={vi.fn()}
+        onApplyCanvasEdit={applyCanvasEdit}
+        embedded
+      />
+    )
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(panel('session-a', workspaceContext))
+    })
+    await settleConversationSelection(renderer)
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Apply before committed identity switch' }
+    }))
+    let submission!: Promise<void>
+    await act(async () => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+      await Promise.resolve()
+    })
+
+    act(() => renderer.update(panel('session-b', changedWorkspaceContext)))
+    expect(renderer.root.findByType(AgentCollaborationPanel).props.sessionKey).toBe('session-b')
+    await act(async () => {
+      pendingApply.reject(new Error('old committed identity apply failed'))
+      await submission
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('does not invalidate a committed apply attempt from an identity render that suspends before commit', async () => {
+    const reactActEnvironment = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean
+    }
+    const previousActEnvironment = reactActEnvironment.IS_REACT_ACT_ENVIRONMENT
+    reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true
+    try {
+      const pendingApply = deferred<boolean | void>()
+      const neverCommits = new Promise<never>(() => undefined)
+      mocks.sendMessage.mockResolvedValueOnce({
+        proposals: [],
+        canvasEdits: [{ id: 'edit-before-aborted-render', kind: 'free_canvas_text_create' }]
+      })
+      const applyCanvasEdit = vi.fn(() => pendingApply.promise)
+      const changedWorkspaceContext: AgentWorkspaceContext = {
+        ...workspaceContext,
+        contextId: 'canvas-context-uncommitted',
+        projectId: 'project-uncommitted',
+        projectTitle: 'Uncommitted Project'
+      }
+      const SuspendBeforeCommit = (): never => {
+        throw neverCommits
+      }
+      const ConcurrentIdentityHarness = ({
+        sessionKey,
+        context,
+        suspend
+      }: {
+        sessionKey: string
+        context: AgentWorkspaceContext
+        suspend: boolean
+      }) => (
+        <>
+          <AgentCollaborationPanel
+            title="Free Canvas Agent"
+            mode="free-canvas-workspace"
+            sessionKey={sessionKey}
+            workspaceContext={context}
+            onApplyWorkspaceProposal={vi.fn()}
+            onApplyCanvasEdit={applyCanvasEdit}
+            embedded
+          />
+          {suspend ? <SuspendBeforeCommit /> : null}
+        </>
+      )
+      let renderer!: ReactTestRenderer
+      await act(async () => {
+        renderer = create(
+          <ConcurrentIdentityHarness sessionKey="session-committed" context={workspaceContext} suspend={false} />,
+          { unstable_isConcurrent: true } as never
+        )
+      })
+      await settleConversationSelection(renderer)
+      act(() =>
+        renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+          currentTarget: {
+            textContent: 'Apply while another identity render aborts'
+          }
+        })
+      )
+      let submission!: Promise<void>
+      await act(async () => {
+        submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+        await Promise.resolve()
+      })
+
+      act(() => {
+        startTransition(() => {
+          renderer.update(
+            <ConcurrentIdentityHarness sessionKey="session-uncommitted" context={changedWorkspaceContext} suspend />
+          )
+        })
+      })
+      expect(renderer.root.findByType(AgentCollaborationPanel).props.sessionKey).toBe('session-committed')
+
+      await act(async () => {
+        pendingApply.reject(new Error('committed apply failed'))
+        await submission
+      })
+
+      expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+    } finally {
+      reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
+    }
+  })
+
+  it('migrates the current apply attempt to a durable new conversation identity', async () => {
+    const pendingApply = deferred<boolean | void>()
+    mocks.sendMessage.mockImplementationOnce(async () => {
+      mocks.sessionConversationId = 'conversation-created'
+      return {
+        proposals: [],
+        canvasEdits: [{ id: 'edit-created-conversation', kind: 'free_canvas_text_create' }]
+      }
+    })
+    const applyCanvasEdit = vi.fn(() => pendingApply.promise)
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Create durable conversation and apply' }
+    }))
+    let submission!: Promise<void>
+    await act(async () => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+      await Promise.resolve()
+    })
+    expect(renderer.root.findByProps({ 'data-active-conversation-id': 'conversation-created' })).toBeTruthy()
+
+    await act(async () => {
+      pendingApply.reject(new Error('current migrated apply failed'))
+      await submission
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
+  })
+
+  it('does not migrate a stale response to its durable conversation identity', async () => {
+    const pendingSend = deferred<{
+      proposals: AgentWorkspaceProposal[]
+      canvasEdits: Array<{ id: string; kind: 'free_canvas_text_create' }>
+    }>()
+    mocks.sendMessage.mockReturnValueOnce(pendingSend.promise)
+    const applyCanvasEdit = vi.fn().mockRejectedValue(new Error('stale response apply failed'))
+    let renderer!: ReactTestRenderer
+    act(() => {
+      renderer = create(
+        <AgentCollaborationPanel
+          title="Free Canvas Agent"
+          mode="free-canvas-workspace"
+          workspaceContext={workspaceContext}
+          onApplyWorkspaceProposal={vi.fn()}
+          onApplyCanvasEdit={applyCanvasEdit}
+          embedded
+        />
+      )
+    })
+    act(() => renderer.root.findByProps({ 'data-agent-composer': true }).props.onInput({
+      currentTarget: { textContent: 'Send before selecting another conversation' }
+    }))
+    let submission!: Promise<void>
+    act(() => {
+      submission = renderer.root.findByProps({ 'aria-label': '发送给 Agent' }).props.onClick()
+    })
+    act(() => renderer.root.findByProps({ 'aria-label': '加载会话 B' }).props.onClick())
+
+    mocks.sessionConversationId = 'conversation-created-from-stale-send'
+    await act(async () => {
+      pendingSend.resolve({
+        proposals: [],
+        canvasEdits: [{ id: 'edit-stale-created-conversation', kind: 'free_canvas_text_create' }]
+      })
+      await submission
+    })
+
+    expect(renderer.root.findByProps({ 'data-active-conversation-id': 'conversation-b' })).toBeTruthy()
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。')
   })
 })

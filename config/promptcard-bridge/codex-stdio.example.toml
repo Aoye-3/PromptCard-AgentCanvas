@@ -1,0 +1,22 @@
+# Copy this table into a trusted Codex config and replace the absolute path.
+# Keep PROMPTCARD_BRIDGE_URL and PROMPTCARD_BRIDGE_TOKEN in the launching
+# environment; do not commit a real token into this file.
+
+[mcp_servers.promptcard]
+command = "powershell.exe"
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "REPLACE_WITH_ABSOLUTE_REPOSITORY_PATH\\scripts\\start-promptcard-mcp.ps1", "-Transport", "stdio"]
+cwd = "REPLACE_WITH_ABSOLUTE_REPOSITORY_PATH"
+enabled = true
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+default_tools_approval_mode = "writes"
+env_vars = ["PROMPTCARD_BRIDGE_URL", "PROMPTCARD_BRIDGE_TOKEN"]
+enabled_tools = [
+  "promptcard_runtime_describe",
+  "promptcard_workspace_describe",
+  "promptcard_skill_read",
+  "promptcard_reference_resolve",
+  "promptcard_prompt_search",
+  "promptcard_asset_read"
+]

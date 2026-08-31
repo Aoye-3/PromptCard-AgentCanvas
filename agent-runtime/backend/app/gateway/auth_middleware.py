@@ -1,5 +1,6 @@
 """Small local-session gate for PromptCard's desktop runtime."""
 
+import time
 from collections.abc import Callable
 
 from fastapi import Request, Response
@@ -7,6 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
+from app.gateway.bridge_auth import BridgeConfigurationError, resolve_bridge_principal
 from app.gateway.internal_auth import (
     INTERNAL_AUTH_HEADER_NAME,
     is_valid_internal_auth_token,
@@ -28,6 +30,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         path = request.url.path.rstrip("/") or "/"
         if path in _PUBLIC_PATHS or any(path.startswith(prefix) for prefix in _PUBLIC_PREFIXES):
+            return await call_next(request)
+        if path.startswith("/api/promptcard/bridge/"):
+            try:
+                principal = resolve_bridge_principal(request.headers.get("authorization"))
+            except BridgeConfigurationError:
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": {"code": "bridge_configuration_invalid"}},
+                )
+            if principal is None:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": {"code": "bridge_credential_required"}},
+                )
+            request.state.bridge_principal = principal
+            activity = getattr(request.app.state, "bridge_profile_activity", None)
+            if not isinstance(activity, dict):
+                activity = {}
+                request.app.state.bridge_profile_activity = activity
+            activity[principal.profile_id] = int(time.time() * 1000)
             return await call_next(request)
         if is_valid_internal_auth_token(
             request.headers.get(INTERNAL_AUTH_HEADER_NAME)

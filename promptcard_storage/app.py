@@ -2,20 +2,28 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Any, Callable, Literal
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .assets import MAX_IMAGE_IMPORT_BYTES
+from .document_resources import (
+    DocumentTooLargeError,
+    DocumentValidationError,
+    document_size_limit,
+)
+from .delivery_ledger import BridgeDeliveryConflict, BridgeDeliveryValidationError
 from .reference_codes import ReferenceCodeError
 from .remote_images import RemoteImage, RemoteImageError, fetch_remote_image
 from .skill_importer import SkillPackageImportError, SkillPackageImportService
 from .skill_hosts import CodexProjectionAdapter, SkillHostConflict, SkillHostService
 from .store import (
+    AgentApplyEditConflict,
     AssetInUse,
     AssetValidationError,
     DeletedAsset,
@@ -34,6 +42,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.environ.get("PROMPTCARD_STORAGE_DATA_DIR", ROOT_DIR / "data"))
 SEED_FILE = ROOT_DIR / "public" / "prompt-library-presets.json"
 MAX_ASSET_UPLOAD_BYTES = 200 * 1024 * 1024
+INTERNAL_AUTH_HEADER_NAME = "X-PromptCard-Internal-Token"
 
 
 def load_seed_presets() -> list[dict[str, Any]]:
@@ -77,6 +86,47 @@ class PresetBatchPayload(BaseModel):
     presets: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class PromptRetrievalPayload(BaseModel):
+    query: str = Field(min_length=1, max_length=256)
+    types: list[str] = Field(default_factory=list, max_length=16)
+    categories: list[str] = Field(default_factory=list, max_length=16)
+    limit: int = Field(default=8, ge=1, le=20)
+    callerKind: Literal["bridge", "local-agent", "maintenance"]
+    callerId: str = Field(min_length=1, max_length=128)
+
+
+class BridgeDeliveryBeginPayload(BaseModel):
+    operationContext: dict[str, Any]
+    operation: Literal["delivery.preview", "delivery.commit", "asset.stage"]
+    deliveryRequest: dict[str, Any]
+
+
+class BridgeDeliveryFinishPayload(BaseModel):
+    profileId: str
+    normalizedRequestDigest: str
+    state: Literal["previewed", "pending_review", "accepted", "rejected", "failed"]
+    result: dict[str, Any]
+
+
+class BridgeDeliveryRecoveryPayload(BaseModel):
+    staleBeforeMs: int = Field(ge=0)
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class BridgePromptDeliveryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operationContext: dict[str, Any]
+    deliveryRequest: dict[str, Any]
+
+
+class BridgeDeliveryDecisionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accepted", "rejected"]
+    resultCodes: list[str] = Field(default_factory=list, max_length=32)
+
+
 class RecentCaptureRegistrationPayload(BaseModel):
     intent: Literal["initial", "analysis-derived"] = "initial"
     mode: str
@@ -99,10 +149,28 @@ class AgentConversationTurnPayload(AgentConversationProjectPayload):
     proposals: list[dict[str, Any]] = Field(default_factory=list)
     skillSnapshots: list[dict[str, Any]] = Field(default_factory=list)
     modelSnapshot: dict[str, Any] | None = None
+    applyEdit: dict[str, Any] | None = None
+
+
+class AgentApplyEditPayload(BaseModel):
+    editId: str
+    status: Literal[
+        "applied",
+        "failed_conflict",
+        "failed_integrity",
+        "failed_target_missing",
+    ]
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentConversationModelBindingPayload(BaseModel):
     modelBinding: dict[str, Any] | None = None
+
+
+class AgentConversationInteractionPayload(BaseModel):
+    interactionMode: Literal["prompt-edit", "chat-experimental"]
+    boundSkillIds: list[str] = Field(default_factory=list, max_length=8)
+    expectedRevision: int = Field(ge=1)
 
 
 class AgentProposalStatusPayload(AgentConversationProjectPayload):
@@ -129,6 +197,22 @@ class CodexProjectionRepairPayload(BaseModel):
     repositoryScope: str
     expectedRevision: int = Field(ge=1)
     expectedDigest: str
+
+
+class ProviderFileCleanupPayload(BaseModel):
+    providerId: str
+    connectionId: str
+    remoteFileId: str
+
+
+class ProviderFileCleanupSucceededPayload(BaseModel):
+    cleanupId: str
+
+
+class ProviderFileCleanupRetryPayload(BaseModel):
+    cleanupId: str
+    nextAttemptAt: int = Field(ge=0)
+    errorCode: str
 
 
 def create_app(
@@ -367,14 +451,50 @@ def create_app(
             conversation_id, project_id, payload.modelBinding
         ))
 
+    @application.patch("/api/projects/{project_id}/conversations/{conversation_id}/interaction")
+    def update_agent_conversation_interaction(
+        project_id: str,
+        conversation_id: str,
+        payload: AgentConversationInteractionPayload,
+    ) -> dict[str, Any]:
+        return _handle(lambda: storage.update_agent_conversation_interaction(
+            conversation_id,
+            project_id,
+            payload.interactionMode,
+            payload.boundSkillIds,
+            expected_revision=payload.expectedRevision,
+        ))
+
     @application.post("/api/agent-conversations/{conversation_id}/turns")
     def append_agent_conversation_turn(
         conversation_id: str,
         payload: AgentConversationTurnPayload,
+        request: Request,
     ) -> dict[str, Any]:
+        _require_internal_auth(request)
         return _handle(lambda: storage.append_agent_conversation_turn(
             conversation_id, payload.projectId, payload.model_dump(exclude={"projectId"})
         ))
+
+    @application.patch(
+        "/api/agent-conversations/{conversation_id}/turns/{request_id}/apply-edit"
+    )
+    def update_agent_apply_edit(
+        conversation_id: str,
+        request_id: str,
+        payload: AgentApplyEditPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(
+            lambda: storage.update_agent_apply_edit(
+                conversation_id,
+                request_id=request_id,
+                edit_id=payload.editId,
+                status=payload.status,
+                evidence=payload.evidence,
+            )
+        )
 
     @application.patch("/api/agent-conversations/{conversation_id}/proposals/{proposal_id}")
     def update_agent_proposal_status(
@@ -555,6 +675,249 @@ def create_app(
     def resolve_context_pack(cvc_code: str) -> dict[str, Any]:
         return _handle(lambda: storage.resolve_context_pack(cvc_code))
 
+    @application.get(
+        "/api/internal/context-packs/{cvc_code}/assets/{reference_code}"
+    )
+    def read_context_asset(
+        cvc_code: str,
+        reference_code: str,
+        request: Request,
+    ) -> FileResponse:
+        _require_internal_auth(request)
+        path, metadata = _handle(
+            lambda: storage.read_context_asset(cvc_code, reference_code)
+        )
+        return FileResponse(
+            path,
+            media_type=metadata["contentType"],
+            headers={
+                "X-File-Name": quote(metadata["filename"], safe=""),
+                "X-PromptCard-Reference-Namespace": metadata["reference"]["namespace"],
+                "X-PromptCard-Reference-Code": metadata["reference"]["code"],
+                "X-PromptCard-Asset-Size": str(metadata["size"]),
+            },
+        )
+
+    @application.post("/api/internal/bridge-deliveries/begin")
+    def begin_bridge_delivery(
+        payload: BridgeDeliveryBeginPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.begin_bridge_delivery(
+            payload.operationContext,
+            payload.operation,
+            payload.deliveryRequest,
+        ))
+
+    @application.post(
+        "/api/internal/bridge-deliveries/{client_request_id}/finish"
+    )
+    def finish_bridge_delivery(
+        client_request_id: str,
+        payload: BridgeDeliveryFinishPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.finish_bridge_delivery(
+            payload.profileId,
+            client_request_id,
+            payload.normalizedRequestDigest,
+            payload.state,
+            payload.result,
+        ))
+
+    @application.get("/api/internal/bridge-deliveries/{client_request_id}")
+    def get_bridge_delivery(
+        client_request_id: str,
+        profileId: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(
+            lambda: storage.get_bridge_delivery(profileId, client_request_id)
+        )
+
+    @application.post("/api/internal/bridge-deliveries/reconcile")
+    def reconcile_bridge_deliveries(
+        payload: BridgeDeliveryRecoveryPayload,
+        request: Request,
+    ) -> dict[str, int]:
+        _require_internal_auth(request)
+        return _handle(lambda: {
+            "recovered": storage.reconcile_bridge_deliveries(
+                payload.staleBeforeMs, limit=payload.limit
+            )
+        })
+
+    @application.post("/api/internal/bridge-prompt-deliveries/preview")
+    def preview_bridge_prompt_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.preview_bridge_prompt_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.post("/api/internal/bridge-prompt-deliveries/commit")
+    def commit_bridge_prompt_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.commit_bridge_prompt_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.post("/api/internal/bridge-document-deliveries/preview")
+    def preview_bridge_document_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.preview_bridge_document_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.post("/api/internal/bridge-document-deliveries/commit")
+    def commit_bridge_document_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.commit_bridge_document_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.post("/api/internal/bridge-storyboard-deliveries/preview")
+    def preview_bridge_storyboard_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.preview_bridge_storyboard_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.post("/api/internal/bridge-storyboard-deliveries/commit")
+    def commit_bridge_storyboard_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.commit_bridge_storyboard_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.post("/api/internal/bridge-image-assets/stage")
+    async def stage_bridge_image_asset(request: Request) -> dict[str, Any]:
+        _require_internal_auth(request)
+        metadata_header = request.headers.get("x-promptcard-stage-metadata", "")
+        if len(metadata_header.encode("utf-8")) > 8192:
+            raise _http_error(
+                400, "asset_stage_request_invalid", "Stage metadata is invalid"
+            )
+        try:
+            metadata = json.loads(metadata_header)
+        except json.JSONDecodeError as exc:
+            raise _http_error(
+                400, "asset_stage_request_invalid", "Stage metadata is invalid"
+            ) from exc
+        if not isinstance(metadata, dict) or set(metadata) != {
+            "operationContext", "stageRequest"
+        }:
+            raise _http_error(
+                400, "asset_stage_request_invalid", "Stage metadata is invalid"
+            )
+        chunks = bytearray()
+        async for chunk in request.stream():
+            chunks.extend(chunk)
+            if len(chunks) > MAX_IMAGE_IMPORT_BYTES:
+                raise _http_error(
+                    413, "asset_size_invalid", "Bridge image exceeds 30 MB"
+                )
+        return _handle(lambda: storage.stage_bridge_image(
+            metadata["operationContext"], metadata["stageRequest"], bytes(chunks)
+        ))
+
+    @application.post("/api/internal/bridge-image-deliveries/preview")
+    def preview_bridge_image_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.preview_bridge_image_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.post("/api/internal/bridge-image-deliveries/commit")
+    def commit_bridge_image_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.commit_bridge_image_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.get("/api/internal/bridge-delivery-proposals/{proposal_id}")
+    def inspect_bridge_delivery_proposal(
+        proposal_id: str,
+        profileId: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.inspect_bridge_delivery_proposal(
+            profileId, proposal_id
+        ))
+
+    @application.get("/api/internal/bridge-prompt-deliveries/{client_request_id}")
+    def get_bridge_prompt_delivery(
+        client_request_id: str,
+        profileId: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.get_bridge_prompt_delivery(
+            profileId, client_request_id
+        ))
+
+    @application.get("/api/internal/context-packs/{cvc_code}/bridge-deliveries")
+    def list_profile_bridge_deliveries(
+        cvc_code: str,
+        profileId: str,
+        request: Request,
+        state: Literal["previewed", "pending_review", "accepted", "rejected", "failed"] | None = None,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: {
+            "deliveries": storage.list_bridge_deliveries(
+                cvc_code, state=state, profile_id=profileId
+            )
+        })
+
+    @application.get("/api/context-packs/{cvc_code}/bridge-deliveries")
+    def list_bridge_deliveries(
+        cvc_code: str,
+        state: Literal["previewed", "pending_review", "accepted", "rejected", "failed"] | None = None,
+    ) -> dict[str, Any]:
+        return _handle(lambda: {
+            "deliveries": storage.list_bridge_deliveries(cvc_code, state=state)
+        })
+
+    @application.post(
+        "/api/context-packs/{cvc_code}/bridge-deliveries/{proposal_id}/decision"
+    )
+    def decide_bridge_delivery(
+        cvc_code: str,
+        proposal_id: str,
+        payload: BridgeDeliveryDecisionPayload,
+    ) -> dict[str, Any]:
+        return _handle(lambda: storage.decide_bridge_delivery(
+            cvc_code, proposal_id, payload.decision, payload.resultCodes
+        ))
+
     @application.get("/api/context-packs/{cvc_code}")
     def inspect_context_pack(cvc_code: str) -> dict[str, Any]:
         return _handle(lambda: storage.inspect_context_pack(cvc_code))
@@ -685,9 +1048,43 @@ def create_app(
             )
         )
 
+    @application.get(
+        "/api/projects/references/{project_reference_code}/creative/{creative_reference_code}"
+    )
+    def resolve_creative_reference(
+        project_reference_code: str,
+        creative_reference_code: str,
+    ) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.resolve_creative_reference(
+                project_reference_code, creative_reference_code
+            )
+        )
+
     @application.get("/api/presets")
     def list_presets() -> dict[str, Any]:
         return {"presets": storage.list_presets()}
+
+    @application.post("/api/prompt-retrieval/search")
+    def search_prompts(payload: PromptRetrievalPayload) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.search_prompts(
+                payload.query,
+                types=payload.types,
+                categories=payload.categories,
+                limit=payload.limit,
+                caller_kind=payload.callerKind,
+                caller_id=payload.callerId,
+            )
+        )
+
+    @application.get("/api/prompt-retrieval/health")
+    def prompt_retrieval_health() -> dict[str, Any]:
+        return storage.prompt_retrieval_health()
+
+    @application.post("/api/prompt-retrieval/rebuild")
+    def rebuild_prompt_retrieval_index() -> dict[str, Any]:
+        return _handle(storage.rebuild_prompt_retrieval)
 
     @application.get("/api/presets/trash")
     def list_preset_trash() -> dict[str, Any]:
@@ -738,6 +1135,153 @@ def create_app(
     def resolve_prompt_reference(reference_code: str) -> dict[str, Any]:
         return _handle(lambda: storage.resolve_prompt_reference(reference_code))
 
+    @application.post("/api/projects/{project_id}/document-resources")
+    async def create_project_document_resource(
+        project_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        filename = unquote(request.headers.get("x-file-name", ""))
+        content_type = request.headers.get("content-type", "")
+        try:
+            limit = document_size_limit(filename, content_type)
+            content_length = request.headers.get("content-length")
+            if content_length is not None and int(content_length) > limit:
+                raise DocumentTooLargeError("Document exceeds the format size limit")
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > limit:
+                    raise DocumentTooLargeError("Document exceeds the format size limit")
+                chunks.append(chunk)
+            return storage.create_project_document_resource(
+                project_id,
+                filename,
+                content_type,
+                b"".join(chunks),
+            )
+        except DocumentTooLargeError as exc:
+            raise _http_error(413, "document_too_large", str(exc)) from exc
+        except (DocumentValidationError, ValueError) as exc:
+            raise _http_error(400, "invalid_document", str(exc)) from exc
+
+    @application.get("/api/projects/{project_id}/document-resources")
+    def list_project_document_resources(project_id: str) -> dict[str, Any]:
+        return _handle(
+            lambda: {
+                "resources": storage.list_project_document_resources(project_id)
+            }
+        )
+
+    @application.get(
+        "/api/projects/{project_id}/document-resources/{resource_id}"
+    )
+    def get_project_document_resource(
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.get_project_document_resource(project_id, resource_id)
+        )
+
+    @application.delete(
+        "/api/projects/{project_id}/document-resources/{resource_id}"
+    )
+    def trash_project_document_resource(
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.trash_project_document_resource(project_id, resource_id)
+        )
+
+    @application.post(
+        "/api/projects/{project_id}/document-resources/{resource_id}/restore"
+    )
+    def restore_project_document_resource(
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        return _handle(
+            lambda: storage.restore_project_document_resource(project_id, resource_id)
+        )
+
+    @application.get(
+        "/api/internal/projects/{project_id}/document-resources/{resource_id}/content"
+    )
+    def read_project_document_resource(
+        project_id: str,
+        resource_id: str,
+        request: Request,
+    ) -> Response:
+        _require_internal_auth(request)
+        try:
+            content, metadata = storage.read_project_document_resource(
+                project_id, resource_id
+            )
+        except MissingItem as exc:
+            raise _http_error(404, "not_found", "Storage item not found") from exc
+        except DocumentValidationError as exc:
+            raise _http_error(
+                409, "document_integrity_failed", "Stored document failed validation"
+            ) from exc
+        return Response(
+            content=content,
+            media_type=metadata["contentType"],
+            headers={
+                "X-File-Name": quote(metadata["originalFilename"], safe=""),
+                "X-Document-Resource-Id": metadata["id"],
+            },
+        )
+
+    @application.post("/api/internal/provider-file-cleanup")
+    def enqueue_provider_file_cleanup(
+        payload: ProviderFileCleanupPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(
+            lambda: storage.enqueue_provider_file_cleanup(
+                payload.providerId, payload.connectionId, payload.remoteFileId
+            )
+        )
+
+    @application.get("/api/internal/provider-file-cleanup/due")
+    def get_due_provider_file_cleanup(
+        request: Request,
+        now: int,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(
+            lambda: {
+                "items": storage.get_due_provider_file_cleanup(now=now, limit=limit)
+            }
+        )
+
+    @application.post("/api/internal/provider-file-cleanup/succeeded")
+    def mark_provider_file_cleanup_succeeded(
+        payload: ProviderFileCleanupSucceededPayload,
+        request: Request,
+    ) -> dict[str, bool]:
+        _require_internal_auth(request)
+        storage.mark_provider_file_cleanup_succeeded(payload.cleanupId)
+        return {"ok": True}
+
+    @application.post("/api/internal/provider-file-cleanup/retry")
+    def mark_provider_file_cleanup_retry(
+        payload: ProviderFileCleanupRetryPayload,
+        request: Request,
+    ) -> dict[str, bool]:
+        _require_internal_auth(request)
+        def mark_retry() -> dict[str, bool]:
+            storage.mark_provider_file_cleanup_retry(
+                payload.cleanupId, payload.nextAttemptAt, payload.errorCode
+            )
+            return {"ok": True}
+
+        return _handle(mark_retry)
+
     return application
 
 
@@ -757,6 +1301,16 @@ def _handle(callback: Callable[[], Any]) -> Any:
             exc.message,
             {"reference": exc.reference},
         ) from exc
+    except BridgeDeliveryConflict as exc:
+        raise _http_error(
+            409,
+            exc.code,
+            "Bridge delivery request conflicts with an existing request",
+            {"existingRequestDigest": exc.existing_digest},
+        ) from exc
+    except BridgeDeliveryValidationError as exc:
+        status = 410 if exc.code == "context_revoked" else 409 if exc.code == "context_stale" else 400
+        raise _http_error(status, exc.code, "Bridge delivery request is invalid") from exc
     except ReferenceCodeError as exc:
         raise _http_error(400, exc.code, "Invalid public reference code") from exc
     except MissingItem as exc:
@@ -765,6 +1319,8 @@ def _handle(callback: Callable[[], Any]) -> Any:
         raise _http_error(409, "duplicate_item", "Storage item already exists", {"id": str(exc)}) from exc
     except RevisionConflict as exc:
         raise _http_error(409, "revision_conflict", "Storage revision conflict", current=exc.current) from exc
+    except AgentApplyEditConflict as exc:
+        raise _http_error(409, exc.code, exc.message) from exc
     except FolderCycle as exc:
         raise _http_error(409, "folder_cycle", "A folder cannot be moved inside itself") from exc
     except FolderNotEmpty as exc:
@@ -809,6 +1365,19 @@ def _http_error(status: int, code: str, message: str, detail: Any = None, curren
     if current is not None:
         payload["current"] = current
     return HTTPException(status_code=status, detail=payload)
+
+
+def _require_internal_auth(request: Request) -> None:
+    expected = os.environ.get("PROMPTCARD_INTERNAL_TOKEN", "").strip()
+    supplied = request.headers.get(INTERNAL_AUTH_HEADER_NAME)
+    if not expected:
+        raise _http_error(
+            503,
+            "internal_auth_unavailable",
+            "Storage internal authentication is unavailable",
+        )
+    if not supplied or not secrets.compare_digest(supplied, expected):
+        raise _http_error(401, "internal_auth_required", "Internal authentication is required")
 
 
 def _delete_storage_artifacts(storage: SqliteStore, ids: list[str]) -> dict[str, bool]:

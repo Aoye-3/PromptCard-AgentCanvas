@@ -2,6 +2,101 @@ import { describe, expect, it } from 'vitest'
 import { buildInvocation } from './proposal-policy.ts'
 
 describe('pi text-agent invocation boundary', () => {
+  it('exposes one pending Prompt handoff proposal only for an explicit experimental Document selection', () => {
+    const basis = {
+      kind: 'document-selection' as const,
+      nodeId: 'document-1', documentRevision: 4,
+      documentDigest: `sha256:${'a'.repeat(64)}`, blockId: 'paragraph-1',
+      utf8Start: 0, utf8End: 5, selectedText: 'Café',
+      selectedTextDigest: `sha256:${'b'.repeat(64)}`
+    }
+    const explicit = buildInvocation({
+      content: '生成 Prompt 提案', permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [],
+      documentWriteContext: { operationKind: 'prompt_handoff', basis }
+    })
+    expect(explicit.policy.allowedProposalKinds).toEqual(['free_canvas_text_create'])
+    expect(explicit.policy.allowedCanvasEditKinds).toEqual([])
+    expect(explicit.policy.promptHandoffContext).toEqual({ operationKind: 'prompt_handoff', basis })
+
+    const implicit = buildInvocation({
+      content: '生成 Prompt', permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: []
+    })
+    expect(implicit.policy.allowedProposalKinds).toEqual([])
+  })
+
+  it('rejects non-NFC, cross-block, and oversized Prompt handoff contexts', () => {
+    const base = {
+      operationKind: 'prompt_handoff' as const,
+      basis: {
+        kind: 'document-selection' as const,
+        nodeId: 'document-1', documentRevision: 1,
+        documentDigest: `sha256:${'a'.repeat(64)}`, blockId: 'block-1',
+        utf8Start: 0, utf8End: 2, selectedText: 'e\u0301',
+        selectedTextDigest: `sha256:${'b'.repeat(64)}`
+      }
+    }
+    for (const context of [
+      base,
+      { ...base, basis: { ...base.basis, endBlockId: 'block-2' } },
+      { ...base, basis: { ...base.basis, selectedText: 'x'.repeat(100_001), utf8End: 100_001 } }
+    ]) {
+      const invocation = buildInvocation({
+        content: 'handoff', permissionScope: 'workspace-chatbot-agent',
+        interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [],
+        documentWriteContext: context as never
+      })
+      expect(invocation.policy.allowedProposalKinds).toEqual([])
+      expect(invocation.policy.promptHandoffContext).toBeNull()
+    }
+  })
+
+  it('rejects Prompt handoff digests that only imitate the sha256 prefix', () => {
+    const invocation = buildInvocation({
+      content: 'handoff', permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'prompt_handoff',
+        basis: {
+          kind: 'storyboard-shot', nodeId: 'storyboard-1', storyboardRevision: 1,
+          storyboardDigest: 'sha256:not-a-digest', rowId: 'shot-1',
+          shotDigest: `sha256:${'b'.repeat(64)}`, shotText: '{"id":"shot-1"}'
+        }
+      }
+    })
+    expect(invocation.policy.allowedProposalKinds).toEqual([])
+    expect(invocation.policy.promptHandoffContext).toBeNull()
+  })
+  it('exposes storyboard creation only for an explicit authoritative transform context', () => {
+    const invocation = buildInvocation({
+      content: '从文档创建分镜表', permissionScope: 'workspace-chatbot-agent', interactionMode: 'chat-experimental',
+      workspaceContext: null, promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'storyboard_create', documentNodeId: 'document-1', documentRevision: 7,
+        documentDigest: `sha256:${'a'.repeat(64)}`, effectiveText: 'The accepted and pending-effective draft.',
+        documentResourceDigests: [`sha256:${'b'.repeat(64)}`]
+      }
+    })
+
+    expect(invocation.policy.allowedCanvasEditKinds).toEqual(['storyboard_create'])
+    expect(invocation.documentWriteContext).toMatchObject({
+      operationKind: 'storyboard_create', documentNodeId: 'document-1', documentRevision: 7,
+      effectiveText: 'The accepted and pending-effective draft.'
+    })
+  })
+
+  it('rejects ambient or forged storyboard authority outside explicit experimental context', () => {
+    const context = {
+      operationKind: 'storyboard_create' as const, documentNodeId: 'document-1', documentRevision: 7,
+      documentDigest: `sha256:${'a'.repeat(64)}`, effectiveText: 'private draft', documentResourceDigests: []
+    }
+    const promptEdit = buildInvocation({ content: 'transform', permissionScope: 'workspace-chatbot-agent', workspaceContext: null, promptLibrary: [], documentWriteContext: context })
+    const malformed = buildInvocation({ content: 'transform', permissionScope: 'workspace-chatbot-agent', interactionMode: 'chat-experimental', workspaceContext: null, promptLibrary: [], documentWriteContext: { ...context, model: { modelId: 'browser-forged' } } as never })
+
+    expect(promptEdit.policy.allowedCanvasEditKinds).not.toContain('storyboard_create')
+    expect(malformed.policy.allowedCanvasEditKinds).not.toContain('storyboard_create')
+  })
   it('allows only the selected canvas text node as an update target', () => {
     const invocation = buildInvocation({
       content: '补全当前文字节点',
@@ -202,5 +297,122 @@ describe('pi text-agent invocation boundary', () => {
 
     expect(chat.policy.allowedProposalKinds).toEqual([])
     expect(preview.policy.allowedProposalKinds).toEqual(['media_prompt_preview'])
+  })
+
+  it('keeps experimental conversation policy closed against Prompt targets and retrieval', () => {
+    const invocation = buildInvocation({
+      content: 'Discuss this project',
+      permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental',
+      workspaceContext: {
+        snapshot: {
+          selectedNodeId: 'text-a',
+          selectedNode: { id: 'text-a', kind: 'text' },
+          nodes: [{ id: 'text-a', kind: 'text' }]
+        }
+      },
+      promptLibrary: [{ label: 'Prompt', content: 'must remain unavailable' }],
+      canvasNodeContext: {
+        mode: 'complete', targetNodeId: 'text-a', referenceNodeIds: [], mentions: []
+      }
+    })
+
+    expect(invocation.interactionMode).toBe('chat-experimental')
+    expect(invocation.promptLibrary).toEqual([])
+    expect(invocation.policy.allowedProposalKinds).toEqual([])
+    expect(invocation.policy.allowedCanvasEditKinds).toEqual([])
+    expect(invocation.policy.selectedTextNodeId).toBeNull()
+    expect(invocation.policy.canSearchPromptLibrary).toBe(false)
+  })
+
+  it('exposes only the Gateway-bound document create capability in experimental chat', () => {
+    const invocation = buildInvocation({
+      content: 'Create a planning document',
+      permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental',
+      workspaceContext: null,
+      promptLibrary: [{ label: 'Prompt', content: 'must remain unavailable' }],
+      documentWriteContext: {
+        operationKind: 'document_create',
+        linkedDocumentResourceIds: ['resource-a', 'resource-b']
+      }
+    })
+
+    expect(invocation.promptLibrary).toEqual([])
+    expect(invocation.policy.allowedCanvasEditKinds).toEqual(['document_create'])
+    expect(invocation.policy.documentWriteContext).toEqual({
+      operationKind: 'document_create',
+      linkedDocumentResourceIds: ['resource-a', 'resource-b']
+    })
+  })
+
+  it('exposes one current Document target and effective block text for changes', () => {
+    const invocation = buildInvocation({
+      content: 'Tighten the opening',
+      permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental',
+      workspaceContext: null,
+      promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'document_changes',
+        nodeId: 'document-a',
+        baseRevision: 7,
+        baseDigest: 'sha256:document-a',
+        blocks: [
+          { blockId: 'paragraph-a', text: 'Caf\u00e9', expectedTextDigest: 'sha256:paragraph-a' }
+        ]
+      }
+    })
+
+    expect(invocation.policy.allowedCanvasEditKinds).toEqual(['document_changes'])
+    expect(invocation.policy.documentWriteContext).toMatchObject({
+      operationKind: 'document_changes',
+      nodeId: 'document-a',
+      baseRevision: 7,
+      baseDigest: 'sha256:document-a'
+    })
+  })
+
+  it.each([
+    ['prompt mode', { interactionMode: 'prompt-edit' as const, permissionScope: 'workspace-chatbot-agent' as const }],
+    ['wrong permission', { interactionMode: 'chat-experimental' as const, permissionScope: 'prompt-library-agent' as const }]
+  ])('keeps document tools unavailable in %s', (_label, boundary) => {
+    const invocation = buildInvocation({
+      content: 'Create a document',
+      ...boundary,
+      workspaceContext: null,
+      promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'document_create',
+        linkedDocumentResourceIds: []
+      }
+    })
+
+    expect(invocation.policy.allowedCanvasEditKinds).not.toContain('document_create')
+    expect(invocation.policy.documentWriteContext).toBeNull()
+  })
+
+  it('rejects an over-budget effective Document context before exposing a write tool', () => {
+    const invocation = buildInvocation({
+      content: 'Revise it',
+      permissionScope: 'workspace-chatbot-agent',
+      interactionMode: 'chat-experimental',
+      workspaceContext: null,
+      promptLibrary: [],
+      documentWriteContext: {
+        operationKind: 'document_changes',
+        nodeId: 'document-a',
+        baseRevision: 1,
+        baseDigest: 'sha256:document-a',
+        blocks: [{
+          blockId: 'paragraph-a',
+          text: 'x'.repeat(100_001),
+          expectedTextDigest: 'sha256:paragraph-a'
+        }]
+      }
+    })
+
+    expect(invocation.policy.documentWriteContext).toBeNull()
+    expect(invocation.policy.allowedCanvasEditKinds).toEqual([])
   })
 })

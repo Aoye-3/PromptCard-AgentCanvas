@@ -15,15 +15,26 @@ import type {
   IFreeCanvasNode,
   IFreeCanvasPosition,
   IFreeCanvasProject,
+  IFreeCanvasDocumentNode,
+  IFreeCanvasStoryboardNode,
+  IFreeCanvasUnsupportedNode,
   IFreeCanvasTextNode,
   IFreeCanvasTextSegment,
   IFreeCanvasViewport,
+  AgentAppliedEditMarker,
   PromptDocument,
   PromptSegment,
   IPromptProject
 } from '@/models/PromptHistory.model'
 import type { ImageRegion } from '@/domain/image-generation/image-generation'
-import type { AgentRunProvenance } from '@/models/Agent.model'
+import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
+import { createPlanningDocumentV1, parsePlanningDocumentV1 } from '@/domain/documents/planning-document'
+import {
+  isValidPersistedStoryboardSequence,
+  isValidStoryboardPendingFieldChanges,
+  isValidStoryboardSourceProvenance,
+  storyboardDigest
+} from '@/domain/storyboard/canvas-storyboard'
 
 const DEFAULT_USER_COLOR = '#111827'
 const DEFAULT_PRESET_COLOR = '#ef4423'
@@ -107,6 +118,26 @@ export const createQuickTextNode = (
   position: IFreeCanvasPosition,
   timestamp = Date.now()
 ): IFreeCanvasTextNode => createFreeCanvasTextNode(text, position, timestamp, 'preset')
+
+export const createFreeCanvasDocumentNode = (
+  position: IFreeCanvasPosition,
+  timestamp = Date.now()
+): IFreeCanvasDocumentNode => {
+  const id = `free-document-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
+  return {
+    id,
+    kind: 'document',
+    title: '未命名文档',
+    position: normalizePosition(position),
+    width: 560,
+    height: 420,
+    document: createPlanningDocumentV1([
+      { id: `${id}-paragraph-1`, type: 'paragraph', content: [] }
+    ]),
+    linkedDocumentResourceIds: [],
+    meta: {}
+  }
+}
 
 export const createFreeCanvasImageGeneratorNode = (
   position: IFreeCanvasPosition,
@@ -676,8 +707,13 @@ export const normalizeFreeCanvasProject = (
 ): IFreeCanvasProject => {
   const nodes = Array.isArray(value?.nodes) ? value.nodes.map(node => normalizeNode(node, timestamp)).filter((node): node is IFreeCanvasNode => Boolean(node)) : []
   const nodeIds = new Set(nodes.map(node => node.id))
+  const connectableNodeIds = new Set(nodes
+    .filter(node => node.kind !== 'document' && node.kind !== 'storyboard' && node.kind !== 'unsupported')
+    .map(node => node.id))
   const edges = Array.isArray(value?.edges)
-    ? value.edges.map(edge => normalizeEdge(edge, timestamp)).filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+    ? value.edges.map(edge => normalizeEdge(edge, timestamp)).filter(edge => (
+        connectableNodeIds.has(edge.source) && connectableNodeIds.has(edge.target)
+      ))
     : []
   const selectedNodeId = value?.selectedNodeId && nodeIds.has(value.selectedNodeId) ? value.selectedNodeId : null
   return {
@@ -946,12 +982,10 @@ const uniqueFreeCanvasRewriteTitle = (nodes: IFreeCanvasNode[], sourceTitle: str
     .filter((node): node is IFreeCanvasTextNode => node.kind === 'text')
     .map(node => node.title.trim().toLocaleLowerCase()))
   if (!existingTitles.has(base.toLocaleLowerCase())) return base
-  let suffix = 2
-  while (true) {
+  for (let suffix = 2; ; suffix += 1) {
     const numericSuffix = ` (${suffix})`
     const candidate = titleWithSuffix(numericSuffix)
     if (!existingTitles.has(candidate.toLocaleLowerCase())) return candidate
-    suffix += 1
   }
 }
 
@@ -994,21 +1028,314 @@ const normalizeNode = (node: Partial<IFreeCanvasNode>, timestamp: number): IFree
       meta: node.meta || {}
     }
   }
-  const textNode = node as Partial<IFreeCanvasTextNode>
-  return {
-    id: textNode.id || `free-text-${timestamp}`,
-    kind: 'text',
-    title: !textNode.title || textNode.title === 'Text'
-      ? defaultFreeCanvasTextNodeTitle(textNode.id || `free-text-${timestamp}`)
-      : textNode.title,
-    position: normalizePosition(textNode.position),
-    width: Number(textNode.width || 420),
-    height: Number(textNode.height || 180),
-    fontSize: textNode.fontSize || 'large',
-    segments: Array.isArray(textNode.segments) ? textNode.segments.map(normalizeTextSegment) : [],
-    ...(typeof textNode.referenceCode === 'string' ? { referenceCode: textNode.referenceCode } : {}),
-    meta: textNode.meta || {}
+  if (node.kind === 'text') {
+    const provenance = normalizeAgentRunProvenance(node.provenance)
+    const agentPromptHandoff = normalizeAgentPromptHandoffMarker(node.agentPromptHandoff)
+    const hasHandoffState = node.provenance !== undefined || node.agentPromptHandoff !== undefined
+    if (hasHandoffState && (!provenance || !agentPromptHandoff)) {
+      return normalizeUnsupportedNode({
+        id: node.id,
+        kind: 'unsupported',
+        title: node.title,
+        position: node.position,
+        width: node.width,
+        height: node.height,
+        originalKind: 'text',
+        originalNode: cloneFrozenRecord({ ...(node as unknown as Record<string, unknown>) }),
+        meta: isPlainRecordValue(node.meta) ? node.meta : {}
+      }, timestamp)
+    }
+    return {
+      id: node.id || `free-text-${timestamp}`,
+      kind: 'text',
+      title: !node.title || node.title === 'Text'
+        ? defaultFreeCanvasTextNodeTitle(node.id || `free-text-${timestamp}`)
+        : node.title,
+      position: normalizePosition(node.position),
+      width: Number(node.width || 420),
+      height: Number(node.height || 180),
+      fontSize: node.fontSize || 'large',
+      segments: Array.isArray(node.segments) ? node.segments.map(normalizeTextSegment) : [],
+      ...(typeof node.referenceCode === 'string' ? { referenceCode: node.referenceCode } : {}),
+      ...(provenance ? { provenance } : {}),
+      ...(agentPromptHandoff ? { agentPromptHandoff } : {}),
+      meta: node.meta || {}
+    }
   }
+  if (node.kind === 'document') {
+    return normalizeDocumentNode(node, timestamp)
+  }
+  if (node.kind === 'storyboard') {
+    return normalizeStoryboardNode(node, timestamp)
+  }
+  if (node.kind === 'unsupported') {
+    return normalizeUnsupportedNode(node, timestamp)
+  }
+
+  // ADR-020: the terminal dispatch is lossless and inert; never reinterpret a future node as Prompt text or image.
+  return normalizeUnsupportedNode({
+    ...node,
+    kind: 'unsupported',
+    originalKind: typeof node.kind === 'string' ? node.kind : 'unknown',
+    originalNode: cloneFrozenRecord({ ...node })
+  }, timestamp)
+}
+
+const normalizeDocumentNode = (
+  node: Partial<IFreeCanvasDocumentNode>,
+  timestamp: number
+): IFreeCanvasDocumentNode | IFreeCanvasUnsupportedNode => {
+  const parsed = parsePlanningDocumentV1(node.document)
+  const agentAppliedEdit = normalizeAgentAppliedEditMarker(node.agentAppliedEdit)
+  const provenance = normalizeAgentRunProvenance(node.provenance)
+  const hasAgentAuthority = node.agentAppliedEdit !== undefined || node.provenance !== undefined
+  if (!parsed.ok || (hasAgentAuthority && (!agentAppliedEdit || !provenance))) {
+    return normalizeUnsupportedNode({
+      id: node.id,
+      kind: 'unsupported',
+      title: node.title,
+      position: node.position,
+      width: node.width,
+      height: node.height,
+      originalKind: 'document',
+      originalNode: cloneFrozenRecord({ ...(node as unknown as Record<string, unknown>) }),
+      meta: node.meta
+    }, timestamp)
+  }
+  return {
+    id: node.id || `free-document-${timestamp}`,
+    kind: 'document',
+    title: (node.title || 'Document').normalize('NFC'),
+    position: normalizePosition(node.position),
+    width: Number(node.width || 560),
+    height: Number(node.height || 420),
+    ...(typeof node.referenceCode === 'string' ? { referenceCode: node.referenceCode } : {}),
+    document: parsed.document,
+    linkedDocumentResourceIds: Array.isArray(node.linkedDocumentResourceIds)
+      ? node.linkedDocumentResourceIds.filter((resourceId): resourceId is string => typeof resourceId === 'string')
+      : [],
+    ...(provenance ? { provenance } : {}),
+    ...(agentAppliedEdit ? { agentAppliedEdit } : {}),
+    meta: node.meta || {}
+  }
+}
+
+const normalizeAgentAppliedEditMarker = (value: unknown): AgentAppliedEditMarker | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const keys = ['conversationId', 'requestId', 'editId', 'resultDigest']
+  if (Object.keys(record).length !== keys.length || keys.some(key => !Object.prototype.hasOwnProperty.call(record, key))) {
+    return null
+  }
+  if (!isStrictNfcText(record.conversationId)
+    || !isStrictNfcText(record.requestId)
+    || !isStrictNfcText(record.editId)
+    || typeof record.resultDigest !== 'string'
+    || !SHA256_DIGEST_PATTERN.test(record.resultDigest)
+  ) return null
+  return {
+    conversationId: record.conversationId,
+    requestId: record.requestId,
+    editId: record.editId,
+    resultDigest: record.resultDigest
+  }
+}
+
+type AgentPromptHandoffMarker = NonNullable<IFreeCanvasTextNode['agentPromptHandoff']>
+
+const normalizeAgentPromptHandoffMarker = (value: unknown): AgentPromptHandoffMarker | null => {
+  if (!isPlainRecordValue(value)) return null
+  const keys = ['version', 'conversationId', 'proposalId', 'basisDigest', 'resultDigest']
+  if (Object.keys(value).length !== keys.length || keys.some(key => !Object.prototype.hasOwnProperty.call(value, key))) {
+    return null
+  }
+  if (value.version !== 1
+    || !isStrictNfcText(value.conversationId)
+    || !isStrictNfcText(value.proposalId)
+    || typeof value.basisDigest !== 'string' || !SHA256_DIGEST_PATTERN.test(value.basisDigest)
+    || typeof value.resultDigest !== 'string' || !SHA256_DIGEST_PATTERN.test(value.resultDigest)
+  ) return null
+  return {
+    version: 1,
+    conversationId: value.conversationId,
+    proposalId: value.proposalId,
+    basisDigest: value.basisDigest,
+    resultDigest: value.resultDigest
+  }
+}
+
+const normalizeAgentRunProvenance = (value: unknown): AgentRunProvenance | null => {
+  if (!isPlainRecordValue(value)
+    || Object.keys(value).length !== 2
+    || !Object.prototype.hasOwnProperty.call(value, 'model')
+    || !Object.prototype.hasOwnProperty.call(value, 'skills')
+    || !isPlainRecordValue(value.model)
+    || !Array.isArray(value.skills)
+    || value.skills.length > 8
+  ) return null
+  const model = value.model
+  const modelKeys = ['connectionId', 'providerId', 'modelId', 'displayName', 'capabilities']
+  if (Object.keys(model).length !== modelKeys.length
+    || modelKeys.some(key => !Object.prototype.hasOwnProperty.call(model, key))
+    || !isStrictNfcText(model.connectionId)
+    || !isStrictNfcText(model.providerId)
+    || !isStrictNfcText(model.modelId)
+    || !isStrictNfcText(model.displayName)
+    || !isPlainRecordValue(model.capabilities)
+    || !isStrictNfcJson(model.capabilities)
+  ) return null
+  const seenSkillIds = new Set<string>()
+  const skills: AgentRunProvenance['skills'] = []
+  for (const skill of value.skills) {
+    if (!isPlainRecordValue(skill)
+      || Object.keys(skill).length !== 3
+      || !Object.prototype.hasOwnProperty.call(skill, 'skillId')
+      || !Object.prototype.hasOwnProperty.call(skill, 'revision')
+      || !Object.prototype.hasOwnProperty.call(skill, 'digest')
+      || !isStrictNfcText(skill.skillId)
+      || seenSkillIds.has(skill.skillId)
+      || !isNonNegativeSafeInteger(skill.revision)
+      || typeof skill.digest !== 'string'
+      || !SHA256_DIGEST_PATTERN.test(skill.digest)
+    ) return null
+    seenSkillIds.add(skill.skillId)
+    skills.push({ skillId: skill.skillId, revision: skill.revision, digest: skill.digest })
+  }
+  return {
+    model: {
+      connectionId: model.connectionId,
+      providerId: model.providerId,
+      modelId: model.modelId,
+      displayName: model.displayName,
+      capabilities: cloneStructuredValue(model.capabilities)
+    },
+    skills
+  }
+}
+
+const isStrictNfcText = (value: unknown): value is string => (
+  typeof value === 'string' && value.length > 0 && isWellFormedText(value) && value === value.normalize('NFC')
+)
+
+const isWellFormedText = (value: string): boolean => {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false
+      index += 1
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false
+  }
+  return true
+}
+
+const isStrictNfcJson = (value: unknown): boolean => {
+  if (value === null || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (typeof value === 'string') return isWellFormedText(value) && value === value.normalize('NFC')
+  if (Array.isArray(value)) return value.every(isStrictNfcJson)
+  if (!isPlainRecordValue(value)) return false
+  return Object.entries(value).every(([key, child]) => (
+    isWellFormedText(key) && key === key.normalize('NFC') && isStrictNfcJson(child)
+  ))
+}
+
+const normalizeStoryboardNode = (
+  node: Partial<IFreeCanvasStoryboardNode>,
+  timestamp: number
+): IFreeCanvasStoryboardNode | IFreeCanvasUnsupportedNode => {
+  const unsupported = () => normalizeUnsupportedNode({
+    id: node.id, kind: 'unsupported', title: node.title, position: node.position, width: node.width, height: node.height,
+    originalKind: 'storyboard', originalNode: cloneFrozenRecord({ ...(node as unknown as Record<string, unknown>) }),
+    meta: isPlainRecordValue(node.meta) ? node.meta : {}
+  }, timestamp)
+  try {
+    if (!isValidPersistedStoryboardNode(node)) return unsupported()
+    const sequence = cloneStructuredValue(node.sequence)
+    const pendingFieldChanges = cloneStructuredValue(node.pendingFieldChanges)
+    const agentAppliedEdit = normalizeAgentAppliedEditMarker(node.agentAppliedEdit)
+    const digest = storyboardDigest(sequence, pendingFieldChanges)
+    if ((node.digest !== undefined && node.digest !== digest) || (node.agentAppliedEdit !== undefined && !agentAppliedEdit)) {
+      return unsupported()
+    }
+    return {
+      id: node.id || `free-storyboard-${timestamp}`,
+      kind: 'storyboard',
+      title: node.title || 'Storyboard',
+      position: normalizePosition(node.position),
+      width: Number(node.width || 640),
+      height: Number(node.height || 480),
+      ...(typeof node.referenceCode === 'string' ? { referenceCode: node.referenceCode } : {}),
+      sequence,
+      source: cloneStructuredValue(node.source),
+      pendingFieldChanges,
+      ...(node.revision !== undefined ? { revision: node.revision } : {}),
+      ...(node.digest !== undefined ? { digest } : {}),
+      ...(agentAppliedEdit ? { agentAppliedEdit } : {}),
+      meta: node.meta
+    }
+  } catch {
+    return unsupported()
+  }
+}
+
+const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u
+
+const isPlainRecordValue = (value: unknown): value is Record<string, unknown> => (
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+)
+
+const isNonNegativeSafeInteger = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0
+
+const isValidPersistedStoryboardNode = (
+  node: Partial<IFreeCanvasStoryboardNode>
+): node is IFreeCanvasStoryboardNode => {
+  if (
+    typeof node.id !== 'string' || !node.id
+    || typeof node.title !== 'string'
+    || !isPlainRecordValue(node.position)
+    || typeof node.position.x !== 'number' || !Number.isFinite(node.position.x)
+    || typeof node.position.y !== 'number' || !Number.isFinite(node.position.y)
+    || typeof node.width !== 'number' || !Number.isFinite(node.width) || node.width <= 0
+    || typeof node.height !== 'number' || !Number.isFinite(node.height) || node.height <= 0
+    || !isValidPersistedStoryboardSequence(node.sequence)
+    || !isValidStoryboardSourceProvenance(node.source)
+    || !isValidStoryboardPendingFieldChanges(node.pendingFieldChanges, node.sequence)
+    || (node.revision !== undefined && !isNonNegativeSafeInteger(node.revision))
+    || (node.digest !== undefined && (typeof node.digest !== 'string' || !SHA256_DIGEST_PATTERN.test(node.digest)))
+    || !isPlainRecordValue(node.meta)
+  ) return false
+  return node.agentAppliedEdit === undefined || normalizeAgentAppliedEditMarker(node.agentAppliedEdit) !== null
+}
+
+const normalizeUnsupportedNode = (
+  node: Partial<IFreeCanvasUnsupportedNode>,
+  timestamp: number
+): IFreeCanvasUnsupportedNode => ({
+  id: typeof node.id === 'string' && node.id ? node.id : `free-unsupported-${timestamp}`,
+  kind: 'unsupported',
+  title: typeof node.title === 'string' && node.title ? node.title : 'Unsupported node',
+  position: {
+    x: typeof node.position?.x === 'number' && Number.isFinite(node.position.x) ? node.position.x : 0,
+    y: typeof node.position?.y === 'number' && Number.isFinite(node.position.y) ? node.position.y : 0
+  },
+  width: typeof node.width === 'number' && Number.isFinite(node.width) && node.width > 0 ? node.width : 360,
+  height: typeof node.height === 'number' && Number.isFinite(node.height) && node.height > 0 ? node.height : 220,
+  originalKind: typeof node.originalKind === 'string' ? node.originalKind : 'unknown',
+  originalNode: cloneFrozenRecord(node.originalNode || {}),
+  meta: isPlainRecordValue(node.meta) ? node.meta : {}
+})
+
+const cloneStructuredValue = <T>(value: T): T => structuredClone(value)
+
+const cloneFrozenRecord = (value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> => (
+  deepFreeze(cloneStructuredValue({ ...value }))
+)
+
+const deepFreeze = <T>(value: T): T => {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value
+  Reflect.ownKeys(value).forEach(key => deepFreeze(Reflect.get(value, key)))
+  return Object.freeze(value)
 }
 
 const normalizeImageGeneratorNode = (

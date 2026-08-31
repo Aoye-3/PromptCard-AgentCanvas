@@ -1,0 +1,33 @@
+{
+  "name": "document change proposal",
+  "entryPoint": "deliveryPreviewRequest",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-preview-request.schema.json",
+  "expectedSchemaValidity": true,
+  "instance": {
+    "clientRequestId": "doc-change-001",
+    "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "document.change",
+    "target": {
+      "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "documentCode": "CVD-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "baseRevision": 1,
+      "baseDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "sourceCodes": ["CVD-01ARZ3NDEKTSV4RRFFQ69G5FAV"],
+    "skillPins": [],
+    "rationale": "Clarify the opening beat.",
+    "provenance": "promptcard-bridge",
+    "payload": {
+      "operations": [
+        {
+          "kind": "replace",
+          "blockId": "block-2",
+          "utf8Start": 0,
+          "utf8End": 14,
+          "text": "A silent opening image.",
+          "expectedTextDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ]
+    }
+  }
+}

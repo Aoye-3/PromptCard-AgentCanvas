@@ -18,7 +18,7 @@ Base: `d354d4f`
 - Codex keeps its accurate `.agents/skills` projection name. Repository scopes returned by Storage can be selected independently; stale scope responses cannot overwrite the selected pin. Owned drift can be repaired explicitly against the current pin; missing ownership metadata or an unowned collision fails without overwriting user content.
 - Canvas now presents “复制 Agent/MCP 上下文”; the immutable CVC contract remains unchanged.
 - `promptcard-bridge/v1` remains unchanged. v2 adds trusted `profileId`/scopes, `promptcard-bridge` provenance, request-side profile forgery rejection, and `(profileId, clientRequestId)` replay isolation.
-- ADR-019 and Plan 008 now define a host-neutral Gateway/CLI/MCP/retrieval/delivery core. Codex and TRAE are verified acceptance targets; Doubao and MarsCode remain “待验证”.
+- ADR-019 and Plan 008 now define a host-neutral Gateway/CLI/MCP/retrieval/delivery core. This historical checkpoint selected Codex and TRAE as intended acceptance targets; Task 28 later verified Codex in a real host and retained TRAE only as an unverified configuration/contract candidate. Doubao and MarsCode remain “待验证”.
 
 ## Automated Evidence
 

@@ -13,10 +13,11 @@ from promptcard_storage.reference_codes import (
     ReferenceNamespace,
     generate_reference_code,
 )
-from promptcard_storage.store import DuplicateItem, JsonCollectionStore
+from promptcard_storage.store import SCHEMA_VERSION, DuplicateItem, JsonCollectionStore
 
 
 SKILL_CODE = re.compile(r"^SKL-[0-7][0-9A-HJKMNP-TV-Z]{25}$")
+TEST_ROOT = Path("F:/.Agent-PromptCardManager/PromptCard-Manager/.test-tmp/skill-packages-v13")
 
 
 def package_entry(entry_type: str, path: str, content: bytes, content_type: str) -> dict:
@@ -86,8 +87,10 @@ def downgrade_skill_schema_to_v12(database: Path) -> None:
 
 class SkillPackagesV13Tests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.data_dir = Path(self.temp_dir.name)
+        TEST_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp_dir = tempfile.TemporaryDirectory(dir=TEST_ROOT)
+        self.data_dir = Path(self.temp_dir.name, "data")
+        self.data_dir.mkdir()
         self.store = JsonCollectionStore(self.data_dir)
 
     def tearDown(self) -> None:
@@ -120,7 +123,12 @@ class SkillPackagesV13Tests(unittest.TestCase):
     def test_fresh_v13_schema_contains_canonical_entry_columns_and_immutability_triggers(self) -> None:
         connection = sqlite3.connect(self.data_dir / "promptcard.sqlite3")
         try:
-            self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 15)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0],
+                SCHEMA_VERSION,
+            )
             entry_columns = {
                 row[1]: row[2] for row in connection.execute("PRAGMA table_info(skill_package_entries)")
             }

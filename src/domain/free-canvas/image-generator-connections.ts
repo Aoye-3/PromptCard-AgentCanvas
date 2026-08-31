@@ -13,6 +13,7 @@ export type ImageGeneratorConnectionValidationErrorCode =
   | 'image_input_limit'
   | 'image_generator_output_unavailable'
   | 'image_input_requires_image_source'
+  | 'prompt_input_requires_text_source'
 
 export interface ImageGeneratorConnectionValidationError {
   code: ImageGeneratorConnectionValidationErrorCode
@@ -33,6 +34,10 @@ export const validateImageGeneratorConnection = (
 
   const targetNode = project.nodes.find(node => node.id === candidate.target)
   if (targetNode?.kind !== 'image-generator') return [{ code: 'target_not_image_generator' }]
+
+  if (candidate.targetHandle === 'prompt' && sourceNode.kind !== 'text') {
+    return [{ code: 'prompt_input_requires_text_source' }]
+  }
 
   if (
     (candidate.targetHandle === 'source-image' || candidate.targetHandle === 'reference-image')

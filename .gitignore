@@ -18,6 +18,7 @@ agent-runtime/backend/.promptcard-runtime/
 agent-runtime/backend/.pytest_cache/
 agent-runtime/backend/tests/.tmp/
 agent-runtime/backend/pytest-tmp/
+promptcard_storage/pytest-tmp*/
 agent-runtime/.promptcard-runtime/
 agent-runtime/.agent/
 agent-runtime/.uv-cache/
@@ -163,6 +164,7 @@ NewVison/Prompt Guide/
 !src-tauri/capabilities/**/*.json
 !public/**/*.json
 !tests/fixtures/image-generation-status.json
+!config/promptcard-bridge/*.json
 tests/.runtime/
 .cache/
 /remotion-video/
@@ -171,6 +173,7 @@ public/prompt-library-presets.json
 *.yaml
 *.yml
 *.toml
+!config/promptcard-bridge/*.toml
 !src-tauri/Cargo.toml
 !src-tauri/permissions/**/*.toml
 *.ini

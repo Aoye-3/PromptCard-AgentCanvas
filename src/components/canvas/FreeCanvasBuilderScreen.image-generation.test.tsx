@@ -403,6 +403,52 @@ describe('project-level free canvas image generation entry', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it('renders an unknown persisted node as an inert read-only Canvas projection', async () => {
+    const unknownNode = {
+      id: 'future-node', kind: 'future-layout', title: 'Future layout',
+      position: { x: 10, y: 10 }, width: 360, height: 220,
+      payload: { nested: 'preserve' }, meta: {}
+    }
+    const textNode = createFreeCanvasTextNode('Prompt target', { x: 500, y: 10 }, 1)
+    const freeCanvas = createFreeCanvasProject(1, {
+      nodes: [unknownNode, textNode] as never,
+      selectedNodeId: unknownNode.id
+    })
+    const onChange = vi.fn()
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <FreeCanvasBuilderScreen
+          activeProject={{ id: 'project-a', title: 'Project A' } as IPromptProject}
+          freeCanvas={freeCanvas}
+          onBack={vi.fn()}
+          onRenameProject={vi.fn()}
+          onSave={vi.fn()}
+          onChange={onChange}
+        />
+      )
+    })
+    const flow = renderer.root.find(candidate => (
+      Array.isArray(candidate.props.nodes) && typeof candidate.props.onConnect === 'function'
+    ))
+    const futureFlowNode = flow.props.nodes.find((node: { id: string }) => node.id === unknownNode.id)
+
+    expect(futureFlowNode.data.canvasNode.kind).toBe('unsupported')
+    act(() => flow.props.onNodesChange([{ id: unknownNode.id, type: 'remove' }]))
+    expect(onChange).not.toHaveBeenCalled()
+    act(() => flow.props.onNodeDragStop({}, { ...futureFlowNode, position: { x: 100, y: 120 } }))
+    expect(onChange).not.toHaveBeenCalled()
+    expect(futureFlowNode).toMatchObject({ draggable: false, connectable: false, deletable: false })
+    expect(flow.props.isValidConnection({ source: unknownNode.id, target: textNode.id })).toBe(false)
+    act(() => flow.props.onConnect({ source: unknownNode.id, target: textNode.id }))
+    expect(onChange).not.toHaveBeenCalled()
+
+    const ReadOnlyNode = flow.props.nodeTypes.freeCanvasNode
+    const readOnlyHtml = renderToStaticMarkup(<ReadOnlyNode data={futureFlowNode.data} selected />)
+    expect(readOnlyHtml).toContain('data-read-only-canvas-node="unsupported"')
+    expect(readOnlyHtml).toContain('future-layout')
+  })
+
   it('renders Agent, 图片生成 and Prompt库 as mutually exclusive peer tabs without creating a node', async () => {
     const onChange = vi.fn()
     const activeProject = { id: 'project-a', title: 'Project A' } as IPromptProject

@@ -88,7 +88,8 @@ const contextClient = (overrides: Record<string, unknown> = {}) => ({
 const renderComponent = async (
   selectedNodeIds: string[],
   client = contextClient(),
-  activeProject = project()
+  activeProject = project(),
+  prepareProjectRevision?: () => Promise<number>
 ) => {
   let renderer!: ReactTestRenderer
   await act(async () => {
@@ -98,6 +99,7 @@ const renderComponent = async (
         nodes={nodes}
         selectedNodeIds={selectedNodeIds}
         client={client}
+        prepareProjectRevision={prepareProjectRevision}
       />
     )
   })
@@ -182,6 +184,22 @@ describe('CopyCodexContext', () => {
     expect(writeText).toHaveBeenCalledWith(codes.context)
     expect(renderer.root.findByProps({ 'data-testid': 'context-pack-code' }).children.join('')).toBe(codes.context)
     expect(renderer.root.findAllByProps({ role: 'status' }).map(textContent).join(' ')).toContain('CVC 已创建并复制')
+  })
+
+  it('flushes the current Canvas and creates the CVC against the authoritative saved revision', async () => {
+    vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+    const prepareProjectRevision = vi.fn().mockResolvedValue(8)
+    const client = contextClient({
+      create: vi.fn().mockResolvedValue(inspection({ projectRevision: 8 }))
+    })
+    const { renderer } = await renderComponent(['text'], client, project(), prepareProjectRevision)
+    await act(async () => button(renderer, '复制 Agent/MCP 上下文')?.props.onClick())
+
+    await act(async () => button(renderer, '创建并复制 CVC')?.props.onClick())
+
+    expect(prepareProjectRevision).toHaveBeenCalledOnce()
+    expect(client.create).toHaveBeenCalledWith(expect.objectContaining({ projectRevision: 8 }))
+    expect(prepareProjectRevision.mock.invocationCallOrder[0]).toBeLessThan(client.create.mock.invocationCallOrder[0])
   })
 
   it('retains a created CVC after clipboard rejection and retries copying without creating again', async () => {

@@ -61,7 +61,7 @@ export interface ModelIntegrationGroup {
 }
 
 export interface ModelCapabilities {
-  input?: Array<'text' | 'image'>
+  input?: Array<'text' | 'image' | 'pdf'>
   toolCalling?: boolean
   contextWindow?: number
   modes?: ImageModelMode[]

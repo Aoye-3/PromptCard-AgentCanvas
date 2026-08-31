@@ -4,7 +4,10 @@ import type {
   AgentAuthStatus,
   AgentCanvasEdit,
   AgentConversationSession,
+  AgentDocumentAttachment,
   AgentInfo,
+  AgentInteractionMode,
+  AgentPlanningWriteContext,
   AgentMessage,
   AgentPermissionScope,
   AgentModelInfo,
@@ -50,8 +53,14 @@ interface AgentState {
       permissionScope?: AgentPermissionScope
       sessionKey: AgentSessionKey
       conversationId?: string
+      requestId?: string
+      interactionMode?: AgentInteractionMode
       selectedSkillIds?: string[]
       canvasNodeContext?: CanvasAgentNodeContext
+      documentResourceIds?: string[]
+      explicitDocumentNodeIds?: string[]
+      documentAttachments?: AgentDocumentAttachment[]
+      documentWriteContext?: AgentPlanningWriteContext
     }
   ) => Promise<{ proposals: AgentWorkspaceProposal[]; canvasEdits: AgentCanvasEdit[] }>
   getAgentSession: (sessionKey: AgentSessionKey) => AgentConversationSession
@@ -61,6 +70,12 @@ interface AgentState {
 }
 
 const messageId = () => `agent-message-${Date.now()}-${Math.random().toString(16).slice(2)}`
+
+type ScopedRetryRequest = NonNullable<AgentConversationSession['retryRequest']> & {
+  conversationId: string
+  userMessageId: string
+  errorMessageId: string
+}
 
 const emptySession = (): AgentConversationSession => ({
   messages: [],
@@ -176,23 +191,61 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  sendMessage: async (content, presets, options) => {
+  sendMessage: async (content, _presets, options) => {
     const sessionKey = options?.sessionKey
     if (!sessionKey) {
       throw new Error('Agent sessionKey is required')
     }
+    const requestId = options?.requestId || messageId()
+    const initialSession = getSessionFromState(get(), sessionKey)
+    const conversationId = options?.conversationId || initialSession.conversationId || ''
+    const pendingRetry = initialSession.retryRequest as ScopedRetryRequest | undefined
+    const isRetry = Boolean(
+      options?.requestId
+      && pendingRetry?.requestId === requestId
+      && pendingRetry.content === content
+      && pendingRetry.conversationId === conversationId
+      && initialSession.messages.some(message => message.id === pendingRetry.userMessageId)
+    )
+    const documentRequest = isRetry && pendingRetry
+      ? {
+          documentResourceIds: [...pendingRetry.documentResourceIds],
+          explicitDocumentNodeIds: [...pendingRetry.explicitDocumentNodeIds],
+          documentAttachments: pendingRetry.documentAttachments.map(attachment => ({ ...attachment }))
+        }
+      : {
+          documentResourceIds: [...(options?.documentResourceIds ?? [])],
+          explicitDocumentNodeIds: [...(options?.explicitDocumentNodeIds ?? [])],
+          documentAttachments: (options?.documentAttachments ?? []).map(attachment => ({ ...attachment }))
+        }
+    const includesDocumentRequest = Boolean(
+      isRetry
+      || options?.documentResourceIds !== undefined
+      || options?.explicitDocumentNodeIds !== undefined
+      || options?.documentAttachments !== undefined
+    )
     const userMessage: AgentMessage = {
       id: messageId(),
       role: 'user',
       content,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      ...(documentRequest.documentAttachments.length ? {
+        documentAttachments: documentRequest.documentAttachments.map(attachment => ({
+          resourceId: attachment.resourceId,
+          name: attachment.name,
+          contentType: attachment.contentType,
+          size: attachment.size,
+          sha256: attachment.sha256
+        }))
+      } : {})
     }
+    const errorMessageId = isRetry && pendingRetry ? pendingRetry.errorMessageId : messageId()
     set(state => ({
       sessionsByKey: updateSessions(state.sessionsByKey, sessionKey, session => ({
         ...session,
         running: true,
         runtimeError: undefined,
-        messages: [...session.messages, userMessage],
+        messages: isRetry ? session.messages : [...session.messages, userMessage],
         updatedAt: Date.now()
       })),
       runtimeError: undefined
@@ -206,53 +259,79 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const result = await agentRuntimeService.sendMessage({
         threadId: getSessionFromState(get(), sessionKey).threadId,
         ...(options?.conversationId ? { conversationId: options.conversationId } : {}),
-        requestId: messageId(),
+        requestId,
         content,
         mode: options?.mode,
         permissionScope: options?.permissionScope || (options?.workspaceContext ? 'workspace-chatbot-agent' : 'prompt-library-agent'),
         sessionKey,
         projectId: options?.workspaceContext?.projectId,
+        ...(options?.interactionMode ? { interactionMode: options.interactionMode } : {}),
         workspaceContext: options?.workspaceContext,
         ...(options?.selectedSkillIds?.length ? { selectedSkillIds: options.selectedSkillIds } : {}),
         ...(options?.canvasNodeContext ? { canvasNodeContext: options.canvasNodeContext } : {}),
-        promptLibrary: (
-          options?.permissionScope === 'prompt-library-agent'
-          || options?.canvasNodeContext?.mode === 'prompt-library'
-            ? presets.slice(0, 200)
-            : []
-        ).map(preset => ({
-          id: preset.id,
-          type: preset.type,
-          category: preset.category,
-          label: preset.label,
-          content: preset.content,
-          meta: preset.meta
-        }))
+        ...(options?.documentWriteContext ? { documentWriteContext: options.documentWriteContext } : {}),
+        ...(includesDocumentRequest ? {
+          documentResourceIds: documentRequest.documentResourceIds,
+          explicitDocumentNodeIds: documentRequest.explicitDocumentNodeIds
+        } : {}),
+        ...(
+          options?.interactionMode !== 'chat-experimental'
+          && (
+            options?.permissionScope === 'prompt-library-agent'
+            || options?.canvasNodeContext?.mode === 'prompt-library'
+          )
+            ? {
+                promptRetrieval: {
+                  query: content.trim().slice(0, 256),
+                  types: [],
+                  categories: [],
+                  exactCodes: [],
+                  limit: 10
+                }
+              }
+            : {}
+        )
       })
       const proposals = result.proposals.map(proposal => ({
         ...proposal,
         threadId: proposal.threadId || result.threadId,
         contextId: proposal.contextId || options?.workspaceContext?.contextId
       }))
-      const canvasEdits = (result.canvasEdits || []).map(edit => ({
-        ...edit,
-        threadId: edit.threadId || result.threadId,
-        contextId: edit.contextId || options?.workspaceContext?.contextId
-      }))
+      const canvasEdits = (result.canvasEdits || []).map(edit => (
+        edit.kind === 'document_create' || edit.kind === 'document_changes' || edit.kind === 'storyboard_create' || edit.kind === 'storyboard_changes'
+          ? edit
+          : {
+              ...edit,
+              threadId: edit.threadId || result.threadId,
+              contextId: edit.contextId || options?.workspaceContext?.contextId
+            }
+      ))
+      const citations = promptCitations(result.diagnostics)
+      const promptRetrieval = promptRetrievalState(result.diagnostics)
 
       set(state => ({
         sessionsByKey: updateSessions(state.sessionsByKey, sessionKey, session => ({
           ...session,
           running: false,
+          runtimeError: undefined,
+          retryRequest: undefined,
           threadId: result.threadId,
           conversationId: result.conversationId || options?.conversationId || session.conversationId,
           messages: [
-            ...session.messages,
+            ...(
+              isRetry && pendingRetry
+                ? session.messages.filter(message => message.id !== pendingRetry.errorMessageId)
+                : session.messages
+            ),
             {
               id: messageId(),
               role: 'assistant',
               content: result.text,
-              createdAt: Date.now()
+              createdAt: Date.now(),
+              ...(citations.length
+                ? { citations }
+                : {}),
+              ...(promptRetrieval ? { promptRetrieval } : {})
             }
           ],
           proposals: mergeProposals(session.proposals, proposals),
@@ -267,10 +346,20 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           ...session,
           running: false,
           runtimeError: error instanceof Error ? error.message : String(error),
+          retryRequest: {
+            requestId,
+            content,
+            conversationId,
+            userMessageId: isRetry && pendingRetry ? pendingRetry.userMessageId : userMessage.id,
+            errorMessageId,
+            documentResourceIds: documentRequest.documentResourceIds,
+            explicitDocumentNodeIds: documentRequest.explicitDocumentNodeIds,
+            documentAttachments: documentRequest.documentAttachments
+          } as ScopedRetryRequest,
           messages: [
-            ...session.messages,
+            ...session.messages.filter(message => message.id !== errorMessageId),
             {
-              id: messageId(),
+              id: errorMessageId,
               role: 'assistant',
               content: `Agent call failed: ${error instanceof Error ? error.message : String(error)}`,
               createdAt: Date.now()
@@ -292,8 +381,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         ...session,
         messages: session.messages || current.messages,
         proposals: session.proposals || current.proposals,
-        running: false
-      }))
+        running: false,
+        runtimeError: undefined,
+        retryRequest: undefined
+      })),
+      runtimeError: undefined
     }))
   },
 
@@ -342,4 +434,47 @@ function mergeProposals(
       return true
     })
   ]
+}
+
+function promptCitations(diagnostics: unknown): NonNullable<AgentMessage['citations']> {
+  if (!diagnostics || typeof diagnostics !== 'object' || Array.isArray(diagnostics)) return []
+  const retrieval = (diagnostics as Record<string, unknown>).promptRetrieval
+  if (!retrieval || typeof retrieval !== 'object' || Array.isArray(retrieval)) return []
+  const citations = (retrieval as Record<string, unknown>).citations
+  if (!Array.isArray(citations)) return []
+  return citations.flatMap(value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+    const item = value as Record<string, unknown>
+    if (
+      typeof item.referenceCode !== 'string'
+      || typeof item.title !== 'string'
+      || !Number.isSafeInteger(item.revision)
+      || typeof item.digest !== 'string'
+    ) return []
+    return [{
+      referenceCode: item.referenceCode,
+      title: item.title,
+      revision: Number(item.revision),
+      digest: item.digest
+    }]
+  })
+}
+
+function promptRetrievalState(diagnostics: unknown): AgentMessage['promptRetrieval'] {
+  if (!diagnostics || typeof diagnostics !== 'object' || Array.isArray(diagnostics)) return undefined
+  const value = (diagnostics as Record<string, unknown>).promptRetrieval
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const retrieval = value as Record<string, unknown>
+  if (
+    typeof retrieval.degraded !== 'boolean'
+    || !Number.isSafeInteger(retrieval.resultCount)
+    || !Number.isSafeInteger(retrieval.staleRejectedCount)
+  ) return undefined
+  return {
+    degraded: retrieval.degraded,
+    resultCount: Number(retrieval.resultCount),
+    staleRejectedCount: Number(retrieval.staleRejectedCount),
+    ...(typeof retrieval.auditId === 'string' ? { auditId: retrieval.auditId } : {}),
+    ...(typeof retrieval.errorCode === 'string' ? { errorCode: retrieval.errorCode } : {})
+  }
 }

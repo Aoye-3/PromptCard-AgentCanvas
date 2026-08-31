@@ -12,6 +12,7 @@ export interface CanvasAgentNodeSummary {
   title: string
   displayText: string
   userText: string
+  kind?: 'text' | 'image' | 'document'
 }
 
 export interface CanvasAgentModelOption {
@@ -23,6 +24,7 @@ export interface CanvasAgentModelOption {
 
 interface CanvasAgentComposerProps {
   nodes: CanvasAgentNodeSummary[]
+  documentNodes?: CanvasAgentNodeSummary[]
   attachments: CanvasAgentAttachment[]
   editMode: CanvasAgentEditMode
   selection?: CanvasAgentSelection
@@ -38,11 +40,12 @@ interface CanvasAgentComposerProps {
   onRemoveNode: (nodeId: string) => void
   onSetTarget: (nodeId: string) => void
   onClearTarget: () => void
-  onSubmit: (content: string, mentions: Array<{ nodeId: string; label: string }>) => void
+  onSubmit: (content: string, mentions: Array<{ nodeId: string; label: string }>) => void | Promise<void>
 }
 
 export function CanvasAgentComposer({
   nodes,
+  documentNodes = [],
   attachments,
   editMode,
   running,
@@ -66,14 +69,20 @@ export function CanvasAgentComposer({
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const [activeMentionIndex, setActiveMentionIndex] = useState(0)
   const [targetMenuOpen, setTargetMenuOpen] = useState(false)
-  const nodeById = useMemo(() => new Map(nodes.map(node => [node.id, node])), [nodes])
+  const nodeById = useMemo(
+    () => new Map([...nodes, ...documentNodes].map(node => [node.id, node])),
+    [documentNodes, nodes]
+  )
   const attachedNodes = attachments.flatMap(attachment => {
     const node = nodeById.get(attachment.nodeId)
     return node ? [{ attachment, node }] : []
   })
   const targetNode = attachedNodes.find(({ attachment }) => attachment.role === 'target')
   const referenceNodes = attachedNodes.filter(({ attachment }) => attachment.role === 'reference')
-  const mentionCandidates = attachedNodes.filter(({ node }) => (
+  const mentionCandidates = [
+    ...attachedNodes.map(item => ({ ...item, document: false })),
+    ...documentNodes.map(node => ({ node, attachment: undefined, document: true }))
+  ].filter(({ node }) => (
     mentionQuery !== null && node.title.toLocaleLowerCase().includes(mentionQuery.toLocaleLowerCase())
   ))
   const selectedModelAvailable = modelOptions.length === 0 || modelOptions.some(model => (
@@ -99,7 +108,10 @@ export function CanvasAgentComposer({
   useEffect(() => {
     const editor = editorRef.current
     if (!editor) return
-    const validIds = new Set(attachments.map(attachment => attachment.nodeId))
+    const validIds = new Set([
+      ...attachments.map(attachment => attachment.nodeId),
+      ...documentNodes.map(node => node.id)
+    ])
     editor.querySelectorAll<HTMLElement>('[data-agent-mention-id]').forEach(element => {
       const nodeId = element.dataset.agentMentionId || ''
       const node = nodeById.get(nodeId)
@@ -111,7 +123,7 @@ export function CanvasAgentComposer({
       element.dataset.agentMentionLabel = node.title
     })
     updateSerialized(editor)
-  }, [attachments, nodeById])
+  }, [attachments, documentNodes, nodeById])
 
   useEffect(() => {
     if (!targetMenuOpen || typeof document === 'undefined') return
@@ -156,6 +168,17 @@ export function CanvasAgentComposer({
       false,
       event.clipboardData.getData('text/plain')
     )
+  }
+
+  const submitCurrentMessage = () => {
+    if (disabled || modelSaving || !selectedModelAvailable || !serialized.content) return
+    try {
+      const submission = onSubmit(serialized.content, serialized.mentions)
+      if (submission) return Promise.resolve(submission).catch(() => undefined)
+    } catch {
+      // React event handlers cannot surface caller failures; the owning panel reports actionable errors.
+      return Promise.resolve()
+    }
   }
 
   const insertMention = (node: CanvasAgentNodeSummary) => {
@@ -205,7 +228,7 @@ export function CanvasAgentComposer({
     }
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
     event.preventDefault()
-    if (!disabled && serialized.content) onSubmit(serialized.content, serialized.mentions)
+    return submitCurrentMessage()
   }
 
   const handleReferenceContextMenu = (event: MouseEvent, nodeId: string) => {
@@ -299,7 +322,7 @@ export function CanvasAgentComposer({
         />
         {mentionQuery !== null ? (
           <div className="absolute bottom-full left-2 right-2 z-40 mb-1 max-h-48 overflow-y-auto rounded-lg border border-[#e5e7eb] bg-white p-1 shadow-xl" role="listbox" aria-label="可引用的文字节点">
-            {mentionCandidates.length ? mentionCandidates.map(({ attachment, node }, index) => (
+            {mentionCandidates.length ? mentionCandidates.map(({ attachment, document, node }, index) => (
               <button
                 key={node.id}
                 type="button"
@@ -309,10 +332,10 @@ export function CanvasAgentComposer({
                 onMouseDown={event => event.preventDefault()}
                 onClick={() => insertMention(node)}
               >
-                <span className="mt-0.5 rounded bg-[#f3f4f6] px-1 text-[9px] font-bold text-[#5e5d59]">{attachment.role === 'target' ? '目标' : '参考'}</span>
+                <span className="mt-0.5 rounded bg-[#f3f4f6] px-1 text-[9px] font-bold text-[#5e5d59]">{document ? '文档' : attachment?.role === 'target' ? '目标' : '参考'}</span>
                 <span className="min-w-0"><span className="block break-all text-[11px] font-bold text-[#141413]">{node.title}</span><span className="block truncate text-[10px] text-[#87867f]">{node.displayText}</span></span>
               </button>
-            )) : <div className="px-2 py-2 text-[11px] text-[#87867f]">没有匹配的已挂载节点</div>}
+            )) : <div className="px-2 py-2 text-[11px] text-[#87867f]">没有匹配的已挂载节点或文档</div>}
           </div>
         ) : null}
         <div className="mt-1 flex items-center gap-2">
@@ -361,7 +384,7 @@ export function CanvasAgentComposer({
             aria-label="发送给 Agent"
             title="发送给 Agent"
             className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#141413] text-white transition hover:bg-[#30302e] disabled:bg-[#d1cfc5]"
-            onClick={() => onSubmit(serialized.content, serialized.mentions)}
+            onClick={submitCurrentMessage}
             disabled={disabled || modelSaving || !selectedModelAvailable || !serialized.content}
           >
             {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}

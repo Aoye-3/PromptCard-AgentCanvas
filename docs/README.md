@@ -14,10 +14,20 @@ This is the single entry point for the maintained project documentation. Histori
 - [Canvas Agent Omnireference Prompt Editing](./frontend/canvas-agent-reference-editing.md)
 - [Skill Host Pins And Projections](./architecture/skill-host-projections.md)
 - [Generic Local Agent Bridge Boundary](./decisions/ADR-019-generic-local-agent-bridge-boundary.md)
+- [Typed Creative Writeback And Agent Workspace](./decisions/ADR-023-typed-creative-writeback-and-agent-workspace.md)
+- [Portable Creative Context Environment](./decisions/ADR-022-portable-creative-context-environment.md)
 - [Task 15.5 Technical Acceptance](./reviews/2026-08-24-task-15-5-technical-acceptance.md)
+- [Task 15.6-15.9 Progress Snapshot](./reviews/2026-08-29-task-15-6-through-15-9-progress.md)
+- [Task 15.10 / Checkpoint 3.5 Technical Acceptance](./reviews/2026-08-27-task-15-10-technical-acceptance.md)
+- [Task 26A Canvas Checkpoint Handoff](./reviews/2026-08-31-task-26a-canvas-checkpoint.md)
+- [Task 26C Agent Work Environment Checkpoint](./reviews/2026-08-31-task-26c-agent-work-environment-checkpoint.md)
+- [Real Codex First-Contact Discovery Checkpoint](./reviews/2026-08-31-real-codex-discovery-checkpoint.md)
+- [Task 28 Optional Bridge Packaging Checkpoint](./reviews/2026-09-01-task-28-bridge-packaging-checkpoint.md)
+- [Plan 008 Final Release Matrix](./reviews/2026-09-01-plan-008-final-release-matrix.md)
 - [Backend](./backend/README.md)
 - [Database and Storage](./database/README.md)
 - [Operations](./operations/README.md)
+- [Local Agent Bridge And MCP Operations](./operations/local-agent-bridge.md)
 - [Quality](./quality/README.md)
 - [Maintenance](./maintenance/README.md)
 - [Plans](./Plan/README.md)
@@ -35,30 +45,19 @@ The floating toolbar's screenshot loop is a Windows-first native `xcap` capture 
 
 Capture Bar also imports WeChat/QQ-style clipboard images. Recent Captures can explicitly register one or many reviewed items into Prompt Library, or place image captures on Free Canvas, while all three consumers reuse one physical `assetId`. See [Recent Capture To Prompt Registration](./architecture/recent-capture-prompt-registration.md), [ADR-006](./decisions/ADR-006-explicit-capture-registration-and-shared-asset-identity.md), and [Storage Service API](./api/storage-service-api.md).
 
-Free Canvas includes a provider-neutral project Image Generation Agent. The first adapter is Doubao Seedream 5.0 Pro; credentials stay in the operating-system keyring, and successful results become local assets and Recent Captures. The current Storage schema is v15: v10 introduced public references, v11-v12 immutable Canvas context packs, v13 canonical Skill packages, v14 independent exact host pins and Codex projection recovery, and v15 exact-revision trust reviews and Skill management operations. Earlier image, asset, resource, conversation, and model-binding migrations remain intact. Legacy generator nodes are read-only. See [Schema Notes](./database/schema-notes.md), [Image Generation And Model Management](./architecture/image-generation-and-model-management.md), [ADR-008](./decisions/ADR-008-provider-neutral-image-generation.md), [ADR-010](./decisions/ADR-010-project-image-generation-conversations.md), and the [current implementation status](./Plan/005-seedream-image-node-frontend-implementation-status.md).
+Free Canvas includes a provider-neutral project Image Generation Agent. The first adapter is Doubao Seedream 5.0 Pro; credentials stay in the operating-system keyring, and successful results become local assets and Recent Captures. The current Storage schema is v19: v10 introduced public references, v11-v12 immutable Canvas context packs, v13 canonical Skill packages, v14 independent exact host pins and Codex projection recovery, v15 exact-revision trust reviews and Skill management operations, v16 document resources plus provider cleanup tracking, v17 stable `CVD-*`/`CVS-*` creative references, v18 transactional Prompt retrieval documents/audits, and v19 the profile-scoped Bridge delivery ledger. Earlier image, asset, resource, conversation, and model-binding migrations remain intact. Legacy generator nodes are read-only. See [Schema Notes](./database/schema-notes.md), [Image Generation And Model Management](./architecture/image-generation-and-model-management.md), [ADR-008](./decisions/ADR-008-provider-neutral-image-generation.md), [ADR-010](./decisions/ADR-010-project-image-generation-conversations.md), and the [current implementation status](./Plan/005-seedream-image-node-frontend-implementation-status.md).
 
-Plan 008 is paused at the Task 15.5 user-acceptance gate. The host-neutral `promptcard-bridge/v2` contract and ADR-019 are complete, while Task 16's bridge router, credential, CLI, MCP server, Prompt retrieval, and delivery runtime are not implemented.
+Plan 008 Tasks 15.6-15.10 are the accepted regression baseline. Tasks 16-28 provide the bounded Bridge read surface, deterministic JSON CLI, Storage v18 retrieval, local-Agent RAG, Storage v19 delivery ledger, four-kind typed visual writeback, bounded image staging, ten-Tool STDIO/loopback HTTP MCP, redacted Agent work environment, adversarial boundary gate, and optional launch/configuration/diagnostic package. Real Codex first-contact, Document → Storyboard → Prompt → generated-image, replay/conflict, and restart scenarios pass, as does the repository-wide build/regression/browser/security/documentation matrix.
 
 Contextual image actions and explicit multi-view groups are tracked by [Plan 007](./Plan/007-contextual-image-editing-and-multi-view-plan.md) and the maintained [Contextual Image Actions](./frontend/contextual-image-actions.md) contract. Recoverable placeholders, project-scoped resources, and explicit multi-view request groups are governed by [ADR-013](./decisions/ADR-013-recoverable-image-generation-placeholders.md), [ADR-014](./decisions/ADR-014-project-scoped-resource-library.md), and [ADR-015](./decisions/ADR-015-explicit-multi-view-request-groups.md). Plan 007 remains `Active`: zero-cost Fake Provider evidence is ready, unified human approval is pending, and paid live-provider gates have not been executed.
 
 ## Product Vision
 
-PromptCard-Manager is evolving into an AIGC director's storyboard-script workstation. The product direction is to integrate Prompt management, AIGC script grids, storyboard images, and script planning into an external management board that reduces video workflow information overload before work enters video production tools.
+PromptCard-Manager is evolving into a portable, cross-platform creative-context environment. It preserves a creator's project context across external Agent applications and creation tools instead of competing to become another image/video generation canvas or model aggregator. The durable core is the context itself—script, references, structured storyboard, shot execution information, assets, feedback, and decisions—while Free Canvas is the shared human/Agent workbench for viewing and editing that context.
 
-Slogan:
+The immediate product/technical priority is the host-neutral Local Agent Bridge / MCP foundation. It must let external Agents operate on explicit, typed project objects through Gateway/Storage policy and reviewable proposals. Browser-facing delivery is deliberately later: an Asset Shelf and connectors should first make project assets portable through file/image drag-out, text copy, and execution-package export; platform-specific fill/return flows follow only where they are reliable and valuable.
 
-```text
-让视频制作画布与编导画布分割开来。
-```
-
-Roadmap:
-
-| Workstream | Target Completion |
-| --- | --- |
-| Prompt管理与协作Agent改造 | TBD |
-| 自由画布式改造 | TBD |
-| 图片API置入 | Seedream 5.0 Pro 自动化适配完成；真实 Ark 发布冒烟待完成 |
-| 宫格分镜大师 | TBD |
+See [ADR-022](./decisions/ADR-022-portable-creative-context-environment.md) and [Plan 009](./Plan/009-portable-creative-context-environment.md) for scope, sequencing, and non-goals.
 
 The root workspace `F:\.Agent-PromptCardManager` is not the project. The project repository is:
 
@@ -79,7 +78,7 @@ Current-state truth lives in the architecture, API, frontend, backend, database,
 - Keep model catalog, connections, and `chat.primary`/`image.primary` assignments unified through Agent Runtime Model Management. Deprecated chat model-config routes are migration compatibility only.
 - Keep `PI 原生` text providers, SDK-backed text adapters, and image-generation adapters as separate invocation paths. Sharing connection metadata never authorizes cross-modality model leakage.
 - Keep model credentials in the operating-system keyring and external provider calls behind the Python credential boundary. The browser and Node pi runtime may use non-secret descriptors but must never receive or persist a provider credential.
-- Keep image-generation conversations, runs, placements, image derivations, text-Agent conversations, per-conversation model bindings, public references, context packs, canonical Skill revisions, exact-revision trust reviews, and host pins in the current PromptCard Storage schema v15. Do not embed image runs or Agent transcripts in project JSON, and do not use browser storage or host projections as authoritative state.
+- Keep image-generation conversations, runs, placements, image derivations, text-Agent conversations, per-conversation model bindings, public references, typed creative references, context packs, transactional Prompt retrieval documents/audits, the Bridge delivery ledger, canonical Skill revisions, exact-revision trust reviews, and host pins in the current PromptCard Storage schema v19. Do not embed image runs or Agent transcripts in project JSON, and do not use browser storage or host projections as authoritative state.
 - Treat `workspaceContext.snapshot` as the per-request current workspace view. Do not use selected cards, current rows, or focused fields as the thread identity unless a future spec explicitly changes the product model.
 - Keep permission scopes narrow: `prompt-library-agent` is the only Prompt Library write proposal surface; `workspace-chatbot-agent` is the Canvas text proposal surface; `media-analysis-agent` may create a non-mutating preview for one explicit media item but cannot register it. Skill instructions, references, and declared tools cannot add permissions or bypass proposal approval.
 - Keep Media conversation history temporary. Each request may include bounded component-memory history, but closing the dialog must discard it and no project Agent conversation may be created.

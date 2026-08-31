@@ -18,11 +18,21 @@ from .assets import (
     DEFAULT_MAX_ASSET_BYTES,
     IMAGE_CONTENT_TYPES,
     AssetStore,
-    AssetValidationError,
+    AssetValidationError as AssetValidationError,
     DeletedAssetLookup,
     prepare_provider_image,
 )
 from .backup import BackupManager
+from .delivery_ledger import (
+    BridgeDeliveryLedger,
+    BridgeDeliveryValidationError,
+    create_bridge_delivery_schema,
+)
+from .document_delivery import BridgeDocumentDeliveryService
+from .image_delivery import BridgeImageDeliveryService
+from .prompt_delivery import BridgePromptDeliveryService
+from .storyboard_delivery import BridgeStoryboardDeliveryService
+from .document_resources import DocumentResourceStore
 from .image_runs import (
     decode_cursor,
     encode_cursor,
@@ -33,11 +43,20 @@ from .image_runs import (
     transition_image_run,
 )
 from .migration import MigrationError, StorageInitializer
+from .provider_file_cleanup import ProviderFileCleanupRepository
 from .reference_codes import (
     ReferenceCodeError,
     ReferenceNamespace,
     generate_reference_code,
     parse_reference_code,
+)
+from .retrieval import (
+    PromptRetrievalRepository,
+    create_prompt_retrieval_schema,
+    drop_prompt_retrieval_preset_triggers,
+    ensure_prompt_retrieval_digest_column,
+    prompt_retrieval_digest,
+    rebuild_prompt_retrieval,
 )
 from .skill_packages import (
     DIGEST_VERSION as SKILL_DIGEST_VERSION,
@@ -52,7 +71,7 @@ from .skill_packages import (
 
 Actor = Literal["user", "agent"]
 SERVICE_VERSION = "2.0.0"
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 19
 DATABASE_NAME = "promptcard.sqlite3"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE = " \t\n\v\f\r"
 _PUBLIC_REFERENCE_EDGE_WHITESPACE_SQL = (
@@ -71,12 +90,25 @@ JSON_SOURCES = (
     "prompt-library-presets.json",
     "prompt-library-trash.json",
 )
+_AGENT_APPLY_EDIT_TERMINAL_STATUSES = {
+    "applied",
+    "failed_conflict",
+    "failed_integrity",
+    "failed_target_missing",
+}
 
 
 class RevisionConflict(Exception):
     def __init__(self, current: dict[str, Any]) -> None:
         super().__init__("revision conflict")
         self.current = current
+
+
+class AgentApplyEditConflict(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(code)
 
 
 class MissingItem(Exception):
@@ -139,11 +171,13 @@ class SqliteStore:
         self.data_dir = data_dir
         self.database_path = data_dir / DATABASE_NAME
         self.assets_dir = data_dir / "assets"
+        self.documents_dir = data_dir / "documents"
         self.backups_dir = data_dir.parent / "backups"
         self.projects_seed = projects_seed or []
         self.presets_seed = presets_seed or []
         self._prepare_provider_image = image_preparer or prepare_provider_image
         self._initialize_lock = threading.Lock()
+        self._document_consistency_lock = threading.RLock()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._initialize()
         self._assets = AssetStore(
@@ -157,17 +191,55 @@ class SqliteStore:
             + [entry["payload"] for entry in self.list_preset_trash()]
             + self._successful_image_run_payloads()
             + self._image_asset_derivation_payloads()
+            + self._bridge_stage_asset_payloads()
             + self._project_resource_asset_payloads(),
             now_ms,
+        )
+        self._documents = DocumentResourceStore(
+            self.data_dir,
+            self._connect,
+            self._transaction,
+            self._require_active_project,
+            now_ms,
+            self._document_consistency_lock,
+        )
+        self._provider_file_cleanup = ProviderFileCleanupRepository(
+            self._connect,
+            self._transaction,
+            now_ms,
+        )
+        self._prompt_retrieval = PromptRetrievalRepository(
+            self.data_dir, self._connect, self._transaction, now_ms
+        )
+        self._bridge_deliveries = BridgeDeliveryLedger(
+            self._transaction, self._connect, now_ms
+        )
+        self._bridge_prompt_deliveries = BridgePromptDeliveryService(
+            self._bridge_deliveries
+        )
+        self._bridge_document_deliveries = BridgeDocumentDeliveryService(
+            self._bridge_deliveries,
+            self.resolve_context_pack,
+        )
+        self._bridge_storyboard_deliveries = BridgeStoryboardDeliveryService(
+            self._bridge_deliveries,
+            self.resolve_context_pack,
+        )
+        self._bridge_image_deliveries = BridgeImageDeliveryService(
+            self._bridge_deliveries,
+            self.save_bridge_staged_image,
+            self.resolve_context_pack,
         )
         self._backups = BackupManager(
             self.database_path,
             self.assets_dir,
+            self.documents_dir,
             DATABASE_NAME,
             SERVICE_VERSION,
             SCHEMA_VERSION,
             self._connect,
             iso_now,
+            self._document_consistency_lock,
         )
 
     def health(self) -> dict[str, Any]:
@@ -190,9 +262,12 @@ class SqliteStore:
                 "imageGenerationPlacements": True,
                 "imageAssetDerivations": True,
                 "projectResources": True,
+                "projectDocumentResources": True,
                 "agentConversations": True,
                 "skillHub": True,
                 "contextPacks": True,
+                "promptRetrieval": True,
+                "bridgeDeliveryLedger": True,
             },
         }
 
@@ -299,6 +374,7 @@ class SqliteStore:
                 "prompt": {
                     "referenceCode": projected["referenceCode"],
                     "revision": projected["revision"],
+                    "digest": _prompt_retrieval_digest(prompt),
                     "type": projected["type"],
                     "category": projected["category"],
                     "label": projected["label"],
@@ -437,6 +513,97 @@ class SqliteStore:
                 "node": self._resolved_canvas_node(node, parsed_node.code),
             }
 
+    def resolve_creative_reference(
+        self,
+        project_reference_code: str,
+        creative_reference_code: str,
+    ) -> dict[str, Any]:
+        parsed_project = parse_reference_code(
+            project_reference_code,
+            expected_namespace=ReferenceNamespace.PROJECT,
+        )
+        parsed_creative = parse_reference_code(creative_reference_code)
+        if parsed_creative.namespace not in {
+            ReferenceNamespace.CANVAS_DOCUMENT,
+            ReferenceNamespace.CANVAS_STORYBOARD,
+        }:
+            raise ReferenceCodeError("reference_namespace_mismatch")
+        namespace_name = (
+            "canvasDocument"
+            if parsed_creative.namespace is ReferenceNamespace.CANVAS_DOCUMENT
+            else "canvasStoryboard"
+        )
+        project_reference = {"namespace": "project", "code": parsed_project.code}
+        creative_reference = {
+            "namespace": namespace_name,
+            "code": parsed_creative.code,
+        }
+        with self._connect() as connection:
+            project_registry = connection.execute(
+                """SELECT internal_id FROM public_references
+                   WHERE public_code=? AND namespace='PRJ' AND owner_scope=''""",
+                (parsed_project.code,),
+            ).fetchone()
+            if project_registry is None:
+                self._raise_canvas_reference_error(
+                    "project_reference_not_found", project_reference, status_code=404
+                )
+            creative_registry = connection.execute(
+                """SELECT project_id, node_id FROM creative_references
+                   WHERE public_code=? AND namespace=?""",
+                (parsed_creative.code, parsed_creative.namespace.value),
+            ).fetchone()
+            if creative_registry is None:
+                self._raise_canvas_reference_error(
+                    "canvas_node_reference_not_found",
+                    creative_reference,
+                    status_code=404,
+                )
+            project_id = project_registry[0]
+            if creative_registry[0] != project_id:
+                self._raise_canvas_reference_error(
+                    "canvas_reference_project_mismatch",
+                    creative_reference,
+                    status_code=409,
+                )
+            project_row = connection.execute(
+                "SELECT revision, status, payload_json FROM projects WHERE id=?",
+                (project_id,),
+            ).fetchone()
+            if project_row is None:
+                self._raise_canvas_reference_error(
+                    "project_missing", project_reference, status_code=410
+                )
+            if project_row[1] == "trash":
+                self._raise_canvas_reference_error(
+                    "project_trashed", project_reference, status_code=410
+                )
+            project = json.loads(project_row[2])
+            node = self._resolve_current_canvas_node(
+                project,
+                creative_registry[1],
+                parsed_creative.namespace,
+                creative_reference,
+            )
+            document_codes = {
+                row[1]: row[0]
+                for row in connection.execute(
+                    """SELECT public_code, node_id FROM creative_references
+                       WHERE project_id=? AND namespace='CVD'""",
+                    (project_id,),
+                )
+            }
+            return {
+                "reference": creative_reference,
+                "project": {
+                    "referenceCode": parsed_project.code,
+                    "revision": project_row[0],
+                },
+                "node": self._resolved_creative_node(
+                    node, parsed_creative.code, document_codes
+                ),
+            }
+
     def create_context_pack(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("Context pack payload must be an object")
@@ -466,6 +633,8 @@ class SqliteStore:
             if parsed.namespace not in {
                 ReferenceNamespace.CANVAS_TEMPLATE,
                 ReferenceNamespace.CANVAS_MEDIA,
+                ReferenceNamespace.CANVAS_DOCUMENT,
+                ReferenceNamespace.CANVAS_STORYBOARD,
             }:
                 raise ReferenceCodeError("reference_namespace_mismatch")
             parsed_nodes.append(parsed)
@@ -511,17 +680,28 @@ class SqliteStore:
             source_codes: list[str] = []
             source_boundaries: list[dict[str, Any]] = []
             for parsed_node in parsed_nodes:
-                namespace_name = (
-                    "canvasTemplate"
-                    if parsed_node.namespace is ReferenceNamespace.CANVAS_TEMPLATE
-                    else "canvasMedia"
-                )
+                namespace_name = {
+                    ReferenceNamespace.CANVAS_TEMPLATE: "canvasTemplate",
+                    ReferenceNamespace.CANVAS_MEDIA: "canvasMedia",
+                    ReferenceNamespace.CANVAS_DOCUMENT: "canvasDocument",
+                    ReferenceNamespace.CANVAS_STORYBOARD: "canvasStoryboard",
+                }[parsed_node.namespace]
                 node_reference = {"namespace": namespace_name, "code": parsed_node.code}
-                registry_row = connection.execute(
-                    """SELECT owner_scope, internal_id FROM public_references
-                       WHERE public_code=? AND namespace=?""",
-                    (parsed_node.code, parsed_node.namespace.value),
-                ).fetchone()
+                if parsed_node.namespace in {
+                    ReferenceNamespace.CANVAS_DOCUMENT,
+                    ReferenceNamespace.CANVAS_STORYBOARD,
+                }:
+                    registry_row = connection.execute(
+                        """SELECT project_id, node_id FROM creative_references
+                           WHERE public_code=? AND namespace=?""",
+                        (parsed_node.code, parsed_node.namespace.value),
+                    ).fetchone()
+                else:
+                    registry_row = connection.execute(
+                        """SELECT owner_scope, internal_id FROM public_references
+                           WHERE public_code=? AND namespace=?""",
+                        (parsed_node.code, parsed_node.namespace.value),
+                    ).fetchone()
                 if registry_row is None:
                     self._raise_context_pack_error(
                         "canvas_node_reference_not_found", node_reference, status_code=404
@@ -658,6 +838,268 @@ class SqliteStore:
                 "sourceCodes": source_codes,
             }
 
+    def read_context_asset(
+        self,
+        cvc_code: str,
+        reference_code: str,
+    ) -> tuple[Path, dict[str, Any]]:
+        resolved = self.resolve_context_pack(cvc_code)
+        parsed_reference = parse_reference_code(reference_code)
+        if parsed_reference.namespace not in {
+            ReferenceNamespace.CANVAS_MEDIA,
+            ReferenceNamespace.PROMPT_MEDIA,
+        }:
+            raise ReferenceCodeError("reference_namespace_mismatch")
+        namespace = (
+            "canvasMedia"
+            if parsed_reference.namespace is ReferenceNamespace.CANVAS_MEDIA
+            else "promptMedia"
+        )
+        reference = {"namespace": namespace, "code": parsed_reference.code}
+        allowed_codes = {
+            entry.get("reference", {}).get("code")
+            for entry in resolved["entries"]
+            if isinstance(entry, dict)
+        }
+        allowed_codes.update(resolved["sourceCodes"])
+        if parsed_reference.code not in allowed_codes:
+            self._raise_context_pack_error(
+                "asset_reference_outside_context", reference, status_code=403
+            )
+
+        with self._connect() as connection:
+            context_row = self._context_pack_row(connection, resolved["cvcCode"])
+            if context_row is None:
+                self._raise_context_pack_error(
+                    "context_not_found",
+                    {"namespace": "canvasContext", "code": resolved["cvcCode"]},
+                    status_code=404,
+                )
+            if context_row[10] is not None:
+                self._raise_context_pack_error(
+                    "context_revoked",
+                    {"namespace": "canvasContext", "code": resolved["cvcCode"]},
+                    status_code=410,
+                )
+            if parsed_reference.namespace is ReferenceNamespace.CANVAS_MEDIA:
+                asset_id = self._context_canvas_asset_id(
+                    connection, resolved["projectCode"], parsed_reference.code
+                )
+                unavailable_code = "media_unavailable"
+            else:
+                asset_id = self._context_prompt_asset_id(
+                    connection, parsed_reference.code
+                )
+                unavailable_code = "source_unavailable"
+            asset = connection.execute(
+                """SELECT original_filename, relative_path, content_type, size,
+                          lifecycle_status
+                   FROM assets WHERE asset_id=?""",
+                (asset_id,),
+            ).fetchone()
+        if asset is None or asset[4] != "active":
+            self._raise_context_pack_error(
+                unavailable_code, reference, status_code=410
+            )
+        path = (self.data_dir / asset[1]).resolve()
+        try:
+            path.relative_to(self.data_dir.resolve())
+        except ValueError:
+            self._raise_context_pack_error(
+                unavailable_code, reference, status_code=410
+            )
+        if not path.is_file():
+            self._raise_context_pack_error(
+                unavailable_code, reference, status_code=410
+            )
+        return path, {
+            "reference": reference,
+            "filename": asset[0],
+            "contentType": asset[2],
+            "size": asset[3],
+        }
+
+    def begin_bridge_delivery(
+        self,
+        operation_context: dict[str, Any],
+        operation: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_deliveries.begin(operation_context, operation, request)
+
+    def finish_bridge_delivery(
+        self,
+        profile_id: str,
+        client_request_id: str,
+        normalized_request_digest: str,
+        state: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return self._bridge_deliveries.finish(
+                profile_id,
+                client_request_id,
+                normalized_request_digest,
+                state,
+                result,
+            )
+        except KeyError as exc:
+            raise MissingItem(client_request_id) from exc
+
+    def get_bridge_delivery(
+        self, profile_id: str, client_request_id: str
+    ) -> dict[str, Any]:
+        record = self._bridge_deliveries.get(profile_id, client_request_id)
+        if record is None:
+            raise MissingItem(client_request_id)
+        return record
+
+    def reconcile_bridge_deliveries(
+        self, stale_before_ms: int, *, limit: int = 100
+    ) -> int:
+        return self._bridge_deliveries.reconcile_processing(
+            stale_before_ms, limit=limit
+        )
+
+    def preview_bridge_prompt_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_prompt_deliveries.preview(operation_context, request)
+
+    def commit_bridge_prompt_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_prompt_deliveries.commit(operation_context, request)
+
+    def preview_bridge_document_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_document_deliveries.preview(operation_context, request)
+
+    def commit_bridge_document_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_document_deliveries.commit(operation_context, request)
+
+    def preview_bridge_storyboard_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_storyboard_deliveries.preview(operation_context, request)
+
+    def commit_bridge_storyboard_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_storyboard_deliveries.commit(operation_context, request)
+
+    def get_bridge_prompt_delivery(
+        self, profile_id: str, client_request_id: str
+    ) -> dict[str, Any]:
+        try:
+            return self._bridge_prompt_deliveries.status(profile_id, client_request_id)
+        except KeyError as exc:
+            raise MissingItem(client_request_id) from exc
+
+    def inspect_bridge_delivery_proposal(
+        self, profile_id: str, proposal_id: str
+    ) -> dict[str, Any]:
+        preview = self._bridge_deliveries.find_preview(profile_id, proposal_id)
+        if preview is None:
+            raise MissingItem(proposal_id)
+        return {
+            "proposalId": proposal_id,
+            "kind": preview["request"].get("kind"),
+            "state": preview["state"],
+        }
+
+    def stage_bridge_image(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+        content: bytes,
+    ) -> dict[str, Any]:
+        return self._bridge_image_deliveries.stage(
+            operation_context, request, content
+        )
+
+    def preview_bridge_image_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_image_deliveries.preview(operation_context, request)
+
+    def commit_bridge_image_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_image_deliveries.commit(operation_context, request)
+
+    def list_bridge_deliveries(
+        self,
+        cvc_code: str,
+        *,
+        state: str | None = None,
+        profile_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        deliveries = self._bridge_prompt_deliveries.list(
+            cvc_code, state=state, profile_id=profile_id
+        ) + self._bridge_document_deliveries.list(
+            cvc_code, state=state, profile_id=profile_id
+        ) + self._bridge_storyboard_deliveries.list(
+            cvc_code, state=state, profile_id=profile_id
+        ) + self._bridge_image_deliveries.list(
+            cvc_code, state=state, profile_id=profile_id
+        )
+        return sorted(
+            deliveries,
+            key=lambda item: (item["createdAt"], item["proposalId"]),
+        )
+
+    def decide_bridge_delivery(
+        self,
+        cvc_code: str,
+        proposal_id: str,
+        decision: str,
+        result_codes: list[str],
+    ) -> dict[str, Any]:
+        try:
+            return self._bridge_prompt_deliveries.decide(
+                cvc_code, proposal_id, decision, result_codes
+            )
+        except BridgeDeliveryValidationError as exc:
+            if exc.code != "delivery_proposal_not_found":
+                raise
+        try:
+            return self._bridge_document_deliveries.decide(
+                cvc_code, proposal_id, decision, result_codes
+            )
+        except BridgeDeliveryValidationError as exc:
+            if exc.code != "delivery_proposal_not_found":
+                raise
+        try:
+            return self._bridge_storyboard_deliveries.decide(
+                cvc_code, proposal_id, decision, result_codes
+            )
+        except BridgeDeliveryValidationError as exc:
+            if exc.code != "delivery_proposal_not_found":
+                raise
+        return self._bridge_image_deliveries.decide(
+            cvc_code, proposal_id, decision, result_codes
+        )
+
     def inspect_context_pack(self, cvc_code: str) -> dict[str, Any]:
         parsed = parse_reference_code(
             cvc_code, expected_namespace=ReferenceNamespace.CANVAS_CONTEXT
@@ -733,6 +1175,9 @@ class SqliteStore:
             "updatedAt": int(item.get("updatedAt") or timestamp),
             "deletedAt": None,
             "modelBinding": model_binding,
+            "interactionMode": "prompt-edit",
+            "boundSkillIds": [],
+            "revision": 1,
         }
         with self._transaction() as connection:
             self._require_active_project(connection, project_id)
@@ -775,7 +1220,8 @@ class SqliteStore:
         with self._connect() as connection:
             rows = connection.execute(
                 f"""SELECT id, project_id, entrypoint, mode, title, status,
-                           created_at, updated_at, deleted_at, model_binding_json
+                           created_at, updated_at, deleted_at, model_binding_json,
+                           interaction_mode, bound_skill_ids_json, revision
                     FROM agent_conversations
                     WHERE {' AND '.join(clauses)}
                     ORDER BY updated_at DESC, id DESC LIMIT ?""",
@@ -797,7 +1243,8 @@ class SqliteStore:
         with self._connect() as connection:
             row = connection.execute(
                 f"""SELECT id, project_id, entrypoint, mode, title, status,
-                           created_at, updated_at, deleted_at, model_binding_json
+                           created_at, updated_at, deleted_at, model_binding_json,
+                           interaction_mode, bound_skill_ids_json, revision
                     FROM agent_conversations
                     WHERE id=? AND project_id=? AND {status_clause}""",
                 (conversation_id, project_id),
@@ -851,7 +1298,8 @@ class SqliteStore:
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT id, project_id, entrypoint, mode, title, status,
-                           created_at, updated_at, deleted_at, model_binding_json
+                           created_at, updated_at, deleted_at, model_binding_json,
+                           interaction_mode, bound_skill_ids_json, revision
                     FROM agent_conversations
                     WHERE id=? AND project_id=? AND status='active'""",
                 (conversation_id, project_id),
@@ -859,6 +1307,60 @@ class SqliteStore:
         if row is None:
             raise MissingItem(conversation_id)
         return self._agent_conversation_summary(row)
+
+    def update_agent_conversation_interaction(
+        self,
+        conversation_id: str,
+        project_id: str,
+        interaction_mode: str,
+        bound_skill_ids: list[str],
+        *,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        if interaction_mode not in {"prompt-edit", "chat-experimental"}:
+            raise ValueError("Invalid agent conversation interactionMode")
+        if not isinstance(bound_skill_ids, list) or len(bound_skill_ids) > 8:
+            raise ValueError("Agent conversation boundSkillIds are invalid")
+        normalized_skill_ids = []
+        for skill_id in bound_skill_ids:
+            if not isinstance(skill_id, str) or not skill_id.strip():
+                raise ValueError("Agent conversation boundSkillIds are invalid")
+            normalized_skill_ids.append(skill_id.strip())
+        if len(normalized_skill_ids) != len(set(normalized_skill_ids)):
+            raise ValueError("Agent conversation boundSkillIds must be unique")
+        if interaction_mode == "prompt-edit" and normalized_skill_ids:
+            raise ValueError("Prompt interactions cannot persist Skill bindings")
+        with self._transaction() as connection:
+            row = connection.execute(
+                """SELECT id, project_id, entrypoint, mode, title, status,
+                          created_at, updated_at, deleted_at, model_binding_json,
+                          interaction_mode, bound_skill_ids_json, revision
+                   FROM agent_conversations
+                   WHERE id=? AND project_id=? AND status='active'""",
+                (conversation_id, project_id),
+            ).fetchone()
+            if row is None:
+                raise MissingItem(conversation_id)
+            current = self._agent_conversation_summary(row)
+            if current["revision"] != expected_revision:
+                raise RevisionConflict(current)
+            result = connection.execute(
+                """UPDATE agent_conversations
+                   SET interaction_mode=?, bound_skill_ids_json=?, revision=revision+1,
+                       updated_at=?
+                   WHERE id=? AND project_id=? AND status='active' AND revision=?""",
+                (
+                    interaction_mode,
+                    _json(normalized_skill_ids),
+                    now_ms(),
+                    conversation_id,
+                    project_id,
+                    expected_revision,
+                ),
+            )
+            if result.rowcount == 0:
+                raise RevisionConflict(current)
+        return self.get_agent_conversation(conversation_id, project_id)
 
     def trash_agent_conversation(self, conversation_id: str, project_id: str) -> dict[str, Any]:
         timestamp = now_ms()
@@ -917,6 +1419,25 @@ class SqliteStore:
             ).fetchone()
             if existing is not None:
                 return json.loads(existing[0])
+            apply_edit = _normalize_agent_apply_edit(
+                turn.get("applyEdit"),
+                conversation_id=conversation_id,
+                request_id=request_id,
+            )
+            if apply_edit is not None:
+                pending = connection.execute(
+                    "SELECT result_json FROM agent_conversation_turns WHERE conversation_id=?",
+                    (conversation_id,),
+                ).fetchall()
+                if any(
+                    isinstance((saved := json.loads(row[0])).get("applyEdit"), dict)
+                    and saved["applyEdit"].get("status") == "pending_apply"
+                    for row in pending
+                ):
+                    raise AgentApplyEditConflict(
+                        "agent_apply_edit_pending",
+                        "The conversation already has an unresolved Agent edit",
+                    )
             timestamp = now_ms()
             current_ordinal = connection.execute(
                 "SELECT COALESCE(MAX(ordinal), 0) FROM agent_conversation_messages WHERE conversation_id=?",
@@ -968,6 +1489,7 @@ class SqliteStore:
                 "skillSnapshots": list(turn.get("skillSnapshots") or []),
                 "modelSnapshot": turn.get("modelSnapshot"),
                 "createdAt": timestamp,
+                **({"applyEdit": apply_edit} if apply_edit is not None else {}),
             }
             connection.execute(
                 "INSERT INTO agent_conversation_turns(conversation_id, request_id, created_at, result_json) VALUES (?, ?, ?, ?)",
@@ -978,6 +1500,81 @@ class SqliteStore:
                 (timestamp, conversation_id),
             )
         return result
+
+    def update_agent_apply_edit(
+        self,
+        conversation_id: str,
+        *,
+        request_id: str,
+        edit_id: str,
+        status: str,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized_request_id = str(request_id or "").strip()
+        normalized_edit_id = str(edit_id or "").strip()
+        if status not in _AGENT_APPLY_EDIT_TERMINAL_STATUSES:
+            raise ValueError("Agent apply edit status is invalid")
+        with self._transaction() as connection:
+            row = connection.execute(
+                """SELECT result_json FROM agent_conversation_turns
+                   WHERE conversation_id=? AND request_id=?""",
+                (conversation_id, normalized_request_id),
+            ).fetchone()
+            if row is None:
+                raise AgentApplyEditConflict(
+                    "agent_apply_edit_identity_mismatch",
+                    "The Agent edit identity does not match a saved turn",
+                )
+            result = json.loads(row[0])
+            apply_edit = result.get("applyEdit")
+            if (
+                not isinstance(apply_edit, dict)
+                or apply_edit.get("conversationId") != conversation_id
+                or apply_edit.get("requestId") != normalized_request_id
+                or apply_edit.get("editId") != normalized_edit_id
+            ):
+                raise AgentApplyEditConflict(
+                    "agent_apply_edit_identity_mismatch",
+                    "The Agent edit identity does not match a saved turn",
+                )
+            current_status = apply_edit.get("status")
+            if current_status != "pending_apply":
+                if current_status != status:
+                    raise AgentApplyEditConflict(
+                        "agent_apply_edit_terminal",
+                        "The Agent edit already has an immutable terminal result",
+                    )
+            normalized_evidence = _normalize_agent_apply_edit_evidence(evidence)
+            if status == "applied":
+                if set(normalized_evidence) != {
+                    "projectRevision",
+                    "nodeId",
+                    "kind",
+                    "resultDigest",
+                } or normalized_evidence.get("kind") not in {"document", "storyboard"}:
+                    raise ValueError("Applied Agent edit evidence is incomplete")
+            elif "code" not in normalized_evidence:
+                raise ValueError("Failed Agent edit evidence code is required")
+            if current_status != "pending_apply":
+                if apply_edit.get("evidence", {}) == normalized_evidence:
+                    return apply_edit
+                raise AgentApplyEditConflict(
+                    "agent_apply_edit_terminal",
+                    "The Agent edit already has an immutable terminal result",
+                )
+            updated = {
+                **apply_edit,
+                "status": status,
+                "evidence": normalized_evidence,
+                "resolvedAt": now_ms(),
+            }
+            result["applyEdit"] = updated
+            connection.execute(
+                """UPDATE agent_conversation_turns SET result_json=?
+                   WHERE conversation_id=? AND request_id=?""",
+                (_json(result), conversation_id, normalized_request_id),
+            )
+            return updated
 
     def update_agent_proposal_status(
         self,
@@ -1588,34 +2185,133 @@ class SqliteStore:
     def delete_project_trash(self, ids: list[str]) -> None:
         if not ids:
             return
-        with self._transaction() as connection:
-            placeholders = ",".join("?" for _ in ids)
-            retired_ids = [
-                row[0]
-                for row in connection.execute(
-                    f"SELECT id FROM projects WHERE status='trash' AND id IN ({placeholders})",
-                    tuple(ids),
-                )
-            ]
-            if not retired_ids:
-                return
-            retired_placeholders = ",".join("?" for _ in retired_ids)
-            connection.execute(
-                f"""DELETE FROM public_references
-                    WHERE namespace IN ('CVT','CVM')
-                      AND owner_scope IN ({retired_placeholders})""",
-                tuple(retired_ids),
-            )
-            connection.execute(
-                f"""DELETE FROM public_references
-                    WHERE namespace='PRJ' AND owner_scope=''
-                      AND internal_id IN ({retired_placeholders})""",
-                tuple(retired_ids),
-            )
-            connection.execute(
-                f"DELETE FROM projects WHERE status='trash' AND id IN ({retired_placeholders})",
-                tuple(retired_ids),
-            )
+        staged_documents = None
+        with self._document_consistency_lock:
+            try:
+                with self._transaction() as connection:
+                    placeholders = ",".join("?" for _ in ids)
+                    retired_ids = [
+                        row[0]
+                        for row in connection.execute(
+                            f"SELECT id FROM projects WHERE status='trash' AND id IN ({placeholders})",
+                            tuple(ids),
+                        )
+                    ]
+                    if not retired_ids:
+                        return
+                    staged_documents = self._documents.stage_project_deletion(
+                        connection, retired_ids
+                    )
+                    retired_placeholders = ",".join("?" for _ in retired_ids)
+                    connection.execute(
+                        f"""DELETE FROM public_references
+                            WHERE namespace IN ('CVT','CVM')
+                              AND owner_scope IN ({retired_placeholders})""",
+                        tuple(retired_ids),
+                    )
+                    connection.execute(
+                        f"""DELETE FROM public_references
+                            WHERE namespace='PRJ' AND owner_scope=''
+                              AND internal_id IN ({retired_placeholders})""",
+                        tuple(retired_ids),
+                    )
+                    connection.execute(
+                        f"DELETE FROM projects WHERE status='trash' AND id IN ({retired_placeholders})",
+                        tuple(retired_ids),
+                    )
+            except Exception:
+                if staged_documents is not None:
+                    self._documents.restore_staged_deletion(staged_documents)
+                raise
+            else:
+                if staged_documents is not None:
+                    self._documents.discard_staged_deletion(staged_documents)
+
+    def create_project_document_resource(
+        self,
+        project_id: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        return self._documents.create(project_id, filename, content_type, content)
+
+    def list_project_document_resources(self, project_id: str) -> list[dict[str, Any]]:
+        return self._documents.list(project_id)
+
+    def get_project_document_resource(
+        self,
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._documents.get(project_id, resource_id)
+        except LookupError as exc:
+            raise MissingItem() from exc
+
+    def trash_project_document_resource(
+        self,
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._documents.trash(project_id, resource_id)
+        except LookupError as exc:
+            raise MissingItem() from exc
+
+    def restore_project_document_resource(
+        self,
+        project_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._documents.restore(project_id, resource_id)
+        except LookupError as exc:
+            raise MissingItem() from exc
+
+    def read_project_document_resource(
+        self,
+        project_id: str,
+        resource_id: str,
+    ) -> tuple[bytes, dict[str, Any]]:
+        try:
+            return self._documents.read(project_id, resource_id)
+        except LookupError as exc:
+            raise MissingItem() from exc
+
+    def enqueue_provider_file_cleanup(
+        self,
+        provider_id: str,
+        connection_id: str,
+        remote_file_id: str,
+    ) -> dict[str, Any]:
+        return self._provider_file_cleanup.enqueue(
+            provider_id, connection_id, remote_file_id
+        )
+
+    def get_due_provider_file_cleanup(
+        self,
+        *,
+        now: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        return self._provider_file_cleanup.get_due(now, limit)
+
+    def mark_provider_file_cleanup_succeeded(self, cleanup_id: str) -> None:
+        self._provider_file_cleanup.mark_succeeded(cleanup_id)
+
+    def mark_provider_file_cleanup_retry(
+        self,
+        cleanup_id: str,
+        next_attempt_at: int,
+        redacted_error_code: str,
+    ) -> dict[str, Any] | None:
+        return self._provider_file_cleanup.mark_retry(
+            cleanup_id, next_attempt_at, redacted_error_code
+        )
+
+    def provider_file_cleanup_diagnostics(self, *, now: int) -> dict[str, int]:
+        return self._provider_file_cleanup.diagnostics(now)
 
     def list_project_resources(self, project_id: str) -> dict[str, list[dict[str, Any]]]:
         with self._connect() as connection:
@@ -2113,6 +2809,31 @@ class SqliteStore:
                 for row in rows
             ]
 
+    def search_prompts(
+        self,
+        query: str,
+        *,
+        types: list[str] | None = None,
+        categories: list[str] | None = None,
+        limit: int = 8,
+        caller_kind: str,
+        caller_id: str,
+    ) -> dict[str, Any]:
+        return self._prompt_retrieval.search(
+            query,
+            types=types,
+            categories=categories,
+            limit=limit,
+            caller_kind=caller_kind,
+            caller_id=caller_id,
+        )
+
+    def rebuild_prompt_retrieval(self) -> dict[str, Any]:
+        return self._prompt_retrieval.rebuild()
+
+    def prompt_retrieval_health(self) -> dict[str, Any]:
+        return self._prompt_retrieval.health()
+
     def get_preset(self, item_id: str) -> dict[str, Any]:
         with self._connect() as connection:
             prompt = self._get_row_payload(connection, "presets", item_id, "active")
@@ -2152,8 +2873,8 @@ class SqliteStore:
                 "updatedAt": normalized_updates.get("updatedAt") or now_ms(),
             })
             connection.execute(
-                "UPDATE presets SET revision=?, type=?, category=?, usage_count=?, created_at=?, updated_at=?, payload_json=? WHERE id=? AND status='active'",
-                (updated["revision"], updated["type"], updated["category"], updated["usageCount"], updated["createdAt"], updated["updatedAt"], _json(updated), item_id),
+                "UPDATE presets SET revision=?, type=?, category=?, usage_count=?, created_at=?, updated_at=?, payload_json=?, retrieval_digest=? WHERE id=? AND status='active'",
+                (updated["revision"], updated["type"], updated["category"], updated["usageCount"], updated["createdAt"], updated["updatedAt"], _json(updated), _prompt_retrieval_digest(updated), item_id),
             )
             self._ensure_preset_public_references(connection, updated)
             return self._with_preset_public_references(connection, updated)
@@ -2173,8 +2894,8 @@ class SqliteStore:
                 if item["id"] in ordered_set:
                     item = {**item, "revision": item["revision"] + 1, "updatedAt": now}
                     connection.execute(
-                        "UPDATE presets SET sort_order=?, revision=?, updated_at=?, payload_json=? WHERE id=?",
-                        (index, item["revision"], now, _json(item), item["id"]),
+                        "UPDATE presets SET sort_order=?, revision=?, updated_at=?, payload_json=?, retrieval_digest=? WHERE id=?",
+                        (index, item["revision"], now, _json(item), _prompt_retrieval_digest(item), item["id"]),
                     )
                     next_items[index] = item
                 else:
@@ -2201,8 +2922,8 @@ class SqliteStore:
                         raise RevisionConflict(existing)
                     next_item = normalize_preset({**existing, **item, "revision": existing["revision"] + 1, "updatedAt": now})
                     connection.execute(
-                        "UPDATE presets SET revision=?, type=?, category=?, usage_count=?, sort_order=?, updated_at=?, payload_json=? WHERE id=?",
-                        (next_item["revision"], next_item["type"], next_item["category"], next_item["usageCount"], index, next_item["updatedAt"], _json(next_item), item["id"]),
+                        "UPDATE presets SET revision=?, type=?, category=?, usage_count=?, sort_order=?, updated_at=?, payload_json=?, retrieval_digest=? WHERE id=?",
+                        (next_item["revision"], next_item["type"], next_item["category"], next_item["usageCount"], index, next_item["updatedAt"], _json(next_item), _prompt_retrieval_digest(next_item), item["id"]),
                     )
                     normalized[index] = next_item
                 else:
@@ -2712,6 +3433,14 @@ class SqliteStore:
             for row in rows
         ]
 
+    def _bridge_stage_asset_payloads(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT result_json FROM bridge_delivery_ledger
+                   WHERE operation='asset.stage' AND result_json IS NOT NULL"""
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
     def import_image_asset(
         self,
         filename: str,
@@ -2755,6 +3484,35 @@ class SqliteStore:
             "width": prepared["width"],
             "height": prepared["height"],
             "derivations": [preview, provider],
+        }
+
+    def save_bridge_staged_image(
+        self,
+        filename: str,
+        content_type: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        try:
+            prepared = self._prepare_provider_image(content_type, content)
+        except AssetValidationError as exc:
+            raise BridgeDeliveryValidationError("asset_image_invalid") from exc
+        extension = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+        }[prepared["contentType"]]
+        prepared_digest = hashlib.sha256(prepared["content"]).hexdigest()
+        asset = self._assets.save_idempotent(
+            f"bridge-{prepared_digest}{extension}",
+            filename,
+            prepared["contentType"],
+            prepared["content"],
+        )
+        return {
+            "asset": asset,
+            "width": prepared["width"],
+            "height": prepared["height"],
+            "preparedDigest": f"sha256:{prepared_digest}",
         }
 
     def create_image_asset_derivation(self, item: dict[str, Any]) -> dict[str, Any]:
@@ -3484,15 +4242,81 @@ class SqliteStore:
                 except Exception:
                     connection.rollback()
                     raise
+            if current_version == 15:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self._create_document_resources_v16_schema(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (
+                            16,
+                            "add-project-document-resources-and-provider-file-cleanup",
+                            now_ms(),
+                        ),
+                    )
+                    connection.commit()
+                    current_version = 16
+                except Exception:
+                    connection.rollback()
+                    raise
+            if current_version == 16:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self._create_creative_references_v17_schema(connection)
+                    self._reconcile_creative_references(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (17, "add-creative-object-references", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 17
+                except Exception:
+                    connection.rollback()
+                    raise
+            if current_version == 17:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    drop_prompt_retrieval_preset_triggers(connection)
+                    ensure_prompt_retrieval_digest_column(connection)
+                    create_prompt_retrieval_schema(connection)
+                    rebuild_prompt_retrieval(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (18, "add-transactional-prompt-retrieval", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 18
+                except Exception:
+                    connection.rollback()
+                    raise
+            if current_version == 18:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    create_bridge_delivery_schema(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (19, "add-profile-scoped-bridge-delivery-ledger", now_ms()),
+                    )
+                    connection.commit()
+                    current_version = 19
+                except Exception:
+                    connection.rollback()
+                    raise
             if current_version != SCHEMA_VERSION:
                 raise MigrationError(f"Unsupported SQLite schema version: {current_version}")
             connection.execute("BEGIN IMMEDIATE")
             try:
+                drop_prompt_retrieval_preset_triggers(connection)
+                ensure_prompt_retrieval_digest_column(connection)
+                create_prompt_retrieval_schema(connection)
+                create_bridge_delivery_schema(connection)
                 self._harden_weak_public_references_v10_schema(connection)
+                self._migrate_agent_conversation_interaction_metadata(connection)
                 self._seed_builtin_skills(connection)
                 self._seed_builtin_skill_host_pins_v14(connection)
                 self._seed_skill_reviews_v15(connection)
                 self._reconcile_public_references(connection)
+                self._reconcile_creative_references(connection)
                 connection.commit()
             except Exception:
                 connection.rollback()
@@ -3513,7 +4337,7 @@ class SqliteStore:
                 id TEXT PRIMARY KEY, revision INTEGER NOT NULL, type TEXT NOT NULL, category TEXT NOT NULL,
                 usage_count INTEGER NOT NULL, sort_order INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('active','trash')),
                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER, deleted_by TEXT,
-                delete_reason TEXT, payload_json TEXT NOT NULL
+                delete_reason TEXT, payload_json TEXT NOT NULL, retrieval_digest TEXT NOT NULL
             );
             CREATE INDEX presets_status_order ON presets(status, sort_order, created_at);
             CREATE TABLE assets(
@@ -3536,6 +4360,90 @@ class SqliteStore:
         self._create_skill_packages_v13_schema(connection)
         self._create_skill_hosts_v14_schema(connection)
         self._create_skill_reviews_v15_schema(connection)
+        self._create_document_resources_v16_schema(connection)
+        self._create_creative_references_v17_schema(connection)
+        create_prompt_retrieval_schema(connection)
+        create_bridge_delivery_schema(connection)
+
+    @staticmethod
+    def _create_creative_references_v17_schema(connection: sqlite3.Connection) -> None:
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS creative_references(
+                public_code TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
+                namespace TEXT NOT NULL CHECK(namespace IN ('CVD','CVS')),
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                node_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL CHECK(created_at >= 0),
+                CHECK((public_code COLLATE BINARY) = upper(public_code)),
+                CHECK(length(public_code) = 30),
+                CHECK(substr(public_code, 1, 4) = namespace || '-'),
+                CHECK(substr(public_code, 5, 1) BETWEEN '0' AND '7'),
+                CHECK(substr(public_code, 5, 26)
+                    NOT GLOB '*[^0123456789ABCDEFGHJKMNPQRSTVWXYZ]*'),
+                CHECK(length(node_id) > 0),
+                UNIQUE(namespace, project_id, node_id)
+            );
+            CREATE INDEX IF NOT EXISTS creative_references_project_namespace
+                ON creative_references(project_id, namespace, public_code);
+        """)
+
+    @staticmethod
+    def _create_document_resources_v16_schema(connection: sqlite3.Connection) -> None:
+        statements = (
+            """CREATE TABLE IF NOT EXISTS project_document_resources(
+                resource_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                relative_path TEXT NOT NULL UNIQUE,
+                original_filename TEXT NOT NULL,
+                content_type TEXT NOT NULL CHECK(content_type IN (
+                    'text/plain',
+                    'text/markdown',
+                    'application/pdf',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                )),
+                size INTEGER NOT NULL CHECK(size > 0 AND size <= 52428800),
+                sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+                extraction_kind TEXT NOT NULL CHECK(extraction_kind IN ('utf-8','docx','none')),
+                extraction_status TEXT NOT NULL CHECK(extraction_status IN ('complete','not-applicable')),
+                normalized_text TEXT,
+                normalized_text_digest TEXT CHECK(
+                    normalized_text_digest IS NULL OR length(normalized_text_digest)=64
+                ),
+                revision INTEGER NOT NULL CHECK(revision >= 1),
+                lifecycle_status TEXT NOT NULL CHECK(lifecycle_status IN ('active','trash')),
+                created_at INTEGER NOT NULL CHECK(created_at >= 0),
+                updated_at INTEGER NOT NULL CHECK(updated_at >= created_at),
+                CHECK(
+                    (extraction_kind IN ('utf-8','docx') AND extraction_status='complete'
+                        AND normalized_text IS NOT NULL AND normalized_text_digest IS NOT NULL)
+                    OR
+                    (extraction_kind='none' AND extraction_status='not-applicable'
+                        AND normalized_text IS NULL AND normalized_text_digest IS NULL)
+                )
+            )""",
+            """CREATE INDEX IF NOT EXISTS project_document_resources_project_lifecycle_order
+                ON project_document_resources(
+                    project_id, lifecycle_status, created_at DESC, resource_id DESC
+                )""",
+            """CREATE TABLE IF NOT EXISTS provider_file_cleanup(
+                cleanup_id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                remote_file_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL CHECK(created_at >= 0),
+                last_attempt_at INTEGER,
+                attempt_count INTEGER NOT NULL CHECK(attempt_count >= 0),
+                next_attempt_at INTEGER NOT NULL CHECK(next_attempt_at >= 0),
+                last_error_code TEXT CHECK(
+                    last_error_code IS NULL OR length(last_error_code) BETWEEN 1 AND 64
+                ),
+                UNIQUE(provider_id, connection_id, remote_file_id)
+            )""",
+            """CREATE INDEX IF NOT EXISTS provider_file_cleanup_due_order
+                ON provider_file_cleanup(next_attempt_at, created_at, cleanup_id)""",
+        )
+        for statement in statements:
+            connection.execute(statement)
 
     @staticmethod
     def _create_skill_hosts_v14_schema(connection: sqlite3.Connection) -> None:
@@ -3973,7 +4881,10 @@ class SqliteStore:
                 ):
                     continue
                 namespace = self._canvas_node_namespace(node)
-                if namespace is not None:
+                if namespace in {
+                    ReferenceNamespace.CANVAS_TEMPLATE,
+                    ReferenceNamespace.CANVAS_MEDIA,
+                }:
                     candidates.add((namespace.value, project_id, node_id))
 
         for preset_id, payload_json in connection.execute(
@@ -4000,6 +4911,66 @@ class SqliteStore:
                 internal_id,
                 owner_scope=owner_scope,
             )
+
+    def _reconcile_creative_references(self, connection: sqlite3.Connection) -> None:
+        for project_id, payload_json in connection.execute(
+            "SELECT id, payload_json FROM projects ORDER BY id"
+        ):
+            project = json.loads(payload_json)
+            nodes = self._project_canvas_nodes(project)
+            node_id_counts = self._canvas_node_id_counts(nodes)
+            for node in nodes:
+                node_id = node.get("id")
+                namespace = self._canvas_node_namespace(node)
+                if (
+                    namespace
+                    not in {
+                        ReferenceNamespace.CANVAS_DOCUMENT,
+                        ReferenceNamespace.CANVAS_STORYBOARD,
+                    }
+                    or not isinstance(node_id, str)
+                    or node_id_counts.get(node_id) != 1
+                ):
+                    continue
+                self._ensure_creative_reference(
+                    connection, namespace, project_id, node_id
+                )
+
+    @staticmethod
+    def _ensure_creative_reference(
+        connection: sqlite3.Connection,
+        namespace: ReferenceNamespace,
+        project_id: str,
+        node_id: str,
+    ) -> str:
+        if namespace not in {
+            ReferenceNamespace.CANVAS_DOCUMENT,
+            ReferenceNamespace.CANVAS_STORYBOARD,
+        }:
+            raise ValueError("Creative reference namespace is invalid")
+        row = connection.execute(
+            """SELECT public_code FROM creative_references
+               WHERE namespace=? AND project_id=? AND node_id=?""",
+            (namespace.value, project_id, node_id),
+        ).fetchone()
+        if row is not None:
+            return row[0]
+        public_code = generate_reference_code(
+            namespace,
+            timestamp_ms=now_ms(),
+            collision_predicate=lambda candidate: connection.execute(
+                "SELECT 1 FROM creative_references WHERE public_code=?",
+                (candidate,),
+            ).fetchone()
+            is not None,
+        )
+        connection.execute(
+            """INSERT INTO creative_references(
+                   public_code, namespace, project_id, node_id, created_at
+               ) VALUES (?, ?, ?, ?, ?)""",
+            (public_code, namespace.value, project_id, node_id, now_ms()),
+        )
+        return public_code
 
     def _ensure_public_reference(
         self,
@@ -4088,12 +5059,20 @@ class SqliteStore:
             namespace = self._canvas_node_namespace(node)
             if namespace is None:
                 continue
-            self._ensure_public_reference(
-                connection,
-                namespace,
-                node["id"],
-                owner_scope=project_id,
-            )
+            if namespace in {
+                ReferenceNamespace.CANVAS_DOCUMENT,
+                ReferenceNamespace.CANVAS_STORYBOARD,
+            }:
+                self._ensure_creative_reference(
+                    connection, namespace, project_id, node["id"]
+                )
+            else:
+                self._ensure_public_reference(
+                    connection,
+                    namespace,
+                    node["id"],
+                    owner_scope=project_id,
+                )
 
     def _with_project_public_references(
         self,
@@ -4121,11 +5100,21 @@ class SqliteStore:
                 continue
             if node_id_counts.get(node_id) != 1:
                 continue
-            node_row = connection.execute(
-                """SELECT public_code FROM public_references
-                   WHERE namespace=? AND owner_scope=? AND internal_id=?""",
-                (namespace.value, project_id, node_id),
-            ).fetchone()
+            if namespace in {
+                ReferenceNamespace.CANVAS_DOCUMENT,
+                ReferenceNamespace.CANVAS_STORYBOARD,
+            }:
+                node_row = connection.execute(
+                    """SELECT public_code FROM creative_references
+                       WHERE namespace=? AND project_id=? AND node_id=?""",
+                    (namespace.value, project_id, node_id),
+                ).fetchone()
+            else:
+                node_row = connection.execute(
+                    """SELECT public_code FROM public_references
+                       WHERE namespace=? AND owner_scope=? AND internal_id=?""",
+                    (namespace.value, project_id, node_id),
+                ).fetchone()
             if node_row is not None:
                 node["referenceCode"] = node_row[0]
         return projected
@@ -4157,6 +5146,18 @@ class SqliteStore:
                 "canvas_node_invalid", reference, status_code=410
             )
         node = matching[0]
+        if expected_namespace in {
+            ReferenceNamespace.CANVAS_DOCUMENT,
+            ReferenceNamespace.CANVAS_STORYBOARD,
+        }:
+            if (
+                not self._is_referenceable_creative_node(node)
+                or self._canvas_node_namespace(node) is not expected_namespace
+            ):
+                self._raise_canvas_reference_error(
+                    "canvas_node_invalid", reference, status_code=410
+                )
+            return node
         try:
             _validate_canvas_node(node)
             if not isinstance(node.get("title"), str):
@@ -4174,6 +5175,117 @@ class SqliteStore:
                 "canvas_node_detached", reference, status_code=410
             )
         return node
+
+    @staticmethod
+    def _resolved_creative_node(
+        node: dict[str, Any],
+        reference_code: str,
+        document_codes: dict[str, str],
+    ) -> dict[str, Any]:
+        title = str(node.get("title") or "")[:_PROJECT_REFERENCE_TITLE_LIMIT]
+        if node.get("kind") == "document":
+            document = node["document"]
+            return {
+                "referenceCode": reference_code,
+                "kind": "document",
+                "title": title,
+                "revision": document["revision"],
+                "digest": document["digest"],
+                "document": {
+                    "version": document["version"],
+                    "blocks": deepcopy(document["blocks"]),
+                    "revision": document["revision"],
+                    "digest": document["digest"],
+                    "suggestions": deepcopy(document.get("suggestions", [])),
+                },
+            }
+        sequence = node["sequence"]
+        source = node.get("source") if isinstance(node.get("source"), dict) else {}
+        rows = []
+        for ordinal, row in enumerate(sequence.get("rows", [])):
+            if not isinstance(row, dict):
+                continue
+            rows.append(
+                {
+                    "ordinal": ordinal,
+                    **{
+                        field: str(row.get(field) or "")
+                        for field in (
+                            "cutLabel",
+                            "timeRange",
+                            "subject",
+                            "action",
+                            "scene",
+                            "camera",
+                            "lighting",
+                            "audio",
+                            "duration",
+                        )
+                    },
+                }
+            )
+        source_document_node_id = source.get("documentNodeId")
+        source_summary = {
+            "documentRevision": source.get("documentRevision"),
+            "documentDigest": source.get("documentDigest"),
+            "documentResourceDigests": list(source.get("documentResourceDigests") or [])[:5],
+            "skills": [
+                {
+                    "skillCode": item.get("skillId"),
+                    "revision": item.get("revision"),
+                    "digest": item.get("digest"),
+                }
+                for item in (source.get("skills") or [])[:8]
+                if isinstance(item, dict)
+                and isinstance(item.get("skillId"), str)
+                and item["skillId"].startswith("SKL-")
+            ],
+        }
+        if isinstance(source_document_node_id, str) and source_document_node_id in document_codes:
+            source_summary["documentCode"] = document_codes[source_document_node_id]
+        row_ordinals = {
+            row.get("id"): ordinal
+            for ordinal, row in enumerate(sequence.get("rows", []))
+            if isinstance(row, dict) and isinstance(row.get("id"), str)
+        }
+        pending_changes = []
+        for change in node.get("pendingFieldChanges") or []:
+            if not isinstance(change, dict):
+                continue
+            sanitized = {
+                key: change[key]
+                for key in (
+                    "id",
+                    "editId",
+                    "scope",
+                    "field",
+                    "previousValue",
+                    "newValue",
+                )
+                if key in change
+            }
+            if change.get("scope") == "row":
+                ordinal = row_ordinals.get(change.get("rowId"))
+                if ordinal is None:
+                    continue
+                sanitized["rowOrdinal"] = ordinal
+            pending_changes.append(sanitized)
+        return {
+            "referenceCode": reference_code,
+            "kind": "storyboard",
+            "title": title,
+            "revision": node["revision"],
+            "digest": node["digest"],
+            "sequence": {
+                "name": str(sequence.get("name") or ""),
+                "description": str(sequence.get("description") or ""),
+                "style": str(sequence.get("style") or ""),
+                "constraints": str(sequence.get("constraints") or ""),
+                "rows": rows,
+            },
+            "source": source_summary,
+            "pendingFieldChanges": pending_changes,
+        }
 
     @staticmethod
     def _resolved_canvas_node(node: dict[str, Any], reference_code: str) -> dict[str, Any]:
@@ -4219,6 +5331,8 @@ class SqliteStore:
             if parsed.namespace not in {
                 ReferenceNamespace.CANVAS_TEMPLATE,
                 ReferenceNamespace.CANVAS_MEDIA,
+                ReferenceNamespace.CANVAS_DOCUMENT,
+                ReferenceNamespace.CANVAS_STORYBOARD,
             }:
                 raise ReferenceCodeError("reference_namespace_mismatch")
             canonical.append(parsed.code)
@@ -4239,7 +5353,7 @@ class SqliteStore:
                 "title": title,
                 "truncated": len(text) > _CANVAS_REFERENCE_TEXT_LIMIT,
             }
-        else:
+        elif node["kind"] == "image":
             content = {
                 "height": node["height"],
                 "kind": "image",
@@ -4251,6 +5365,78 @@ class SqliteStore:
             size = node.get("size")
             if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
                 content["size"] = size
+        elif node["kind"] == "document":
+            document = node["document"]
+            content = {
+                "kind": "document",
+                "title": title,
+                "revision": document["revision"],
+                "digest": document["digest"],
+                "document": {
+                    "version": document["version"],
+                    "blocks": document["blocks"],
+                    "suggestions": document.get("suggestions", []),
+                },
+            }
+        else:
+            sequence = node["sequence"]
+            row_ordinals = {
+                row.get("id"): ordinal
+                for ordinal, row in enumerate(sequence.get("rows", []))
+                if isinstance(row, dict) and isinstance(row.get("id"), str)
+            }
+            pending_field_changes = []
+            for change in node.get("pendingFieldChanges") or []:
+                if not isinstance(change, dict):
+                    continue
+                scope = change.get("scope")
+                field = change.get("field")
+                if scope == "sequence" and isinstance(field, str):
+                    pending_field_changes.append({
+                        "scope": "sequence", "field": field,
+                    })
+                    continue
+                if scope != "row" or not isinstance(field, str):
+                    continue
+                ordinal = row_ordinals.get(change.get("rowId"))
+                if ordinal is not None:
+                    pending_field_changes.append({
+                        "scope": "row", "rowOrdinal": ordinal, "field": field,
+                    })
+            content = {
+                "kind": "storyboard",
+                "title": title,
+                "revision": node["revision"],
+                "digest": node["digest"],
+                "sequence": {
+                    "name": sequence.get("name", ""),
+                    "description": sequence.get("description", ""),
+                    "style": sequence.get("style", ""),
+                    "constraints": sequence.get("constraints", ""),
+                    "rows": [
+                        {
+                            "ordinal": ordinal,
+                            **{
+                                field: row.get(field, "")
+                                for field in (
+                                    "cutLabel",
+                                    "timeRange",
+                                    "subject",
+                                    "action",
+                                    "scene",
+                                    "camera",
+                                    "lighting",
+                                    "audio",
+                                    "duration",
+                                )
+                            },
+                        }
+                        for ordinal, row in enumerate(sequence.get("rows", []))
+                        if isinstance(row, dict)
+                    ],
+                },
+                "pendingFieldChanges": pending_field_changes,
+            }
         return _canonical_json(content)
 
     def _context_source_boundary(
@@ -4438,6 +5624,96 @@ class SqliteStore:
                 "source_unavailable", reference, status_code=410
             )
 
+    def _context_canvas_asset_id(
+        self,
+        connection: sqlite3.Connection,
+        project_code: str,
+        media_code: str,
+    ) -> str:
+        project_registry = connection.execute(
+            """SELECT internal_id FROM public_references
+               WHERE public_code=? AND namespace='PRJ' AND owner_scope=''""",
+            (project_code,),
+        ).fetchone()
+        registry = connection.execute(
+            """SELECT owner_scope, internal_id FROM public_references
+               WHERE public_code=? AND namespace='CVM'""",
+            (media_code,),
+        ).fetchone()
+        reference = {"namespace": "canvasMedia", "code": media_code}
+        if project_registry is None or registry is None or registry[0] != project_registry[0]:
+            self._raise_context_pack_error(
+                "media_unavailable", reference, status_code=410
+            )
+        project_row = connection.execute(
+            "SELECT status, payload_json FROM projects WHERE id=?",
+            (project_registry[0],),
+        ).fetchone()
+        if project_row is None or project_row[0] != "active":
+            self._raise_context_pack_error(
+                "media_unavailable", reference, status_code=410
+            )
+        try:
+            node = self._resolve_current_canvas_node(
+                json.loads(project_row[1]),
+                registry[1],
+                ReferenceNamespace.CANVAS_MEDIA,
+                reference,
+            )
+        except (PromptReferenceError, TypeError, json.JSONDecodeError):
+            self._raise_context_pack_error(
+                "media_unavailable", reference, status_code=410
+            )
+        asset_id = node.get("assetId")
+        if not isinstance(asset_id, str) or not asset_id:
+            self._raise_context_pack_error(
+                "media_unavailable", reference, status_code=410
+            )
+        return asset_id
+
+    def _context_prompt_asset_id(
+        self,
+        connection: sqlite3.Connection,
+        media_code: str,
+    ) -> str:
+        reference = {"namespace": "promptMedia", "code": media_code}
+        registry = connection.execute(
+            """SELECT owner_scope, internal_id FROM public_references
+               WHERE public_code=? AND namespace='PLM'""",
+            (media_code,),
+        ).fetchone()
+        prompt_row = (
+            connection.execute(
+                "SELECT status, payload_json FROM presets WHERE id=?", (registry[0],)
+            ).fetchone()
+            if registry is not None
+            else None
+        )
+        try:
+            prompt = json.loads(prompt_row[1]) if prompt_row is not None else None
+        except (TypeError, json.JSONDecodeError):
+            prompt = None
+        bindings = (
+            [
+                binding
+                for binding in self._preset_media(prompt)
+                if binding.get("id") == registry[1]
+            ]
+            if isinstance(prompt, dict) and registry is not None
+            else []
+        )
+        asset_id = bindings[0].get("assetId") if len(bindings) == 1 else None
+        if (
+            prompt_row is None
+            or prompt_row[0] != "active"
+            or not isinstance(asset_id, str)
+            or not asset_id
+        ):
+            self._raise_context_pack_error(
+                "source_unavailable", reference, status_code=410
+            )
+        return asset_id
+
     @staticmethod
     def _context_pack_select() -> str:
         return (
@@ -4490,6 +5766,7 @@ class SqliteStore:
             "source_reference_not_found": "Context source reference was not found",
             "source_unavailable": "Context source is unavailable",
             "media_unavailable": "Canvas media is unavailable",
+            "asset_reference_outside_context": "Asset reference is outside the canvas context",
         }
         raise PromptReferenceError(
             code, messages[code], reference, status_code=status_code
@@ -4522,6 +5799,10 @@ class SqliteStore:
         self, node: dict[str, Any]
     ) -> ReferenceNamespace | None:
         kind = node.get("kind")
+        if kind == "document" and self._is_referenceable_creative_node(node):
+            return ReferenceNamespace.CANVAS_DOCUMENT
+        if kind == "storyboard" and self._is_referenceable_creative_node(node):
+            return ReferenceNamespace.CANVAS_STORYBOARD
         try:
             _validate_canvas_node(node)
         except ValueError:
@@ -4531,6 +5812,33 @@ class SqliteStore:
         if kind == "image" and self._is_stable_canvas_image(node):
             return ReferenceNamespace.CANVAS_MEDIA
         return None
+
+    @staticmethod
+    def _is_referenceable_creative_node(node: dict[str, Any]) -> bool:
+        node_id = node.get("id")
+        title = node.get("title")
+        revision = (
+            node.get("document", {}).get("revision")
+            if node.get("kind") == "document" and isinstance(node.get("document"), dict)
+            else node.get("revision")
+        )
+        digest = (
+            node.get("document", {}).get("digest")
+            if node.get("kind") == "document" and isinstance(node.get("document"), dict)
+            else node.get("digest")
+        )
+        return (
+            isinstance(node_id, str)
+            and bool(node_id)
+            and isinstance(title, str)
+            and isinstance(revision, int)
+            and not isinstance(revision, bool)
+            and revision >= 0
+            and isinstance(digest, str)
+            and len(digest) == 71
+            and digest.startswith("sha256:")
+            and all(character in "0123456789abcdef" for character in digest[7:])
+        )
 
     def _ensure_preset_public_references(
         self,
@@ -4746,7 +6054,10 @@ class SqliteStore:
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 deleted_at INTEGER,
-                model_binding_json TEXT
+                model_binding_json TEXT,
+                interaction_mode TEXT NOT NULL DEFAULT 'prompt-edit',
+                bound_skill_ids_json TEXT NOT NULL DEFAULT '[]',
+                revision INTEGER NOT NULL DEFAULT 1
             );
             CREATE INDEX IF NOT EXISTS agent_conversations_project_status_order
                 ON agent_conversations(project_id, status, updated_at DESC, id DESC);
@@ -4809,6 +6120,22 @@ class SqliteStore:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_conversations)")}
         if "model_binding_json" not in columns:
             connection.execute("ALTER TABLE agent_conversations ADD COLUMN model_binding_json TEXT")
+
+    def _migrate_agent_conversation_interaction_metadata(
+        self,
+        connection: sqlite3.Connection,
+    ) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_conversations)")}
+        additions = {
+            "interaction_mode": "TEXT NOT NULL DEFAULT 'prompt-edit'",
+            "bound_skill_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+            "revision": "INTEGER NOT NULL DEFAULT 1",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE agent_conversations ADD COLUMN {name} {definition}"
+                )
 
     def _seed_builtin_skills(self, connection: sqlite3.Connection) -> None:
         builtins = (
@@ -4918,6 +6245,9 @@ class SqliteStore:
             "title": row[4], "status": row[5], "createdAt": row[6],
             "updatedAt": row[7], "deletedAt": row[8],
             "modelBinding": json.loads(row[9]) if row[9] is not None else None,
+            "interactionMode": row[10],
+            "boundSkillIds": json.loads(row[11]),
+            "revision": row[12],
         }
 
     def _skill_summary(self, row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
@@ -4991,10 +6321,11 @@ class SqliteStore:
 
     def _insert_preset(self, connection: sqlite3.Connection, item: dict[str, Any], status: str, sort_order: int, trash: dict[str, Any] | None = None) -> None:
         connection.execute(
-            "INSERT INTO presets(id, revision, type, category, usage_count, sort_order, status, created_at, updated_at, deleted_at, deleted_by, delete_reason, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO presets(id, revision, type, category, usage_count, sort_order, status, created_at, updated_at, deleted_at, deleted_by, delete_reason, payload_json, retrieval_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (item["id"], item["revision"], item["type"], item["category"], item["usageCount"], sort_order, status,
              item["createdAt"], item["updatedAt"], trash.get("deletedAt") if trash else None,
-             trash.get("deletedBy") if trash else None, trash.get("deleteReason") if trash else None, _json(item)),
+             trash.get("deletedBy") if trash else None, trash.get("deleteReason") if trash else None, _json(item),
+             _prompt_retrieval_digest(item)),
         )
 
     def _create_recent_captures_schema(self, connection: sqlite3.Connection) -> None:
@@ -5410,6 +6741,10 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _prompt_retrieval_digest(value: dict[str, Any]) -> str:
+    return prompt_retrieval_digest(_json(value))
+
+
 def _canonical_json(value: Any) -> str:
     return json.dumps(
         value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
@@ -5432,6 +6767,87 @@ def normalize_model_binding(value: Any) -> dict[str, str] | None:
             raise ValueError(f"Agent conversation modelBinding {key} is required")
         binding[key] = item.strip()
     return binding
+
+
+def _normalize_agent_apply_edit(
+    value: Any,
+    *,
+    conversation_id: str,
+    request_id: str,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("Agent apply edit must be an object")
+    allowed = {
+        "status",
+        "conversationId",
+        "requestId",
+        "editId",
+        "kind",
+        "nodeId",
+        "expectedResultDigest",
+    }
+    if set(value) != allowed:
+        raise ValueError("Agent apply edit fields are invalid")
+    normalized = {
+        "status": value.get("status"),
+        "conversationId": str(value.get("conversationId") or "").strip(),
+        "requestId": str(value.get("requestId") or "").strip(),
+        "editId": str(value.get("editId") or "").strip(),
+        "kind": value.get("kind"),
+        "nodeId": str(value.get("nodeId") or "").strip(),
+        "expectedResultDigest": value.get("expectedResultDigest"),
+    }
+    if normalized["status"] != "pending_apply":
+        raise ValueError("New Agent apply edit must be pending_apply")
+    if (
+        normalized["conversationId"] != conversation_id
+        or normalized["requestId"] != request_id
+    ):
+        raise ValueError("Agent apply edit conversation/request identity is invalid")
+    if normalized["kind"] not in {"document_create", "document_changes", "storyboard_create", "storyboard_changes"}:
+        raise ValueError("Agent apply edit kind is invalid")
+    if not normalized["editId"] or not normalized["nodeId"]:
+        raise ValueError("Agent apply edit identity is required")
+    result_digest = normalized["expectedResultDigest"]
+    if (
+        not isinstance(result_digest, str)
+        or not result_digest.startswith("sha256:")
+        or len(result_digest) != 71
+        or any(character not in "0123456789abcdef" for character in result_digest[7:])
+    ):
+        raise ValueError("Agent apply edit result digest is invalid")
+    return normalized
+
+
+def _normalize_agent_apply_edit_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("Agent apply edit evidence must be an object")
+    allowed = {"projectRevision", "nodeId", "kind", "resultDigest", "code"}
+    if not set(value).issubset(allowed):
+        raise ValueError("Agent apply edit evidence fields are invalid")
+    normalized: dict[str, Any] = {}
+    if "projectRevision" in value:
+        revision = value["projectRevision"]
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            raise ValueError("Agent apply edit evidence projectRevision is invalid")
+        normalized["projectRevision"] = revision
+    for key in ("nodeId", "kind", "resultDigest", "code"):
+        if key not in value:
+            continue
+        item = value[key]
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"Agent apply edit evidence {key} is invalid")
+        normalized[key] = item.strip()
+    result_digest = normalized.get("resultDigest")
+    if result_digest is not None and (
+        len(result_digest) != 71
+        or not result_digest.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in result_digest[7:])
+    ):
+        raise ValueError("Agent apply edit evidence resultDigest is invalid")
+    return normalized
 
 
 def _legacy_image_conversation_id(project_id: str, node_id: str) -> str:

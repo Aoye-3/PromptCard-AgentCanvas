@@ -27,6 +27,9 @@ const serviceMock = vi.hoisted(() => ({
   testModelConfig: vi.fn()
 }))
 
+const DOCUMENT_RESOURCE_A = 'a'.repeat(32)
+const DOCUMENT_RESOURCE_B = 'b'.repeat(32)
+
 vi.mock('@/services/agent-runtime-service', () => ({
   agentRuntimeService: serviceMock
 }))
@@ -119,7 +122,6 @@ describe('agent store', () => {
       permissionScope: 'workspace-chatbot-agent',
       sessionKey: 'workspace:card:project-1',
       projectId: 'project-1',
-      promptLibrary: [],
       workspaceContext
     })
   })
@@ -146,6 +148,49 @@ describe('agent store', () => {
     })
 
     expect(serviceMock.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ canvasNodeContext }))
+  })
+
+  it('forwards document identities and records only metadata on the optimistic user message', async () => {
+    const documentAttachments = [{
+      resourceId: DOCUMENT_RESOURCE_A,
+      name: 'plan.md',
+      contentType: 'text/markdown' as const,
+      size: 7,
+      sha256: 'a'.repeat(64)
+    }]
+
+    await useAgentStore.getState().sendMessage('Discuss the plan', [], {
+      sessionKey: 'workspace:free-canvas:project-1',
+      mode: 'free-canvas-workspace',
+      interactionMode: 'chat-experimental',
+      documentResourceIds: [DOCUMENT_RESOURCE_A],
+      explicitDocumentNodeIds: ['document-node-1'],
+      documentAttachments
+    })
+
+    expect(serviceMock.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      documentResourceIds: [DOCUMENT_RESOURCE_A],
+      explicitDocumentNodeIds: ['document-node-1']
+    }))
+    expect(useAgentStore.getState().getAgentSession('workspace:free-canvas:project-1').messages[0])
+      .toMatchObject({ role: 'user', documentAttachments })
+  })
+
+  it('forwards the explicit Storyboard write selector without adding it to optimistic message metadata', async () => {
+    const documentWriteContext = {
+      operationKind: 'storyboard_create' as const,
+      documentNodeId: 'document-node-1'
+    }
+    await useAgentStore.getState().sendMessage('Create shots', [], {
+      sessionKey: 'workspace:free-canvas:project-1',
+      mode: 'free-canvas-workspace',
+      interactionMode: 'chat-experimental',
+      documentWriteContext
+    })
+
+    expect(serviceMock.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ documentWriteContext }))
+    expect(useAgentStore.getState().getAgentSession('workspace:free-canvas:project-1').messages[0])
+      .not.toHaveProperty('documentWriteContext')
   })
 
   it('returns validated Canvas edits separately without storing them as pending proposals', async () => {
@@ -187,7 +232,30 @@ describe('agent store', () => {
     expect(useAgentStore.getState().getAgentSession('workspace:free-canvas:project-1').proposals).toEqual([])
   })
 
-  it('does not attach the Prompt Library to ordinary Canvas completion requests', async () => {
+  it('preserves the closed Gateway identity of Document edits without legacy Canvas fields', async () => {
+    const edit = {
+      kind: 'document_create' as const,
+      id: 'edit-document-1', editId: 'edit-document-1', conversationId: 'conversation-1',
+      requestId: 'request-1', nodeId: 'document-1', expectedResultDigest: `sha256:${'a'.repeat(64)}`,
+      base: { projectRevision: 1 },
+      payload: { title: 'Draft', blocks: [], linkedDocumentResourceIds: [] },
+      rationale: 'Create a draft.'
+    }
+    serviceMock.sendMessage.mockResolvedValueOnce({
+      threadId: 'thread-1', conversationId: 'conversation-1', requestId: 'request-1',
+      text: 'Document edit generated.', proposals: [], canvasEdits: [edit]
+    })
+
+    const returned = await useAgentStore.getState().sendMessage('Create it', [], {
+      sessionKey: 'workspace:free-canvas:project-1', mode: 'free-canvas-workspace'
+    })
+
+    expect(returned.canvasEdits).toEqual([edit])
+    expect(returned.canvasEdits[0]).not.toHaveProperty('threadId')
+    expect(returned.canvasEdits[0]).not.toHaveProperty('contextId')
+  })
+
+  it('does not request Prompt retrieval for ordinary Canvas completion', async () => {
     await useAgentStore.getState().sendMessage('补全目标', promptLibraryPresets(254), {
       sessionKey: 'workspace:free-canvas:project-1',
       mode: 'free-canvas-workspace',
@@ -197,10 +265,12 @@ describe('agent store', () => {
       }
     })
 
-    expect(serviceMock.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ promptLibrary: [] }))
+    const request = serviceMock.sendMessage.mock.calls[serviceMock.sendMessage.mock.calls.length - 1]?.[0]
+    expect(request).not.toHaveProperty('promptLibrary')
+    expect(request).not.toHaveProperty('promptRetrieval')
   })
 
-  it('sends a bounded Prompt Library snapshot only in retrieval mode', async () => {
+  it('sends only a bounded retrieval query in Prompt Library mode', async () => {
     await useAgentStore.getState().sendMessage('查找建筑风格 Prompt', promptLibraryPresets(254), {
       sessionKey: 'workspace:free-canvas:project-1',
       mode: 'free-canvas-workspace',
@@ -211,8 +281,51 @@ describe('agent store', () => {
     })
 
     const request = serviceMock.sendMessage.mock.calls[serviceMock.sendMessage.mock.calls.length - 1]?.[0]
-    expect(request.promptLibrary).toHaveLength(200)
-    expect(request.promptLibrary[0].meta.media[0].id).toBe('media-0')
+    expect(request).not.toHaveProperty('promptLibrary')
+    expect(request.promptRetrieval).toEqual({
+      query: '查找建筑风格 Prompt', types: [], categories: [], exactCodes: [], limit: 10
+    })
+  })
+
+  it('does not request Prompt retrieval in experimental chat', async () => {
+    await useAgentStore.getState().sendMessage('讨论已有提示词', promptLibraryPresets(2), {
+      sessionKey: 'workspace:free-canvas:project-1',
+      permissionScope: 'prompt-library-agent',
+      interactionMode: 'chat-experimental'
+    })
+
+    const request = serviceMock.sendMessage.mock.calls[serviceMock.sendMessage.mock.calls.length - 1]?.[0]
+    expect(request).not.toHaveProperty('promptLibrary')
+    expect(request).not.toHaveProperty('promptRetrieval')
+  })
+
+  it('persists bounded Prompt citations on the assistant message', async () => {
+    serviceMock.sendMessage.mockResolvedValueOnce({
+      threadId: 'thread-rag', text: 'Use the cited prompt.', proposals: [], canvasEdits: [],
+      diagnostics: {
+        promptRetrieval: {
+          degraded: false, resultCount: 1, staleRejectedCount: 0, auditId: 'audit-1',
+          citations: [{
+            referenceCode: 'PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV', title: 'Rainy city', revision: 3,
+            digest: `sha256:${'a'.repeat(64)}`
+          }]
+        }
+      }
+    })
+
+    await useAgentStore.getState().sendMessage('查找雨夜城市', [], {
+      sessionKey: 'prompt-library:global', permissionScope: 'prompt-library-agent'
+    })
+
+    const messages = useAgentStore.getState().getAgentSession('prompt-library:global').messages
+    const assistant = messages[messages.length - 1]
+    expect(assistant?.citations).toEqual([{
+      referenceCode: 'PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV', title: 'Rainy city', revision: 3,
+      digest: `sha256:${'a'.repeat(64)}`
+    }])
+    expect(assistant?.promptRetrieval).toEqual({
+      degraded: false, resultCount: 1, staleRejectedCount: 0, auditId: 'audit-1'
+    })
   })
 
   it('keeps Agent panel and project chat sessions isolated', async () => {
@@ -276,6 +389,129 @@ describe('agent store', () => {
       threadId: 'thread-1',
       sessionKey: 'workspace:card:project-1'
     }))
+  })
+
+  it('reuses an explicit request id after a lost response', async () => {
+    serviceMock.sendMessage
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce({
+        threadId: 'conversation-1', conversationId: 'conversation-1', requestId: 'request-stable',
+        text: 'saved response', proposals: [], canvasEdits: [], diagnostics: { idempotent: true }
+      })
+    const options = {
+      sessionKey: 'workspace:free-canvas:project-1',
+      conversationId: 'conversation-1',
+      requestId: 'request-stable'
+    }
+
+    await useAgentStore.getState().sendMessage('continue', [], options)
+    await useAgentStore.getState().sendMessage('continue', [], options)
+
+    expect(serviceMock.sendMessage.mock.calls.slice(-2).map(call => call[0].requestId))
+      .toEqual(['request-stable', 'request-stable'])
+    const session = useAgentStore.getState().getAgentSession(options.sessionKey)
+    expect(session.retryRequest).toBeUndefined()
+    expect(session.messages.map(message => [message.role, message.content])).toEqual([
+      ['user', 'continue'],
+      ['assistant', 'saved response']
+    ])
+  })
+
+  it('freezes empty document identity arrays on a failed original request', async () => {
+    serviceMock.sendMessage.mockRejectedValueOnce(new Error('response lost'))
+
+    await useAgentStore.getState().sendMessage('continue without documents', [], {
+      sessionKey: 'workspace:free-canvas:project-1',
+      conversationId: 'conversation-1',
+      requestId: 'request-empty-documents'
+    })
+
+    expect(useAgentStore.getState().getAgentSession('workspace:free-canvas:project-1').retryRequest)
+      .toMatchObject({
+        requestId: 'request-empty-documents',
+        documentResourceIds: [],
+        explicitDocumentNodeIds: [],
+        documentAttachments: []
+      })
+  })
+
+  it('uses the failed turn document snapshot authoritatively for the same request id', async () => {
+    serviceMock.sendMessage
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce({
+        threadId: 'thread-1', conversationId: 'conversation-1', requestId: 'request-documents',
+        text: 'saved response', proposals: [], canvasEdits: [], diagnostics: { idempotent: true }
+      })
+    const originalAttachment = {
+      resourceId: DOCUMENT_RESOURCE_A,
+      name: 'original.md',
+      contentType: 'text/markdown' as const,
+      size: 7,
+      sha256: 'a'.repeat(64)
+    }
+    const replacementAttachment = {
+      resourceId: DOCUMENT_RESOURCE_B,
+      name: 'replacement.md',
+      contentType: 'text/markdown' as const,
+      size: 8,
+      sha256: 'b'.repeat(64)
+    }
+    const baseOptions = {
+      sessionKey: 'workspace:free-canvas:project-1',
+      conversationId: 'conversation-1',
+      requestId: 'request-documents'
+    }
+
+    await useAgentStore.getState().sendMessage('continue with documents', [], {
+      ...baseOptions,
+      documentResourceIds: [DOCUMENT_RESOURCE_A],
+      explicitDocumentNodeIds: ['document-node-original'],
+      documentAttachments: [originalAttachment]
+    })
+    await useAgentStore.getState().sendMessage('continue with documents', [], {
+      ...baseOptions,
+      documentResourceIds: [DOCUMENT_RESOURCE_B],
+      explicitDocumentNodeIds: ['document-node-replacement'],
+      documentAttachments: [replacementAttachment]
+    })
+
+    expect(serviceMock.sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      documentResourceIds: [DOCUMENT_RESOURCE_A],
+      explicitDocumentNodeIds: ['document-node-original']
+    }))
+    expect(useAgentStore.getState().getAgentSession(baseOptions.sessionKey).retryRequest).toBeUndefined()
+  })
+
+  it('clears a failed conversation retry when another conversation is hydrated', async () => {
+    serviceMock.sendMessage.mockRejectedValueOnce(new Error('response lost'))
+    const sessionKey = 'workspace:free-canvas:project-1'
+
+    await useAgentStore.getState().sendMessage('continue A', [], {
+      sessionKey,
+      conversationId: 'conversation-a',
+      requestId: 'request-a'
+    })
+
+    const failed = useAgentStore.getState().getAgentSession(sessionKey)
+    expect(failed.retryRequest).toEqual(expect.objectContaining({
+      requestId: 'request-a', content: 'continue A', conversationId: 'conversation-a'
+    }))
+    expect(failed.runtimeError).toBe('response lost')
+
+    useAgentStore.getState().hydrateSession(sessionKey, {
+      conversationId: 'conversation-b',
+      threadId: 'conversation-b',
+      messages: [],
+      proposals: []
+    })
+
+    const switched = useAgentStore.getState().getAgentSession(sessionKey)
+    expect(switched.conversationId).toBe('conversation-b')
+    expect(switched.retryRequest).toBeUndefined()
+    expect(switched.runtimeError).toBeUndefined()
+    expect(useAgentStore.getState().runtimeError).toBeUndefined()
+    expect(switched.messages).toEqual([])
+    expect(serviceMock.sendMessage).toHaveBeenCalledTimes(1)
   })
 
   it('clears and updates proposals only inside the target session', async () => {

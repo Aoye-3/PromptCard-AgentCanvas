@@ -1,0 +1,23 @@
+{
+  "name": "document create proposal",
+  "entryPoint": "deliveryPreviewRequest",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-preview-request.schema.json",
+  "expectedSchemaValidity": true,
+  "instance": {
+    "clientRequestId": "doc-create-001",
+    "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "document.create",
+    "target": { "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV" },
+    "sourceCodes": ["PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAV"],
+    "skillPins": [],
+    "rationale": "Create a reviewable script analysis.",
+    "provenance": "promptcard-bridge",
+    "payload": {
+      "title": "Script analysis",
+      "blocks": [
+        { "id": "block-1", "type": "heading", "level": 1, "content": [{ "text": "Beat sheet" }] },
+        { "id": "block-2", "type": "paragraph", "content": [{ "text": "Opening image." }] }
+      ]
+    }
+  }
+}

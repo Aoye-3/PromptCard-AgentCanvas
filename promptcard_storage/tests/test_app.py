@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     from fastapi.testclient import TestClient
@@ -274,12 +275,17 @@ class StorageAppContractTest(unittest.TestCase):
             "entrypoint": "workspace-chatbot-agent", "mode": "free-canvas",
             "modelBinding": {"connectionId": "connection-a", "providerId": "ark", "modelId": "model-a"},
         })
-        turn = self.client.post("/api/agent-conversations/conversation-1/turns", json={
-            "projectId": "project-agent", "requestId": "request-1",
-            "userMessage": {"role": "user", "text": "Hello"},
-            "assistantMessage": {"role": "assistant", "text": "Hi"},
-            "modelSnapshot": {"connectionId": "connection-a", "providerId": "ark", "modelId": "model-a"},
-        })
+        with patch.dict("os.environ", {"PROMPTCARD_INTERNAL_TOKEN": "storage-test-token"}):
+            turn = self.client.post(
+                "/api/agent-conversations/conversation-1/turns",
+                headers={"X-PromptCard-Internal-Token": "storage-test-token"},
+                json={
+                    "projectId": "project-agent", "requestId": "request-1",
+                    "userMessage": {"role": "user", "text": "Hello"},
+                    "assistantMessage": {"role": "assistant", "text": "Hi"},
+                    "modelSnapshot": {"connectionId": "connection-a", "providerId": "ark", "modelId": "model-a"},
+                },
+            )
         listed = self.client.get("/api/agent-conversations", params={"projectId": "project-agent"})
         detail = self.client.get("/api/agent-conversations/conversation-1", params={"projectId": "project-agent"})
         skills = self.client.get("/api/skills")
@@ -288,6 +294,27 @@ class StorageAppContractTest(unittest.TestCase):
         self.assertEqual(turn.status_code, 200)
         self.assertEqual(listed.json()["conversations"][0]["id"], "conversation-1")
         self.assertEqual(listed.json()["conversations"][0]["modelBinding"]["modelId"], "model-a")
+        self.assertEqual(created.json()["interactionMode"], "prompt-edit")
+        interaction = self.client.patch(
+            "/api/projects/project-agent/conversations/conversation-1/interaction",
+            json={
+                "interactionMode": "chat-experimental",
+                "boundSkillIds": ["SKL-external"],
+                "expectedRevision": 1,
+            },
+        )
+        self.assertEqual(interaction.status_code, 200)
+        self.assertEqual(interaction.json()["interactionMode"], "chat-experimental")
+        self.assertEqual(interaction.json()["boundSkillIds"], ["SKL-external"])
+        stale = self.client.patch(
+            "/api/projects/project-agent/conversations/conversation-1/interaction",
+            json={
+                "interactionMode": "prompt-edit",
+                "boundSkillIds": [],
+                "expectedRevision": 1,
+            },
+        )
+        self.assertEqual(stale.status_code, 409)
         self.assertEqual(len(detail.json()["messages"]), 2)
         self.assertEqual(detail.json()["turns"][0]["modelSnapshot"]["connectionId"], "connection-a")
         self.assertEqual(len(skills.json()["skills"]), 2)

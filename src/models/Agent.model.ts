@@ -1,5 +1,15 @@
 import type { CardType, IPreset } from './Card.model'
-import type { IStoryboardRow, IStoryboardSequence } from './PromptHistory.model'
+import type {
+  IStoryboardRow,
+  IStoryboardSequence,
+  PlanningDocumentBlockV1,
+  StoryboardRowField,
+  StoryboardSequenceField,
+  StoryboardSourceProvenance
+} from './PromptHistory.model'
+import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
+
+export type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 
 export type AgentRuntimeStatus = 'unknown' | 'connected' | 'disconnected'
 
@@ -9,11 +19,47 @@ export type AgentAuthStatus =
   | 'unauthenticated'
   | 'authenticated'
 
+export interface AgentPromptCitation {
+  referenceCode: string
+  title: string
+  revision: number
+  digest: string
+}
+
+export interface AgentPromptRetrievalState {
+  degraded: boolean
+  resultCount: number
+  staleRejectedCount: number
+  auditId?: string
+  errorCode?: string
+}
+
 export interface AgentMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
   createdAt: number
+  documentAttachments?: AgentDocumentAttachmentAudit[]
+  citations?: AgentPromptCitation[]
+  promptRetrieval?: AgentPromptRetrievalState
+}
+
+export type DocumentContentType =
+  | 'text/plain'
+  | 'text/markdown'
+  | 'application/pdf'
+  | 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+
+export interface AgentDocumentAttachment {
+  resourceId: string
+  name: string
+  contentType: DocumentContentType
+  size: number
+  sha256: string
+}
+
+export type AgentDocumentAttachmentAudit = Omit<AgentDocumentAttachment, 'sha256'> & {
+  sha256?: string
 }
 
 export type AgentSessionKey = string
@@ -21,6 +67,16 @@ export type AgentSessionKey = string
 export interface AgentConversationSession {
   threadId?: string
   conversationId?: string
+  interactionMode?: AgentInteractionMode
+  boundSkillIds?: string[]
+  revision?: number
+  retryRequest?: {
+    requestId: string
+    content: string
+    documentResourceIds: string[]
+    explicitDocumentNodeIds: string[]
+    documentAttachments: AgentDocumentAttachment[]
+  }
   messages: AgentMessage[]
   proposals: AgentWorkspaceProposal[]
   running: boolean
@@ -45,7 +101,7 @@ export interface AgentModelInfo {
   modelId?: string
   displayName?: string
   capabilities?: {
-    input?: Array<'text' | 'image'>
+    input?: Array<'text' | 'image' | 'pdf'>
     toolCalling?: boolean
     contextWindow?: number
     [key: string]: unknown
@@ -122,7 +178,39 @@ export interface AgentWorkspaceContext {
   snapshot: Record<string, unknown>
 }
 
+/** Prompt-text edit operations only; conversation interaction modes are a separate policy boundary. See ADR-020. */
 export type CanvasAgentEditMode = 'complete' | 'rewrite' | 'prompt-library'
+
+export type AgentInteractionMode = 'prompt-edit' | 'chat-experimental'
+
+export type AgentPromptHandoffBasis =
+  | {
+    kind: 'document-selection'
+    nodeId: string
+    documentRevision: number
+    documentDigest: string
+    blockId: string
+    utf8Start: number
+    utf8End: number
+    selectedText: string
+    selectedTextDigest: string
+  }
+  | {
+    kind: 'storyboard-shot'
+    nodeId: string
+    storyboardRevision: number
+    storyboardDigest: string
+    rowId: string
+    shotDigest: string
+    shotText?: string
+  }
+
+export type AgentPlanningWriteContext =
+  | { operationKind: 'document_create' }
+  | { operationKind: 'document_changes'; nodeId: string }
+  | { operationKind: 'storyboard_create'; documentNodeId: string }
+  | { operationKind: 'storyboard_changes'; nodeId: string }
+  | { operationKind: 'prompt_handoff'; basis: AgentPromptHandoffBasis }
 
 export interface CanvasAgentSelection {
   start: number
@@ -253,17 +341,6 @@ export interface AgentFreeCanvasTextProposalBasis {
   baseSegmentsDigest: string
 }
 
-export interface AgentRunProvenance {
-  model: {
-    connectionId: string
-    providerId: string
-    modelId: string
-    displayName?: string
-    capabilities?: Record<string, unknown>
-  }
-  skills: Array<{ skillId: string; revision: number; digest: string }>
-}
-
 export interface AgentFreeCanvasTextInsertionsEdit {
   kind: 'free_canvas_text_insertions'
   contextId?: string
@@ -292,14 +369,82 @@ export interface AgentFreeCanvasTextCreateEdit {
   userText: string
   sourceNodeId?: string
   basis?: AgentFreeCanvasTextProposalBasis
+  handoffBasis?: AgentPromptHandoffBasis
   provenance?: AgentRunProvenance
   rationale: string
   createdAt: number
 }
 
+export type AgentDocumentChangeOperation =
+  | { kind: 'insert'; blockId: string; utf8Offset: number; text: string; expectedTextDigest: string }
+  | { kind: 'delete'; blockId: string; utf8Start: number; utf8End: number; expectedTextDigest: string }
+  | { kind: 'replace'; blockId: string; utf8Start: number; utf8End: number; text: string; expectedTextDigest: string }
+
+interface AgentDocumentEditIdentity {
+  id: string
+  editId: string
+  conversationId: string
+  requestId: string
+  nodeId: string
+  expectedResultDigest: string
+  rationale: string
+  provenance?: AgentRunProvenance
+}
+
+export type AgentStoryboardFieldChangeOperation =
+  | { scope: 'sequence'; field: StoryboardSequenceField; value: string }
+  | { scope: 'row'; rowId: string; field: StoryboardRowField; value: string }
+
+export interface AgentStoryboardCreateEdit extends AgentDocumentEditIdentity {
+  kind: 'storyboard_create'
+  base: { projectRevision: number }
+  payload: {
+    title: string
+    sequence: IStoryboardSequence
+    source: StoryboardSourceProvenance
+  }
+}
+
+export interface AgentStoryboardChangesEdit extends AgentDocumentEditIdentity {
+  kind: 'storyboard_changes'
+  base: {
+    projectRevision: number
+    nodeRevision: number
+    nodeDigest: string
+  }
+  payload: {
+    changes: AgentStoryboardFieldChangeOperation[]
+    source: StoryboardSourceProvenance
+  }
+}
+
+export interface AgentDocumentCreateEdit extends AgentDocumentEditIdentity {
+  kind: 'document_create'
+  base: { projectRevision: number }
+  payload: {
+    title: string
+    blocks: PlanningDocumentBlockV1[]
+    linkedDocumentResourceIds: string[]
+  }
+}
+
+export interface AgentDocumentChangesEdit extends AgentDocumentEditIdentity {
+  kind: 'document_changes'
+  base: {
+    projectRevision: number
+    nodeRevision: number
+    nodeDigest: string
+  }
+  payload: { operations: AgentDocumentChangeOperation[] }
+}
+
 export type AgentCanvasEdit =
   | AgentFreeCanvasTextInsertionsEdit
   | AgentFreeCanvasTextCreateEdit
+  | AgentDocumentCreateEdit
+  | AgentDocumentChangesEdit
+  | AgentStoryboardCreateEdit
+  | AgentStoryboardChangesEdit
 
 export interface AgentFreeCanvasTextInsertionsProposal extends AgentFreeCanvasTextInsertionsEdit {
   status: 'pending' | 'approved' | 'rejected'

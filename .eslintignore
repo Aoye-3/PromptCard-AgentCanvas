@@ -1,0 +1,14 @@
+**/.pytest_cache/**
+**/.pytest_cache/
+**/pytest-*/**
+**/pytest-*/
+**/pytest-native/**
+**/pytest-native/
+review-task-*/**
+review-task-*/
+task-*-umbrella-*/**
+task-*-umbrella-*/
+test-output/**
+test-output/
+.tmp/**
+dist/**

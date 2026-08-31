@@ -28,7 +28,11 @@ export function createSdkGatewayStream(
   options: SimpleStreamOptions | undefined
 ) {
   const stream = createAssistantMessageEventStream()
-  const connectionId = (model as Model<any> & { promptcardConnectionId?: string }).promptcardConnectionId
+  const promptcardModel = model as Model<any> & {
+    promptcardConnectionId?: string
+    promptcardDocumentInvocationHandle?: string
+  }
+  const connectionId = promptcardModel.promptcardConnectionId
   queueMicrotask(async () => {
     try {
       if (!connectionId) throw new Error('PromptCard model connection is missing')
@@ -45,7 +49,10 @@ export function createSdkGatewayStream(
           messages: context.messages,
           tools: context.tools || [],
           temperature: options?.temperature,
-          maxTokens: options?.maxTokens
+          maxTokens: options?.maxTokens,
+          ...(promptcardModel.promptcardDocumentInvocationHandle
+            ? { documentInvocationHandle: promptcardModel.promptcardDocumentInvocationHandle }
+            : {})
         }),
         signal: options?.signal
       })

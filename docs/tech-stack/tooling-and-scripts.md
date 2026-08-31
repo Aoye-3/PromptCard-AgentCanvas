@@ -8,9 +8,12 @@ npm.cmd run tauri:dev
 npm.cmd test -- --run
 npm.cmd run build
 npm.cmd run test:e2e
+npm.cmd run test:e2e:real-codex-discovery
 ```
 
 `test:e2e` delegates to `scripts/run-e2e-tests.ps1`. That runner fixes browser binaries to the workspace `.playwright-browsers`, starts and owns Vite, the Fake Runtime, and Storage on ports `38100`, `38101`, and `38102`, propagates Playwright's real exit code, returns `124` on runner timeout, and stops the owned service trees in `finally` before verifying port release. The focused image-node and multi-view gate is:
+
+`test:e2e:real-codex-discovery` switches the same runner to the real Gateway and an isolated `real-codex-e2e` repository scope, forwards only the Bridge URL/token/workspace root into the repository-owned STDIO MCP, and launches the signed-in Codex CLI with no PromptCard schema preloaded. The assertion source is Codex JSONL MCP events and bounded result payloads, not final model prose. This gate requires a locally authenticated Codex installation and is intentionally separate from the default offline E2E suite.
 
 ```powershell
 npm.cmd run test:e2e -- -c playwright.image-generation.config.ts

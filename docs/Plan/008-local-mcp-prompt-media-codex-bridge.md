@@ -2,15 +2,15 @@
 
 ## Status
 
-Paused at Task 15.5 user acceptance
+Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes were merged into and satisfied by the final real-Codex closed-loop gate. Tasks 16-28 and the repository-wide release matrix are complete on `feat/skill-document-storyboard-loop`: Codex passed first-contact discovery, the complete Document/Storyboard create/change → Prompt create → generated-image review chain, four-kind replay, digest conflict, process restart recovery, the adversarial boundary matrix, optional Bridge packaging/diagnostics, and all build/regression/browser/security/documentation gates. The branch is ready for its authorized merge into `main`.
 
 ## Current Normative Boundary
 
 This plan began with Codex-specific product language. That historical design remains useful for reference identities, retrieval, and delivery flows, but it is no longer normative where it makes MCP, Gateway, CLI, retrieval, or delivery Codex-only.
 
-[ADR-019](../decisions/ADR-019-generic-local-agent-bridge-boundary.md) and the [Plan 008 execution ledger](../superpowers/plans/2026-08-22-plan-008-execution.md) define the current `PromptCard Local Agent Bridge`: a host-neutral core with trusted profiles/scopes, v2 `promptcard-bridge` provenance, STDIO plus loopback Streamable HTTP, and Codex/TRAE as initial acceptance adapters. Codex `.agents/skills` and the local-Agent snapshot remain accurately named concrete Host Adapters. Doubao and MarsCode remain “待验证”.
+[ADR-019](../decisions/ADR-019-generic-local-agent-bridge-boundary.md) and the [Plan 008 execution ledger](../superpowers/plans/2026-08-22-plan-008-execution.md) define the current `PromptCard Local Agent Bridge`: a host-neutral core with trusted profiles/scopes, v2 `promptcard-bridge` provenance, and STDIO plus loopback Streamable HTTP. Codex is the first verified real host. TRAE is a configuration/contract candidate only; Doubao and MarsCode remain “待验证”. Codex `.agents/skills` and the local-Agent snapshot remain accurately named concrete Host Adapters.
 
-Task 15 and Task 15.5 are implemented and technically accepted; see the [acceptance package](../reviews/2026-08-24-task-15-5-technical-acceptance.md). Execution is paused for user acceptance before Task 16. The Bridge router, credential, CLI, MCP server, Prompt RAG backend, and delivery runtime are not implemented.
+Task 15, Task 15.5, and Tasks 15.6-15.10 are implemented and technically accepted; see the [Task 15.5 acceptance package](../reviews/2026-08-24-task-15-5-technical-acceptance.md) and [Checkpoint 3.5 acceptance package](../reviews/2026-08-27-task-15-10-technical-acceptance.md). On 2026-08-30 the user folded the remaining manual probes into final real-Codex acceptance and authorized Task 16. Bridge v3 and ADR-023 now freeze the typed Document/Storyboard/Prompt/image writeback boundary; runtime implementation follows the execution ledger.
 
 ## Date
 
@@ -138,11 +138,11 @@ The maintained runtime also has important boundaries that this plan preserves:
 - the pi text Agent has no direct filesystem, Storage, or Canvas write access;
 - current provider image generation is independent from text-Agent sessions.
 
-The current left navigation includes the complete Task 15 Skill Hub management surface. PromptCard Storage schema v15 owns canonical Skill packages, immutable revisions and digests, provenance, lifecycle, exact-revision trust reviews, and independent host pins. Skill Hub supports inert folder/archive inspection, structured findings, import, history/diff, archive/restore, exact review, Codex/local-Agent controls, projection health, and explicit owned-drift repair. The Gateway continues to supply exact bounded snapshots to the local text Agent without expanding Runtime permissions.
+The current left navigation includes the complete Task 15 Skill Hub management surface. PromptCard Storage schema v19 owns canonical Skill packages, immutable revisions and digests, provenance, lifecycle, exact-revision trust reviews, independent host pins, typed creative references, transactional Prompt retrieval/audit records, and the profile-scoped Bridge delivery ledger. Skill Hub supports inert folder/archive inspection, structured findings, import, history/diff, archive/restore, exact review, Codex/local-Agent controls, projection health, and explicit owned-drift repair. The Gateway continues to supply exact bounded snapshots to the local text Agent without expanding Runtime permissions.
 
-Codex `.agents/skills` is a derived native projection, not the canonical store. Canonical revision updates do not move either host pin. Skill scripts, hooks, installers, automatic semantic matching, MCP Skill resources, and Task 16's host-neutral read surface remain unimplemented.
+Codex `.agents/skills` is a derived native projection, not the canonical store. Canonical revision updates do not move either host pin. Skill scripts, hooks, installers, automatic semantic matching, and MCP Skill resources remain unimplemented. Task 16's host-neutral read surface resolves Codex pins only through a trusted profile repository scope; Task 18 Prompt search remains discovery-only and requires an explicit `CVC-*`.
 
-The current Canvas Agent `prompt-library` mode is still request-snapshot based: the browser may serialize up to 200 Prompt records, the pi Runtime keeps at most 100, and `search_prompt_library` searches only that array. This avoids ambient library access but scales request and context size with the library, cannot provide maintained semantic retrieval, and cannot durably explain why a Prompt was selected. The shared RAG track below replaces this transport while keeping Agent and MCP permissions separate.
+The Canvas Agent `prompt-library` mode and dedicated Prompt Library assistant now send only a bounded query/filter/exact-code request. Gateway loads revision-pinned evidence from Storage schema v18, caps the injected body, records digest-only retrieval audit metadata, and returns resolvable citations plus an explicit degraded state. Ordinary Canvas editing, discussion, media analysis, and `chat-experimental` receive neither the retriever nor Prompt evidence. The pi Runtime still exposes its model-facing `search_prompt_library` tool, but that tool searches only Gateway-supplied evidence and has no Storage authority.
 
 Agent-delivered images must not be represented as successful Seedream or other provider generation runs. New delivery records use v2 `promptcard-bridge` provenance and a profile-scoped ledger; v1 `codex-harness` remains compatibility-only. Delivery uses a separate additive asset path.
 
@@ -459,6 +459,16 @@ Codex and the local Agent share package identity and revision content, but not t
 
 The audit trail records which host resolved which `SKL` revision and digest, without storing model secrets or unbounded conversation content.
 
+## Local Agent Creative Document Loop (Implemented regression baseline)
+
+Checkpoint 3.5 added a project-local creative planning loop for the existing text Agent. Its automated tests are the regression baseline, while its remaining manual probes are part of final real-Codex acceptance. The detailed design is frozen by [ADR-020](../decisions/ADR-020-separate-planning-documents-from-prompt-execution.md), [ADR-021](../decisions/ADR-021-project-document-resources-and-ephemeral-provider-files.md), and the [implementation plan](../superpowers/plans/2026-08-27-skill-conversation-document-storyboard.md).
+
+The loop introduces a top-level **对话模式【测试中】** that can keep explicitly selected local-Agent Skills bound across turns, accept project-scoped TXT/Markdown/PDF/DOCX attachments, and directly create or revise a long-form Document working draft. Document is a separate Canvas node and storage domain: it does not reuse Prompt segments and never enters Prompt Library, Prompt RAG, Prompt compilation, image-generation inputs, or ambient full-body workspace context.
+
+Document changes use inline suggestion review while their proposed state is the effective working draft. The user must explicitly invoke `Document -> Storyboard`; later Storyboard changes use per-field differences. Moving selected Document text or a Storyboard shot into Prompt content is another explicit action that creates a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node; it cannot update an existing Prompt or read/write Prompt Library.
+
+This project-local loop does not use MCP, Bridge credentials/profiles, or the Bridge delivery ledger. Skills remain inert bounded instruction/reference packages; each turn revalidates the current local-Agent pin, trust, lifecycle, exact revision/digest, and tool dependencies. The user authorized Task 16 on 2026-08-30 and merged Checkpoint 3.5 manual acceptance into the final external-Agent closed-loop gate.
+
 ## MCP Boundary
 
 ### Transport and ownership
@@ -671,6 +681,18 @@ Additional rules:
 - [x] Enabling or disabling one host does not change the other host.
 - [x] The local Agent cannot execute Skill scripts or gain tools outside its existing `permissionScope`.
 
+### Phase 3.5: Skill Conversation And Creative Documents (Planned)
+
+**Goal:** Complete a recoverable local Skill conversation -> file -> Document -> Storyboard -> explicit Prompt proposal loop without changing Prompt or external Bridge semantics.
+
+- [ ] Add `chat-experimental` as a conversation mode separate from Prompt edit modes, with persistent conversation-scoped Skill binding and per-turn pin/trust/tool revalidation.
+- [x] Add Storage schema v16 project document resources for TXT/Markdown/PDF/DOCX; keep image project resources unchanged.
+- [ ] Use local safe text/DOCX extraction and an isolated Ark Files/Responses path for PDF, with per-invocation remote deletion and durable cleanup retry.
+- [ ] Add isolated Document and Storyboard Canvas nodes, explicit kind dispatch, bounded context resolution, persistence, command history, and old-project compatibility.
+- [ ] Apply Agent Document suggestions and Storyboard field differences through typed operations, frontend persistence acknowledgement, rollback, and idempotent restart reconciliation.
+- [ ] Require explicit Document -> Storyboard and selected text/shot -> Prompt actions; prove Document/Storyboard never enter Prompt Library/RAG/compiler/image-generation implicitly.
+- [x] Deliver Checkpoint 3.5 evidence and stop for user acceptance before Task 16.
+
 ### Phase 4: Read-Only CLI and Local MCP
 
 **Goal:** Give verified MCP-capable Agent hosts safe access to Prompt Library, Canvas context, and Skill Hub references through one host-neutral core.
@@ -682,11 +704,11 @@ Additional rules:
 
 **Acceptance:**
 
-- [ ] Codex and TRAE can resolve user-copied `PRJ`, `PLP`, `PLM`, `CVT`, `CVM`, `CVC`, and `SKL` codes through the same core contracts.
+- [x] The host-neutral MCP/CLI contract resolves user-copied `PRJ`, `PLP`, `PLM`, `CVT`, `CVM`, `CVC`, and `SKL` codes through the same core; real Codex is the current acceptance host and TRAE remains contract-compatibility coverage rather than a manual gate.
 - [ ] Prompt Library search never returns Canvas identities, and Canvas search never returns Prompt Library identities.
 - [ ] A broad search returns compact typed codes and summaries, not unbounded asset data.
-- [ ] No read tool exposes local paths, credentials, or unrestricted project JSON.
-- [ ] STDIO and loopback Streamable HTTP pass the frozen protocol-era, authentication, origin, response-budget, and cleanup gates without downloading runtime dependencies at launch.
+- [x] No read tool exposes local paths, credentials, internal asset IDs, or unrestricted project JSON.
+- [x] STDIO and loopback Streamable HTTP pass the frozen protocol-era, authentication, origin, response-budget, and cleanup gates without downloading runtime dependencies at launch.
 
 ### Phase 4A: Shared Prompt Library RAG
 
@@ -701,14 +723,14 @@ Additional rules:
 
 **Acceptance:**
 
-- [ ] Agent RAG requests and MCP searches contain no browser-supplied full Prompt array.
+- [x] Agent RAG requests contain no browser-supplied full Prompt array; MCP reuses the same bounded Storage/Gateway retrieval core through its own Bridge profile and audit identity.
 - [ ] Exact Prompt/media codes resolve deterministically before ranking.
 - [ ] Chinese and English paraphrases retrieve relevant active Prompts with reviewable reasons.
-- [ ] Result count and injected context remain bounded as the library grows.
-- [ ] Create, update, archive, and restore keep retrieval indexes consistent and exclude Trash from ordinary results.
-- [ ] Missing semantic infrastructure produces an explicit lexical fallback and does not fail the Agent conversation or MCP search.
-- [ ] Agent citations and MCP results expose resolvable Prompt identities and revisions.
-- [ ] Canvas completion/rewrite, ordinary discussion, and media analysis cannot call the retriever.
+- [x] Result count and injected context remain bounded as the library grows.
+- [x] Create, update, archive, and restore keep retrieval indexes consistent and exclude Trash from ordinary results.
+- [x] Missing retrieval infrastructure produces an explicit no-evidence degraded state and does not fail the local-Agent turn; semantic retrieval remains deferred.
+- [x] Agent citations and MCP results expose resolvable Prompt identities, revisions, and digests.
+- [x] Canvas completion/rewrite, ordinary discussion, media analysis, and experimental chat cannot call the retriever.
 - [ ] RAG mode cannot mutate Canvas or Prompt Library without a separate valid proposal and user approval.
 - [ ] Disabling RAG leaves ordinary Agent, Canvas, media analysis, exact-code resolution, and non-RAG MCP tools available.
 
@@ -716,7 +738,7 @@ Additional rules:
 
 **Goal:** Return Local Agent Bridge outputs to the correct Canvas safely.
 
-- Implement additive Prompt node proposal delivery.
+- [x] Implement additive Prompt node proposal delivery. Preview is non-mutating, commit enters the visual CVC-scoped review queue, accept saves one deterministic all-`user` Prompt before terminal acknowledgement, and reject remains audited.
 - Implement multipart image delivery with v2 `promptcard-bridge` provenance and profile-scoped idempotency; accept v1 `codex-harness` only at the compatibility boundary.
 - Add idempotent generic pending Canvas placements independent of provider generation runs.
 - Reuse the existing save-before-placed reconciliation order.
@@ -725,10 +747,10 @@ Additional rules:
 **Acceptance:**
 
 - [ ] Repeated delivery does not create duplicate assets or nodes.
-- [ ] A Prompt node or image targets the Canvas identified by the `CVC` pack.
+- [x] A Prompt node or image targets the Canvas identified by the `CVC` pack.
 - [ ] Project save failure leaves delivery pending and recoverable.
-- [ ] No bridge-delivered asset is recorded as a Seedream/provider generation run.
-- [ ] PromptCard shows provenance and the source codes used.
+- [x] No bridge-delivered asset is recorded as a Seedream/provider generation run.
+- [x] PromptCard shows provenance and the source codes used.
 
 ### Phase 6: Hardening and Distribution
 
@@ -756,12 +778,14 @@ Additional rules:
 - Runtime tests: only explicit Prompt Library RAG mode receives bounded evidence or the retrieval tool.
 - MCP/CLI contract tests: identical schemas and results for every shared operation.
 - Skill package security tests: traversal, unsafe links, duplicate normalized paths, archive limits, malformed metadata, collision, and no-execution guarantees.
+- Creative-document tests: experimental conversation/Skill persistence, document format and provider cleanup security, Document suggestion semantics, Storyboard field review, apply/replay recovery, explicit transforms, and Prompt/image isolation.
 - End-to-end tests:
   - copy a `PLP` code, resolve Prompt and ordered `PLM` media;
   - resolve a `PRJ`, search Canvas `CVT`/`CVM`, and separately search Prompt Library `PLP`/`PLM`;
   - create a `CVC` code from selected nodes and resolve it after focus changes;
   - import one Skill, publish the same pinned revision to Codex, and enable it independently for the local Agent;
   - update the Skill and verify neither host moves revisions without explicit approval;
+  - bind a local-Agent Skill across an experimental conversation, attach each supported document format, create/revise a Document, explicitly create a Storyboard, and explicitly create one pending `free_canvas_text_create` proposal from a selection;
   - deliver a Prompt node and image to that context;
   - repeat the same request and verify no duplicate node or asset;
   - disable Codex/MCP and verify PromptCard local workflows still work.
@@ -780,7 +804,7 @@ Additional rules:
 - No silent upload of Prompt content to a remote embedding service.
 - No shared generic media code spanning Prompt Library and Canvas.
 - No copying the entire Canvas when the user has not explicitly requested it.
-- No updates, deletes, or destructive Canvas operations in the first MCP write surface.
+- No updates, deletes, or destructive Canvas operations in the first MCP/Bridge write surface; the separately accepted project-local Document/Storyboard typed operations do not create a general Canvas mutation API.
 - No representation of Codex image output as a successful PromptCard provider run.
 - No promise that an open-source clone receives free or offline image generation.
 

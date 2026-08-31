@@ -34,6 +34,10 @@ The split is deliberate:
 - PromptCard Storage is the sole durable authority for project Agent conversations, messages, proposal status, and Skill revision audit records.
 - Image generation remains an independent Gateway module and does not depend on pi.
 
+The Local Agent Bridge is an additional Gateway boundary, not another Agent runtime. Its independent Bearer profile supplies fixed scopes and an optional configured Codex repository scope. An external host starts with runtime discovery, then reads one user-selected `PRJ-*`/`CVC-*`; it cannot derive authority from UI focus, its claimed client name, an internal node ID, a fuzzy title, or a search result. Gateway resolves all exact references through Storage and returns bounded projections. Bridge routes do not inherit browser cookie authority and therefore bypass cookie double-submit CSRF, but every request still passes the dedicated Bearer profile/scope middleware; browser mutations retain CSRF enforcement. The repository JSON CLI and the repository-owned STDIO/loopback HTTP MCP server both call this same service layer; neither adapter reads SQLite, project files, keyring credentials, or arbitrary paths.
+
+MCP is a transport adapter with ten closed-schema Tools: six reads, idempotent proposal preview/commit, read-only status, and bounded workspace image staging. Its STDIO path writes only JSON-RPC to stdout. Its HTTP path hard-binds `127.0.0.1`, validates Host/Origin, and adds a transport Bearer token distinct from the downstream Bridge profile credential. Both protocol eras instantiate the same Tool factory, so host/version negotiation cannot change business behavior. Binary evidence reads are addressed only by explicit `CVC + PLM/CVM`; staging is the sole filesystem-reading Tool and can resolve only a relative regular file beneath an explicit real-path workspace root. Gateway still owns profile scope, CVC, MIME, size, digest, ledger, and opaque `AST-*` authority.
+
 ## Minimal Closed Loop
 
 The first product milestone is:
@@ -52,12 +56,23 @@ The text Agent supports the third step without becoming a general-purpose autono
 - `rewrite` exposes the same tool name with a different schema that accepts one complete `userText`. Valid output becomes `free_canvas_text_create`; approval creates a derived node to the source node's right and never changes the source.
 - New proposals carry `baseNodeRevision`, `templateDigest`, and `baseSegmentsDigest`. Gateway and the apply path reject the whole proposal when any basis or anchor is stale.
 - The built-in `canvas-prompt-editor` revision 3 is bound by `canvas.prompt.edit`, but target locking, reference immutability, tool schemas, and approval checks remain Gateway/application policy rather than Skill-granted authority.
-- Prompt Library content is not included in ordinary Canvas discussion or edit calls. It is available only in the explicit `prompt-library` mode, which exposes search but no Canvas mutation tool.
+- Prompt Library content is not included in ordinary Canvas discussion or edit calls. Only explicit Prompt Library modes may send a bounded `promptRetrieval` request; Gateway resolves revision-pinned Storage evidence and the pi search tool can inspect only that evidence, with no Storage authority or Canvas mutation tool.
 - The frontend must show Apply and Reject controls. No Agent response writes to Canvas automatically.
+
+## Experimental Conversation And Creative-Document Contract
+
+- `chat-experimental` is a top-level interaction mode, not a `CanvasAgentEditMode`. It needs no Prompt target and cannot inherit Prompt edit or Prompt Library authority.
+- The conversation persists `interactionMode`, `boundSkillIds`, model binding, and optimistic revision in Storage. Each turn still resolves the current exact local-Agent pin and revalidates trust, lifecycle, digest, budgets, and tool dependencies; a bound Skill never grants a tool.
+- Project document resources accept only validated TXT, Markdown, DOCX, and PDF. Local bytes remain canonical. TXT/Markdown are strict UTF-8, DOCX uses pinned `python-docx==1.2.0`, and PDF uses an isolated Ark Files/Responses invocation with `finally` deletion plus durable redacted cleanup retry.
+- Document is an editor-neutral versioned block AST. Tiptap `3.30.3` is a frontend adapter only. Agent changes use NFC UTF-8 byte offsets inside one leaf block and become tracked insert/delete/replace suggestions with an effective-draft projection.
+- Document -> Storyboard, Document/Storyboard revision, and selection/shot -> Prompt handoff all require explicit user actions. Storyboard reuses the standalone field definitions but has a separate Canvas mutation path and per-field review state.
+- Document and Storyboard are never Prompt segments, Prompt Library/RAG records, Prompt compiler input, image-generation attachments, media references, or ambient full-body context. Prompt handoff may only create a pending new all-`user` text node; it cannot update an existing Prompt.
+- Document/Storyboard writes use a durable apply ledger. Gateway assigns deterministic edit/node identity and expected result digest; the frontend saves the node with `AgentAppliedEditMarker`, then ACKs. Gateway reloads Storage and requires one unique target and marker before recording `applied`.
+- Saved-before-ACK, response loss, duplicate request, stale base, missing target, marker/digest mismatch, and restart recovery fail closed or replay the identical edit. Browser ACK, node order, and the first matching node are never authority.
 
 ## Prompt Library Contract
 
-The Prompt Library Agent may search the provided snapshot and emit only additive `prompt_library_write_proposal` records with `operation: "create"`. Update, overwrite, archive, and delete are outside the Agent tool surface.
+The Prompt Library Agent may search Gateway-supplied, revision-pinned evidence and emit only additive `prompt_library_write_proposal` records with `operation: "create"`. The browser never supplies a Prompt snapshot. Citations and retrieval diagnostics are persisted with the assistant turn; unavailable retrieval degrades to an explicit empty-evidence state. Update, overwrite, archive, and delete are outside the Agent tool surface.
 
 ## Media Analysis Contract
 
@@ -80,7 +95,7 @@ The Media Library's temporary collaboration dialog calls `POST /api/promptcard/r
 - Every first execution records the actual connection, provider, model, display name, and capability snapshot. An idempotent retry returns that stored turn even if the conversation's selected model later changes.
 - Conversation list, rename, Trash, restore, and permanent deletion are project-scoped. Permanent deletion cascades its messages, turns, and proposals.
 - The current `localStorage` entry remembers only the selected conversation ID. Composer drafts are component state; browser storage is never a message-history authority.
-- Built-in Skills are selected by stable capability ID. External Skills are chosen explicitly and apply to one message only.
+- Built-in Skills are selected by stable capability ID. In `prompt-edit`, external Skills are chosen explicitly for one message only. In `chat-experimental`, the conversation persists up to eight explicitly bound external Skill IDs across turns and restarts.
 - Every injected snapshot resolves the enabled local-Agent host pin and records its exact `skillId`, immutable revision, and digest. It never falls back to the Skill's mutable current revision.
 - Storage rechecks active lifecycle, trust, content budget, and declared capabilities on every snapshot read. Instructions and bounded text references are allowed; scripts/assets are never sent to the model or executed.
 - Gateway independently validates the returned shape, public `SKL`, digest, UTF-8 budgets, reference paths/content types, and capabilities. Declared tools must be a subset of tools already allowed by `permissionScope`; any non-tool capability, missing pin, unavailable snapshot, or privilege expansion fails before model invocation.
@@ -124,4 +139,10 @@ Neither path requires a Canvas contract change or an image-generation adapter ch
 
 The manifest includes `textAgentUrl` and `textAgentHealthUrl` in addition to the existing frontend, Gateway, and Storage URLs.
 
-The runtime-manifest schema and Storage schema are independent. PromptCard Storage currently reports schema v15. The combined development launcher and `npm.cmd run agent:check` still contain legacy exact-v9 checks; until those launch scripts are migrated, they do not constitute a valid v15 readiness check. Direct Storage/Gateway test gates use the v15 implementation.
+The runtime-manifest schema and Storage schema are independent. PromptCard Storage currently reports schema v19. Direct Storage/Gateway test gates use the v18 transactional Prompt retrieval index/audit surface plus the v19 profile-scoped Bridge delivery ledger.
+
+Task 24 is the first writeback slice over that ledger. Gateway v3 owns strict external `delivery/preview`, `delivery/commit`, and `delivery/status` routes and derives profile/scope/client audit context from the Bridge credential. Before a preview reaches Storage, Gateway rejects source references outside the explicit CVC and rejects Skill pins that are not enabled, healthy, and locked to the approved revision/digest; Storage independently enforces that every source belongs to the immutable context snapshot. Storage owns deterministic proposal identity, replay/conflict state, pending review, restart recovery, and terminal decision records. Free Canvas remains the human application surface: it saves the additive Prompt through the existing project save coordinator, verifies the returned `CVT-*`, and only then acknowledges acceptance. The Bridge never writes project JSON directly and never treats current UI focus as authority.
+
+Task 25 extends the same boundary to external images. Gateway accepts bounded multipart bytes only after the trusted profile grants `bridge:deliver:image`; it validates a closed metadata envelope, workspace-relative path, multipart MIME/filename, byte count, and SHA-256 digest. Storage then uses the existing image decoder/preparer, records a durable `asset.stage`, and exposes only an opaque `AST-*` handle to the external host. `image.place` creates a CVC-scoped visual proposal, optionally pinned to an exact `CVS` revision/digest/shot ordinal. Free Canvas persists a deterministic ordinary image with `promptcard-bridge` provenance and acknowledges the delivery only after Storage assigns a same-project `CVM-*`. This path is intentionally separate from provider image generation and never creates or impersonates an image-generation run.
+
+Task 26A proves the Document slice across real processes. A user-created CVC may now contain stable Text, Media, Document, and Storyboard objects; browser parsing remains closed and revalidates the native Document/Storyboard shapes. The acceptance harness starts real Storage, Gateway, Vite, and Chromium, then exercises runtime/workspace discovery, Document create/change, native tracked review, durable decision acknowledgement, idempotent replay, browser reload, and full service restart. Restart recovery preserves the one Storage-owned CVD, exact source/Skill provenance, deterministic Bridge marker, and profile-scoped ledger result. Storyboard follows through the same boundary in Task 26B rather than creating a second delivery system.

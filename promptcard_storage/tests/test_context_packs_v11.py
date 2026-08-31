@@ -182,7 +182,9 @@ class ContextPackV11Test(unittest.TestCase):
         }
 
     def test_fresh_schema_and_real_v10_v11_databases_migrate_to_current(self) -> None:
-        self.assertEqual(store_module.SCHEMA_VERSION, 15)
+        self.assertEqual(
+            self.store.health()["schemaVersion"], store_module.SCHEMA_VERSION
+        )
         self.assertTrue(self.store.health()["capabilities"]["contextPacks"])
         with self.store._connect() as connection:
             self.assertEqual(
@@ -287,6 +289,75 @@ class ContextPackV11Test(unittest.TestCase):
             str(self.data_dir), PNG.hex(),
         ):
             self.assertNotIn(forbidden, serialized)
+
+    def test_context_asset_read_accepts_only_explicit_public_media_references(self) -> None:
+        created, asset, prompt = self.create_sources()
+        inspection = self.store.create_context_pack(self.pack_payload(created))
+        canvas_code = created["freeCanvas"]["nodes"][1]["referenceCode"]
+        prompt_media_code = prompt["meta"]["media"][0]["referenceCode"]
+
+        for code, namespace in (
+            (canvas_code, "canvasMedia"),
+            (prompt_media_code, "promptMedia"),
+        ):
+            with self.subTest(namespace=namespace):
+                path, metadata = self.store.read_context_asset(
+                    inspection["cvcCode"].lower(), code.lower()
+                )
+                self.assertEqual(path.read_bytes(), PNG)
+                self.assertEqual(metadata, {
+                    "reference": {"namespace": namespace, "code": code},
+                    "filename": asset["filename"],
+                    "contentType": "image/png",
+                    "size": len(PNG),
+                })
+                serialized = json.dumps(metadata)
+                self.assertNotIn(asset["id"], serialized)
+                self.assertNotIn(str(self.data_dir), serialized)
+
+        other, _other_asset, _other_prompt = self.create_sources("project-b")
+        outside_code = other["freeCanvas"]["nodes"][1]["referenceCode"]
+        with self.assertRaises(PromptReferenceError) as outside:
+            self.store.read_context_asset(inspection["cvcCode"], outside_code)
+        self.assertEqual(outside.exception.code, "asset_reference_outside_context")
+        self.assertEqual(outside.exception.status_code, 403)
+
+    def test_context_asset_read_rejects_revoked_context(self) -> None:
+        created, _asset, _prompt = self.create_sources()
+        inspection = self.store.create_context_pack(self.pack_payload(created))
+        canvas_code = created["freeCanvas"]["nodes"][1]["referenceCode"]
+        self.store.revoke_context_pack(inspection["cvcCode"], "tester", "done")
+
+        with self.assertRaises(PromptReferenceError) as revoked:
+            self.store.read_context_asset(inspection["cvcCode"], canvas_code)
+        self.assertEqual(revoked.exception.code, "context_revoked")
+
+    def test_context_asset_endpoint_requires_internal_auth_and_returns_no_internal_id(self) -> None:
+        created, asset, _prompt = self.create_sources()
+        inspection = self.store.create_context_pack(self.pack_payload(created))
+        canvas_code = created["freeCanvas"]["nodes"][1]["referenceCode"]
+        path = (
+            f"/api/internal/context-packs/{inspection['cvcCode']}"
+            f"/assets/{canvas_code}"
+        )
+        client = TestClient(create_app(self.store))
+
+        with mock.patch.dict(
+            "os.environ", {"PROMPTCARD_INTERNAL_TOKEN": "storage-test-token"}
+        ):
+            self.assertEqual(client.get(path).status_code, 401)
+            response = client.get(
+                path,
+                headers={"X-PromptCard-Internal-Token": "storage-test-token"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, PNG)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertEqual(
+            response.headers["x-promptcard-reference-code"], canvas_code
+        )
+        self.assertNotIn(asset["id"], json.dumps(dict(response.headers)))
 
     def test_create_rejects_unavailable_prompt_media_assets_without_leaking_details(self) -> None:
         def assert_unavailable(suffix: str, mutate) -> None:

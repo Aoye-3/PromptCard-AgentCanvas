@@ -40,8 +40,8 @@ flowchart TD
 
 ## Ownership
 
-- Frontend: interaction state, Canvas selection, pending proposal UI, explicit Apply/Reject actions, and existing Canvas/image-generation components.
-- PromptCard Storage: projects, Prompt Library, media assets, captures, image conversations, immutable runs, placements, and derivatives.
+- Frontend: interaction state, Canvas selection, pending proposal/field/suggestion review UI, atomic project save plus apply marker, and existing Canvas/image-generation components.
+- PromptCard Storage: projects, Prompt Library, media assets, captures, image conversations, immutable runs, placements, derivatives, project document resources, Agent apply-ledger evidence, and provider-file cleanup retries.
 - Python Gateway: browser session and CSRF boundary, model catalog/connections/assignments, keyring access, secure PI-native forwarding, SDK-backed text adapters, media loading, and the independent image-generation lifecycle.
 - pi text runtime: request-scoped normalized history, PI provider collection, prompt orchestration, Prompt Library search, and proposal-only tools. It does not own durable conversation state.
 
@@ -69,12 +69,12 @@ flowchart LR
 1. A Canvas, Prompt Library, or Media Library surface sends a bounded request through `agent-runtime-service.ts`.
 2. Vite proxies `/agent-api` to the Python Gateway.
 3. For a project conversation, Gateway validates the project, entrypoint, mode, permission scope, `conversationId`, and idempotent `requestId`, then loads bounded SQLite history. Media requests instead carry bounded component-memory history and are never persisted.
-4. Gateway binds the feature Skill and any one-shot external Skill, rejects unavailable tool dependencies, and forwards normalized history, current workspace context, Skill snapshots, and the permitted tool catalog to the stateless pi Runtime using an internal token.
+4. Gateway binds the feature Skill plus either one-shot Prompt-edit Skills or the experimental conversation's persisted Skill IDs, resolves every current exact local-Agent pin, rejects unavailable tool dependencies, and forwards normalized history, current workspace context, Skill snapshots, and the permitted tool catalog to the stateless pi Runtime using an internal token.
 5. pi can search Prompt Library only in the explicit `prompt-library` mode and can emit only tools allowed by the request policy.
 6. For persistent project chat, Gateway resolves the conversation's whitelisted model binding and sends its non-secret descriptor to pi. `chat.primary` initializes a conversation but is not reselected on every turn.
 7. PI-native models stream through the credential-injecting Gateway proxy; SDK-backed models use the separate Gateway text-adapter registry.
 8. Gateway validates the result again and durably records project messages, tool summaries, proposal state, and the exact Skill revision/digest used.
-9. The frontend displays Apply/Reject. No response mutates Canvas or Prompt Library data automatically.
+9. Pending Prompt/Prompt Library proposals remain Apply/Reject operations. An explicit planning action may return one enriched Document/Storyboard Canvas edit; the frontend saves its reviewable state and marker atomically, then Gateway verifies Storage before recording `applied`.
 
 ## Canvas Proposal Rules
 
@@ -84,10 +84,11 @@ flowchart LR
 - Proposals record the target node revision, template digest, and segment digest. The apply path fails closed when any baseline or anchor changes. Explicit Canvas context without a target is discussion-only.
 - Prompt Library: additive preset creation only.
 - Media analysis: ordinary chat or a non-mutating Prompt preview for one selected image. Prompt Library registration always requires a separate explicit user action.
+- Creative documents: explicit Document create/change, Document -> Storyboard, Storyboard field change, and selection/shot -> Prompt handoff only. Ambient context carries bounded Document metadata/excerpts, never implicit full bodies or Prompt/image inputs.
 
 ## Image-Generation Isolation
 
-Image generation remains a separate Gateway module using `image.primary`. Image models never enter the PI text provider collection or the text-SDK registry. It does not depend on text-Agent availability. The current Storage schema is v15: it preserves the image-generation conversations and durable placements introduced in v4, the original/derived image relationships introduced in v5, the later asset-lifecycle and project-resource additions, and the v8-v9 text-Agent conversation, Skill, and model-binding tables. Versions 10–15 add public references, immutable context packs, canonical Skill packages, exact host pins, projection recovery, and exact-revision trust reviews without changing image-run lifecycle. Image runs remain immutable, and Recent Capture behavior remains unchanged.
+Image generation remains a separate Gateway module using `image.primary`. Image models never enter the PI text provider collection or the text-SDK registry. It does not depend on text-Agent availability. The current Storage schema is v19: it preserves the image-generation conversations and durable placements introduced in v4, the original/derived image relationships introduced in v5, the later asset-lifecycle and project-resource additions, and the v8-v9 text-Agent conversation, Skill, and model-binding tables. Versions 10–19 add public references, immutable context packs, canonical Skill packages, exact host pins, projection recovery, exact-revision trust reviews, project document/provider-cleanup tables, typed creative references, transactional Prompt retrieval, and the profile-scoped Bridge delivery ledger without changing image-run lifecycle. Image runs remain immutable, and Recent Capture behavior remains unchanged.
 
 ## Local Port Discovery
 
@@ -100,9 +101,17 @@ Image generation remains a separate Gateway module using `image.primary`. Image 
 
 Browser code continues to use `/agent-api` and `/storage-api`; only launch/proxy configuration knows concrete ports.
 
+## External Agent Work Environment
+
+The Canvas right rail presents a redacted Agent work environment rather than embedding an external Agent chat. It combines local Gateway health, configured/recently-active Bridge profiles, fixed scopes, explicit PRJ/CVC revision, Bootstrap and exact Skill pins, Tool/writeback capability, pending proposals, recent failures, and external provenance. This surface is observational and interactive only at the local-browser boundary: selecting a profile changes the view, while selecting a CVC first requires an authoritative Storage ownership/revocation inspection.
+
+External Agents continue to authenticate independently through their Bridge Bearer profile and operate only on explicit immutable CVC membership. Missing/invalid Bearer credentials and invalid server-side Bridge configuration have distinct stable error codes, with no credential or configuration echo. The task-copy path includes exact PRJ/CVC/object references and a Bootstrap-first discovery sequence; screenshots and current UI focus are never authority. Delivery proposals remain in the existing Document, Storyboard, Prompt, and image review/application paths, so the environment panel is not a second editor or a generic Canvas mutation surface.
+
+Bridge-created Document, Storyboard, Prompt, and image nodes use conservative collision-free Canvas slots so a large proposal cannot cover another proposal's review controls. This is a presentation-only allocator applied at the four external create/place adapters; ordinary user-created node placement and the Storage-owned delivery target/provenance rules remain unchanged.
+
 ## Deferred
 
 - video media analysis;
-- full Skill package import, Codex publication, and MCP exposure;
+- future signed/distributed Bridge packaging beyond the repository-owned optional launcher;
 - production multi-user authentication;
-- broader script/storyboard proposal tools.
+- general Canvas write tools, automatic Skill matching, local OCR, and asset/plugin node types.

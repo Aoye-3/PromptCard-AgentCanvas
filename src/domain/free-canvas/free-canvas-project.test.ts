@@ -1,10 +1,12 @@
 import { describe, expect, test, vi } from 'vitest'
 import { createThreeStageProject } from '@/domain/projects/project-normalization'
+import { storyboardDigest } from '@/domain/storyboard/canvas-storyboard'
 import { updateFreeCanvasNodePosition, threeStageFormNodeId, createFreeCanvasMediaNode, addFreeCanvasMediaNode, addFreeCanvasEdge, mediaNodeFlowId } from './free-canvas'
 import {
   addFreeCanvasImageAnnotation,
   appendFreeCanvasUserText,
   createFreeCanvasImageGeneratorNode,
+  createFreeCanvasDocumentNode,
   createFreeCanvasImageGenerationPlaceholder,
   createFreeCanvasImageNodeFromMedia,
   createFreeCanvasProject,
@@ -33,7 +35,16 @@ import {
   matchesFreeCanvasTextProposalBasis,
   previewFreeCanvasTextInsertions
 } from './free-canvas-project'
-import type { IPromptProject } from '@/models/PromptHistory.model'
+import type { IPromptProject, PlanningDocumentBlockV1 } from '@/models/PromptHistory.model'
+import { createPlanningDocumentV1, planningDocumentDigest } from '@/domain/documents/planning-document'
+
+const DOCUMENT_AGENT_PROVENANCE = {
+  model: {
+    connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1',
+    displayName: 'Production Model', capabilities: { input: ['text'], toolCalling: true }
+  },
+  skills: [{ skillId: 'SKL-tone', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
+}
 
 describe('free canvas project domain', () => {
   test('previews interleaved insertions without changing the anchored segments', () => {
@@ -619,6 +630,656 @@ describe('free canvas project domain', () => {
     expect(project.nodes[0]).toMatchObject({ id: 'legacy-text', fontSize: 'medium', meta: { legacy: true } })
     expect(project.nodes[1]).toMatchObject({ id: 'legacy-image', assetId: 'asset-old', imageUrl: '/old.png' })
     expect(project.nodes[2]).toMatchObject({ id: 'legacy-arrow', text: 'Next', color: '#123456' })
+  })
+
+  test('keeps planning documents and storyboards isolated from Prompt text normalization', () => {
+    const planningDocument = createPlanningDocumentV1([
+      { id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Private planning prose', bold: true }] }
+    ], 3)
+    const document = {
+      id: 'document-1',
+      kind: 'document',
+      title: 'Creative brief',
+      position: { x: 10, y: 20 },
+      width: 560,
+      height: 420,
+      document: planningDocument,
+      linkedDocumentResourceIds: ['resource-1'],
+      meta: { collapsed: false }
+    }
+    const storyboard = {
+      id: 'storyboard-1',
+      kind: 'storyboard',
+      title: 'Opening sequence',
+      position: { x: 620, y: 20 },
+      width: 640,
+      height: 480,
+      sequence: {
+        id: 'sequence-1',
+        name: 'Opening',
+        description: 'Arrival',
+        style: 'Cinematic',
+        constraints: 'No dialogue',
+        rows: [{
+          id: 'row-isolation', cutLabel: '1', timeRange: '0-1s', subject: '', action: '', scene: '',
+          camera: '', lighting: '', audio: '', duration: '1s', createdAt: 1, updatedAt: 1
+        }],
+        createdAt: 1,
+        updatedAt: 2,
+        meta: {}
+      },
+      source: {
+        documentNodeId: 'document-1',
+        documentRevision: 3,
+        documentDigest: planningDocument.digest,
+        documentResourceDigests: [`sha256:${'a'.repeat(64)}`],
+        model: { connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1', displayName: 'Model', capabilities: {} },
+        skills: [{ skillId: 'skill-1', revision: 2, digest: `sha256:${'b'.repeat(64)}` }]
+      },
+      pendingFieldChanges: [],
+      meta: {}
+    }
+
+    const project = normalizeFreeCanvasProject({
+      nodes: [document, storyboard] as never,
+      edges: [],
+      meta: {}
+    }, 100)
+
+    expect(project.nodes.map(node => node.kind)).toEqual(['document', 'storyboard'])
+    expect(project.nodes[0]).toMatchObject(document)
+    expect(project.nodes[1]).toMatchObject(storyboard)
+    expect(project.nodes.every(node => node.kind !== 'text')).toBe(true)
+  })
+
+  test('reloads strict Storyboard digest/marker evidence and freezes corrupted evidence losslessly', () => {
+    const sequence = {
+      id: 'sequence-strict', name: 'Opening', description: '', style: 'ink', constraints: '',
+      rows: [{
+        id: 'row-1', cutLabel: '1', timeRange: '0-3s', subject: 'Mara', action: 'enters', scene: 'hall',
+        camera: 'wide', lighting: '', audio: '', duration: '3s', createdAt: 1, updatedAt: 1
+      }],
+      createdAt: 1, updatedAt: 1, meta: {}
+    }
+    const digest = storyboardDigest(sequence, [])
+    const strictNode = {
+      id: 'storyboard-strict', kind: 'storyboard', title: 'Strict shots', position: { x: 0, y: 0 },
+      referenceCode: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      width: 680, height: 440, sequence,
+      source: {
+        documentNodeId: 'document-1', documentRevision: 4, documentDigest: `sha256:${'a'.repeat(64)}`,
+        documentResourceDigests: [], model: {
+          connectionId: 'c', providerId: 'p', modelId: 'm', displayName: 'Model',
+          capabilities: { input: ['text'], toolCalling: true }
+        }, skills: []
+      },
+      pendingFieldChanges: [], revision: 0, digest,
+      agentAppliedEdit: {
+        conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1', resultDigest: digest
+      },
+      meta: {}
+    }
+
+    const valid = normalizeFreeCanvasProject({ nodes: [strictNode] as never, edges: [], meta: {} }, 100)
+    const exactSkillBoundary = normalizeFreeCanvasProject({
+      nodes: [{
+        ...strictNode,
+        source: {
+          ...strictNode.source,
+          skills: Array.from({ length: 8 }, (_, index) => ({
+            skillId: `skill-${index + 1}`, revision: index + 1, digest: `sha256:${String(index + 1).repeat(64)}`
+          }))
+        }
+      }] as never,
+      edges: [], meta: {}
+    }, 100)
+    const corrupt = normalizeFreeCanvasProject({
+      nodes: [{ ...strictNode, digest: `sha256:${'f'.repeat(64)}` }] as never, edges: [], meta: {}
+    }, 100)
+
+    expect(valid.nodes[0]).toMatchObject({
+      kind: 'storyboard', referenceCode: strictNode.referenceCode,
+      revision: 0, digest, agentAppliedEdit: strictNode.agentAppliedEdit
+    })
+    expect(exactSkillBoundary.nodes[0]).toMatchObject({ kind: 'storyboard', id: 'storyboard-strict' })
+    expect(corrupt.nodes[0]).toMatchObject({
+      kind: 'unsupported', originalKind: 'storyboard',
+      originalNode: expect.objectContaining({ id: 'storyboard-strict', digest: `sha256:${'f'.repeat(64)}` })
+    })
+
+    const rowWithoutLighting = { ...sequence.rows[0] } as Record<string, unknown>
+    delete rowWithoutLighting.lighting
+    const rowWithoutAudio = { ...sequence.rows[0] } as Record<string, unknown>
+    delete rowWithoutAudio.audio
+    const malformed = [
+      { label: 'sequence', node: { ...strictNode, sequence: { ...sequence, rows: 'not-rows' } } },
+      { label: 'empty rows', node: { ...strictNode, sequence: { ...sequence, rows: [] } } },
+      { label: 'missing lighting', node: {
+        ...strictNode, sequence: { ...sequence, rows: [rowWithoutLighting] }
+      } },
+      { label: 'missing audio', node: {
+        ...strictNode, sequence: { ...sequence, rows: [rowWithoutAudio] }
+      } },
+      { label: 'numeric lighting', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], lighting: 0 }] }
+      } },
+      { label: 'null lighting', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], lighting: null }] }
+      } },
+      { label: 'sequence extra key', node: {
+        ...strictNode, sequence: { ...sequence, browserTrusted: true }
+      } },
+      { label: 'row extra key', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], browserTrusted: true }] }
+      } },
+      { label: 'decomposed sequence id', node: { ...strictNode, sequence: { ...sequence, id: 'Cafe\u0301' } } },
+      { label: 'oversized sequence id', node: { ...strictNode, sequence: { ...sequence, id: 'x'.repeat(10_001) } } },
+      { label: 'surrogate row id', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], id: 'bad\ud800' }] }
+      } },
+      { label: 'decomposed image URL', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], imageUrl: 'https://example.test/Cafe\u0301' }] }
+      } },
+      { label: 'oversized image URL', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], imageUrl: 'x'.repeat(10_001) }] }
+      } },
+      { label: 'invalid sequence createdAt', node: {
+        ...strictNode, sequence: { ...sequence, createdAt: -1 }
+      } },
+      { label: 'invalid sequence updatedAt', node: {
+        ...strictNode, sequence: { ...sequence, updatedAt: 1.5 }
+      } },
+      { label: 'invalid sequence meta', node: {
+        ...strictNode, sequence: { ...sequence, meta: [] }
+      } },
+      { label: 'invalid row createdAt', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], createdAt: -1 }] }
+      } },
+      { label: 'invalid row updatedAt', node: {
+        ...strictNode, sequence: { ...sequence, rows: [{ ...sequence.rows[0], updatedAt: 1.5 }] }
+      } },
+      { label: 'pending change', node: {
+        ...strictNode,
+        pendingFieldChanges: [{
+          id: 'bad', editId: 'edit-bad', scope: 'row', rowId: 'missing', field: 'imageUrl',
+          previousValue: '', newValue: 'forged'
+        }]
+      } },
+      { label: 'source', node: {
+        ...strictNode, source: { ...strictNode.source, documentDigest: 'not-a-digest' }
+      } },
+      { label: 'decomposed source id', node: {
+        ...strictNode, source: { ...strictNode.source, documentNodeId: 'Cafe\u0301' }
+      } },
+      { label: 'oversized source id', node: {
+        ...strictNode, source: { ...strictNode.source, documentNodeId: 'x'.repeat(10_001) }
+      } },
+      { label: 'legacy three-key model', node: {
+        ...strictNode, source: {
+          ...strictNode.source, model: { connectionId: 'c', providerId: 'p', modelId: 'm' }
+        }
+      } },
+      { label: 'surrogate model display name', node: {
+        ...strictNode, source: { ...strictNode.source, model: { ...strictNode.source.model, displayName: 'bad\ud800' } }
+      } },
+      { label: 'oversized Skill id', node: {
+        ...strictNode, source: {
+          ...strictNode.source, skills: [{ skillId: 'x'.repeat(10_001), revision: 1, digest: `sha256:${'c'.repeat(64)}` }]
+        }
+      } },
+      { label: 'nine Skills', node: {
+        ...strictNode, source: {
+          ...strictNode.source,
+          skills: Array.from({ length: 9 }, (_, index) => ({
+            skillId: `skill-${index + 1}`, revision: index + 1, digest: `sha256:${String(index + 1).repeat(64)}`
+          }))
+        }
+      } },
+      { label: 'revision', node: { ...strictNode, revision: -1 } },
+      { label: 'metadata', node: { ...strictNode, meta: [] } },
+      { label: 'id', node: { ...strictNode, id: 42 } },
+      { label: 'title', node: { ...strictNode, title: { forged: true } } },
+      { label: 'geometry type', node: { ...strictNode, position: { x: 'left', y: 0 } } },
+      { label: 'geometry finite', node: { ...strictNode, position: { x: Infinity, y: 0 } } },
+      { label: 'width', node: { ...strictNode, width: 'wide' } },
+      { label: 'height', node: { ...strictNode, height: -1 } }
+    ]
+    malformed.forEach(({ label, node }) => {
+      let normalized!: ReturnType<typeof normalizeFreeCanvasProject>
+      expect(() => {
+        normalized = normalizeFreeCanvasProject({ nodes: [node] as never, edges: [], meta: {} }, 100)
+      }, label).not.toThrow()
+      expect(normalized.nodes[0], label).toMatchObject({
+        kind: 'unsupported', originalKind: 'storyboard', originalNode: node
+      })
+      const unsupported = normalized.nodes[0]
+      if (unsupported.kind !== 'unsupported') throw new Error('Expected unsupported Storyboard')
+      expect(typeof unsupported.id, label).toBe('string')
+      expect(typeof unsupported.title, label).toBe('string')
+      expect(Number.isFinite(unsupported.position.x), label).toBe(true)
+      expect(Number.isFinite(unsupported.position.y), label).toBe(true)
+      expect(Number.isFinite(unsupported.width) && unsupported.width > 0, label).toBe(true)
+      expect(Number.isFinite(unsupported.height) && unsupported.height > 0, label).toBe(true)
+      expect(unsupported.meta && typeof unsupported.meta === 'object' && !Array.isArray(unsupported.meta), label).toBe(true)
+      expect(unsupported.originalNode, label).toEqual(node)
+    })
+  })
+
+  test('hydrates a Storyboard with an over-budget prospective pending change as lossless unsupported data', () => {
+    const rows = Array.from({ length: 3 }, (_, index) => ({
+      id: `row-${index + 1}`, cutLabel: '', timeRange: '', subject: '', action: '', scene: '', camera: '',
+      lighting: '', audio: '', duration: '', createdAt: index + 1, updatedAt: index + 1
+    }))
+    const sequence = {
+      id: 'sequence-budget', name: '', description: '', style: '', constraints: '', rows,
+      createdAt: 1, updatedAt: 1, meta: {}
+    }
+    const targets: Array<[Record<string, unknown>, string]> = [
+      ...['name', 'description', 'style', 'constraints'].map(field => [sequence, field] as [Record<string, unknown>, string]),
+      ...rows.flatMap(row => ['cutLabel', 'timeRange', 'subject', 'action', 'scene', 'camera', 'lighting', 'audio', 'duration']
+        .map(field => [row, field] as [Record<string, unknown>, string]))
+    ]
+    let remaining = 256_000
+    targets.forEach(([target, field]) => {
+      const size = Math.min(10_000, remaining)
+      target[field] = 'a'.repeat(size)
+      remaining -= size
+    })
+    const pendingFieldChanges = [{
+      id: 'change-grow', editId: 'edit-grow', scope: 'row' as const, rowId: 'row-3',
+      field: 'duration' as const, previousValue: '', newValue: 'b'.repeat(10_000)
+    }]
+    const originalNode = {
+      id: 'storyboard-over-budget', kind: 'storyboard', title: 'Over budget', position: { x: 0, y: 0 },
+      width: 680, height: 440, sequence,
+      source: {
+        documentNodeId: 'document-1', documentRevision: 4, documentDigest: `sha256:${'a'.repeat(64)}`,
+        documentResourceDigests: [], model: {
+          connectionId: 'c', providerId: 'p', modelId: 'm', displayName: 'Model', capabilities: {}
+        }, skills: []
+      },
+      pendingFieldChanges, revision: 1, digest: storyboardDigest(sequence, pendingFieldChanges), meta: {}
+    }
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 100)
+
+    expect(normalized.nodes[0]).toMatchObject({
+      kind: 'unsupported', originalKind: 'storyboard', originalNode
+    })
+    if (normalized.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported Storyboard')
+    expect(normalized.nodes[0].originalNode).toEqual(originalNode)
+    expect(Object.isFrozen(normalized.nodes[0].originalNode)).toBe(true)
+  })
+
+  test.each([
+    { label: 'empty document', blocks: [] },
+    { label: 'empty bullet list', blocks: [{ id: 'empty-list', type: 'bulletList', items: [] }] },
+    { label: 'empty ordered list', blocks: [{ id: 'empty-list', type: 'orderedList', items: [] }] },
+    { label: 'empty check list', blocks: [{ id: 'empty-list', type: 'checkList', items: [] }] },
+    { label: 'zero-length inline', blocks: [{ id: 'empty-inline', type: 'paragraph', content: [{ text: '' }] }] },
+    {
+      label: 'adjacent identical marked runs',
+      blocks: [{
+        id: 'adjacent-inline',
+        type: 'paragraph',
+        content: [
+          { text: 'A', bold: true, italic: true, href: 'https://example.com/same' },
+          { text: 'B', bold: true, italic: true, href: 'https://example.com/same' }
+        ]
+      }]
+    }
+  ] as Array<{ label: string; blocks: PlanningDocumentBlockV1[] }>)('freezes a correct-digest unrenderable Document ($label) as lossless unsupported data', ({ blocks }) => {
+    const digestInput = { version: 1 as const, blocks, suggestions: [] }
+    const document = { ...digestInput, revision: 2, digest: planningDocumentDigest(digestInput) }
+    const originalNode = {
+      id: 'document-invalid-structure',
+      kind: 'document',
+      title: 'Preserve the invalid structure',
+      position: { x: 10, y: 20 },
+      width: 560,
+      height: 420,
+      document,
+      linkedDocumentResourceIds: ['resource-1'],
+      futureNodeAttribute: { preserve: ['exactly'] },
+      meta: { collapsed: true }
+    }
+
+    const project = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 100)
+
+    expect(project.nodes[0]).toMatchObject({
+      id: 'document-invalid-structure',
+      kind: 'unsupported',
+      originalKind: 'document',
+      originalNode
+    })
+    if (project.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(project.nodes[0].originalNode).not.toBe(originalNode)
+    expect(Object.isFrozen(project.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(project.nodes[0].originalNode.document)).toBe(true)
+  })
+
+  test.each([
+    {
+      label: 'unknown version',
+      document: { version: 2, blocks: [], revision: 0, digest: 'sha256:invalid', suggestions: [] }
+    },
+    {
+      label: 'digest mismatch',
+      document: { version: 1, blocks: [], revision: 0, digest: 'sha256:invalid', suggestions: [] }
+    },
+    {
+      label: 'unknown AST block',
+      document: {
+        version: 1,
+        blocks: [{ id: 'code-1', type: 'codeBlock', content: [{ text: 'secret' }] }],
+        revision: 0,
+        digest: 'sha256:invalid',
+        suggestions: []
+      }
+    },
+    {
+      label: 'Task 7 suggestion data',
+      document: {
+        version: 1,
+        blocks: [],
+        revision: 0,
+        digest: 'sha256:invalid',
+        suggestions: [{ id: 'future-suggestion', operation: { arbitrary: true } }]
+      }
+    }
+  ])('projects an invalid Document ($label) as a lossless read-only unsupported node', ({ document }) => {
+    const originalNode = {
+      id: 'document-invalid',
+      kind: 'document',
+      title: 'Do not lose this node',
+      position: { x: 10, y: 20 },
+      width: 560,
+      height: 420,
+      document,
+      linkedDocumentResourceIds: ['resource-1'],
+      futureNodeAttribute: { preserve: ['byte-for-structure'] },
+      meta: { collapsed: true }
+    }
+    const project = normalizeFreeCanvasProject({
+      nodes: [
+        originalNode,
+        { ...createFreeCanvasTextNode('Prompt', { x: 0, y: 0 }, 100), id: 'text-1' }
+      ] as never,
+      edges: [{ id: 'invalid-document-edge', source: 'document-invalid', target: 'text-1', createdAt: 1 }],
+      meta: {}
+    }, 100)
+
+    expect(project.nodes[0]).toMatchObject({
+      id: 'document-invalid',
+      kind: 'unsupported',
+      originalKind: 'document',
+      originalNode
+    })
+    if (project.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(project.nodes[0].originalNode).not.toBe(originalNode)
+    expect(Object.isFrozen(project.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(project.nodes[0].originalNode.document)).toBe(true)
+    expect(project.edges).toEqual([])
+  })
+
+  test('preserves and deeply clones strict Agent edit provenance with its Document marker', () => {
+    const node = createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100)
+    const agentAppliedEdit = {
+      conversationId: 'conversation-1',
+      requestId: 'request-1',
+      editId: 'edit-1',
+      resultDigest: node.document.digest
+    }
+    const normalized = normalizeFreeCanvasProject({
+      nodes: [{ ...node, provenance: DOCUMENT_AGENT_PROVENANCE, agentAppliedEdit }], edges: [], meta: {}
+    }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({
+      kind: 'document', provenance: DOCUMENT_AGENT_PROVENANCE, agentAppliedEdit
+    })
+    if (normalized.nodes[0].kind !== 'document') throw new Error('Expected Document node')
+    expect(normalized.nodes[0].agentAppliedEdit).toEqual(agentAppliedEdit)
+    expect(normalized.nodes[0].agentAppliedEdit).not.toBe(agentAppliedEdit)
+    expect(normalized.nodes[0].provenance).toEqual(DOCUMENT_AGENT_PROVENANCE)
+    expect(normalized.nodes[0].provenance).not.toBe(DOCUMENT_AGENT_PROVENANCE)
+    expect(normalized.nodes[0].provenance?.model.capabilities).not.toBe(DOCUMENT_AGENT_PROVENANCE.model.capabilities)
+    expect(normalized.nodes[0].document.digest).toBe(node.document.digest)
+  })
+
+  test('keeps an ordinary user Document valid without Agent marker or provenance', () => {
+    const node = createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100)
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [node], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({ kind: 'document', id: node.id })
+    expect(normalized.nodes[0]).not.toHaveProperty('agentAppliedEdit')
+    expect(normalized.nodes[0]).not.toHaveProperty('provenance')
+  })
+
+  test('preserves a Document CVD across Canvas normalization', () => {
+    const node = {
+      ...createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100),
+      referenceCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'
+    }
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [node], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({
+      kind: 'document', referenceCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'
+    })
+  })
+
+  test.each([
+    ['marker without provenance', (node: Record<string, unknown>) => { delete node.provenance }],
+    ['provenance without marker', (node: Record<string, unknown>) => { delete node.agentAppliedEdit }],
+    ['null provenance model', (node: Record<string, unknown>) => {
+      node.provenance = { model: null, skills: [] }
+    }],
+    ['provenance model extra key', (node: Record<string, unknown>) => {
+      node.provenance = {
+        ...structuredClone(DOCUMENT_AGENT_PROVENANCE),
+        model: { ...DOCUMENT_AGENT_PROVENANCE.model, trusted: true }
+      }
+    }],
+    ['non-NFC provenance model id', (node: Record<string, unknown>) => {
+      node.provenance = {
+        ...structuredClone(DOCUMENT_AGENT_PROVENANCE),
+        model: { ...DOCUMENT_AGENT_PROVENANCE.model, modelId: 'e\u0301' }
+      }
+    }],
+    ['bad provenance Skill digest', (node: Record<string, unknown>) => {
+      node.provenance = {
+        ...structuredClone(DOCUMENT_AGENT_PROVENANCE),
+        skills: [{ ...DOCUMENT_AGENT_PROVENANCE.skills[0], digest: 'sha256:nope' }]
+      }
+    }],
+    ['duplicate provenance Skills', (node: Record<string, unknown>) => {
+      node.provenance = {
+        ...structuredClone(DOCUMENT_AGENT_PROVENANCE),
+        skills: [DOCUMENT_AGENT_PROVENANCE.skills[0], DOCUMENT_AGENT_PROVENANCE.skills[0]]
+      }
+    }],
+    ['nine provenance Skills', (node: Record<string, unknown>) => {
+      node.provenance = {
+        ...structuredClone(DOCUMENT_AGENT_PROVENANCE),
+        skills: Array.from({ length: 9 }, (_, index) => ({
+          skillId: `SKL-${index}`, revision: index, digest: `sha256:${index.toString(16).repeat(64)}`
+        }))
+      }
+    }]
+  ])('freezes Agent-authority Document with invalid provenance as lossless unsupported data: %s', (_label, mutate) => {
+    const documentNode = createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100)
+    const originalNode: Record<string, unknown> = {
+      ...documentNode,
+      provenance: structuredClone(DOCUMENT_AGENT_PROVENANCE),
+      agentAppliedEdit: {
+        conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1',
+        resultDigest: documentNode.document.digest
+      }
+    }
+    mutate(originalNode)
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [originalNode as never], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({ kind: 'unsupported', originalKind: 'document', originalNode })
+    if (normalized.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported Document node')
+    expect(Object.isFrozen(normalized.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(normalized.nodes[0].originalNode.document)).toBe(true)
+  })
+
+  test.each([
+    { conversationId: '', requestId: 'request-1', editId: 'edit-1', resultDigest: 'sha256:x' },
+    { conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1' },
+    { conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1', resultDigest: 'sha256:x', extra: true }
+  ])('freezes a correct-document-digest node with malformed Agent marker as lossless unsupported data', marker => {
+    const node = createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100)
+    const originalNode = { ...node, agentAppliedEdit: marker }
+    const normalized = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({ kind: 'unsupported', originalKind: 'document', originalNode })
+    if (normalized.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(Object.isFrozen(normalized.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(normalized.nodes[0].originalNode.agentAppliedEdit)).toBe(true)
+  })
+
+  test.each([
+    ['non-NFC identity', 'e\u0301'],
+    ['lone-surrogate identity', 'bad\ud800']
+  ])('freezes a valid-provenance Document with %s in its Agent marker losslessly', (_label, conversationId) => {
+    const node = createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100)
+    const originalNode = {
+      ...node,
+      provenance: structuredClone(DOCUMENT_AGENT_PROVENANCE),
+      agentAppliedEdit: {
+        conversationId,
+        requestId: 'request-1',
+        editId: 'edit-1',
+        resultDigest: node.document.digest
+      }
+    }
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [originalNode], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({ kind: 'unsupported', originalKind: 'document', originalNode })
+    if (normalized.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported Document node')
+    expect(normalized.nodes[0].originalNode).toEqual(originalNode)
+    expect(Object.isFrozen(normalized.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(normalized.nodes[0].originalNode.agentAppliedEdit)).toBe(true)
+  })
+
+  test('preserves a strict Prompt handoff marker and provenance through real Canvas normalization', () => {
+    const node = {
+      ...createFreeCanvasTextNode('Cinematic portrait', { x: 80, y: 100 }, 100),
+      id: 'prompt-handoff-node',
+      provenance: {
+        model: {
+          connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1',
+          displayName: 'Production Model', capabilities: { input: ['text'], toolCalling: true }
+        },
+        skills: [{ skillId: 'SKL-tone', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
+      },
+      agentPromptHandoff: {
+        version: 1 as const, conversationId: 'conversation-1', proposalId: 'proposal-1',
+        basisDigest: `sha256:${'a'.repeat(64)}`, resultDigest: `sha256:${'b'.repeat(64)}`
+      }
+    }
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [node], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({
+      kind: 'text', provenance: node.provenance, agentPromptHandoff: node.agentPromptHandoff
+    })
+    if (normalized.nodes[0].kind !== 'text') throw new Error('Expected Prompt text node')
+    expect(normalized.nodes[0].provenance).not.toBe(node.provenance)
+    expect(normalized.nodes[0].agentPromptHandoff).not.toBe(node.agentPromptHandoff)
+  })
+
+  test.each([
+    ['marker extra key', (node: Record<string, unknown>) => {
+      node.agentPromptHandoff = { ...(node.agentPromptHandoff as object), trusted: true }
+    }],
+    ['marker missing key', (node: Record<string, unknown>) => {
+      const marker = { ...(node.agentPromptHandoff as Record<string, unknown>) }
+      delete marker.resultDigest
+      node.agentPromptHandoff = marker
+    }],
+    ['marker invalid digest', (node: Record<string, unknown>) => {
+      node.agentPromptHandoff = { ...(node.agentPromptHandoff as object), basisDigest: 'sha256:nope' }
+    }],
+    ['provenance model extra key', (node: Record<string, unknown>) => {
+      const provenance = structuredClone(node.provenance as Record<string, unknown>)
+      provenance.model = { ...(provenance.model as object), secret: 'x' }
+      node.provenance = provenance
+    }],
+    ['provenance duplicate skills', (node: Record<string, unknown>) => {
+      const provenance = structuredClone(node.provenance as Record<string, unknown>)
+      provenance.skills = [...(provenance.skills as unknown[]), structuredClone((provenance.skills as unknown[])[0])]
+      node.provenance = provenance
+    }],
+    ['marker without provenance', (node: Record<string, unknown>) => { delete node.provenance }],
+    ['provenance without marker', (node: Record<string, unknown>) => { delete node.agentPromptHandoff }]
+  ])('freezes malformed Prompt handoff text as lossless unsupported data: %s', (_label, mutate) => {
+    const originalNode: Record<string, unknown> = {
+      ...createFreeCanvasTextNode('Cinematic portrait', { x: 80, y: 100 }, 100),
+      id: 'prompt-handoff-corrupt',
+      provenance: {
+        model: {
+          connectionId: 'connection-1', providerId: 'provider-1', modelId: 'model-1',
+          displayName: 'Production Model', capabilities: {}
+        },
+        skills: [{ skillId: 'SKL-tone', revision: 2, digest: `sha256:${'d'.repeat(64)}` }]
+      },
+      agentPromptHandoff: {
+        version: 1, conversationId: 'conversation-1', proposalId: 'proposal-1',
+        basisDigest: `sha256:${'a'.repeat(64)}`, resultDigest: `sha256:${'b'.repeat(64)}`
+      }
+    }
+    mutate(originalNode)
+    const normalized = normalizeFreeCanvasProject({ nodes: [originalNode as never], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({ kind: 'unsupported', originalKind: 'text', originalNode })
+    if (normalized.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported text node')
+    expect(Object.isFrozen(normalized.nodes[0].originalNode)).toBe(true)
+  })
+
+  test('projects unknown node kinds as detached read-only data and drops their connections', () => {
+    const unknownNode = {
+      id: 'future-1',
+      kind: 'future-layout',
+      title: 'Future node',
+      position: { x: 40, y: 50 },
+      width: 360,
+      height: 220,
+      payload: { nested: [{ value: 'preserve exactly' }] },
+      meta: { futureFlag: true }
+    }
+    const textNode = {
+      id: 'text-1', kind: 'text', title: 'Prompt', position: { x: 0, y: 0 }, width: 420, height: 180,
+      fontSize: 'large', segments: [], meta: {}
+    }
+    const project = normalizeFreeCanvasProject({
+      nodes: [unknownNode, textNode] as never,
+      edges: [{ id: 'future-edge', source: 'future-1', target: 'text-1', createdAt: 1 }],
+      selectedNodeId: 'future-1',
+      meta: {}
+    }, 100)
+
+    expect(project.nodes[0]).toMatchObject({
+      id: 'future-1',
+      kind: 'unsupported',
+      originalKind: 'future-layout',
+      originalNode: unknownNode
+    })
+    if (project.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(project.nodes[0].originalNode).not.toBe(unknownNode)
+    expect(Object.isFrozen(project.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen((project.nodes[0].originalNode.payload as { nested: unknown[] }).nested)).toBe(true)
+    unknownNode.payload.nested[0].value = 'mutated source'
+    expect(project.nodes[0].originalNode).toMatchObject({
+      payload: { nested: [{ value: 'preserve exactly' }] }
+    })
+    expect(project.edges).toEqual([])
+    expect(project.selectedNodeId).toBe('future-1')
   })
 
   test('keeps malformed generator payloads as safe generator nodes with a validation warning', () => {

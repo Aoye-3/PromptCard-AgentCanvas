@@ -2,6 +2,7 @@ import type { ICard } from './Card.model'
 import type { IPage } from '@/stores/card-initial-state'
 import type { ImageGenerationMode, ImageRegion } from '@/domain/image-generation/image-generation'
 import type { ImageModelBinding } from '@/domain/models/model-management'
+import type { AgentRunProvenance } from '@/domain/agent/agent-provenance'
 
 export interface IPromptHistory {
   id: string
@@ -33,7 +34,7 @@ export interface IPromptProject {
   meta: Record<string, any>
 }
 
-export type FreeCanvasProjectNodeKind = 'text' | 'image' | 'arrow' | 'image-generator'
+export type FreeCanvasProjectNodeKind = 'text' | 'image' | 'arrow' | 'image-generator' | 'document' | 'storyboard' | 'unsupported'
 export type FreeCanvasTextSegmentSource = 'preset' | 'user'
 export type FreeCanvasTextSize = 'small' | 'medium' | 'large' | 'extra-large' | 'huge'
 export type FreeCanvasImageAnnotationKind = 'text' | 'rect' | 'arrow' | 'freehand' | 'shotNumber'
@@ -50,6 +51,81 @@ export interface PromptDocument {
   version: 1
   segments: PromptSegment[]
 }
+
+export type PlanningInlineV1 = { text: string; bold?: true; italic?: true; href?: string }
+
+export type PlanningDocumentBlockV1 =
+  | { id: string; type: 'paragraph' | 'blockquote'; content: PlanningInlineV1[] }
+  | { id: string; type: 'heading'; level: 1 | 2 | 3; content: PlanningInlineV1[] }
+  | { id: string; type: 'bulletList' | 'orderedList'; items: Array<{ id: string; content: PlanningInlineV1[] }> }
+  | { id: string; type: 'checkList'; items: Array<{ id: string; checked: boolean; content: PlanningInlineV1[] }> }
+  | { id: string; type: 'table'; rows: Array<{ id: string; cells: Array<{ id: string; header?: true; content: PlanningInlineV1[] }> }> }
+
+export interface DocumentSuggestion {
+  id: string
+  groupId: string
+  editId: string
+  kind: 'insert' | 'delete'
+  /** ID of one text-bearing leaf: block, list item, or table cell. */
+  blockId: string
+  /** Coordinates in the current NFC-normalized effective leaf text. */
+  utf8Start: number
+  utf8End: number
+  /** Inserted or visually retained deleted rich text. */
+  content: PlanningInlineV1[]
+}
+
+export interface AgentAppliedEditMarker {
+  conversationId: string
+  requestId: string
+  editId: string
+  resultDigest: string
+}
+
+export interface PlanningDocumentV1 {
+  version: 1
+  blocks: PlanningDocumentBlockV1[]
+  revision: number
+  digest: string
+  suggestions: DocumentSuggestion[]
+}
+
+export interface StoryboardSourceProvenance {
+  documentNodeId: string
+  documentRevision: number
+  documentDigest: string
+  documentResourceDigests: string[]
+  model: {
+    connectionId: string
+    providerId: string
+    modelId: string
+    displayName: string
+    capabilities: Record<string, unknown>
+  }
+  skills: AgentRunProvenance['skills']
+}
+
+export type StoryboardSequenceField = 'name' | 'description' | 'style' | 'constraints'
+export type StoryboardRowField = 'cutLabel' | 'timeRange' | 'subject' | 'action' | 'scene' | 'camera' | 'lighting' | 'audio' | 'duration'
+
+export type StoryboardFieldChange =
+  | {
+    id: string
+    editId: string
+    scope: 'sequence'
+    field: StoryboardSequenceField
+    previousValue: string
+    newValue: string
+  }
+  | {
+    id: string
+    editId: string
+    scope: 'row'
+    rowId: string
+    field: StoryboardRowField
+    previousValue: string
+    newValue: string
+  }
 
 export interface IFreeCanvasImageGeneratorSettings {
   resolution: FreeCanvasImageResolution
@@ -110,10 +186,24 @@ export interface IFreeCanvasBaseNode {
   meta: Record<string, unknown>
 }
 
+/**
+ * Executable Prompt-authoring content with protected preset/user segments.
+ * Long-form planning prose must use a separate Document node and explicit
+ * transform actions; it must never be folded into this Prompt shape.
+ * See ADR-020.
+ */
 export interface IFreeCanvasTextNode extends IFreeCanvasBaseNode {
   kind: 'text'
   fontSize: FreeCanvasTextSize
   segments: IFreeCanvasTextSegment[]
+  provenance?: AgentRunProvenance
+  agentPromptHandoff?: {
+    version: 1
+    conversationId: string
+    proposalId: string
+    basisDigest: string
+    resultDigest: string
+  }
 }
 
 export interface IFreeCanvasImageNode extends IFreeCanvasBaseNode {
@@ -144,7 +234,38 @@ export interface IFreeCanvasImageGeneratorNode extends IFreeCanvasBaseNode {
   primaryAssetId?: string
 }
 
-export type IFreeCanvasNode = IFreeCanvasTextNode | IFreeCanvasImageNode | IFreeCanvasArrowNode | IFreeCanvasImageGeneratorNode
+export interface IFreeCanvasDocumentNode extends IFreeCanvasBaseNode {
+  kind: 'document'
+  document: PlanningDocumentV1
+  linkedDocumentResourceIds: string[]
+  provenance?: AgentRunProvenance
+  agentAppliedEdit?: AgentAppliedEditMarker
+}
+
+export interface IFreeCanvasStoryboardNode extends IFreeCanvasBaseNode {
+  kind: 'storyboard'
+  sequence: IStoryboardSequence
+  source: StoryboardSourceProvenance
+  pendingFieldChanges: StoryboardFieldChange[]
+  revision?: number
+  digest?: string
+  agentAppliedEdit?: AgentAppliedEditMarker
+}
+
+export interface IFreeCanvasUnsupportedNode extends IFreeCanvasBaseNode {
+  kind: 'unsupported'
+  readonly originalKind: string
+  readonly originalNode: Readonly<Record<string, unknown>>
+}
+
+export type IFreeCanvasNode =
+  | IFreeCanvasTextNode
+  | IFreeCanvasImageNode
+  | IFreeCanvasArrowNode
+  | IFreeCanvasImageGeneratorNode
+  | IFreeCanvasDocumentNode
+  | IFreeCanvasStoryboardNode
+  | IFreeCanvasUnsupportedNode
 
 export interface IFreeCanvasEdge {
   id: string

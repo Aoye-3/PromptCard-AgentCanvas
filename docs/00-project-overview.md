@@ -1,6 +1,12 @@
 # Project Overview
 
-PromptCard-Manager is a local-first prompt and visual-production workspace. It combines a Prompt media library, Free Canvas, provider-neutral image generation, and a focused text Agent.
+PromptCard-Manager is a local-first, portable creative-context environment. It combines a Prompt media library, Free Canvas, provider-neutral image generation, structured creative documents/storyboards, and focused Agent collaboration without making any one model vendor, Agent client, or external creation platform the product authority.
+
+## Product Direction
+
+The durable product is the project context shared by a creator, Agents, and external creative tools: script and planning material, characters/scenes, references, structured storyboard rows, shot execution information, generated assets, review notes, revisions, and decisions. Free Canvas is the visual workbench for these objects; it is not a competing video/image generation platform or a generic model aggregator.
+
+The current next technical priority is the host-neutral Local Agent Bridge / MCP foundation defined by ADR-019 and Plan 008. External Agents must work through the same typed references, Gateway policy, proposal/approval boundaries, and Storage authority as first-party flows. The future Asset Shelf and browser connectors are project-asset delivery surfaces: reliable file/image drag-out, text copy, and execution-package export come before optional platform-specific fill/return integrations. The app must not embed or take over a third-party browser UI as a prerequisite for the creative loop.
 
 ## Minimal Closed Loop
 

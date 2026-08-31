@@ -24,6 +24,8 @@ class ReferenceNamespace(str, Enum):
     CANVAS_TEMPLATE = "CVT"
     CANVAS_MEDIA = "CVM"
     CANVAS_CONTEXT = "CVC"
+    CANVAS_DOCUMENT = "CVD"
+    CANVAS_STORYBOARD = "CVS"
     SKILL = "SKL"
 
 

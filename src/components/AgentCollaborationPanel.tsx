@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, Check, Loader2, MoreHorizontal, Puzzle, RefreshCw, Send, Wand2, X } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Bot, Check, FileText, Loader2, MoreHorizontal, Puzzle, RefreshCw, Send, Wand2, X } from 'lucide-react'
 import { useAgentStore } from '@/stores/agent.store'
 import { usePresetStore } from '@/stores/preset.store'
-import { agentRuntimeService } from '@/services/agent-runtime-service'
+import { agentRuntimeService, normalizeAgentWorkspaceProposals } from '@/services/agent-runtime-service'
 import type {
   AgentMessage,
   AgentCanvasEdit,
+  AgentDocumentAttachment,
   AgentModelInfo,
+  AgentInteractionMode,
+  AgentPlanningWriteContext,
   AgentWorkspaceContext,
   AgentWorkspaceMode,
   AgentWorkspaceProposal,
@@ -16,6 +19,7 @@ import type {
 import { AgentConversationMenu } from '@/components/agent/AgentConversationMenu'
 import { AgentMarkdownMessage } from '@/components/agent/AgentMarkdownMessage'
 import { CanvasAgentComposer, type CanvasAgentModelOption, type CanvasAgentNodeSummary } from '@/components/agent/CanvasAgentComposer'
+import { AgentDocumentAttachments } from '@/components/agent/AgentDocumentAttachments'
 import {
   attachCanvasAgentNode,
   clearCanvasAgentTarget,
@@ -33,6 +37,13 @@ interface AgentCollaborationPanelProps {
   sessionKey?: string
   onApplyWorkspaceProposal: (proposal: AgentWorkspaceProposal) => Promise<boolean | void> | boolean | void
   onApplyCanvasEdit?: (edit: AgentCanvasEdit) => Promise<boolean | void> | boolean | void
+  onDocumentReconcileStateChange?: (state: {
+    projectId: string
+    conversationId: string
+    leaseId: string
+    pending: boolean
+    nodeId?: string
+  }) => Promise<void> | void
   autoApplyWorkspaceChanges?: boolean
   compact?: boolean
   embedded?: boolean
@@ -40,6 +51,7 @@ interface AgentCollaborationPanelProps {
   draftRequest?: {
     id: string
     content?: string
+    documentWriteContext?: AgentPlanningWriteContext
     canvasNode?: {
       nodeId: string
       role: CanvasAgentAttachment['role']
@@ -64,6 +76,14 @@ const agentQuickPrompts = [
   }
 ] as const
 
+const POST_SEND_APPLY_ERROR = '消息已发送，但应用 Agent 修改失败。请检查当前工作区状态。'
+const useCommitLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect
+let documentReconcileLeaseSequence = 0
+
+const nextDocumentReconcileLeaseId = (projectId: string, conversationId: string): string => (
+  `${projectId}:${conversationId}:${++documentReconcileLeaseSequence}`
+)
+
 export function AgentCollaborationPanel({
   title,
   mode,
@@ -71,6 +91,7 @@ export function AgentCollaborationPanel({
   sessionKey: sessionKeyProp,
   onApplyWorkspaceProposal,
   onApplyCanvasEdit,
+  onDocumentReconcileStateChange,
   autoApplyWorkspaceChanges = false,
   compact = false,
   embedded = false,
@@ -100,22 +121,56 @@ export function AgentCollaborationPanel({
   const [draft, setDraft] = useState(embedded ? '' : '告诉 Agent 你想怎么修改当前选中的提示词卡片。')
   const [appliedMessages, setAppliedMessages] = useState<AgentMessage[]>([])
   const [conversationId, setConversationId] = useState<string>()
+  const [conversationProjectId, setConversationProjectId] = useState<string>()
+  const [conversationSelectionGeneration, setConversationSelectionGeneration] = useState(0)
+  const [pendingDocumentLedgerTarget, setPendingDocumentLedgerTarget] = useState<{
+    projectId: string
+    conversationId: string
+    nodeId: string
+  }>()
+  const retryRequest = session.retryRequest as (
+    (NonNullable<typeof session.retryRequest> & { conversationId: string }) | undefined
+  )
+  const currentRetryRequest = retryRequest?.conversationId === conversationId
+    ? retryRequest
+    : undefined
   const [skillMenuOpen, setSkillMenuOpen] = useState(false)
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
+  const [interactionMode, setInteractionMode] = useState<AgentInteractionMode>('prompt-edit')
+  const [boundSkillIds, setBoundSkillIds] = useState<string[]>([])
+  const [conversationRevision, setConversationRevision] = useState(1)
   const [canvasAttachments, setCanvasAttachments] = useState<CanvasAgentAttachment[]>([])
+  const [documentAttachments, setDocumentAttachments] = useState<AgentDocumentAttachment[]>([])
+  const [documentUploadingCount, setDocumentUploadingCount] = useState(0)
   const [canvasEditMode, setCanvasEditMode] = useState<CanvasAgentEditMode>('complete')
   const [canvasSelection, setCanvasSelection] = useState<(CanvasAgentSelection & { nodeId: string }) | undefined>()
   const [composerResetKey, setComposerResetKey] = useState(0)
   const [composerDraft, setComposerDraft] = useState<{ id: string; content: string }>()
+  const [pendingWriteContext, setPendingWriteContext] = useState<AgentPlanningWriteContext>()
   const [selectedModelKey, setSelectedModelKey] = useState('')
   const [modelSelectionRequired, setModelSelectionRequired] = useState(false)
   const [modelSaving, setModelSaving] = useState(false)
   const [modelSwitchError, setModelSwitchError] = useState<string>()
+  const [postSendApplyError, setPostSendApplyError] = useState<string>()
+  const [documentEditReconciling, setDocumentEditReconciling] = useState(false)
+  const [applyingProposalKeys, setApplyingProposalKeys] = useState<Set<string>>(() => new Set())
+  const [persistedProposalKeys, setPersistedProposalKeys] = useState<Set<string>>(() => new Set())
+  const applyingProposalKeysRef = useRef(new Set<string>())
+  const appliedProposalKeysRef = useRef(new Set<string>())
+  const rejectedProposalKeysRef = useRef(new Set<string>())
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const onApplyCanvasEditRef = useRef(onApplyCanvasEdit)
+  onApplyCanvasEditRef.current = onApplyCanvasEdit
+  const onDocumentReconcileStateChangeRef = useRef(onDocumentReconcileStateChange)
+  onDocumentReconcileStateChangeRef.current = onDocumentReconcileStateChange
   const canvasIdentityRef = useRef(`${sessionKey}:${workspaceContext.projectId}`)
+  const postSendApplyIdentity = `${sessionKey}:${workspaceContext.projectId}:${conversationId || 'new'}`
+  const postSendApplyIdentityRef = useRef(postSendApplyIdentity)
+  const postSendApplyAttemptRef = useRef(0)
   const lastDraftRequestIdRef = useRef<string>()
   const externalSkills = skills.filter(skill => skill.source === 'external' && skill.id)
   const canvasNodes = useMemo(() => readCanvasNodeSummaries(workspaceContext), [workspaceContext])
+  const documentNodes = useMemo(() => readDocumentNodeSummaries(workspaceContext), [workspaceContext])
   const canvasTextPreviewNodes = useMemo(() => readCanvasTextPreviewNodes(workspaceContext), [workspaceContext])
   const modelOptions = useMemo(() => models.flatMap(model => {
     const option = canvasAgentModelOption(model)
@@ -128,6 +183,13 @@ export function AgentCollaborationPanel({
     ? selectedModelKey
     : selectedModelKey || (defaultModel ? canvasAgentModelOption(defaultModel)?.key || '' : '')
   const effectiveModel = models.find(model => canvasAgentModelOption(model)?.key === effectiveModelKey)
+  const visiblePanelError = visibleRuntimeError || postSendApplyError || modelSwitchError
+
+  useCommitLayoutEffect(() => {
+    if (postSendApplyIdentityRef.current === postSendApplyIdentity) return
+    postSendApplyIdentityRef.current = postSendApplyIdentity
+    postSendApplyAttemptRef.current += 1
+  }, [postSendApplyIdentity])
 
   useEffect(() => {
     if (!initialized) init()
@@ -143,6 +205,7 @@ export function AgentCollaborationPanel({
 
   useEffect(() => {
     if (!draftRequest || lastDraftRequestIdRef.current === draftRequest.id) return
+    setPendingWriteContext(draftRequest.documentWriteContext)
     if (typeof draftRequest.content === 'string') {
       if (embedded) setComposerDraft({ id: draftRequest.id, content: draftRequest.content })
       else setDraft(draftRequest.content)
@@ -170,10 +233,107 @@ export function AgentCollaborationPanel({
     if (canvasIdentityRef.current === identity) return
     canvasIdentityRef.current = identity
     setCanvasAttachments([])
+    setDocumentAttachments([])
+    setDocumentUploadingCount(0)
+    setPostSendApplyError(undefined)
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
+    setPendingWriteContext(undefined)
     setComposerResetKey(key => key + 1)
   }, [sessionKey, workspaceContext.projectId])
+
+  useEffect(() => {
+    if (
+      !conversationId
+      || conversationProjectId !== workspaceContext.projectId
+      || !onApplyCanvasEditRef.current
+    ) {
+      setDocumentEditReconciling(false)
+      return
+    }
+    const projectId = workspaceContext.projectId
+    const leaseId = nextDocumentReconcileLeaseId(projectId, conversationId)
+    let cancelled = false
+    let barrierReleased = false
+    let applyStarted = false
+    const identity = `${sessionKey}:${workspaceContext.projectId}:${conversationId}`
+    const releaseBarrier = async () => {
+      if (barrierReleased) return
+      barrierReleased = true
+      try {
+        await onDocumentReconcileStateChangeRef.current?.({
+          projectId, conversationId, leaseId, pending: false
+        })
+      } catch {
+        // Releasing a local edit barrier is best-effort during identity changes.
+      }
+    }
+    setDocumentEditReconciling(true)
+    void (async () => {
+      try {
+        const ledgerNodeId = pendingDocumentLedgerTarget?.projectId === projectId
+          && pendingDocumentLedgerTarget.conversationId === conversationId
+          ? pendingDocumentLedgerTarget.nodeId
+          : undefined
+        await onDocumentReconcileStateChangeRef.current?.({
+          projectId,
+          conversationId,
+          leaseId,
+          pending: true,
+          ...(ledgerNodeId ? { nodeId: ledgerNodeId } : {})
+        })
+        if (cancelled || postSendApplyIdentityRef.current !== identity) return
+        const reconciliation = await agentRuntimeService.reconcileDocumentEdits(
+          projectId,
+          conversationId
+        )
+        if (cancelled || postSendApplyIdentityRef.current !== identity) return
+        if (reconciliation.status === 'pending_apply' && reconciliation.canvasEdits.length === 1) {
+          const edit = reconciliation.canvasEdits[0]
+          if (
+            edit.kind === 'document_create'
+            || edit.kind === 'document_changes'
+            || edit.kind === 'storyboard_create'
+            || edit.kind === 'storyboard_changes'
+          ) {
+            await onDocumentReconcileStateChangeRef.current?.({
+              projectId,
+              conversationId,
+              leaseId,
+              pending: true,
+              nodeId: edit.nodeId
+            })
+            if (cancelled || postSendApplyIdentityRef.current !== identity) return
+          }
+          applyStarted = true
+          const applied = await onApplyCanvasEditRef.current?.(edit)
+          if (applied === false && !cancelled && postSendApplyIdentityRef.current === identity) {
+            setPostSendApplyError(POST_SEND_APPLY_ERROR)
+          }
+        }
+      } catch {
+        if (!cancelled && postSendApplyIdentityRef.current === identity) {
+          setPostSendApplyError(POST_SEND_APPLY_ERROR)
+        }
+      } finally {
+        if (!cancelled && postSendApplyIdentityRef.current === identity) {
+          setDocumentEditReconciling(false)
+        }
+        await releaseBarrier()
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (!applyStarted) void releaseBarrier()
+    }
+  }, [
+    conversationId,
+    conversationProjectId,
+    conversationSelectionGeneration,
+    pendingDocumentLedgerTarget,
+    sessionKey,
+    workspaceContext.projectId
+  ])
 
   const conversationMessages = useMemo(
     () => [...messages, ...appliedMessages].sort((a, b) => a.createdAt - b.createdAt),
@@ -186,14 +346,34 @@ export function AgentCollaborationPanel({
 
   const handleSend = async (
     content = draft,
-    mentions: Array<{ nodeId: string; label: string }> = []
+    mentions: Array<{ nodeId: string; label: string }> = [],
+    requestId?: string,
+    retryDocuments?: {
+      documentResourceIds: string[]
+      explicitDocumentNodeIds: string[]
+      documentAttachments: AgentDocumentAttachment[]
+    }
   ) => {
-    if (!content.trim() || running) return
+    if (!content.trim() || running || documentUploadingCount > 0 || documentEditReconciling) return
+    if (pendingWriteContext?.operationKind === 'prompt_handoff' && interactionMode !== 'chat-experimental') {
+      setPostSendApplyError('请先切换到对话模式【测试中】，再发送此 Prompt 提案请求。')
+      return
+    }
+    const writeContextForTurn = interactionMode === 'chat-experimental'
+      ? pendingWriteContext
+      : undefined
+    if (writeContextForTurn) setPendingWriteContext(undefined)
+    const applyAttempt = postSendApplyAttemptRef.current + 1
+    postSendApplyAttemptRef.current = applyAttempt
+    let applyIdentity = postSendApplyIdentityRef.current
+    setPostSendApplyError(undefined)
     const promptLibraryMode = canvasEditMode === 'prompt-library'
     const target = promptLibraryMode
       ? undefined
       : canvasAttachments.find(attachment => attachment.role === 'target')
-    const canvasNodeContext = embedded && mode === 'free-canvas-workspace'
+    const canvasNodeContext = interactionMode === 'prompt-edit'
+      && embedded
+      && mode === 'free-canvas-workspace'
       ? {
           mode: canvasEditMode,
           targetNodeId: target?.nodeId || null,
@@ -203,64 +383,115 @@ export function AgentCollaborationPanel({
           mentions,
         }
       : undefined
+    const activeDocumentAttachments = retryDocuments
+      ? retryDocuments.documentAttachments
+      : documentAttachments
+    const documentResourceIds = retryDocuments
+      ? retryDocuments.documentResourceIds
+      : activeDocumentAttachments.map(attachment => attachment.resourceId)
+    const explicitDocumentNodeIds = retryDocuments
+      ? retryDocuments.explicitDocumentNodeIds
+      : explicitDocumentMentions(mentions, documentNodes)
     const returned = await sendMessage(content.trim(), presets, {
       workspaceContext,
       mode,
       permissionScope: 'workspace-chatbot-agent',
       sessionKey,
       conversationId,
-      selectedSkillIds,
-      canvasNodeContext
+      requestId,
+      interactionMode,
+      selectedSkillIds: interactionMode === 'prompt-edit' ? selectedSkillIds : undefined,
+      canvasNodeContext,
+      ...(interactionMode === 'chat-experimental' ? {
+        documentResourceIds,
+        explicitDocumentNodeIds,
+        documentAttachments: activeDocumentAttachments,
+        ...(writeContextForTurn ? { documentWriteContext: writeContextForTurn } : {})
+      } : {})
     })
     const succeeded = !getAgentSession(sessionKey).runtimeError
     if (!succeeded) return
-    setSelectedSkillIds([])
-
-    const appliedCanvasEdits: AgentCanvasEdit[] = []
-    if (onApplyCanvasEdit) {
-      for (const edit of returned.canvasEdits) {
-        const applied = await onApplyCanvasEdit(edit)
-        if (applied === false) continue
-        appliedCanvasEdits.push(edit)
-      }
+    const updatedConversationId = getAgentSession(sessionKey).conversationId
+    if (
+      updatedConversationId
+      && updatedConversationId !== conversationId
+      && postSendApplyAttemptRef.current === applyAttempt
+      && postSendApplyIdentityRef.current === applyIdentity
+    ) {
+      applyIdentity = `${sessionKey}:${workspaceContext.projectId}:${updatedConversationId}`
+      postSendApplyIdentityRef.current = applyIdentity
+      setConversationProjectId(workspaceContext.projectId)
+      setConversationSelectionGeneration(generation => generation + 1)
+      setConversationId(updatedConversationId)
     }
-    if (appliedCanvasEdits.length > 0) {
-      setAppliedMessages(current => [
-        ...current,
-        {
-          id: `agent-canvas-applied-${Date.now()}`,
-          role: 'system',
-          content: summarizeAppliedCanvasEdits(appliedCanvasEdits),
-          createdAt: Date.now()
+    if (interactionMode === 'prompt-edit') setSelectedSkillIds([])
+
+    setDraft('')
+    setCanvasAttachments([])
+    setDocumentAttachments([])
+    setCanvasSelection(undefined)
+    setCanvasEditMode('complete')
+    setPendingWriteContext(undefined)
+    setComposerResetKey(key => key + 1)
+
+    try {
+      const appliedCanvasEdits: AgentCanvasEdit[] = []
+      if (onApplyCanvasEdit) {
+        for (const edit of returned.canvasEdits) {
+          const applied = await onApplyCanvasEdit(edit)
+          if (applied === false) {
+            if (
+              edit.kind === 'document_create'
+              || edit.kind === 'document_changes'
+              || edit.kind === 'storyboard_create'
+              || edit.kind === 'storyboard_changes'
+            ) {
+              throw new Error('terminal_document_apply_failure')
+            }
+            continue
+          }
+          appliedCanvasEdits.push(edit)
         }
-      ])
-    }
-
-    if (autoApplyWorkspaceChanges) {
-      const workspaceProposals = returned.proposals.filter(isDirectWorkspaceProposal)
-      for (const proposal of workspaceProposals) {
-        const applied = await onApplyWorkspaceProposal(proposal)
-        if (applied === false) continue
-        await setProposalStatus(proposal.id, 'approved')
       }
-      if (workspaceProposals.length > 0) {
+      if (appliedCanvasEdits.length > 0) {
         setAppliedMessages(current => [
           ...current,
           {
-            id: `agent-applied-${Date.now()}`,
+            id: `agent-canvas-applied-${Date.now()}`,
             role: 'system',
-            content: summarizeAppliedChanges(workspaceProposals),
+            content: summarizeAppliedCanvasEdits(appliedCanvasEdits),
             createdAt: Date.now()
           }
         ])
       }
-    }
 
-    setDraft('')
-    setCanvasAttachments([])
-    setCanvasSelection(undefined)
-    setCanvasEditMode('complete')
-    setComposerResetKey(key => key + 1)
+      if (autoApplyWorkspaceChanges) {
+        const workspaceProposals = returned.proposals.filter(isDirectWorkspaceProposal)
+        for (const proposal of workspaceProposals) {
+          const applied = await onApplyWorkspaceProposal(proposal)
+          if (applied === false) continue
+          await setProposalStatus(proposal.id, 'approved')
+        }
+        if (workspaceProposals.length > 0) {
+          setAppliedMessages(current => [
+            ...current,
+            {
+              id: `agent-applied-${Date.now()}`,
+              role: 'system',
+              content: summarizeAppliedChanges(workspaceProposals),
+              createdAt: Date.now()
+            }
+          ])
+        }
+      }
+    } catch {
+      if (
+        postSendApplyAttemptRef.current === applyAttempt
+        && postSendApplyIdentityRef.current === applyIdentity
+      ) {
+        setPostSendApplyError(POST_SEND_APPLY_ERROR)
+      }
+    }
   }
 
   const setDraftText = (content: string) => {
@@ -271,16 +502,78 @@ export function AgentCollaborationPanel({
     setDraft(content)
   }
 
-  const setProposalStatus = async (proposalId: string, status: 'approved' | 'rejected') => {
-    if (conversationId) {
+  const setProposalStatus = async (
+    proposalId: string,
+    status: 'approved' | 'rejected',
+    targetConversationId = conversationId,
+    targetProjectId = workspaceContext.projectId
+  ) => {
+    if (targetConversationId) {
       await storageServiceClient.agentConversations.updateProposal(
-        conversationId,
+        targetConversationId,
         proposalId,
-        workspaceContext.projectId,
+        targetProjectId,
         status
       )
     }
     markProposalStatus(proposalId, status, sessionKey)
+  }
+
+  const applyPendingProposal = async (proposal: AgentWorkspaceProposal) => {
+    const applyIdentity = postSendApplyIdentityRef.current
+    const applyConversationId = conversationId
+    const applyProjectId = workspaceContext.projectId
+    const key = `${applyIdentity}:${proposal.id}`
+    if (applyingProposalKeysRef.current.has(key) || rejectedProposalKeysRef.current.has(key)) return
+    applyingProposalKeysRef.current.add(key)
+    setApplyingProposalKeys(current => new Set(current).add(key))
+    try {
+      if (!appliedProposalKeysRef.current.has(key)) {
+        const applied = await onApplyWorkspaceProposal(proposal)
+        if (applied === false) return
+        appliedProposalKeysRef.current.add(key)
+        setPersistedProposalKeys(current => new Set(current).add(key))
+      }
+      if (postSendApplyIdentityRef.current !== applyIdentity) return
+      await setProposalStatus(proposal.id, 'approved', applyConversationId, applyProjectId)
+    } catch {
+      if (postSendApplyIdentityRef.current === applyIdentity) {
+        setPostSendApplyError('应用提案失败，请检查工作区状态后重试。')
+      }
+    } finally {
+      applyingProposalKeysRef.current.delete(key)
+      setApplyingProposalKeys(current => {
+        const next = new Set(current)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+
+  const rejectPendingProposal = async (proposal: AgentWorkspaceProposal) => {
+    const rejectIdentity = postSendApplyIdentityRef.current
+    const rejectConversationId = conversationId
+    const rejectProjectId = workspaceContext.projectId
+    const key = `${rejectIdentity}:${proposal.id}`
+    if (applyingProposalKeysRef.current.has(key) || appliedProposalKeysRef.current.has(key)) return
+    applyingProposalKeysRef.current.add(key)
+    setApplyingProposalKeys(current => new Set(current).add(key))
+    try {
+      if (postSendApplyIdentityRef.current !== rejectIdentity) return
+      await setProposalStatus(proposal.id, 'rejected', rejectConversationId, rejectProjectId)
+      rejectedProposalKeysRef.current.add(key)
+    } catch {
+      if (postSendApplyIdentityRef.current === rejectIdentity) {
+        setPostSendApplyError('拒绝提案失败，请重试。')
+      }
+    } finally {
+      applyingProposalKeysRef.current.delete(key)
+      setApplyingProposalKeys(current => {
+        const next = new Set(current)
+        next.delete(key)
+        return next
+      })
+    }
   }
 
   return (
@@ -327,14 +620,14 @@ export function AgentCollaborationPanel({
             <RefreshCw className="h-4 w-4" />
           </button>
         </div>
-        {(visibleRuntimeError || modelSwitchError) && (
-          <RuntimeErrorNotice error={visibleRuntimeError || modelSwitchError!} />
+        {visiblePanelError && (
+          <RuntimeErrorNotice error={visiblePanelError} />
         )}
       </div>
       )}
 
-      {embedded && (visibleRuntimeError || modelSwitchError) && (
-        <div className="mx-3 mt-2 shrink-0"><RuntimeErrorNotice error={visibleRuntimeError || modelSwitchError!} dense /></div>
+      {embedded && visiblePanelError && (
+        <div className="mx-3 mt-2 shrink-0"><RuntimeErrorNotice error={visiblePanelError} dense /></div>
       )}
 
       {embedded ? (
@@ -345,9 +638,24 @@ export function AgentCollaborationPanel({
             activeConversationId={conversationId}
             onConversationChange={handleConversationChange}
           />
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-bold text-amber-800" title="此内置 Skill 由画布入口自动绑定">
-            <Wand2 className="h-3 w-3" /> Canvas Prompt Editor
-          </span>
+          <select
+            aria-label="Agent 交互模式"
+            value={interactionMode}
+            disabled={!conversationId || running}
+            onChange={event => void persistConversationInteraction(
+              event.target.value as AgentInteractionMode,
+              []
+            )}
+            className="h-7 rounded-md border border-[#e5e7eb] bg-white px-2 text-[10px] font-bold text-[#4d4c48] disabled:opacity-50"
+          >
+            <option value="prompt-edit">提示词编辑</option>
+            <option value="chat-experimental">对话模式【测试中】</option>
+          </select>
+          {interactionMode === 'prompt-edit' ? (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-bold text-amber-800" title="此内置 Skill 由画布入口自动绑定">
+              <Wand2 className="h-3 w-3" /> Canvas Prompt Editor
+            </span>
+          ) : null}
         </div>
       ) : null}
 
@@ -401,10 +709,23 @@ export function AgentCollaborationPanel({
                   {message.role === 'user' ? '你' : message.role === 'system' ? '已应用' : 'Agent'}
                 </div>
                 {message.role === 'assistant' ? (
-                  <AgentMarkdownMessage content={message.content} />
+                  <AgentMarkdownMessage content={message.content} citations={message.citations} promptRetrieval={message.promptRetrieval} />
                 ) : (
                   <pre className="whitespace-pre-wrap break-words font-sans">{message.content}</pre>
                 )}
+                {message.documentAttachments?.length ? (
+                  <div className="mt-2 flex flex-wrap gap-1" aria-label="历史文档附件">
+                    {message.documentAttachments.map(attachment => (
+                      <span
+                        key={attachment.resourceId}
+                        className="inline-flex max-w-full items-center gap-1 rounded-md border border-current/20 px-1.5 py-1 text-[10px] font-semibold"
+                      >
+                        <FileText className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        <span className="max-w-40 truncate">{attachment.name}</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </div>
           ))
@@ -414,7 +735,11 @@ export function AgentCollaborationPanel({
 
       {pendingProposals.length > 0 && (
         <div className="shrink-0 space-y-2 border-t border-gray-100 p-3">
-          {pendingProposals.slice(-3).map(proposal => (
+          {pendingProposals.slice(-3).map(proposal => {
+            const applyKey = `${postSendApplyIdentity}:${proposal.id}`
+            const applying = applyingProposalKeys.has(applyKey)
+            const persisted = persistedProposalKeys.has(applyKey)
+            return (
             <div key={proposal.id} className="rounded-xl border border-amber-200 bg-amber-50 p-3">
               <div className="text-xs font-black text-amber-900">{proposalTitle(proposal)}</div>
               {proposal.kind === 'free_canvas_text_update' ? (
@@ -432,31 +757,55 @@ export function AgentCollaborationPanel({
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 rounded-full bg-gray-950 px-3 py-1.5 text-xs font-black text-white"
-                  onClick={async () => {
-                    const applied = await onApplyWorkspaceProposal(proposal)
-                    if (applied === false) return
-                    await setProposalStatus(proposal.id, 'approved')
-                  }}
+                  disabled={applying}
+                  onClick={() => applyPendingProposal(proposal)}
                 >
-                  <Check className="h-3.5 w-3.5" />
+                  {applying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                   Apply
                 </button>
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 rounded-full border border-amber-300 px-3 py-1.5 text-xs font-black text-amber-900"
-                  onClick={() => void setProposalStatus(proposal.id, 'rejected')}
+                  disabled={applying || persisted}
+                  onClick={() => rejectPendingProposal(proposal)}
                 >
                   <X className="h-3.5 w-3.5" />
                   Reject
                 </button>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
       {embedded ? (
         <div className="shrink-0 border-t border-[#e5e7eb] bg-white p-2.5">
+          {currentRetryRequest ? (
+            <button
+              type="button"
+              aria-label="使用原请求重试"
+              className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900"
+              onClick={() => {
+                if (currentRetryRequest.conversationId !== conversationId) return
+                return handleSend(
+                  currentRetryRequest.content,
+                  currentRetryRequest.explicitDocumentNodeIds.map(nodeId => ({
+                    nodeId,
+                    label: documentNodes.find(node => node.id === nodeId)?.title || nodeId
+                  })),
+                  currentRetryRequest.requestId,
+                  {
+                    documentResourceIds: currentRetryRequest.documentResourceIds,
+                    explicitDocumentNodeIds: currentRetryRequest.explicitDocumentNodeIds,
+                    documentAttachments: currentRetryRequest.documentAttachments
+                  }
+                ).catch(() => undefined)
+              }}
+            >
+              使用原请求重试
+            </button>
+          ) : null}
           <div className="relative mb-2 flex min-w-0 items-center gap-1.5">
             {agentQuickPrompts.slice(0, 2).map(item => (
               <QuickPrompt
@@ -477,35 +826,68 @@ export function AgentCollaborationPanel({
             </button>
             <button
               type="button"
-              className={`ml-auto inline-flex h-7 items-center gap-1 rounded-lg border px-2 text-[10px] font-bold ${selectedSkillIds.length ? 'border-sky-200 bg-sky-50 text-sky-800' : 'border-[#e5e7eb] text-[#5e5d59]'}`}
+              aria-label="Skill 选择"
+              className={`ml-auto inline-flex h-7 items-center gap-1 rounded-lg border px-2 text-[10px] font-bold ${(interactionMode === 'chat-experimental' ? boundSkillIds : selectedSkillIds).length ? 'border-sky-200 bg-sky-50 text-sky-800' : 'border-[#e5e7eb] text-[#5e5d59]'}`}
               onClick={() => setSkillMenuOpen(value => !value)}
               aria-expanded={skillMenuOpen}
             >
-              <Puzzle className="h-3 w-3" /> Skill{selectedSkillIds.length ? ` · ${selectedSkillIds.length}` : ''}
+              <Puzzle className="h-3 w-3" /> Skill{(interactionMode === 'chat-experimental' ? boundSkillIds : selectedSkillIds).length ? ` · ${(interactionMode === 'chat-experimental' ? boundSkillIds : selectedSkillIds).length}` : ''}
             </button>
             {skillMenuOpen ? (
               <div className="absolute bottom-9 right-0 z-30 w-64 rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
-                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-gray-400">仅作用于下一条消息</div>
+                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-gray-400">
+                  {interactionMode === 'chat-experimental' ? '本对话持续启用' : '仅作用于下一条消息'}
+                </div>
                 {externalSkills.length === 0 ? <div className="px-2 py-3 text-xs text-gray-400">暂无可主动触发的外置 Skill</div> : externalSkills.map(skill => {
                   const dependencies = skill.toolDependencies || []
-                  const availableTools = new Set(tools.map(tool => tool.name))
+                  const availableTools = new Set(
+                    interactionMode === 'chat-experimental' ? [] : tools.map(tool => tool.name)
+                  )
                   const unavailable = dependencies.some(name => !availableTools.has(name))
-                  const selected = selectedSkillIds.includes(skill.id!)
+                  const activeSkillIds = interactionMode === 'chat-experimental'
+                    ? boundSkillIds
+                    : selectedSkillIds
+                  const selected = activeSkillIds.includes(skill.id!)
                   return <label key={skill.id} className={`flex items-start gap-2 rounded-md px-2 py-2 text-xs ${unavailable ? 'cursor-not-allowed opacity-45' : 'cursor-pointer hover:bg-gray-50'}`} title={unavailable ? `缺少工具：${dependencies.filter(name => !availableTools.has(name)).join(', ')}` : skill.description}>
-                    <input type="checkbox" disabled={unavailable} checked={selected} onChange={() => setSelectedSkillIds(current => selected ? current.filter(id => id !== skill.id) : [...current, skill.id!])} />
+                    <input
+                      type="checkbox"
+                      disabled={unavailable}
+                      checked={selected}
+                      onChange={() => {
+                        const next = selected
+                          ? activeSkillIds.filter(id => id !== skill.id)
+                          : [...activeSkillIds, skill.id!]
+                        if (interactionMode === 'chat-experimental') {
+                          void persistConversationInteraction(interactionMode, next)
+                        } else {
+                          setSelectedSkillIds(next)
+                        }
+                      }}
+                    />
                     <span><span className="block font-bold text-gray-800">{skill.name}</span><span className="mt-0.5 block text-[10px] text-gray-400">v{skill.revision || 1} · {skill.trustState || skill.source}</span></span>
                   </label>
                 })}
               </div>
             ) : null}
           </div>
+          {interactionMode === 'chat-experimental' ? (
+            <AgentDocumentAttachments
+              projectId={workspaceContext.projectId}
+              attachments={documentAttachments}
+              disabled={running}
+              resetKey={`${sessionKey}:${conversationId || 'new'}:${composerResetKey}`}
+              onChange={setDocumentAttachments}
+              onUploadingChange={setDocumentUploadingCount}
+            />
+          ) : null}
           <CanvasAgentComposer
             nodes={canvasNodes}
+            documentNodes={interactionMode === 'chat-experimental' ? documentNodes : []}
             attachments={canvasAttachments}
             editMode={canvasEditMode}
             selection={canvasSelection ? withoutNodeId(canvasSelection) : undefined}
             running={running}
-            disabled={runtimeStatus !== 'connected' || running || modelSaving || !effectiveModel || effectiveModel.available === false}
+            disabled={runtimeStatus !== 'connected' || running || documentEditReconciling || documentUploadingCount > 0 || modelSaving || !effectiveModel || effectiveModel.available === false || (interactionMode === 'chat-experimental' && !conversationId)}
             externalDraft={composerDraft}
             resetKey={composerResetKey}
             modelOptions={modelOptions}
@@ -531,7 +913,7 @@ export function AgentCollaborationPanel({
               setCanvasSelection(undefined)
             }}
             onModelChange={modelKey => void persistConversationModel(modelKey)}
-            onSubmit={(content, mentions) => void handleSend(content, mentions)}
+            onSubmit={handleSend}
           />
         </div>
       ) : (
@@ -551,7 +933,7 @@ export function AgentCollaborationPanel({
           type="button"
           className={`${compact ? 'mt-2 py-2 text-[13px]' : 'mt-3 py-2.5 text-sm'} inline-flex w-full items-center justify-center gap-2 rounded-full bg-black px-4 font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300`}
           onClick={() => handleSend()}
-          disabled={runtimeStatus !== 'connected' || running || !draft.trim()}
+          disabled={runtimeStatus !== 'connected' || running || documentEditReconciling || !draft.trim()}
         >
           {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           发送给 Agent
@@ -563,20 +945,54 @@ export function AgentCollaborationPanel({
   )
 
   function handleConversationChange(conversation: AgentConversationDetail) {
+    const nextApplyIdentity = `${sessionKey}:${workspaceContext.projectId}:${conversation.id}`
+    if (postSendApplyIdentityRef.current !== nextApplyIdentity) {
+      postSendApplyIdentityRef.current = nextApplyIdentity
+      postSendApplyAttemptRef.current += 1
+    }
+    setPostSendApplyError(undefined)
+    setPendingWriteContext(undefined)
+    setConversationProjectId(conversation.projectId)
+    setConversationSelectionGeneration(generation => generation + 1)
     setConversationId(conversation.id)
+    const pendingDocumentNodeId = readUniquePendingDocumentLedgerNodeId(conversation)
+    setPendingDocumentLedgerTarget(pendingDocumentNodeId
+      ? { projectId: conversation.projectId, conversationId: conversation.id, nodeId: pendingDocumentNodeId }
+      : undefined)
+    setInteractionMode(conversation.interactionMode || 'prompt-edit')
+    setBoundSkillIds(conversation.boundSkillIds || [])
+    setConversationRevision(conversation.revision || 1)
     hydrateSession(sessionKey, {
       conversationId: conversation.id,
       threadId: conversation.id,
+      interactionMode: conversation.interactionMode || 'prompt-edit',
+      boundSkillIds: conversation.boundSkillIds || [],
+      revision: conversation.revision || 1,
       messages: conversation.messages.map((message, index) => ({
         id: message.id || `stored-message-${index}`,
         role: message.role,
         content: message.text,
-        createdAt: message.createdAt || conversation.createdAt + index
+        createdAt: message.createdAt || conversation.createdAt + index,
+        ...(message.documentAttachments?.length ? {
+          documentAttachments: message.documentAttachments.map(attachment => ({
+            resourceId: attachment.resourceId,
+            name: attachment.name,
+            contentType: attachment.contentType,
+            size: attachment.size,
+            ...(attachment.sha256 ? { sha256: attachment.sha256 } : {})
+          }))
+        } : {})
       })),
-      proposals: conversation.proposals as unknown as AgentWorkspaceProposal[],
+      proposals: normalizeAgentWorkspaceProposals(conversation.proposals, {
+        permissionScope: 'workspace-chatbot-agent',
+        interactionMode: conversation.interactionMode || 'prompt-edit',
+        conversationId: conversation.id
+      }),
       updatedAt: conversation.updatedAt
     })
     setCanvasAttachments([])
+    setDocumentAttachments([])
+    setDocumentUploadingCount(0)
     setCanvasSelection(undefined)
     setCanvasEditMode('complete')
     setComposerResetKey(key => key + 1)
@@ -598,6 +1014,44 @@ export function AgentCollaborationPanel({
     setModelSelectionRequired(false)
     if (!conversation.modelBinding && nextOption) {
       void persistConversationModel(nextOption.key, conversation.id)
+    }
+  }
+
+  async function persistConversationInteraction(
+    nextMode: AgentInteractionMode,
+    nextBoundSkillIds: string[]
+  ) {
+    if (!conversationId) return
+    setModelSwitchError(undefined)
+    try {
+      const updated = await storageServiceClient.agentConversations.updateInteraction(
+        conversationId,
+        workspaceContext.projectId,
+        {
+          interactionMode: nextMode,
+          boundSkillIds: nextMode === 'chat-experimental' ? nextBoundSkillIds : [],
+          expectedRevision: conversationRevision
+        }
+      )
+      setInteractionMode(updated.interactionMode)
+      setBoundSkillIds(updated.boundSkillIds)
+      setConversationRevision(updated.revision)
+      setSelectedSkillIds([])
+      setDocumentAttachments([])
+      setDocumentUploadingCount(0)
+      hydrateSession(sessionKey, {
+        interactionMode: updated.interactionMode,
+        boundSkillIds: updated.boundSkillIds,
+        revision: updated.revision
+      })
+      if (updated.interactionMode === 'chat-experimental') {
+        setCanvasAttachments([])
+        setCanvasSelection(undefined)
+        setCanvasEditMode('complete')
+        setComposerResetKey(key => key + 1)
+      }
+    } catch (error) {
+      setModelSwitchError(error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -647,6 +1101,38 @@ function readCanvasNodeSummaries(workspaceContext: AgentWorkspaceContext): Canva
       userText: String(node.userText || '')
     }]
   })
+}
+
+function readDocumentNodeSummaries(workspaceContext: AgentWorkspaceContext): CanvasAgentNodeSummary[] {
+  const nodes = Array.isArray(workspaceContext.snapshot.nodes) ? workspaceContext.snapshot.nodes : []
+  return nodes.flatMap(value => {
+    if (!value || typeof value !== 'object') return []
+    const node = value as Record<string, unknown>
+    if (node.kind !== 'document' || typeof node.id !== 'string') return []
+    return [{
+      id: node.id,
+      kind: 'document' as const,
+      title: String(node.title || node.id),
+      displayText: '',
+      userText: ''
+    }]
+  })
+}
+
+function explicitDocumentMentions(
+  mentions: Array<{ nodeId: string; label: string }>,
+  documentNodes: CanvasAgentNodeSummary[]
+): string[] {
+  const documentNodeIds = new Set(documentNodes.map(node => node.id))
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const mention of mentions) {
+    if (!documentNodeIds.has(mention.nodeId) || seen.has(mention.nodeId)) continue
+    seen.add(mention.nodeId)
+    result.push(mention.nodeId)
+    if (result.length === 5) break
+  }
+  return result
 }
 
 function readCanvasTextPreviewNodes(workspaceContext: AgentWorkspaceContext): IFreeCanvasTextNode[] {
@@ -807,6 +1293,27 @@ function summarizeAppliedCanvasEdits(edits: AgentCanvasEdit[]) {
 }
 
 export const AIChatbotBox = AgentCollaborationPanel
+
+function readUniquePendingDocumentLedgerNodeId(conversation: AgentConversationDetail): string | undefined {
+  const pendingNodeIds = conversation.turns.flatMap(turn => {
+    if (!isPlainRecord(turn) || !isPlainRecord(turn.applyEdit)) return []
+    const ledger = turn.applyEdit
+    if (
+      ledger.status !== 'pending_apply'
+      || !['document_create', 'document_changes', 'storyboard_create', 'storyboard_changes'].includes(String(ledger.kind))
+      || ledger.conversationId !== conversation.id
+      || typeof ledger.nodeId !== 'string'
+      || !ledger.nodeId
+      || ledger.nodeId.trim() !== ledger.nodeId
+    ) return []
+    return [ledger.nodeId]
+  })
+  return pendingNodeIds.length === 1 ? pendingNodeIds[0] : undefined
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
 
 function RuntimeErrorNotice({ error, dense = false }: { error: string; dense?: boolean }) {
   return (

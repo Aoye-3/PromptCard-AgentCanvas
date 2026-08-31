@@ -6,6 +6,7 @@ import {
   createProjectSaveCoordinator,
   isExpectedProjectSaveNavigationCancellation
 } from './project-save-coordinator'
+import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
 
 const project = (revision = 1, title = 'Local'): IPromptProject => ({
   id: 'project-1',
@@ -18,6 +19,19 @@ const project = (revision = 1, title = 'Local'): IPromptProject => ({
   updatedAt: 2,
   lastOpenedAt: 2,
   meta: {}
+})
+
+const documentProject = (text: string): IPromptProject => ({
+  ...project(),
+  type: 'free-canvas',
+  freeCanvas: {
+    nodes: [{
+      id: 'document-1', kind: 'document', title: 'Plan', position: { x: 0, y: 0 }, width: 560, height: 420,
+      document: createPlanningDocumentV1([{ id: 'paragraph-1', type: 'paragraph', content: [{ text }] }]),
+      linkedDocumentResourceIds: [], meta: {}
+    }],
+    edges: [], viewport: null, selectedNodeId: 'document-1', meta: {}
+  }
 })
 
 describe('project save coordinator', () => {
@@ -185,5 +199,27 @@ describe('project save coordinator', () => {
       .resolves.toMatchObject({ status: 'failed', editSeq: 3 })
     await expect(coordinator.flush('project-1')).resolves.toMatchObject({ status: 'saved', editSeq: 3 })
     expect(update).toHaveBeenCalledTimes(2)
+  })
+
+  test('replaces a failed Document edit with its recovery snapshot for retry', async () => {
+    const recovery = documentProject('Before')
+    const update = vi.fn()
+      .mockRejectedValueOnce(new Error('edit offline'))
+      .mockRejectedValueOnce(new Error('recovery offline'))
+      .mockResolvedValueOnce({ ...recovery, revision: 2 })
+    const coordinator = createProjectSaveCoordinator({ create: vi.fn(), update })
+
+    await expect(coordinator.enqueue({ project: documentProject('After'), editSeq: 1 }))
+      .resolves.toMatchObject({ status: 'failed' })
+    await expect(coordinator.enqueue({ project: recovery, editSeq: 1 }))
+      .resolves.toMatchObject({ status: 'failed' })
+    await expect(coordinator.flush('project-1')).resolves.toMatchObject({ status: 'saved' })
+
+    expect(update).toHaveBeenCalledTimes(3)
+    expect(update.mock.calls[2][2]).toMatchObject({
+      freeCanvas: { nodes: [expect.objectContaining({ document: expect.objectContaining({
+        blocks: [expect.objectContaining({ content: [{ text: 'Before' }] })]
+      }) })] }
+    })
   })
 })

@@ -15,6 +15,10 @@ from promptcard_storage.store import (
 )
 
 
+TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / ".test-tmp" / "task15-8-sqlite"
+TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+
+
 def project(item_id: str, title: str) -> dict:
     return {
         "id": item_id,
@@ -47,7 +51,7 @@ def preset(item_id: str, label: str) -> dict:
 
 class SqliteStoreTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT)
         self.data_dir = Path(self.temp_dir.name, "data")
         self.data_dir.mkdir()
 
@@ -179,6 +183,8 @@ class SqliteStoreTest(unittest.TestCase):
         self.assertTrue(health["capabilities"]["recentCaptures"])
         self.assertTrue(health["capabilities"]["agentConversations"])
         self.assertTrue(health["capabilities"]["skillHub"])
+        self.assertTrue(health["capabilities"]["projectDocumentResources"])
+        self.assertTrue(health["capabilities"]["bridgeDeliveryLedger"])
         self.assertIsInstance(health["pid"], int)
 
         connection = sqlite3.connect(self.data_dir / "promptcard.sqlite3")
@@ -187,6 +193,118 @@ class SqliteStoreTest(unittest.TestCase):
             self.assertEqual(journal_mode.lower(), "wal")
         finally:
             connection.close()
+
+    def test_fresh_schema_v19_contains_retrieval_and_delivery_tables(self) -> None:
+        store = JsonCollectionStore(self.data_dir)
+
+        self.assertEqual(SCHEMA_VERSION, 19)
+        connection = sqlite3.connect(store.database_path)
+        try:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            migration = connection.execute(
+                "SELECT version, name FROM schema_migrations"
+            ).fetchall()
+            preset_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(presets)")
+            }
+        finally:
+            connection.close()
+
+        self.assertIn("project_document_resources", tables)
+        self.assertIn("provider_file_cleanup", tables)
+        self.assertIn("creative_references", tables)
+        self.assertIn("prompt_retrieval_documents", tables)
+        self.assertIn("prompt_retrieval_fts", tables)
+        self.assertIn("prompt_retrieval_audits", tables)
+        self.assertIn("bridge_delivery_ledger", tables)
+        self.assertIn("retrieval_digest", preset_columns)
+        self.assertEqual(migration, [(19, "json-v1-to-sqlite")])
+
+    def test_v15_migrates_both_v16_tables_and_then_repairs_conversation_columns(self) -> None:
+        store = JsonCollectionStore(self.data_dir)
+        connection = sqlite3.connect(store.database_path)
+        try:
+            connection.execute("DROP TABLE IF EXISTS project_document_resources")
+            connection.execute("DROP TABLE IF EXISTS provider_file_cleanup")
+            for column in ("interaction_mode", "bound_skill_ids_json", "revision"):
+                connection.execute(f"ALTER TABLE agent_conversations DROP COLUMN {column}")
+            connection.execute("DELETE FROM schema_migrations")
+            connection.execute(
+                "INSERT INTO schema_migrations(version, name, applied_at) VALUES (15, 'legacy-v15', 1)"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated = JsonCollectionStore(self.data_dir)
+        connection = sqlite3.connect(migrated.database_path)
+        try:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(agent_conversations)")
+            }
+            migrations = connection.execute(
+                "SELECT version, name FROM schema_migrations ORDER BY version"
+            ).fetchall()
+        finally:
+            connection.close()
+
+        self.assertIn("project_document_resources", tables)
+        self.assertIn("provider_file_cleanup", tables)
+        self.assertTrue({"interaction_mode", "bound_skill_ids_json", "revision"} <= columns)
+        self.assertEqual(
+            migrations,
+            [
+                (15, "legacy-v15"),
+                (16, "add-project-document-resources-and-provider-file-cleanup"),
+                (17, "add-creative-object-references"),
+                (18, "add-transactional-prompt-retrieval"),
+                (19, "add-profile-scoped-bridge-delivery-ledger"),
+            ],
+        )
+
+    def test_v15_to_v16_rolls_back_both_tables_when_the_second_create_fails(self) -> None:
+        store = JsonCollectionStore(self.data_dir)
+        connection = sqlite3.connect(store.database_path)
+        try:
+            connection.execute("DROP TABLE project_document_resources")
+            connection.execute("DROP TABLE provider_file_cleanup")
+            connection.execute("DELETE FROM schema_migrations")
+            connection.execute(
+                "INSERT INTO schema_migrations(version, name, applied_at) VALUES (15, 'legacy-v15', 1)"
+            )
+            connection.execute("CREATE VIEW provider_file_cleanup AS SELECT 1 AS incompatible")
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(sqlite3.OperationalError):
+            JsonCollectionStore(self.data_dir)
+
+        connection = sqlite3.connect(store.database_path)
+        try:
+            document_table = connection.execute(
+                """SELECT 1 FROM sqlite_master
+                   WHERE type='table' AND name='project_document_resources'"""
+            ).fetchone()
+            version = connection.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertIsNone(document_table)
+        self.assertEqual(version, 15)
 
     def test_backup_contains_consistent_database_assets_and_manifest(self) -> None:
         store = JsonCollectionStore(self.data_dir)
@@ -265,6 +383,53 @@ class SqliteStoreTest(unittest.TestCase):
         self.assertEqual(store.get_agent_conversation("conversation-model", "p1")["modelBinding"], updated["modelBinding"])
         with self.assertRaises(MissingItem):
             store.update_agent_conversation_model_binding("conversation-model", "p2", None)
+
+    def test_agent_conversation_interaction_defaults_and_optimistic_update_persist(self) -> None:
+        store = JsonCollectionStore(self.data_dir)
+        store.create_project(project("p1", "One"))
+        store.create_project(project("p2", "Two"))
+        created = store.create_agent_conversation({
+            "id": "conversation-interaction",
+            "projectId": "p1",
+            "entrypoint": "workspace-chatbot-agent",
+            "mode": "free-canvas",
+        })
+
+        self.assertEqual(created["interactionMode"], "prompt-edit")
+        self.assertEqual(created["boundSkillIds"], [])
+        self.assertEqual(created["revision"], 1)
+
+        updated = store.update_agent_conversation_interaction(
+            "conversation-interaction",
+            "p1",
+            "chat-experimental",
+            ["SKL-one", "SKL-two"],
+            expected_revision=1,
+        )
+
+        self.assertEqual(updated["interactionMode"], "chat-experimental")
+        self.assertEqual(updated["boundSkillIds"], ["SKL-one", "SKL-two"])
+        self.assertEqual(updated["revision"], 2)
+        self.assertEqual(
+            store.get_agent_conversation("conversation-interaction", "p1")["boundSkillIds"],
+            ["SKL-one", "SKL-two"],
+        )
+        with self.assertRaises(RevisionConflict):
+            store.update_agent_conversation_interaction(
+                "conversation-interaction",
+                "p1",
+                "prompt-edit",
+                [],
+                expected_revision=1,
+            )
+        with self.assertRaises(MissingItem):
+            store.update_agent_conversation_interaction(
+                "conversation-interaction",
+                "p2",
+                "prompt-edit",
+                [],
+                expected_revision=2,
+            )
 
     def test_v8_agent_conversations_migrate_model_binding_column(self) -> None:
         store = JsonCollectionStore(self.data_dir)

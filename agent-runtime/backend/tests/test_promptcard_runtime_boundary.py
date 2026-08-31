@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -15,10 +16,45 @@ from app.gateway.promptcard_runtime import (
     _allowed_tool_names,
     _resolve_canvas_node_context,
     _resolve_skill_snapshots,
+    _storage_request,
     validate_agent_canvas_edits,
     validate_agent_proposals,
 )
 from app.gateway.routers import promptcard_runtime
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/agent-conversations/conversation-1/turns"),
+        (
+            "PATCH",
+            "/api/agent-conversations/conversation-1/turns/request-1/apply-edit",
+        ),
+    ],
+)
+async def test_storage_ledger_mutations_include_internal_auth(
+    monkeypatch,
+    method,
+    path,
+):
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"status": "ok"})
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setenv("PROMPTCARD_INTERNAL_TOKEN", "gateway-test-token")
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime.httpx.AsyncClient",
+        lambda **kwargs: real_async_client(transport=transport, **kwargs),
+    )
+
+    assert await _storage_request(method, path, json={}) == {"status": "ok"}
+    assert requests[0].headers["X-PromptCard-Internal-Token"] == "gateway-test-token"
 
 
 @pytest.mark.anyio
@@ -161,7 +197,7 @@ def test_ark_multimodal_text_model_is_in_catalog():
     assert model is not None
     assert model["providerId"] == "volcengine-ark"
     assert model["modality"] == "chat"
-    assert model["capabilities"]["input"] == ["text", "image"]
+    assert model["capabilities"]["input"] == ["text", "image", "pdf"]
 
 
 def test_ark_pro_text_model_is_in_catalog():
@@ -1116,6 +1152,143 @@ async def test_persistent_message_loads_history_skills_and_saves_turn(monkeypatc
 
 
 @pytest.mark.anyio
+async def test_prompt_library_rag_uses_storage_evidence_and_returns_citations(monkeypatch):
+    calls = []
+
+    async def fake_storage(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if method == "POST" and path == "/api/prompt-retrieval/search":
+            assert kwargs["json"] == {
+                "query": "rainy city",
+                "types": [],
+                "categories": ["shot"],
+                "limit": 10,
+                "callerKind": "local-agent",
+                "callerId": "prompt-library:global",
+            }
+            return {
+                "queryDigest": "sha256:" + "a" * 64,
+                "auditId": "audit-1",
+                "degraded": False,
+                "staleRejectedCount": 0,
+                "results": [{
+                    "reference": {"namespace": "promptBundle", "code": "PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+                    "revision": 2,
+                    "digest": "sha256:" + "b" * 64,
+                    "title": "Rainy city",
+                    "summary": "A rainy neon city at night.",
+                    "type": "storyboard",
+                    "category": "shot",
+                    "matchedFields": ["label", "content"],
+                    "score": 1.0,
+                    "scoreComponents": {"lexical": 1.0, "usage": 0.0},
+                    "reason": "Matched label, content",
+                    "media": [],
+                }],
+            }
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_invoke(payload):
+        assert "promptLibrary" in payload
+        assert len(payload["promptLibrary"]) == 1
+        assert "preset-internal" not in str(payload)
+        evidence = payload["promptLibrary"][0]
+        assert evidence["referenceCode"] == "PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        assert evidence["revision"] == 2
+        return {"threadId": "thread-1", "text": "Found it", "proposals": [], "diagnostics": {}}
+
+    monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", fake_storage)
+    monkeypatch.setattr("app.gateway.promptcard_runtime._invoke_text_agent", fake_invoke)
+    monkeypatch.setattr("app.gateway.promptcard_runtime.resolve_text_model", lambda _: {
+        "connectionId": "connection-1", "providerId": "deepseek",
+        "model": {"id": "deepseek-chat", "displayName": "DeepSeek Chat", "capabilities": {"input": ["text"]}},
+    })
+    body = PromptCardRuntimeMessageRequest.model_validate({
+        "content": "Use relevant examples",
+        "permissionScope": "prompt-library-agent",
+        "sessionKey": "prompt-library:global",
+        "promptRetrieval": {
+            "query": "rainy city", "types": [], "categories": ["shot"],
+            "exactCodes": [], "limit": 10,
+        },
+    })
+
+    result = await promptcard_runtime.runtime_service.send_message(body, None)
+
+    retrieval = result["diagnostics"]["promptRetrieval"]
+    assert retrieval["auditId"] == "audit-1"
+    assert retrieval["citations"] == [{
+        "referenceCode": "PLP-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "title": "Rainy city",
+        "revision": 2,
+        "digest": "sha256:" + "b" * 64,
+    }]
+
+
+@pytest.mark.anyio
+async def test_prompt_library_rag_degrades_without_blocking_other_agent_work(monkeypatch):
+    async def unavailable_storage(*_args, **_kwargs):
+        raise HTTPException(status_code=503, detail="storage_unavailable")
+
+    async def fake_invoke(payload):
+        assert payload["promptLibrary"] == []
+        return {"threadId": "thread-1", "text": "Continued without retrieval", "proposals": [], "diagnostics": {}}
+
+    monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", unavailable_storage)
+    monkeypatch.setattr("app.gateway.promptcard_runtime._invoke_text_agent", fake_invoke)
+    monkeypatch.setattr("app.gateway.promptcard_runtime.resolve_text_model", lambda _: {
+        "connectionId": "connection-1", "providerId": "deepseek",
+        "model": {"id": "deepseek-chat", "displayName": "DeepSeek Chat", "capabilities": {"input": ["text"]}},
+    })
+    body = PromptCardRuntimeMessageRequest.model_validate({
+        "content": "Continue even if retrieval is down",
+        "permissionScope": "prompt-library-agent",
+        "sessionKey": "prompt-library:global",
+        "promptRetrieval": {
+            "query": "rainy city", "types": [], "categories": [],
+            "exactCodes": [], "limit": 10,
+        },
+    })
+
+    result = await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert result["text"] == "Continued without retrieval"
+    assert result["diagnostics"]["promptRetrieval"] == {
+        "auditId": None,
+        "queryDigest": None,
+        "degraded": True,
+        "staleRejectedCount": 0,
+        "resultCount": 0,
+        "errorCode": "prompt_retrieval_unavailable",
+        "citations": [],
+    }
+
+
+@pytest.mark.anyio
+async def test_experimental_chat_rejects_prompt_retrieval_before_storage_or_model(monkeypatch):
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("retrieval or model must not run")
+
+    monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", forbidden)
+    monkeypatch.setattr("app.gateway.promptcard_runtime._invoke_text_agent", forbidden)
+    body = PromptCardRuntimeMessageRequest.model_validate({
+        "content": "Do not retrieve",
+        "permissionScope": "workspace-chatbot-agent",
+        "interactionMode": "chat-experimental",
+        "promptRetrieval": {
+            "query": "secret document", "types": [], "categories": [],
+            "exactCodes": [], "limit": 10,
+        },
+    })
+
+    with pytest.raises(HTTPException) as caught:
+        await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert caught.value.status_code == 422
+    assert caught.value.detail == "prompt_retrieval_scope_invalid"
+
+
+@pytest.mark.anyio
 async def test_rejected_canvas_edit_does_not_claim_that_a_modification_was_generated(monkeypatch):
     async def fake_storage(method, path, **kwargs):
         if method == "GET":
@@ -1178,7 +1351,9 @@ async def test_rejected_canvas_edit_does_not_claim_that_a_modification_was_gener
 
 
 @pytest.mark.anyio
-async def test_persistent_message_reuses_saved_turn_before_model_resolution(monkeypatch):
+async def test_persistent_message_reuses_saved_turn_before_document_model_skill_or_provider_resolution(
+    monkeypatch,
+):
     saved_snapshot = {
         "connectionId": "connection-previous", "providerId": "deepseek", "modelId": "deepseek-chat",
         "displayName": "DeepSeek Chat", "capabilities": {"input": ["text"]},
@@ -1193,7 +1368,14 @@ async def test_persistent_message_reuses_saved_turn_before_model_resolution(monk
             "modelBinding": {"connectionId": "connection-new", "providerId": "deepseek", "modelId": "deepseek-reasoner"},
             "turns": [{
                 "requestId": "request-1",
-                "messages": [{"role": "assistant", "text": "Saved answer"}],
+                "messages": [
+                    {
+                        "role": "user",
+                        "text": "Question",
+                        "documentAttachments": [{"resourceId": "document-now-trashed"}],
+                    },
+                    {"role": "assistant", "text": "Saved answer"},
+                ],
                 "proposals": [{"id": "proposal-1"}],
                 "modelSnapshot": saved_snapshot,
             }],
@@ -1211,7 +1393,20 @@ async def test_persistent_message_reuses_saved_turn_before_model_resolution(monk
     body = PromptCardRuntimeMessageRequest.model_validate({
         "conversationId": "conversation-1", "requestId": "request-1",
         "content": "Question", "projectId": "project-1", "mode": "free-canvas",
+        "documentResourceIds": ["document-now-trashed"],
     })
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime._load_document_resources",
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError("trashed document resolution must be skipped")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime._resolve_skill_snapshots",
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError("Skill resolution must be skipped")
+        ),
+    )
 
     result = await promptcard_runtime.runtime_service.send_message(body, None)
 
@@ -1220,6 +1415,161 @@ async def test_persistent_message_reuses_saved_turn_before_model_resolution(monk
         "text": "Saved answer", "proposals": [{"id": "proposal-1"}], "canvasEdits": [],
         "diagnostics": {"idempotent": True, "modelSnapshot": saved_snapshot},
     }
+
+
+@pytest.mark.anyio
+async def test_experimental_conversation_reloads_bound_skills_and_current_pin_each_turn(
+    monkeypatch,
+):
+    conversation = {
+        "id": "conversation-1",
+        "projectId": "project-1",
+        "entrypoint": "workspace-chatbot-agent",
+        "mode": "free-canvas",
+        "interactionMode": "chat-experimental",
+        "boundSkillIds": ["SKL-00000000000000000000000002"],
+        "modelBinding": {
+            "connectionId": "connection-1",
+            "providerId": "deepseek",
+            "modelId": "deepseek-chat",
+        },
+        "messages": [],
+        "turns": [],
+    }
+    pin_revision = 0
+    invocations = []
+
+    async def fake_storage(method, path, **kwargs):
+        nonlocal pin_revision
+        if method == "GET" and path == "/api/agent-conversations/conversation-1":
+            return conversation
+        if method == "GET" and path == "/api/skills":
+            return {"skills": [{
+                "id": "external-skill-id",
+                "referenceCode": "SKL-00000000000000000000000002",
+                "source": "external",
+            }]}
+        if method == "GET" and path == "/api/skill-host-snapshots/local-agent":
+            pin_revision += 1
+            return {
+                "skillId": "external-skill-id",
+                "skillReferenceCode": "SKL-00000000000000000000000002",
+                "revision": pin_revision,
+                "digest": "sha256:" + str(pin_revision) * 64,
+                "instructions": f"Pinned revision {pin_revision}",
+                "references": [],
+                "declaredCapabilities": {
+                    "tools": [], "network": [], "executables": [], "models": [], "other": [],
+                },
+            }
+        if method == "POST" and path.endswith("/turns"):
+            turn = {
+                "requestId": kwargs["json"]["requestId"],
+                "messages": [kwargs["json"]["userMessage"], kwargs["json"]["assistantMessage"]],
+                "proposals": kwargs["json"]["proposals"],
+                "skillSnapshots": kwargs["json"]["skillSnapshots"],
+                "modelSnapshot": kwargs["json"]["modelSnapshot"],
+            }
+            conversation["turns"].append(turn)
+            conversation["messages"].extend(turn["messages"])
+            return turn
+        raise AssertionError((method, path, kwargs))
+
+    async def fake_invoke(payload):
+        invocations.append(payload)
+        return {
+            "threadId": "conversation-1",
+            "text": f"Answer {len(invocations)}",
+            "proposals": [],
+            "canvasEdits": [],
+            "diagnostics": {},
+        }
+
+    monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", fake_storage)
+    monkeypatch.setattr("app.gateway.promptcard_runtime._invoke_text_agent", fake_invoke)
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime.resolve_text_model",
+        lambda _: {
+            "connectionId": "connection-1", "providerId": "deepseek",
+            "model": {"id": "deepseek-chat", "displayName": "DeepSeek", "capabilities": {"input": ["text"]}},
+        },
+    )
+
+    for request_id, content in (("request-1", "First"), ("request-2", "Second")):
+        body = PromptCardRuntimeMessageRequest.model_validate({
+            "conversationId": "conversation-1",
+            "requestId": request_id,
+            "content": content,
+            "projectId": "project-1",
+            "mode": "free-canvas",
+            "selectedSkillIds": ["SKL-browser-one-shot-must-not-win"],
+            "canvasNodeContext": {
+                "mode": "complete", "targetNodeId": "stale-prompt-target",
+                "referenceNodeIds": [], "mentions": [],
+            },
+        })
+        await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert [payload["interactionMode"] for payload in invocations] == [
+        "chat-experimental", "chat-experimental",
+    ]
+    assert [payload["skillSnapshots"][0]["revision"] for payload in invocations] == [1, 2]
+    assert [turn["skillSnapshots"][0]["digest"] for turn in conversation["turns"]] == [
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+    ]
+    assert [message["content"][0]["text"] for message in invocations[1]["history"]] == [
+        "First", "Answer 1",
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        HTTPException(status_code=403, detail="skill_host_disabled"),
+        HTTPException(status_code=403, detail="skill_revision_untrusted"),
+        HTTPException(status_code=410, detail="skill_archived"),
+        HTTPException(status_code=413, detail="skill_snapshot_too_large"),
+        HTTPException(status_code=403, detail="skill_tool_dependency_not_allowed"),
+    ],
+    ids=["disabled", "untrusted", "archived", "over-budget", "missing-tool"],
+)
+async def test_experimental_bound_skill_failure_precedes_model_invocation(monkeypatch, failure):
+    async def fake_storage(method, path, **kwargs):
+        if path == "/api/agent-conversations/conversation-1":
+            return {
+                "id": "conversation-1", "projectId": "project-1",
+                "entrypoint": "workspace-chatbot-agent", "mode": "free-canvas",
+                "interactionMode": "chat-experimental", "boundSkillIds": ["SKL-00000000000000000000000002"],
+                "messages": [], "turns": [],
+            }
+        if path == "/api/skills":
+            return {"skills": [{
+                "id": "external-skill-id", "referenceCode": "SKL-00000000000000000000000002", "source": "external",
+            }]}
+        if path == "/api/skill-host-snapshots/local-agent":
+            raise failure
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr("app.gateway.promptcard_runtime._storage_request", fake_storage)
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime.resolve_text_model",
+        lambda _: (_ for _ in ()).throw(AssertionError("model resolution must be skipped")),
+    )
+    monkeypatch.setattr(
+        "app.gateway.promptcard_runtime._invoke_text_agent",
+        lambda _: (_ for _ in ()).throw(AssertionError("agent invocation must be skipped")),
+    )
+    body = PromptCardRuntimeMessageRequest.model_validate({
+        "conversationId": "conversation-1", "requestId": "request-1",
+        "content": "Use the bound Skill", "projectId": "project-1", "mode": "free-canvas",
+    })
+
+    with pytest.raises(HTTPException) as error:
+        await promptcard_runtime.runtime_service.send_message(body, None)
+
+    assert error.value.detail == failure.detail
 
 
 @pytest.mark.anyio

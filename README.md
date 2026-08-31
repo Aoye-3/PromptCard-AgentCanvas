@@ -236,6 +236,10 @@ npm.cmd run dev:with-agent
 npm.cmd run agent:dev
 npm.cmd run text-agent:dev
 npm.cmd run agent:check
+npm.cmd run mcp:stdio
+npm.cmd run mcp:http
+npm.cmd run mcp:check
+npm.cmd run test:mcp
 npm.cmd test -- --run
 npm.cmd run test:frontend
 npm.cmd run test:e2e
@@ -272,18 +276,21 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 ### PromptCard Local Agent Bridge 与 Prompt 库 RAG
 
-当前已经完成 Skill Hub 管理工作流和宿主中立的 Bridge v2 合同边界。后续将分别为项目、Prompt 库 Prompt、Prompt 库媒体、画布文本节点、画布媒体和画布选区提供稳定、可复制的引用编码。用户既可以复制精确编码，也可以先给出项目编码，让已授权的 Agent 应用在项目画布与 Prompt 库两个独立索引中查找候选内容，再通过本地受控接口交付提示词或图片。
+贡献者和本地使用者请从 [Local Agent Bridge 与 MCP 运维指南](./docs/operations/local-agent-bridge.md) 启用：首轮只读配置不需要任何模型供应商密钥，启动器不会下载运行时；Codex 已通过真实闭环验收，TRAE 仍是未验证候选，不作为兼容性声明。
+
+当前已经完成 Skill Hub 管理工作流、宿主中立的 Bridge v1/v2 合同边界，以及承载 Document、Storyboard、Prompt 与图片提案的 Bridge v3 合同。Storage v19 在 v18 事务化 Prompt FTS5 检索与稳定 `CVD-*` / `CVS-*` 外部引用之上，增加统一的 profile-scoped 写回账本；独立凭据保护的 Gateway、确定性 JSON CLI 和 repository-owned MCP 已能让外部 Agent 从明确选择的 `PRJ-*` / `CVC-*` 工作上下文发现对象、精确 Skill pin、带 revision/digest 的 Prompt 证据及明确授权的媒体，并通过同一合同提交、排队和查询待审阅的创作提案。
 
 - 外部 Agent 应用是创作入口；PMAgent-Canvas 不内嵌某一家的聊天界面，也不按客户端名称分叉核心工具、schema、权限或结果。
-- 后续桥接计划支持本地 STDIO 与仅监听 `127.0.0.1` 的 Streamable HTTP；不实现已弃用的旧 SSE。Codex 与 TRAE 是首批验收目标，豆包与 MarsCode 暂标“待验证”。
+- MCP 已支持本地 STDIO 与仅监听 `127.0.0.1` 的 Streamable HTTP，并覆盖 2025-11-25 与 2026-07-28 两个协议时代；不实现旧 SSE。Codex 是本轮首个真实验收宿主，TRAE 保留合同兼容覆盖，不作为本轮人工验收门槛；豆包与 MarsCode 暂标“待验证”。
 - Prompt 库媒体和画布媒体采用独立编码、索引、权限与生命周期；即使复用同一底层资产，也不共用业务编码。
-- Agent 生成结果只通过 Gateway/Storage 导入，不直接修改项目 JSON、SQLite 或资产目录；后续 Bridge 必须使用独立凭据与受限 scope，不能复用内部全权令牌。
+- Agent 生成结果只通过 Gateway/Storage 导入，不直接修改项目 JSON、SQLite 或资产目录；Bridge 使用独立凭据与受限 scope，不能复用内部全权令牌。
 - 左侧全局 **Skill Hub** 已支持惰性导入预审、结构化发现、revision 历史与 diff、精确 revision 信任审阅、archive/restore，以及 Codex/local-Agent 独立 pin 和显式投影修复。
 - Codex `.agents/skills` 是一个准确命名的具体 Host Adapter；canonical revision 更新不会自动移动 Codex 或 local-Agent pin。
 - Skill 导入只读取与校验包，不执行其中的脚本、安装器、hook 或依赖；本地 Agent 只读取受限的指令与文本参考资料。
-- Canvas 已使用“复制 Agent/MCP 上下文”这一宿主中立入口；Task 16 的 Gateway bridge router、CLI 和 MCP server 尚未开始。
+- Canvas 的右侧栏现已将连接状态、受信 profile 与固定 scope、明确 PRJ/CVC、Bootstrap Skill、精确 Skill pin、Tool/写回能力、待审阅提案和近期失败集中为一个 **Agent 工作环境**。Bootstrap v6 由 Runtime 直接返回可执行上手说明，不再只是名字和 digest；它给出 fresh CVC、四字段 Skill pin、六类封闭写回形状、图片 staging 的精确六字段输入及 preview→commit→人工审阅规则。精确 CVD 解析还会返回有界的块文本、UTF-8 长度与摘要，让外部 Agent 能构造冲突安全的 `document.change`，无需猜字段或自行计算摘要；Storyboard 创建与修改的完整 sequence/row 字段和 `payload.changes` 也被明确冻结。创建 CVC 前会先强制持久化当前 Canvas，并使用 Storage 返回的权威项目 revision；无新编辑的空闲自动保存不再重复推进 revision。真实 Gateway/Storage/浏览器检查点、真实 Codex MCP 首次发现，以及真实 Codex Document 创建/修改、Storyboard 创建/逐字段修改、Prompt 创建和图片写回均已通过原生可视化审阅与持久化验收。最新总链使用实际 Codex 图片能力从已接受 Prompt 生成 PNG，在用户显式多选 Prompt 与 Storyboard 后创建双对象 CVC，再由新 Codex 进程完成受控 `AST-*` staging、镜头 0 定位、图片提案和唯一 `CVM-*` 保存；Storage 同时证明没有产生 provider generation run。随后停止并重启 Storage、Gateway、Vite 和 Codex 后，新 Codex 按完全相同的 staging 与六组 preview/commit/status 参数完成幂等重放，不产生重复 `CVD-*`、`CVS-*`、`CVT-*` 或 `CVM-*`，同 key 不同 digest 明确返回 `delivery_conflict`，新浏览器也恢复四类对象、来源和接受状态。真实闭环还暴露并修复了外部写回节点按 20×16 偏移而互相遮挡的问题；Bridge 新建节点现使用保守的无碰撞槽位，普通手动节点布局保持不变。
+- 当前功能分支已完成只读 Gateway、Storage v18 检索、local-Agent RAG、repository JSON CLI、Storage v19 统一写回账本，以及同一 Gateway 之上的十工具 MCP。新增的 `promptcard_delivery_preview`、`promptcard_delivery_commit`、`promptcard_delivery_status` 与 `promptcard_asset_stage` 对 Codex 和其他 MCP 宿主保持相同 schema 与结果；文件 staging 只允许配置的 workspace root 内真实文件，拒绝路径穿越和 symlink/junction 逃逸。外部 Agent 的 preview/commit 只产生待审阅提案；Prompt 接受后先保存全 `user` 节点并取得 `CVT-*`，图片则先经 30 MB、MIME、摘要和路径边界校验进入不透明 `AST-*` staging，再由 Canvas 保存普通图片节点并取得 `CVM-*` 后确认。两类流程都可安全重试，不重复建节点；图片写回不会伪造 provider generation run。Task 26A 的 Document create/change 与 Task 26B 的 Storyboard create/change 均已通过真实 Gateway、Storage 与浏览器 Canvas 闭环。Document 创建复用原生 AST，修改只按 `CVD/revision/digest` 定点转换为既有红删绿增建议；Storyboard 创建保留精确来源 Document 证据，修改只按 `CVS/revision/digest` 和外部 row ordinal 转换为既有逐字段差异。两类结果都必须先保存并取得 Storage 所有的稳定代码，才确认 ledger。Storyboard CVC 只额外公开已有待审阅字段的 `scope/rowOrdinal/field` 身份，不泄露内部行、编辑或建议 ID，并在新修改命中同一字段时 fail closed。默认真实进程测试已覆盖创建、修改、审阅、重放和唯一结果；两阶段服务重启测试还证明已接受 Document、已接受 Storyboard、待审阅字段修改、来源、状态与 UI CVC 偏好可恢复。`main` 仍在最终真实 Codex 总闭环验收前保持不变。
 
-本地 Agent 的 Prompt 库手动搜索后续将升级为有界、可引用、可审计的 RAG 检索。Plan 008 的 Tasks 15.6–15.10 已完成技术验收，当前暂停在 Checkpoint 3.5 的人工验收；Task 16（受控的只读 Gateway/CLI 基础）尚未开始。详见 [Plan 008 执行台账](./docs/superpowers/plans/2026-08-22-plan-008-execution.md)、[ADR-019](./docs/decisions/ADR-019-generic-local-agent-bridge-boundary.md) 与 [Checkpoint 3.5 技术验收包](./docs/reviews/2026-08-27-task-15-10-technical-acceptance.md)。
+本地 Agent 与 MCP 现已复用同一个有界、可引用、可审计 Prompt 检索核心，但保持会话、身份与权限隔离。Plan 008 的 Tasks 15.6–15.10 自动化结果保留为回归基线，Task 19 已再次确认连续消息、丢失响应重放和重启 hydration；原 Checkpoint 3.5 人工探针已并入最终真实 Codex 闭环。详见 [Plan 008 执行台账](./docs/superpowers/plans/2026-08-22-plan-008-execution.md)、[ADR-023](./docs/decisions/ADR-023-typed-creative-writeback-and-agent-workspace.md) 与 [Plan 009](./docs/Plan/009-portable-creative-context-environment.md)。
 
 ## 未来设想（暂无计划）
 
@@ -305,4 +312,4 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 ## 当前状态
 
-PMAgent-Canvas 仍处于活跃开发阶段。当前重点是完成 Checkpoint 3.5 的人工验收，并稳定受控的 Local Agent Bridge / MCP 基础；自由画布、图片生成与编辑、Prompt/媒体资产沉淀和 Agent 会话隔离继续作为项目上下文能力的组成部分。浏览器连接器与 Asset Shelf 尚未排期实现。对外使用前请以仓库中的实际实现和技术文档为准。
+PMAgent-Canvas 仍处于活跃开发阶段。受控 Local Agent Bridge / MCP 的真实 Codex 四类写回、可视化审阅、相同请求幂等重放、不同摘要冲突拒绝、服务与宿主重启恢复已经通过。Phase 6 的统一对抗性边界门禁也已通过：它覆盖跨项目/跨上下文访问、撤销 CVC、失信或归档 Skill、scope 伪造、路径与 junction 逃逸、MIME/摘要欺骗、重复/崩溃重放、错误脱敏以及 MCP 缺席时的普通 Canvas/Agent 启动回归；真实 Gateway 攻击链还促使无效凭据响应统一为稳定的 `bridge_credential_required`。可选 Bridge 启动器、只读/全审阅配置模板、贡献者诊断、宿主状态和移除说明，以及全仓构建、回归、浏览器、安全与文档发布矩阵均已通过。浏览器连接器与 Asset Shelf 不在本轮范围。对外使用前请以仓库中的实际实现和技术文档为准。

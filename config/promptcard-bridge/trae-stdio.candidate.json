@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "promptcard": {
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "REPLACE_WITH_ABSOLUTE_REPOSITORY_PATH\\scripts\\start-promptcard-mcp.ps1",
+        "-Transport",
+        "stdio"
+      ],
+      "env": {
+        "PROMPTCARD_BRIDGE_URL": "http://127.0.0.1:8000",
+        "PROMPTCARD_BRIDGE_TOKEN": "replace-with-local-bridge-token"
+      }
+    }
+  }
+}

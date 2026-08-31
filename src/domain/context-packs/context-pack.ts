@@ -6,7 +6,7 @@ import type { ContextPackCreateRequest } from '@/storage/storage-service-client'
 export interface ContextPackPreviewItem {
   nodeId: string
   code: string
-  type: '文字' | '图片'
+  type: '文字' | '图片' | '文档' | '分镜'
   title: string
 }
 
@@ -30,7 +30,7 @@ export const createContextPackSelectionPreview = (
     return [{
       nodeId: node.id,
       code,
-      type: node.kind === 'text' ? '文字' as const : '图片' as const,
+      type: contextNodeType(node),
       title: node.title
     }]
   })
@@ -65,12 +65,17 @@ const supportedNodeCode = (node: IFreeCanvasNode, codeCounts: Map<string, number
     const code = validatePublicReferenceCode(node.referenceCode, 'CVT')
     return code && codeCounts.get(code) === 1 ? code : null
   }
-  if (node.kind !== 'image') return null
-  if (
-    node.transient === true
+  if (node.kind === 'document') {
+    const code = validatePublicReferenceCode(node.referenceCode, 'CVD')
+    return code && codeCounts.get(code) === 1 ? code : null
+  }
+  if (node.kind === 'storyboard') {
+    const code = validatePublicReferenceCode(node.referenceCode, 'CVS')
+    return code && codeCounts.get(code) === 1 ? code : null
+  }
+  if (node.kind !== 'image' || node.transient === true
     || node.meta.generationState === 'running'
-    || node.meta.generationState === 'failed'
-  ) return null
+    || node.meta.generationState === 'failed') return null
   const code = validatePublicReferenceCode(node.referenceCode, 'CVM')
   return code && codeCounts.get(code) === 1 ? code : null
 }
@@ -82,8 +87,19 @@ const countSupportedCodes = (nodes: IFreeCanvasNode[]): Map<string, number> => {
       ? validatePublicReferenceCode(node.referenceCode, 'CVT')
       : node.kind === 'image'
         ? validatePublicReferenceCode(node.referenceCode, 'CVM')
-        : null
+        : node.kind === 'document'
+          ? validatePublicReferenceCode(node.referenceCode, 'CVD')
+          : node.kind === 'storyboard'
+            ? validatePublicReferenceCode(node.referenceCode, 'CVS')
+            : null
     if (code) counts.set(code, (counts.get(code) || 0) + 1)
   })
   return counts
+}
+
+const contextNodeType = (node: IFreeCanvasNode): ContextPackPreviewItem['type'] => {
+  if (node.kind === 'text') return '文字'
+  if (node.kind === 'image') return '图片'
+  if (node.kind === 'document') return '文档'
+  return '分镜'
 }

@@ -1,0 +1,21 @@
+{
+  "name": "delivery request cannot forge v3 profile context",
+  "entryPoint": "deliveryPreviewRequest",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v3/delivery-preview-request.schema.json",
+  "expectedSchemaValidity": false,
+  "instance": {
+    "clientRequestId": "prompt-create-002",
+    "normalizedRequestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "prompt.create",
+    "target": { "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV" },
+    "sourceCodes": [],
+    "skillPins": [],
+    "rationale": "Attempt to expand authority.",
+    "provenance": "promptcard-bridge",
+    "profileId": "forged-admin",
+    "payload": {
+      "title": "Unsafe",
+      "userText": "Do not accept forged authority."
+    }
+  }
+}

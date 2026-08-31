@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import type { IPromptProject } from '@/models/PromptHistory.model'
+import type { IPromptProject, PlanningDocumentBlockV1 } from '@/models/PromptHistory.model'
+import { normalizeFreeCanvasProject } from '@/domain/free-canvas/free-canvas-project'
+import { createPlanningDocumentV1, planningDocumentDigest } from '@/domain/documents/planning-document'
 import { storageServiceClient } from './storage-service-client'
 
 afterEach(() => {
@@ -9,6 +11,104 @@ afterEach(() => {
 })
 
 describe('storageServiceClient', () => {
+  test('uses an isolated project document identity client and strips internal fields', async () => {
+    const unsafeResource = {
+      id: 'document/one',
+      projectId: 'project/one',
+      originalFilename: 'plan.md',
+      contentType: 'text/markdown',
+      size: 7,
+      sha256: 'a'.repeat(64),
+      extractionKind: 'utf-8',
+      extractionStatus: 'complete',
+      normalizedTextDigest: 'b'.repeat(64),
+      revision: 1,
+      lifecycleStatus: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      relativePath: 'documents/secret.md',
+      normalizedText: '# secret',
+      remoteFileId: 'provider-secret'
+    }
+    const expectedResource = {
+      id: 'document/one',
+      projectId: 'project/one',
+      originalFilename: 'plan.md',
+      contentType: 'text/markdown',
+      size: 7,
+      sha256: 'a'.repeat(64),
+      extractionKind: 'utf-8',
+      extractionStatus: 'complete',
+      normalizedTextDigest: 'b'.repeat(64),
+      revision: 1,
+      lifecycleStatus: 'active',
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(unsafeResource))
+      .mockResolvedValueOnce(jsonResponse({ resources: [unsafeResource] }))
+      .mockResolvedValueOnce(jsonResponse(unsafeResource))
+      .mockResolvedValueOnce(jsonResponse({ ...unsafeResource, lifecycleStatus: 'trash', revision: 2 }))
+      .mockResolvedValueOnce(jsonResponse({ ...unsafeResource, lifecycleStatus: 'active', revision: 3 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const file = new File(['# plan'], 'plan.md', { type: 'text/markdown' })
+
+    await expect(storageServiceClient.projectDocumentResources.upload('project/one', file))
+      .resolves.toEqual(expectedResource)
+    await expect(storageServiceClient.projectDocumentResources.list('project/one'))
+      .resolves.toEqual([expectedResource])
+    await expect(storageServiceClient.projectDocumentResources.get('project/one', 'document/one'))
+      .resolves.toEqual(expectedResource)
+    await expect(storageServiceClient.projectDocumentResources.delete('project/one', 'document/one'))
+      .resolves.toMatchObject({ lifecycleStatus: 'trash', revision: 2 })
+    await expect(storageServiceClient.projectDocumentResources.restore('project/one', 'document/one'))
+      .resolves.toMatchObject({ lifecycleStatus: 'active', revision: 3 })
+
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1]?.method])).toEqual([
+      ['/storage-api/projects/project%2Fone/document-resources', 'POST'],
+      ['/storage-api/projects/project%2Fone/document-resources', undefined],
+      ['/storage-api/projects/project%2Fone/document-resources/document%2Fone', undefined],
+      ['/storage-api/projects/project%2Fone/document-resources/document%2Fone', 'DELETE'],
+      ['/storage-api/projects/project%2Fone/document-resources/document%2Fone/restore', 'POST']
+    ])
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      body: file,
+      headers: expect.objectContaining({
+        'Content-Type': 'text/markdown',
+        'X-File-Name': 'plan.md'
+      })
+    })
+  })
+
+  test('cancels a project document upload through the caller AbortSignal', async () => {
+    const lifecycle = new AbortController()
+    let requestSignal: AbortSignal | undefined
+    let resolveFetch!: (response: Response) => void
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      requestSignal = init?.signal ?? undefined
+      resolveFetch = resolve
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const file = new File(['# plan'], 'plan.md', { type: 'text/markdown' })
+
+    const upload = storageServiceClient.projectDocumentResources.upload('project/one', file, lifecycle.signal)
+    lifecycle.abort('project-changed')
+    await Promise.resolve()
+    if (!requestSignal?.aborted) {
+      resolveFetch(jsonResponse({
+        id: 'a'.repeat(32), projectId: 'project/one', originalFilename: 'plan.md',
+        contentType: 'text/markdown', size: 7, sha256: 'a'.repeat(64), extractionKind: 'utf-8',
+        extractionStatus: 'complete', normalizedTextDigest: 'b'.repeat(64), revision: 1,
+        lifecycleStatus: 'active', createdAt: 1, updatedAt: 1
+      }))
+    }
+
+    await expect(upload).rejects.toMatchObject({ code: 'request_aborted', status: 0 })
+    expect(requestSignal?.aborted).toBe(true)
+  })
+
   test('creates, inspects and idempotently revokes a closed context-pack inspection', async () => {
     const inspection = contextPackInspection()
     const fetchMock = vi.fn()
@@ -45,6 +145,88 @@ describe('storageServiceClient', () => {
     ])
   })
 
+  test('accepts strict CVD/CVS entries in an immutable context-pack inspection', async () => {
+    const document = createPlanningDocumentV1([{
+      id: 'opening', type: 'paragraph', content: [{ text: 'A rainy opening.' }]
+    }], 2)
+    const inspection = {
+      ...contextPackInspection(),
+      entries: [{
+        reference: { namespace: 'canvasDocument' as const, code: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY' },
+        content: JSON.stringify({
+          kind: 'document', title: 'Script', revision: document.revision, digest: document.digest,
+          document: { version: document.version, blocks: document.blocks, suggestions: document.suggestions }
+        }),
+        contentDigest: `sha256:${'c'.repeat(64)}`
+      }, {
+        reference: { namespace: 'canvasStoryboard' as const, code: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAX' },
+        content: JSON.stringify({
+          kind: 'storyboard', title: 'Shots', revision: 1, digest: `sha256:${'d'.repeat(64)}`,
+          sequence: {
+            name: 'Shots', description: '', style: '', constraints: '',
+            rows: [{ ordinal: 0, cutLabel: '1', timeRange: '', subject: 'Hero', action: 'Walks', scene: 'Street', camera: 'Wide', lighting: 'Night', audio: 'Rain', duration: '3s' }]
+          }
+        }),
+        contentDigest: `sha256:${'e'.repeat(64)}`
+      }],
+      sourceBoundaries: [{
+        nodeCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY', promptLibraryReferences: [], canvasMediaReferences: []
+      }, {
+        nodeCode: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAX', promptLibraryReferences: [], canvasMediaReferences: []
+      }],
+      placementHint: {
+        mode: 'after-selection' as const,
+        anchorNodeCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY', 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAX']
+      }
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(inspection)))
+
+    await expect(storageServiceClient.contextPacks.inspect(inspection.cvcCode)).resolves.toEqual(inspection)
+  })
+
+  test('accepts bounded Storyboard pending-field identities and rejects hidden row ids', async () => {
+    const storyboardEntry = {
+      reference: { namespace: 'canvasStoryboard' as const, code: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAX' },
+      content: JSON.stringify({
+        kind: 'storyboard', title: 'Shots', revision: 1, digest: `sha256:${'d'.repeat(64)}`,
+        sequence: {
+          name: 'Shots', description: '', style: '', constraints: '',
+          rows: [{ ordinal: 0, cutLabel: '1', timeRange: '', subject: 'Hero', action: 'Walks', scene: 'Street', camera: 'Wide', lighting: 'Night', audio: 'Rain', duration: '3s' }]
+        },
+        pendingFieldChanges: [{ scope: 'row', rowOrdinal: 0, field: 'camera' }]
+      }),
+      contentDigest: `sha256:${'e'.repeat(64)}`
+    }
+    const inspection = {
+      ...contextPackInspection(),
+      entries: [storyboardEntry],
+      sourceBoundaries: [{
+        nodeCode: storyboardEntry.reference.code,
+        promptLibraryReferences: [], canvasMediaReferences: []
+      }],
+      placementHint: {
+        mode: 'after-selection' as const,
+        anchorNodeCodes: [storyboardEntry.reference.code]
+      }
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(inspection)))
+    await expect(storageServiceClient.contextPacks.inspect(inspection.cvcCode)).resolves.toEqual(inspection)
+
+    const hidden = {
+      ...inspection,
+      entries: [{
+        ...storyboardEntry,
+        content: JSON.stringify({
+          ...JSON.parse(storyboardEntry.content),
+          pendingFieldChanges: [{ scope: 'row', rowOrdinal: 0, rowId: 'internal-row', field: 'camera' }]
+        })
+      }]
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(hidden)))
+    await expect(storageServiceClient.contextPacks.inspect(hidden.cvcCode))
+      .rejects.toMatchObject({ code: 'invalid_storage_response' })
+  })
+
   test.each([
     ['an unknown root field', { internalId: 'secret-id' }],
     ['a malformed typed reference', { entries: [{
@@ -55,6 +237,14 @@ describe('storageServiceClient', () => {
     ['a hidden nested URL field', { entries: [{
       ...contextPackInspection().entries[0],
       url: 'file:///secret/project.json'
+    }] }],
+    ['a hidden creative-object path', { entries: [{
+      reference: { namespace: 'canvasDocument', code: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY' },
+      content: JSON.stringify({
+        kind: 'document', title: 'Script', revision: 1, digest: `sha256:${'a'.repeat(64)}`,
+        workspacePath: '../secret.md', document: { version: 1, blocks: [], suggestions: [] }
+      }),
+      contentDigest: `sha256:${'a'.repeat(64)}`
     }] }]
   ])('fails closed when a context-pack response contains %s', async (_label, override) => {
     const payload = { ...contextPackInspection(), ...override }
@@ -71,6 +261,122 @@ describe('storageServiceClient', () => {
     await expect(storageServiceClient.contextPacks.inspect('CVC-invalid'))
       .rejects.toMatchObject({ code: 'invalid_context_code' })
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test('lists and decides typed bridge prompt deliveries for an exact CVC', async () => {
+    const delivery = bridgePromptDelivery()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ deliveries: [delivery] }))
+      .mockResolvedValueOnce(jsonResponse({ ...delivery, state: 'rejected' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )).resolves.toEqual([delivery])
+    await expect(storageServiceClient.bridgeDeliveries.decide(
+      delivery.request.target.cvcCode,
+      delivery.proposalId,
+      'rejected',
+      []
+    )).resolves.toMatchObject({ state: 'rejected' })
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1]?.method, call[1]?.body])).toEqual([
+      [`/storage-api/context-packs/${delivery.request.target.cvcCode}/bridge-deliveries?state=pending_review`, undefined, undefined],
+      [`/storage-api/context-packs/${delivery.request.target.cvcCode}/bridge-deliveries/${delivery.proposalId}/decision`, 'POST', JSON.stringify({ decision: 'rejected', resultCodes: [] })]
+    ])
+  })
+
+  test('parses a typed bridge image placement without exposing it as a Prompt', async () => {
+    const delivery = bridgeImageDelivery()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ deliveries: [delivery] })))
+
+    const result = await storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )
+
+    expect(result).toEqual([delivery])
+    expect(result[0].request.kind).toBe('image.place')
+    expect(result[0].visualProposal.kind).toBe('free_canvas_image_place')
+  })
+
+  test.each([
+    ['create', bridgeDocumentCreateDelivery()],
+    ['change', bridgeDocumentChangeDelivery()]
+  ])('parses a typed bridge document %s delivery without internal node identity', async (_label, delivery) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ deliveries: [delivery] })))
+
+    const result = await storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )
+
+    expect(result).toEqual([delivery])
+    expect(result[0].request.kind).toBe(delivery.request.kind)
+    expect(JSON.stringify(result[0])).not.toContain('nodeId')
+  })
+
+  test.each([
+    ['create', bridgeStoryboardCreateDelivery()],
+    ['change', bridgeStoryboardChangeDelivery()]
+  ])('parses a typed bridge storyboard %s delivery without internal row identity', async (_label, delivery) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ deliveries: [delivery] })))
+
+    const result = await storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )
+
+    expect(result).toEqual([delivery])
+    expect(result[0].request.kind).toBe(delivery.request.kind)
+    expect(JSON.stringify(result[0])).not.toContain('rowId')
+  })
+
+  test.each([
+    ['an internal Storyboard node target', () => ({
+      ...bridgeStoryboardChangeDelivery(),
+      request: {
+        ...bridgeStoryboardChangeDelivery().request,
+        target: { ...bridgeStoryboardChangeDelivery().request.target, nodeId: 'secret-node' }
+      }
+    })],
+    ['a visual proposal whose ordinal differs from its request', () => ({
+      ...bridgeStoryboardChangeDelivery(),
+      visualProposal: {
+        ...bridgeStoryboardChangeDelivery().visualProposal,
+        changes: [{
+          ...bridgeStoryboardChangeDelivery().visualProposal.changes[0],
+          rowOrdinal: 1
+        }]
+      }
+    })]
+  ])('fails closed when a Storyboard delivery contains %s', async (_label, buildDelivery) => {
+    const delivery = buildDelivery()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ deliveries: [delivery] })))
+
+    await expect(storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )).rejects.toMatchObject({ code: 'invalid_storage_response' })
+  })
+
+  test.each([
+    ['an internal write target', () => ({
+      ...bridgeDocumentChangeDelivery(),
+      request: {
+        ...bridgeDocumentChangeDelivery().request,
+        target: { ...bridgeDocumentChangeDelivery().request.target, nodeId: 'secret-node' }
+      }
+    })],
+    ['a visual proposal whose document code differs from its target', () => ({
+      ...bridgeDocumentChangeDelivery(),
+      visualProposal: {
+        ...bridgeDocumentChangeDelivery().visualProposal,
+        documentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY'
+      }
+    })]
+  ])('fails closed when a Document delivery contains %s', async (_label, buildDelivery) => {
+    const delivery = buildDelivery()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ deliveries: [delivery] })))
+
+    await expect(storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )).rejects.toMatchObject({ code: 'invalid_storage_response' })
   })
 
   test('reports storage health without throwing', async () => {
@@ -212,6 +518,232 @@ describe('storageServiceClient', () => {
     }
   })
 
+  test('writes an unsupported Canvas projection back as its untouched original node', async () => {
+    const originalNode = {
+      id: 'future-node',
+      kind: 'future-layout',
+      title: 'Future layout',
+      position: { x: 10, y: 20 },
+      width: 360,
+      height: 220,
+      referenceCode: 'FUTURE-opaque-code',
+      payload: { nested: [{ keep: true }] },
+      meta: { referenceCodePending: true, futureFlag: 'preserve' }
+    }
+    const freeCanvas = normalizeFreeCanvasProject({
+      nodes: [originalNode] as never,
+      edges: [],
+      meta: {}
+    }, 1)
+    const project: IPromptProject = {
+      id: 'project-future', title: 'Future project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0, freeCanvas,
+      createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes).toEqual([originalNode])
+    expect(payload.freeCanvas.nodes[0].kind).toBe('future-layout')
+    expect(payload.freeCanvas.nodes[0].originalNode).toBeUndefined()
+  })
+
+  test.each([
+    {
+      label: 'zero-length inline',
+      blocks: [{ id: 'empty-inline', type: 'paragraph', content: [{ text: '' }] }]
+    },
+    {
+      label: 'adjacent identical marked runs',
+      blocks: [{
+        id: 'adjacent-inline',
+        type: 'paragraph',
+        content: [
+          { text: 'A', bold: true, href: 'https://example.com/same' },
+          { text: 'B', bold: true, href: 'https://example.com/same' }
+        ]
+      }]
+    }
+  ] as Array<{ label: string; blocks: PlanningDocumentBlockV1[] }>)('writes a correct-digest invalid Document ($label) back byte-for-structure from frozen unsupported data', async ({ blocks }) => {
+    const digestInput = { version: 1 as const, blocks, suggestions: [] }
+    const originalNode = {
+      id: 'document-invalid-inline',
+      kind: 'document',
+      title: 'Preserve invalid inline data',
+      position: { x: 10, y: 20 },
+      width: 560,
+      height: 420,
+      document: { ...digestInput, revision: 2, digest: planningDocumentDigest(digestInput) },
+      linkedDocumentResourceIds: ['resource-1'],
+      futureNodeAttribute: { preserve: ['exactly'] },
+      meta: { collapsed: true }
+    }
+    const freeCanvas = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 1)
+    expect(freeCanvas.nodes[0]).toMatchObject({ kind: 'unsupported', originalNode })
+    if (freeCanvas.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(Object.isFrozen(freeCanvas.nodes[0].originalNode)).toBe(true)
+    expect(Object.isFrozen(freeCanvas.nodes[0].originalNode.document)).toBe(true)
+    const project: IPromptProject = {
+      id: 'project-invalid-document', title: 'Invalid Document project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0, freeCanvas,
+      createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes).toEqual([originalNode])
+  })
+
+  test('writes a correct-digest malformed Document suggestion back byte-for-structure from frozen unsupported data', async () => {
+    const blocks: PlanningDocumentBlockV1[] = [{ id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Draft' }] }]
+    const malformedSuggestions = [{
+      id: 'suggestion-1', groupId: 'group-1', editId: 'edit-1', kind: 'insert', blockId: 'paragraph-1',
+      utf8Start: 0, utf8End: 2, content: [{ text: 'not-the-effective-prefix' }]
+    }]
+    const digestInput = { version: 1 as const, blocks, suggestions: malformedSuggestions }
+    const originalNode = {
+      id: 'document-malformed-suggestion', kind: 'document', title: 'Preserve malformed suggestion',
+      position: { x: 10, y: 20 }, width: 560, height: 420,
+      document: { ...digestInput, revision: 2, digest: planningDocumentDigest(digestInput as never) },
+      linkedDocumentResourceIds: ['resource-1'], futureNodeAttribute: { preserve: ['exactly'] }, meta: {}
+    }
+    const freeCanvas = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 1)
+    expect(freeCanvas.nodes[0]).toMatchObject({ kind: 'unsupported', originalNode })
+    if (freeCanvas.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(Object.isFrozen(freeCanvas.nodes[0].originalNode.document)).toBe(true)
+    expect(Object.isFrozen((freeCanvas.nodes[0].originalNode.document as { suggestions: unknown[] }).suggestions)).toBe(true)
+    const project: IPromptProject = {
+      id: 'project-malformed-suggestion', title: 'Malformed suggestion project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0, freeCanvas, createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200, headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes).toEqual([originalNode])
+  })
+
+  test('writes a malformed top-level Agent edit marker back byte-for-structure from frozen unsupported data', async () => {
+    const document = createPlanningDocumentV1([{ id: 'paragraph-1', type: 'paragraph', content: [{ text: 'Draft' }] }], 2)
+    const originalNode = {
+      id: 'document-malformed-marker', kind: 'document', title: 'Preserve malformed marker',
+      position: { x: 10, y: 20 }, width: 560, height: 420, document,
+      linkedDocumentResourceIds: [],
+      agentAppliedEdit: {
+        conversationId: 'conversation-1', requestId: 'request-1', editId: 'edit-1',
+        resultDigest: document.digest, futureAuthority: 'must-not-be-dropped'
+      },
+      futureNodeAttribute: { preserve: ['exactly'] }, meta: {}
+    }
+    const freeCanvas = normalizeFreeCanvasProject({ nodes: [originalNode] as never, edges: [], meta: {} }, 1)
+    expect(freeCanvas.nodes[0]).toMatchObject({ kind: 'unsupported', originalNode })
+    if (freeCanvas.nodes[0].kind !== 'unsupported') throw new Error('Expected unsupported node')
+    expect(Object.isFrozen(freeCanvas.nodes[0].originalNode.agentAppliedEdit)).toBe(true)
+    const project: IPromptProject = {
+      id: 'project-malformed-marker', title: 'Malformed marker project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0, freeCanvas, createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200, headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes).toEqual([originalNode])
+  })
+
+  test('writes a Document node as editor-neutral AST without derived or Tiptap state', async () => {
+    const document = createPlanningDocumentV1([{
+      id: 'paragraph-1',
+      type: 'paragraph',
+      content: [{ text: 'Plan ', href: 'https://example.com/brief' }]
+    }], 3)
+    const project: IPromptProject = {
+      id: 'project-document', title: 'Document project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0,
+      freeCanvas: {
+        nodes: [{
+          id: 'document-1', kind: 'document', title: 'Plan', position: { x: 0, y: 0 },
+          width: 560, height: 420, document, linkedDocumentResourceIds: [], meta: {}
+        }],
+        edges: [], viewport: null, selectedNodeId: 'document-1', meta: {}
+      },
+      createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes[0].document).toEqual(document)
+    expect(payload.freeCanvas.nodes[0].document.effectiveText).toBeUndefined()
+    expect(payload.freeCanvas.nodes[0].tiptap).toBeUndefined()
+  })
+
+  test('normalizes decomposed persisted Document IDs before exact Storage writeback', async () => {
+    const rawBlocks: PlanningDocumentBlockV1[] = [{
+      id: 'cafe\u0301-block',
+      type: 'paragraph',
+      content: [{ text: 'Plan' }]
+    }]
+    const digestInput = { version: 1 as const, blocks: rawBlocks, suggestions: [] }
+    const expectedDocument = createPlanningDocumentV1([{
+      id: 'café-block',
+      type: 'paragraph',
+      content: [{ text: 'Plan' }]
+    }], 3)
+    const freeCanvas = normalizeFreeCanvasProject({
+      nodes: [{
+        id: 'document-nfc', kind: 'document', title: 'NFC plan', position: { x: 0, y: 0 },
+        width: 560, height: 420,
+        document: { ...digestInput, revision: 3, digest: planningDocumentDigest(digestInput) },
+        linkedDocumentResourceIds: [], meta: {}
+      }] as never,
+      edges: [],
+      meta: {}
+    }, 1)
+    const normalizedNode = freeCanvas.nodes[0]
+    if (normalizedNode.kind !== 'document') throw new Error('Expected Document node')
+    expect(normalizedNode.document).toEqual(expectedDocument)
+    const project: IPromptProject = {
+      id: 'project-document-nfc', title: 'NFC Document project', type: 'free-canvas', revision: 1,
+      pages: [], currentPage: 0, freeCanvas,
+      createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(project), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await storageServiceClient.projects.create(project)
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(payload.freeCanvas.nodes[0].document).toEqual(expectedDocument)
+  })
+
   test('manages project agent conversations and skills through scoped endpoints', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
       conversations: [], skills: []
@@ -227,6 +759,9 @@ describe('storageServiceClient', () => {
     await storageServiceClient.agentConversations.updateModel('conversation/1', 'project/1', {
       connectionId: 'connection-1', providerId: 'volcengine-ark', modelId: 'ark-chat'
     })
+    await storageServiceClient.agentConversations.updateInteraction('conversation/1', 'project/1', {
+      interactionMode: 'chat-experimental', boundSkillIds: ['SKL-one'], expectedRevision: 3
+    })
     await storageServiceClient.agentConversations.deleteForever('conversation/1', 'project/1')
     await storageServiceClient.skills.list()
 
@@ -236,8 +771,12 @@ describe('storageServiceClient', () => {
       method: 'PATCH',
       body: JSON.stringify({ modelBinding: { connectionId: 'connection-1', providerId: 'volcengine-ark', modelId: 'ark-chat' } })
     }))
-    expect(fetchMock).toHaveBeenNthCalledWith(6, '/storage-api/agent-conversations/conversation%2F1', expect.objectContaining({ method: 'DELETE' }))
-    expect(fetchMock).toHaveBeenNthCalledWith(7, '/storage-api/skills', expect.any(Object))
+    expect(fetchMock).toHaveBeenNthCalledWith(6, '/storage-api/projects/project%2F1/conversations/conversation%2F1/interaction', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ interactionMode: 'chat-experimental', boundSkillIds: ['SKL-one'], expectedRevision: 3 })
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(7, '/storage-api/agent-conversations/conversation%2F1', expect.objectContaining({ method: 'DELETE' }))
+    expect(fetchMock).toHaveBeenNthCalledWith(8, '/storage-api/skills', expect.any(Object))
   })
 
   test('manages inspected skills, exact reviews, independent pins, and projection repair', async () => {
@@ -809,3 +1348,252 @@ const contextPackInspection = () => ({
   revokedBy: null,
   revocationReason: null
 })
+
+const bridgePromptDelivery = () => ({
+  operationContext: {
+    profileId: 'codex-local',
+    scopes: ['bridge:deliver:prompt'],
+    provenance: 'promptcard-bridge',
+    clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'preview-1',
+    normalizedRequestDigest: `sha256:${'a'.repeat(64)}`,
+    kind: 'prompt.create',
+    target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+    sourceCodes: [],
+    skillPins: [],
+    rationale: 'Create a prompt.',
+    provenance: 'promptcard-bridge',
+    payload: { title: 'Opening', userText: 'Wide shot' }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+  state: 'pending_review',
+  disposition: 'original',
+  resultCodes: [],
+  message: 'waiting',
+  createdAt: '2026-08-30T00:00:00.000Z',
+  updatedAt: '2026-08-30T00:00:00.000Z',
+  visualProposal: {
+    kind: 'free_canvas_text_create',
+    id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    agentName: 'codex',
+    title: 'Opening',
+    userText: 'Wide shot',
+    segments: [{ source: 'user', text: 'Wide shot' }],
+    rationale: 'Create a prompt.',
+    status: 'pending',
+    createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local',
+      cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      clientRequestId: 'preview-1',
+      normalizedRequestDigest: `sha256:${'a'.repeat(64)}`,
+      sourceCodes: [],
+      skillPins: []
+    }
+  }
+})
+
+const bridgeImageDelivery = () => ({
+  operationContext: {
+    profileId: 'codex-local',
+    scopes: ['bridge:deliver:image'],
+    provenance: 'promptcard-bridge',
+    clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'image-preview-1',
+    normalizedRequestDigest: `sha256:${'c'.repeat(64)}`,
+    kind: 'image.place',
+    target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+    sourceCodes: [],
+    skillPins: [],
+    rationale: 'Place a frame.',
+    provenance: 'promptcard-bridge',
+    payload: {
+      stagedAssetHandle: 'AST-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      altText: 'Opening frame'
+    }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAX',
+  state: 'pending_review',
+  disposition: 'original',
+  resultCodes: [],
+  message: 'waiting',
+  createdAt: '2026-08-30T00:00:00.000Z',
+  updatedAt: '2026-08-30T00:00:00.000Z',
+  visualProposal: {
+    kind: 'free_canvas_image_place',
+    id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAX',
+    agentName: 'codex',
+    title: 'opening.png',
+    altText: 'Opening frame',
+    assetId: 'bridge-image.png',
+    contentType: 'image/png',
+    width: 640,
+    height: 360,
+    rationale: 'Place a frame.',
+    status: 'pending',
+    createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local',
+      cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      clientRequestId: 'image-preview-1',
+      normalizedRequestDigest: `sha256:${'c'.repeat(64)}`,
+      sourceCodes: [],
+      skillPins: [],
+      target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+      stagedAssetHandle: 'AST-01ARZ3NDEKTSV4RRFFQ69G5FAV'
+    }
+  }
+})
+
+const bridgeDocumentCreateDelivery = () => ({
+  operationContext: {
+    profileId: 'codex-local', scopes: ['bridge:deliver:document'],
+    provenance: 'promptcard-bridge', clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'document-create-preview', normalizedRequestDigest: `sha256:${'d'.repeat(64)}`,
+    kind: 'document.create', target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+    sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: [],
+    rationale: 'Create the script analysis.', provenance: 'promptcard-bridge',
+    payload: {
+      title: 'Script analysis',
+      blocks: [{ id: 'opening', type: 'paragraph', content: [{ text: 'A rainy opening.' }] }]
+    }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAT', state: 'pending_review',
+  disposition: 'original', resultCodes: [], message: 'waiting',
+  createdAt: '2026-08-31T00:00:00.000Z', updatedAt: '2026-08-31T00:00:00.000Z',
+  visualProposal: {
+    kind: 'document_create', id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAT', agentName: 'codex',
+    title: 'Script analysis',
+    blocks: [{ id: 'opening', type: 'paragraph', content: [{ text: 'A rainy opening.' }] }],
+    rationale: 'Create the script analysis.', status: 'pending', createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local', cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      clientRequestId: 'document-create-preview', normalizedRequestDigest: `sha256:${'d'.repeat(64)}`,
+      sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: []
+    }
+  }
+})
+
+const bridgeDocumentChangeDelivery = () => ({
+  operationContext: {
+    profileId: 'codex-local', scopes: ['bridge:deliver:document'],
+    provenance: 'promptcard-bridge', clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'document-change-preview', normalizedRequestDigest: `sha256:${'e'.repeat(64)}`,
+    kind: 'document.change',
+    target: {
+      cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      documentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      baseRevision: 2, baseDigest: `sha256:${'a'.repeat(64)}`
+    },
+    sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: [],
+    rationale: 'Clarify the opening.', provenance: 'promptcard-bridge',
+    payload: {
+      operations: [{
+        kind: 'replace', blockId: 'opening', utf8Start: 0, utf8End: 5, text: 'First',
+        expectedTextDigest: `sha256:${'f'.repeat(64)}`
+      }]
+    }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAS', state: 'pending_review',
+  disposition: 'original', resultCodes: [], message: 'waiting',
+  createdAt: '2026-08-31T00:00:00.000Z', updatedAt: '2026-08-31T00:00:00.000Z',
+  visualProposal: {
+    kind: 'document_changes', id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAS', agentName: 'codex',
+    documentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    baseRevision: 2, baseDigest: `sha256:${'a'.repeat(64)}`,
+    operations: [{
+      kind: 'replace', blockId: 'opening', utf8Start: 0, utf8End: 5, text: 'First',
+      expectedTextDigest: `sha256:${'f'.repeat(64)}`
+    }],
+    rationale: 'Clarify the opening.', status: 'pending', createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local', cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      clientRequestId: 'document-change-preview', normalizedRequestDigest: `sha256:${'e'.repeat(64)}`,
+      sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: []
+    }
+  }
+})
+
+const bridgeStoryboardCreateDelivery = () => ({
+  operationContext: {
+    profileId: 'codex-local', scopes: ['bridge:deliver:storyboard'],
+    provenance: 'promptcard-bridge', clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'storyboard-create-preview', normalizedRequestDigest: `sha256:${'1'.repeat(64)}`,
+    kind: 'storyboard.create', target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+    sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: [],
+    rationale: 'Create the opening shots.', provenance: 'promptcard-bridge',
+    payload: {
+      title: 'Opening shots', sourceDocumentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      sourceDocumentRevision: 2, sourceDocumentDigest: `sha256:${'a'.repeat(64)}`,
+      sequence: {
+        name: 'Opening', description: 'Quiet reveal', style: 'Naturalistic', constraints: 'No dialogue',
+        rows: [{
+          cutLabel: '1', timeRange: '00:00-00:04', subject: 'Street', action: 'Rain falls',
+          scene: 'Night exterior', camera: 'Slow push', lighting: 'Neon', audio: 'Rain', duration: '4s'
+        }]
+      }
+    }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAR', state: 'pending_review',
+  disposition: 'original', resultCodes: [], message: 'waiting',
+  createdAt: '2026-08-31T00:00:00.000Z', updatedAt: '2026-08-31T00:00:00.000Z',
+  visualProposal: {
+    kind: 'storyboard_create', id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAR', agentName: 'codex',
+    title: 'Opening shots', sourceDocumentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    sourceDocumentRevision: 2, sourceDocumentDigest: `sha256:${'a'.repeat(64)}`,
+    sequence: {
+      name: 'Opening', description: 'Quiet reveal', style: 'Naturalistic', constraints: 'No dialogue',
+      rows: [{
+        cutLabel: '1', timeRange: '00:00-00:04', subject: 'Street', action: 'Rain falls',
+        scene: 'Night exterior', camera: 'Slow push', lighting: 'Neon', audio: 'Rain', duration: '4s'
+      }]
+    },
+    rationale: 'Create the opening shots.', status: 'pending', createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local', cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      clientRequestId: 'storyboard-create-preview', normalizedRequestDigest: `sha256:${'1'.repeat(64)}`,
+      sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: []
+    }
+  }
+})
+
+const bridgeStoryboardChangeDelivery = () => {
+  const created = bridgeStoryboardCreateDelivery()
+  const change = { scope: 'row', rowOrdinal: 0, field: 'duration', value: '3s' }
+  return {
+    ...created,
+    request: {
+      ...created.request,
+      clientRequestId: 'storyboard-change-preview', kind: 'storyboard.change',
+      target: {
+        cvcCode: created.request.target.cvcCode,
+        storyboardCode: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        baseRevision: 1, baseDigest: `sha256:${'b'.repeat(64)}`
+      },
+      sourceCodes: ['CVS-01ARZ3NDEKTSV4RRFFQ69G5FAV'],
+      payload: { changes: [change] }
+    },
+    proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAQ',
+    visualProposal: {
+      kind: 'storyboard_changes', id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAQ', agentName: 'codex',
+      storyboardCode: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      baseRevision: 1, baseDigest: `sha256:${'b'.repeat(64)}`, changes: [change],
+      rationale: 'Create the opening shots.', status: 'pending', createdAt: 0,
+      bridgeDelivery: {
+        profileId: 'codex-local', cvcCode: created.request.target.cvcCode,
+        clientRequestId: 'storyboard-change-preview', normalizedRequestDigest: created.request.normalizedRequestDigest,
+        sourceCodes: ['CVS-01ARZ3NDEKTSV4RRFFQ69G5FAV'], skillPins: []
+      }
+    }
+  }
+}

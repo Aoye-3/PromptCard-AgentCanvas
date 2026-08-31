@@ -1,0 +1,13 @@
+{
+  "codex-read-only": {
+    "token": "replace-with-a-local-random-token-of-at-least-32-characters",
+    "repositoryScope": "replace-with-this-repository-scope",
+    "scopes": [
+      "bridge:read"
+    ],
+    "clientInfo": {
+      "name": "codex",
+      "version": "local"
+    }
+  }
+}

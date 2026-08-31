@@ -37,13 +37,13 @@
 - Rust：10 项通过；Agent Check、Ruff、`git diff --check` 和高置信度 secret 扫描通过。
 - Playwright：模型管理和项目级图片生成闭环 2 项通过，使用真实 Runtime HTTP、真实 SQLite Storage 和 Provider DI fake。
 - Runtime 全仓测试：3378 项通过、32 项跳过、49 项失败；失败集中在 Windows 无符号链接权限、缺少 DeepSeek 实时凭据、POSIX/Docker 脚本假设及既有跨平台路径测试，不属于本次图片链路。
-- ESLint：0 个错误；全仓当前有 41 个警告，超过 `max-warnings=30` 门槛，因此 `npm.cmd run lint` 仍返回失败。应单独降低警告预算，不应在图片功能改动中顺带重构无关文件。
+- ESLint：0 个错误；全仓当前 41 个历史警告已冻结为 ratchet 基线，`npm.cmd run lint` 在 41 条时通过、出现第 42 条时失败。pytest/测试输出目录已从源码枚举排除，避免受限 ACL 阻断门禁。后续应单独降低基线，不应在图片功能改动中顺带重构无关文件。
 
 ## 发布前仍需完成
 
 - 使用真实 Windows Credential Locker 与真实 Ark 账号完成人工冒烟：文生图、2–10 图、多参考 `@`、智能改图、point、bbox、视觉标记派生图。
 - 覆盖真实 Ark 的 standard/fast、1K/2K、预设/自定义尺寸、PNG/JPEG、水印以及阿拉伯语、日语、德语文字系统。
-- 单独治理全仓 ESLint 41 个既有警告，以及 Runtime 全仓测试的 Windows/POSIX/实时凭据环境基线。
+- 单独治理并逐步下调全仓 ESLint 41 个既有警告，以及 Runtime 全仓测试的 Windows/POSIX/实时凭据环境基线；功能分支不得上调 ratchet。
 
 ## 维护约束
 

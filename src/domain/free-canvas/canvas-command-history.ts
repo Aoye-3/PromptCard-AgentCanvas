@@ -3,9 +3,12 @@ import type {
   IFreeCanvasImageAnnotation,
   IFreeCanvasImageNode,
   IFreeCanvasNode,
-  IFreeCanvasProject
+  IFreeCanvasProject,
+  IFreeCanvasStoryboardNode,
+  PlanningDocumentV1
 } from '@/models/PromptHistory.model'
 import { markCanvasNodeReferencePending } from '@/domain/reference-codes/canvas-node-reference-lifecycle'
+import { clonePlanningDocumentV1 } from '@/domain/documents/planning-document'
 
 export type CanvasFlipAxis = 'horizontal' | 'vertical'
 
@@ -23,6 +26,12 @@ export type CanvasLocalCommand =
       selectedNodeId: string | null
     }
   | { kind: 'insert-node'; node: IFreeCanvasNode; index: number }
+  | {
+      kind: 'update-document'
+      nodeId: string
+      document: PlanningDocumentV1
+    }
+  | { kind: 'update-storyboard'; nodeId: string; storyboard: IFreeCanvasStoryboardNode }
 
 export interface CanvasCommandApplication {
   project: IFreeCanvasProject
@@ -39,10 +48,66 @@ export interface CanvasCommandHistory {
   future: CanvasCommandHistoryEntry[]
 }
 
+const commandDocumentNodeIds = (command: CanvasLocalCommand): string[] => {
+  if (command.kind === 'update-document' || command.kind === 'update-storyboard') return [command.nodeId]
+  if (command.kind === 'insert-node') return command.node.kind === 'document' || command.node.kind === 'storyboard' ? [command.node.id] : []
+  if (command.kind === 'restore-nodes') {
+    return command.nodes.flatMap(item => item.node.kind === 'document' || item.node.kind === 'storyboard' ? [item.node.id] : [])
+  }
+  return []
+}
+
+export const canvasHistoryEntryDocumentNodeIds = (entry: CanvasCommandHistoryEntry): string[] => {
+  const commands = [entry.undo, entry.redo]
+  const typedDocumentIds = new Set(commands.flatMap(commandDocumentNodeIds))
+  const affectedDocumentIds = commands.flatMap(command => command.kind === 'delete-nodes'
+    ? command.nodeIds.filter(nodeId => typedDocumentIds.has(nodeId))
+    : commandDocumentNodeIds(command))
+  return [...new Set(affectedDocumentIds)].sort()
+}
+
 export const createCanvasCommandHistory = (): CanvasCommandHistory => ({
   past: [],
   future: []
 })
+
+export const discardCanvasCommandHistoryEntry = (
+  history: CanvasCommandHistory,
+  entry: CanvasCommandHistoryEntry
+): CanvasCommandHistory => ({
+  past: history.past.filter(candidate => candidate !== entry),
+  future: history.future.filter(candidate => candidate !== entry)
+})
+
+export const recoverFailedCanvasHistoryStep = (
+  current: CanvasCommandHistory,
+  before: CanvasCommandHistory,
+  entry: CanvasCommandHistoryEntry,
+  direction: 'undo' | 'redo'
+): CanvasCommandHistory => {
+  const stripped = discardCanvasCommandHistoryEntry(current, entry)
+  if (direction === 'undo') {
+    const originalIndex = before.past.indexOf(entry)
+    const insertionIndex = originalIndex < 0
+      ? stripped.past.length
+      : Math.min(originalIndex, stripped.past.length)
+    return {
+      past: [
+        ...stripped.past.slice(0, insertionIndex),
+        entry,
+        ...stripped.past.slice(insertionIndex)
+      ],
+      future: stripped.future
+    }
+  }
+
+  const currentIndex = current.past.indexOf(entry)
+  const hasLaterPastEntry = currentIndex >= 0 && currentIndex < current.past.length - 1
+  return {
+    past: stripped.past,
+    future: hasLaterPastEntry ? stripped.future : [entry, ...stripped.future]
+  }
+}
 
 export const applyCanvasLocalCommand = (
   project: IFreeCanvasProject,
@@ -89,7 +154,7 @@ export const applyCanvasLocalCommand = (
     ))
     const removedEdges = project.edges.flatMap((edge, index) => (
       removable.has(edge.source) || removable.has(edge.target)
-        ? [{ index, edge: { ...edge } }]
+        ? [{ index, edge: cloneEdge(edge) }]
         : []
     ))
     return {
@@ -111,8 +176,28 @@ export const applyCanvasLocalCommand = (
   }
 
   if (command.kind === 'restore-nodes') {
-    const nodes = insertIndexed(project.nodes, command.nodes)
-    const edges = insertIndexed(project.edges, command.edges)
+    const existingNodeIds = new Set(project.nodes.map(node => node.id))
+    const restoredNodeIds = command.nodes.map(item => item.node.id)
+    const existingEdgeIds = new Set(project.edges.map(edge => edge.id))
+    const restoredEdgeIds = command.edges.map(item => item.edge.id)
+    const finalNodeIds = new Set([...existingNodeIds, ...restoredNodeIds])
+    if (
+      new Set(restoredNodeIds).size !== restoredNodeIds.length
+      || restoredNodeIds.some(nodeId => existingNodeIds.has(nodeId))
+      || new Set(restoredEdgeIds).size !== restoredEdgeIds.length
+      || restoredEdgeIds.some(edgeId => existingEdgeIds.has(edgeId))
+      || command.edges.some(item => (
+        !finalNodeIds.has(item.edge.source) || !finalNodeIds.has(item.edge.target)
+      ))
+    ) return { project, inverse: command }
+    const nodes = insertIndexed(project.nodes, command.nodes.map(item => ({
+      index: item.index,
+      node: cloneNode(item.node)
+    })))
+    const edges = insertIndexed(project.edges, command.edges.map(item => ({
+      index: item.index,
+      edge: cloneEdge(item.edge)
+    })))
     return {
       project: {
         ...project,
@@ -127,6 +212,43 @@ export const applyCanvasLocalCommand = (
     }
   }
 
+  if (command.kind === 'update-document') {
+    const current = project.nodes.find(node => node.id === command.nodeId)
+    if (!current || current.kind !== 'document') return { project, inverse: command }
+    const document = clonePlanningDocumentV1(command.document)
+    return {
+      project: {
+        ...project,
+        nodes: project.nodes.map(node => node.id === command.nodeId && node.kind === 'document'
+          ? {
+              ...node,
+              document,
+              ...(node.agentAppliedEdit ? { agentAppliedEdit: { ...node.agentAppliedEdit } } : {})
+            }
+          : node)
+      },
+      inverse: {
+        kind: 'update-document',
+        nodeId: command.nodeId,
+        document: clonePlanningDocumentV1(current.document)
+      }
+    }
+  }
+
+  if (command.kind === 'update-storyboard') {
+    const current = project.nodes.find(node => node.id === command.nodeId)
+    if (!current || current.kind !== 'storyboard' || command.storyboard.id !== command.nodeId || command.storyboard.kind !== 'storyboard') {
+      return { project, inverse: command }
+    }
+    return {
+      project: { ...project, nodes: project.nodes.map(node => node.id === command.nodeId ? cloneNode(command.storyboard) : node) },
+      inverse: { kind: 'update-storyboard', nodeId: command.nodeId, storyboard: cloneNode(current) as IFreeCanvasStoryboardNode }
+    }
+  }
+
+  if (project.nodes.some(node => node.id === command.node.id)) {
+    return { project, inverse: command }
+  }
   const index = clampInsertionIndex(command.index, project.nodes.length)
   const nodes = [...project.nodes]
   nodes.splice(index, 0, cloneNode(command.node))
@@ -150,7 +272,10 @@ export const executeCanvasLocalCommand = (
   return {
     project: applied.project,
     history: {
-      past: [...history.past, { undo: applied.inverse, redo: command }],
+      past: [...history.past, {
+        undo: cloneCommand(applied.inverse),
+        redo: cloneCommand(command)
+      }],
       future: []
     }
   }
@@ -218,14 +343,35 @@ const imagePresentation = (node: IFreeCanvasImageNode): { flipX: boolean; flipY:
 }
 
 const cloneNode = (node: IFreeCanvasNode): IFreeCanvasNode => {
-  if (node.kind !== 'image') return { ...node, meta: { ...node.meta } } as IFreeCanvasNode
-  return {
-    ...node,
-    position: { ...node.position },
-    crop: node.crop ? { ...node.crop } : null,
-    annotations: node.annotations.map(annotation => cloneAnnotation(annotation, annotation.id)),
-    meta: { ...node.meta }
+  const cloned = structuredClone(node)
+  return cloned.kind === 'document'
+    ? { ...cloned, document: clonePlanningDocumentV1(cloned.document) }
+    : cloned
+}
+
+const cloneEdge = (edge: IFreeCanvasEdge): IFreeCanvasEdge => structuredClone(edge)
+
+const cloneCommand = (command: CanvasLocalCommand): CanvasLocalCommand => {
+  if (command.kind === 'update-document') {
+    return { ...command, document: clonePlanningDocumentV1(command.document) }
   }
+  if (command.kind === 'update-storyboard') {
+    return { ...command, storyboard: cloneNode(command.storyboard) as IFreeCanvasStoryboardNode }
+  }
+  if (command.kind === 'insert-node') {
+    return { ...command, node: cloneNode(command.node) }
+  }
+  if (command.kind === 'restore-nodes') {
+    return {
+      ...command,
+      nodes: command.nodes.map(item => ({ index: item.index, node: cloneNode(item.node) })),
+      edges: command.edges.map(item => ({ index: item.index, edge: cloneEdge(item.edge) }))
+    }
+  }
+  if (command.kind === 'delete-nodes') {
+    return { ...command, nodeIds: [...command.nodeIds] }
+  }
+  return { ...command }
 }
 
 const cloneAnnotation = (

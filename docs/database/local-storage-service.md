@@ -1,14 +1,15 @@
 # Local Storage Service
 
-`promptcard_storage` is the sole durable owner of projects, Prompt Library presets, Trash state, asset metadata/bytes, Recent Capture metadata, image-generation runs, public references, immutable context packs, canonical Skill packages, and host pins. During editable development, `PROMPTCARD_STORAGE_DATA_DIR` resolves to the repository data root:
+`promptcard_storage` is the sole durable owner of projects, Prompt Library presets, Trash state, asset metadata/bytes, project document metadata/bytes, Recent Capture metadata, image-generation runs, Agent apply evidence, provider-file cleanup retries, public references, immutable context packs, canonical Skill packages, and host pins. During editable development, `PROMPTCARD_STORAGE_DATA_DIR` resolves to the repository data root:
 
 ```text
 data/
   promptcard.sqlite3
   assets/
+  documents/
 ```
 
-Every maintained launcher must use this same path and reject a healthy Storage Service whose `/health` response reports a different storage root. Packaged builds may move the same database/assets contract only through an explicit migration.
+Every maintained launcher must use this same path and reject a healthy Storage Service whose `/health` response reports a different storage root. Packaged builds may move the same database/assets/documents contract only through an explicit migration.
 
 ## SQLite Contract
 
@@ -24,6 +25,9 @@ Every maintained launcher must use this same path and reject a healthy Storage S
 - Schema version `13` migrates Skills to immutable canonical package entries with provenance, lifecycle, declared capabilities, and versioned digests.
 - Schema version `14` adds independent exact-revision pins for `local-agent` and repository-scoped `codex` hosts. Codex projection files remain derived state coordinated through OS-backed locks and a prepared recovery journal.
 - Schema version `15` adds digest-bound `trusted | untrusted` review records per immutable Skill revision. New external revisions do not inherit an older revision's approval; host enablement and Codex repair recheck the exact review.
+- Schema version `16` adds project-scoped document resources and the provider-file cleanup retry ledger in one migration. Local document bytes remain canonical under `documents/`; cleanup rows retain only the internal state needed for bounded Gateway retry and expose redacted diagnostics.
+- Schema version `17` adds typed creative public references for Canvas Documents (`CVD`) and Storyboards (`CVS`) without changing existing reference namespaces.
+- Schema version `18` adds normalized Prompt retrieval documents, external-content FTS5, lifecycle maintenance triggers, explicit rebuild/health operations, revision/digest stale rejection, and digest-only retrieval audit rows. Browser and model runtimes do not own this index.
 - Projects and presets retain their existing JSON payload. Indexed columns own revision, status, ordering, usage, and timestamps.
 - Recent Capture rows retain their full JSON payload while indexed columns own `asset_id`, `kind`, `status`, capture time, timestamps, and revision.
 - Image-generation rows retain the immutable normalized request snapshot and terminal result/error payload while indexed columns own project, optional conversation/node, connection, provider, model, state, and lifecycle timestamps. Conversation, placement, and derivation rows are permanent and have no ordinary delete path.
@@ -50,7 +54,7 @@ python -m promptcard_storage.maintenance --data-dir logs\desktop-profile\data di
 python -m promptcard_storage.maintenance --data-dir logs\desktop-profile\data restore logs\desktop-profile\backups\manual-backup
 ```
 
-Backups use the SQLite backup API and include the database, assets, and a manifest. Restore validates schema and database integrity and creates a pre-restore snapshot when current storage exists. Repository-local Codex projections are reproducible derived state and are not part of the Storage database/assets backup.
+Backups use the SQLite backup API and include the database, assets, documents, and a manifest. Restore validates schema, database integrity, asset/document digests, and creates a pre-restore snapshot when current storage exists. Repository-local Codex projections are reproducible derived state and are not part of the Storage database/assets/documents backup.
 
 ## Verification
 
@@ -64,4 +68,5 @@ The Storage release gate discovers every `test_*.py` file under `promptcard_stor
 Push-Location agent-runtime\backend
 .\.venv\Scripts\python.exe -m pytest tests\test_image_generation_storage_integration.py -q
 Pop-Location
+.\agent-runtime\backend\.venv\Scripts\python.exe -m pytest promptcard_storage/tests/test_project_document_resources.py -q
 ```

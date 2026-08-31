@@ -1,0 +1,36 @@
+{
+  "name": "explicit project workspace description",
+  "entryPoint": "workspaceDescription",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v3/workspace-description.schema.json",
+  "expectedSchemaValidity": true,
+  "instance": {
+    "projectCode": "PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "contextRevision": 3,
+    "contextDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revoked": false,
+    "skills": [
+      {
+        "skillCode": "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "revision": 2,
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "projectionHealth": "healthy"
+      }
+    ],
+    "objects": [
+      {
+        "reference": {
+          "namespace": "canvasDocument",
+          "code": "CVD-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        },
+        "revision": 1,
+        "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "title": "Episode 1 script"
+      }
+    ],
+    "objectCodes": [
+      "CVD-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    ],
+    "pendingDeliveries": 0
+  }
+}

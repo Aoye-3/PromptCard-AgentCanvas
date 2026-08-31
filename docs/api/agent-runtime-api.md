@@ -6,6 +6,65 @@ The maintained frontend contract is the PromptCard Runtime Boundary. In developm
 /agent-api/* -> ${PROMPTCARD_AGENT_URL}/api/*
 ```
 
+## Local Agent Bridge v3
+
+The external-Agent surface is separate from the browser Runtime boundary and uses `/api/promptcard/bridge/v3/*`. It accepts only `Authorization: Bearer <bridge-token>` backed by `PROMPTCARD_BRIDGE_PROFILES_JSON`; the internal Runtime token and browser session do not authorize it, and a Bridge credential cannot call internal-chat, model-management, or image-generation routes. These Bridge routes are intentionally outside the browser cookie/CSRF boundary because they have no browser session authority: POST without a valid Bridge Bearer profile is rejected, while ordinary authenticated browser mutations still require double-submit CSRF. Missing and invalid Bridge credentials return HTTP 401 with `detail.code = bridge_credential_required`; an invalid server-side profile configuration returns HTTP 503 with `detail.code = bridge_configuration_invalid`. Neither response echoes credentials or configuration details.
+
+Each trusted profile declares fixed scopes and may bind one configured Codex `repositoryScope`. Neither `profileId`, scopes, client identity, nor repository scope is accepted from a Tool request. The current Bridge exposes:
+
+- `GET /api/promptcard/bridge/v3/runtime`
+- `GET /api/promptcard/bridge/v3/workspace?projectCode=PRJ-...&cvcCode=CVC-...`
+- `GET /api/promptcard/bridge/v3/reference?cvcCode=CVC-...&code=...`
+- `GET /api/promptcard/bridge/v3/skill?skillCode=SKL-...&revision=...&digest=sha256:...`
+- `POST /api/promptcard/bridge/v3/prompt-search`
+- `GET /api/promptcard/bridge/v3/asset?cvcCode=CVC-...&code=PLM-...|CVM-...`
+- `POST /api/promptcard/bridge/v3/assets/stage`
+- `POST /api/promptcard/bridge/v3/delivery/preview`
+- `POST /api/promptcard/bridge/v3/delivery/commit`
+- `GET /api/promptcard/bridge/v3/delivery/status?clientRequestId=...`
+
+`runtime` returns Bootstrap v6 with its executable `instructions`, not merely a name and digest. The guide tells a new host to discover the exact Workspace, stop on stale/revoked context, copy the closed four-field Skill pins, use the six kind-specific target/payload shapes, preview before commit, and stop at visual review. Its Document-change instructions freeze the exact `payload.operations` wrapper and operation fields; its Storyboard instructions freeze the full sequence, nine-field row, and `payload.changes` shapes; its image instructions freeze `promptcard_asset_stage` as exactly `{clientRequestId, cvcCode, workspaceRelativePath, contentDigest, mediaType, byteLength}` and require only the returned opaque handle to enter `image.place`. `promptcard-bootstrap` is built in and is not an `SKL-*` readable through `skill_read`.
+
+`workspace` requires an explicit project/context pair, rejects a CVC whose project revision is behind the current project as `context_stale`, lists only objects snapshotted into a fresh CVC, and resolves only active, trusted, enabled exact Codex Skill pins in the profile's configured repository scope. `reference` refuses codes outside the CVC. An exact authorized `CVD-*` response adds `documentEditEvidence.blocks`: each bounded entry contains `blockId`, concatenated leaf `text`, `utf8Length`, and the SHA-256 `textDigest`. The Agent copies that digest to `expectedTextDigest` and uses byte offsets, while the authoritative Document AST and revision/digest remain unchanged; malformed or oversized Storage evidence fails closed. `prompt-search` reuses Storage v18 retrieval with the trusted Bridge profile as caller identity. `asset` accepts only a `PLM` or `CVM` explicitly contained by the CVC, limits the body to 5 MiB, validates current lifecycle/MIME/size/reference metadata, and returns filename, MIME, size, SHA-256 and Base64 without an internal asset ID or path. Delivery preview/commit/status use the profile-scoped v19 ledger; Prompt, image, Document, and Storyboard kinds are end-to-end implemented. Gateway accepts the closed v3 `storyboard.create` and `storyboard.change` unions, requires `bridge:deliver:storyboard`, canonicalizes exact CVC/CVD/CVS/source references, validates approved Skill pins, and routes preview/commit only to the protected Storyboard Storage adapter. External row changes remain ordinal-addressed at the contract boundary; internal row IDs are never accepted or returned. A Storyboard CVC projection includes `pendingFieldChanges` as a bounded identity-only list (`scope/field` or `scope/rowOrdinal/field`), omits internal change/edit/row IDs and values, and makes new writes fail closed when the selected field was already pending. Browser parsing preserves this closed shape, creates one native Storyboard with a Storage-owned `CVS-*`, and maps accepted external changes into the existing per-field review UI. Preview/commit/decision/replay and a pending field proposal have been verified across separate Storage/Gateway/browser process lifetimes. Status remains read-only through the shared ledger, and absent optional fields are omitted before forwarding so Gateway payloads remain byte-shape compatible with the closed Storage contracts.
+
+The repository CLI in `promptcard-bridge-cli/` calls only these Gateway routes, including bounded search and exact asset read. It accepts the Bridge origin/token from process environment, refuses non-loopback origins before sending the token, produces one stable JSON value on stdout, sends diagnostics to stderr, and assigns stable exit classes for usage/auth/lifecycle/offline/remote failures. CLI and Gateway success payloads are JSON-equivalent; the CLI does not read Storage or project files.
+
+`promptcard-mcp/` wraps that same client with ten closed-schema Tools: six bounded reads plus delivery preview, delivery commit, delivery status, and image staging. `npm.cmd run mcp:stdio` reserves stdout for JSON-RPC. `npm.cmd run mcp:http` binds only `127.0.0.1` (default port `8142`), serves `/mcp`, validates loopback Host/Origin, and requires a separate `PROMPTCARD_MCP_HTTP_TOKEN`. Both transports support the 2025-11-25 and 2026-07-28 protocol eras from one server factory; no legacy SSE endpoint exists. Preview/commit are idempotent, proposal-only mutations; status is read-only and never repeats a mutation.
+
+The optional distribution entrypoint is `scripts/start-promptcard-mcp.ps1`. It accepts only a loopback Bridge origin, verifies an existing Node 22.6+ runtime and locked MCP dependency, performs no install/download, and starts either the STDIO or loopback HTTP entrypoint. `scripts/diagnose-promptcard-bridge.ps1` reports a redacted packaging check and optionally a live runtime-description probe. Contributor setup, Codex registration, candidate-host labeling, scope upgrade, provenance/cost caveats, six-layer failure isolation, and removal are maintained in the [operations guide](../operations/local-agent-bridge.md).
+
+Required process environment is intentionally small:
+
+- both transports: `PROMPTCARD_BRIDGE_URL`, `PROMPTCARD_BRIDGE_TOKEN`;
+- image staging: `PROMPTCARD_BRIDGE_WORKSPACE_ROOT`, an explicit absolute root whose real path contains every file eligible for staging;
+- HTTP only: `PROMPTCARD_MCP_HTTP_TOKEN`, optional `PROMPTCARD_MCP_PORT`;
+- platform launch essentials such as `PATH`, `SystemRoot`, `ComSpec`, `TEMP`, and `TMP` may be passed by the host.
+
+The MCP process has no direct SQLite, shell, keyring, arbitrary-filesystem, or general network Tool. Only `promptcard_asset_stage` reads a caller-declared relative path; it resolves both root and candidate through the filesystem, rejects traversal and symlink/junction escape, validates regular-file status, 30 MiB size, image signature, declared length, and SHA-256, then uploads multipart bytes to Gateway. Codex is the first real acceptance host; other MCP hosts use the identical Tool names, schemas, permissions, and results.
+
+The real-host image checkpoint uses Codex's own managed image-generation capability rather than a PromptCard provider fixture. The acceptance host accepts only an absolute artifact inside Codex's managed generated-images root, revalidates regular-file status, 30 MiB budget, raster signature, extension, and copied bytes, and materializes one workspace-relative file under the explicit MCP root. A newly connected Codex then discovers Bootstrap v6, resolves the selected Prompt and Storyboard in one explicit multi-object CVC, stages the file, and commits `image.place` against exact Storyboard revision/digest and shot ordinal 0. Browser acceptance persists one `CVM-*` with `promptcard-bridge` provenance; the project has zero PromptCard provider generation runs.
+
+Successful `promptcard_asset_stage` returns durable external state `accepted`, the opaque `AST-*` handle, and contract evidence such as digest; it intentionally does not expose an internal asset ID, storage path, or provider-run identity. After Storage, Gateway, Vite, and host restart, replaying the exact stage arguments and the exact Document/Storyboard/Prompt/image preview and commit arguments returns the original accepted outcomes. Reusing a profile-scoped request key with different canonical content returns HTTP 409 `delivery_conflict`. Bridge-created Document, Storyboard, Prompt, and image nodes are assigned conservative collision-free review slots, so all authorized objects remain selectable for visual review and later CVC creation; this placement policy is a browser concern and does not widen Bridge write authority.
+
+### Browser Agent work-environment view
+
+`GET /agent-api/promptcard/runtime/bridge-environment` is the authenticated local-browser view used by the Canvas Agent work-environment panel. Optional `projectCode`, `cvcCode`, and `profileId` query parameters select the project/context/profile to display. They do not authorize an external Bridge request.
+
+The response is a closed, redacted composition of:
+
+- Gateway health and Bridge configuration state;
+- configured profile IDs, client labels, fixed scopes, repository-scoped boolean, and bounded recent-activity state;
+- Bridge v3 contract version, Bootstrap Skill identity plus executable instructions, Tool descriptions, writeback kinds, and fixed constraints;
+- when both references are explicit and valid, the PRJ/CVC revision/digest, exact Skill pins, public creative objects, CVC member `objectCodes`, and pending delivery count.
+
+The response never contains a Bridge token, repository path, internal Canvas node ID, arbitrary file path, or provider credential. `profileId` changes display only; the external caller's Bearer profile remains authority. Recent activity means a valid Bridge Bearer request was observed within the bounded display window and is telemetry, not a durable connection or permission grant. A CVC is switched in the browser only after the Storage inspection confirms the requested project and confirms that the CVC is not revoked.
+
+The Canvas CVC creation action first flushes the current Free Canvas through the project save coordinator and uses the authoritative Storage revision returned by that save. The coordinator records the persisted edit sequence, so a later idle timer with no new edit does not perform a metadata-only project update that would immediately stale the new CVC.
+
+`objectCodes` is derived from `resolve.entries[].reference.code`. It is deliberately separate from context-pack `sourceCodes`, which describe dependencies/evidence and must not be interpreted as CVC membership or write authority.
+
+Prompt acceptance creates one deterministic all-`user` text node, persists it before acknowledgement, and requires the Storage response to assign a same-project `CVT-*`. Its external-Agent model provenance is a closed snapshot including `capabilities: {}`; omitting that field is invalid even when the raw node could be stored, because the strict browser normalizer must be able to re-read the saved result before the ledger becomes `accepted`.
+
 ## PromptCard Runtime Boundary
 
 Authenticated browser mutations are protected by the Runtime CSRF middleware. The maintained frontend client sends the session cookie with `credentials: "include"`, reads the CSRF cookie, and copies it to `X-CSRF-Token`. Direct callers that omit or mismatch the token receive a structured rejection before model, keyring, Storage, or provider work begins.
@@ -31,7 +90,7 @@ Creates the process-local PromptCard browser session and sets the HttpOnly runti
 
 ### `GET /agent-api/promptcard/runtime/catalog`
 
-Returns the focused text-Agent catalog. The current tool surface contains Prompt Library search, Canvas/Prompt proposal emitters, and the media Prompt preview emitter. `skills` is populated from the Storage Skill registry with revision, digest, source, trust state, capability, and tool dependencies. Subagents remain disabled.
+Returns the focused text-Agent catalog. The catalog advertises the four stable surface capabilities: Prompt Library search, Canvas Prompt edit, Prompt Library create proposal, and media Prompt preview. Document/Storyboard/Prompt-handoff emitters are operation-scoped runtime tools supplied only after Gateway validates an explicit `chat-experimental` write context; they are not general catalog grants. `skills` is populated from the Storage Skill registry with revision, digest, source, trust state, capability, and tool dependencies. Subagents remain disabled.
 
 ```json
 {
@@ -381,8 +440,7 @@ Request:
         "userText": "existing prompt"
       }
     }
-  },
-  "promptLibrary": []
+  }
 }
 ```
 
@@ -407,6 +465,7 @@ Response:
       "status": "pending"
     }
   ],
+  "canvasEdits": [],
   "diagnostics": { "proposalCount": 0 }
 }
 ```
@@ -423,11 +482,39 @@ Current proposal behavior:
 - Preset/template segments, every existing target segment, and all reference nodes are read-only through the revision 3 tool schema.
 - Gateway resolves node bodies from the current project snapshot and attaches the current node revision, template digest, and canonical segment digest. The frontend rechecks all three and every anchor before applying a proposal.
 
+`canvasEdits` is separate from the legacy proposal array. It contains at most one Gateway-enriched `document_create`, `document_changes`, `storyboard_create`, or `storyboard_changes` edit for an explicitly authorized experimental-chat operation. The edit carries deterministic request/edit/node identity, authoritative base revision/digest, expected result digest, and exact model/Skill provenance. Browser-supplied identity, Tiptap JSON, arbitrary JSON Patch, and more than one successful write tool are rejected.
+
 Persistent project calls use `conversationId + requestId`. Gateway loads up to 40 normalized messages from PromptCard Storage, validates the conversation's project, entrypoint, mode, and saved model binding, invokes the stateless Node runtime, and stores the new turn plus its model snapshot. Retrying the same `requestId` returns the first stored result and model snapshot instead of appending duplicates or switching models.
 
-`selectedSkillIds` accepts at most eight external Skill IDs. These selections affect only this request. The Gateway also binds the built-in Canvas Skill by capability, resolves the exact enabled local-Agent host pin, and records `skillId + revision + digest`; it never falls back to the package's current revision. Storage and Gateway independently reject disabled, archived, untrusted, malformed, over-budget, non-tool-capability, or out-of-scope-tool snapshots before model invocation.
+In `prompt-edit`, `selectedSkillIds` accepts at most eight external Skill IDs and affects only that request. In `chat-experimental`, the authoritative Skill IDs come from the conversation's persisted `boundSkillIds`; the browser cannot replace them in the message body. Gateway resolves the exact enabled local-Agent host pin for every turn and records `skillId + revision + digest`; it never falls back to the package's current revision. Storage and Gateway independently reject disabled, archived, untrusted, malformed, over-budget, non-tool-capability, or out-of-scope-tool snapshots before model invocation.
 
 The Python Gateway validates the browser request and returned proposals. The pi runtime owns prompt orchestration, the PI provider collection, and proposal tools. Gateway resolves the conversation's non-secret model descriptor for each request; PI-native models use PI's API implementation through the credential-injecting Gateway proxy, and SDK-backed models use the Gateway text-SDK registry. Provider credentials never enter the Node process.
+
+#### Experimental conversation and planning writes
+
+An ordinary experimental turn adds `"interactionMode": "chat-experimental"`. It may attach up to five project document resource IDs and explicitly referenced Document nodes:
+
+```json
+{
+  "conversationId": "persistent-project-conversation",
+  "requestId": "client-generated-idempotency-key",
+  "content": "Use these references to plan the character.",
+  "mode": "free-canvas-workspace",
+  "permissionScope": "workspace-chatbot-agent",
+  "projectId": "project",
+  "interactionMode": "chat-experimental",
+  "documentResourceIds": ["0123456789abcdef0123456789abcdef"],
+  "explicitDocumentNodeIds": ["document-node-1"],
+  "documentWriteContext": { "operationKind": "document_create" },
+  "workspaceContext": null
+}
+```
+
+`documentWriteContext` is a closed explicit action union: `document_create`, `document_changes` with one node ID, `storyboard_create` with one Document node ID, `storyboard_changes` with one Storyboard node ID, or `prompt_handoff` with a Document-selection/Storyboard-shot basis. Gateway discards browser-authored authority and rebuilds the full write context from Storage and the current Canvas. Without that explicit context, experimental chat is discussion-only.
+
+TXT/Markdown/DOCX normalized text and ephemeral PDF provider input are resolved only for the current invocation. Ambient workspace context contains Document identity/title/revision/digest plus a bounded excerpt, never an implicit full body. Document/Storyboard content is not added to Prompt Library, Prompt search, Prompt compilation, image-generation input, or media reference codes.
+
+Prompt handoff is the only planning action returned in `proposals`: it creates one pending `free_canvas_text_create` proposal whose `handoffBasis` binds the exact Document selection or Storyboard shot. Approval may create one new all-`user` Prompt node; it cannot update an existing Prompt or read/write Prompt Library.
 
 ### `PATCH /agent-api/promptcard/runtime/projects/{projectId}/conversations/{conversationId}/model`
 
@@ -445,9 +532,18 @@ Persists a conversation model selection immediately:
 
 Gateway—not the browser—checks that the conversation belongs to the project and is active, the model belongs to the connection's current `agentChatModelIds`, and the connection is enabled, credentialed, and most recently tested successfully. The route then forwards the validated binding to Storage. Passing `null` is supported by the storage contract, while the project UI normally selects another available model instead.
 
+### Document/Storyboard apply acknowledgement and reconciliation
+
+- `POST /agent-api/promptcard/runtime/projects/{projectId}/conversations/{conversationId}/edits/{editId}/ack`
+- `POST /agent-api/promptcard/runtime/projects/{projectId}/conversations/{conversationId}/edits/reconcile`
+
+The frontend persists the changed node and its `AgentAppliedEditMarker` in one project save before acknowledging `applied`. ACK carries the originating `requestId` plus `status: "applied" | "failed"`; a failed ACK is advisory until Gateway reloads Storage.
+
+Gateway never trusts the browser receipt alone. It reloads the project, requires exactly one matching Canvas target and marker, and verifies project/node kind, deterministic identity, request/edit identity, and result digest. Reconciliation returns `pending_apply`, `applied`, `failed_conflict`, `failed_integrity`, `failed_target_missing`, or `idle`, with the identical replay edit only when the stored base is still revalidatable. This is the saved-before-ACK and restart-recovery boundary.
+
 #### Explicit Prompt Library lookup
 
-Prompt Library access is opt-in per request. A normal project Agent request, including `complete` and `rewrite`, sends `promptLibrary: []`; the Runtime does not inject the library into model context and does not expose `search_prompt_library`. To perform a read-only lookup from the Canvas Agent, the browser sends:
+Prompt Library access is opt-in per request. A normal project Agent request, including `complete`, `rewrite`, ordinary discussion, media analysis, and `chat-experimental`, omits `promptRetrieval`; Gateway injects no library evidence and the Runtime does not expose `search_prompt_library`. To perform a read-only lookup from the Canvas Agent or dedicated Prompt Library assistant, the browser sends only a bounded request:
 
 ```json
 {
@@ -458,24 +554,19 @@ Prompt Library access is opt-in per request. A normal project Agent request, inc
     "referenceNodeIds": [],
     "mentions": []
   },
-  "promptLibrary": [
-    {
-      "id": "preset-1",
-      "type": "style",
-      "category": "cinematic",
-      "label": "Cool industrial light",
-      "content": "Hard directional light with cool highlights.",
-      "meta": {
-        "media": [{ "assetId": "asset-1", "captureId": "capture-1" }]
-      }
-    }
-  ]
+  "promptRetrieval": {
+    "query": "cool industrial light",
+    "types": ["style"],
+    "categories": ["cinematic"],
+    "exactCodes": [],
+    "limit": 10
+  }
 }
 ```
 
-The browser includes at most 200 Prompt records, and request validation rejects larger arrays. The stateless pi Runtime narrows an accepted snapshot to the first 100 records. Search covers Prompt labels and content and returns the matching records with their supplied metadata, including linked `meta.media`; it is not authorization to load other assets or records. In this mode `allowedProposalKinds` is empty, so a successful response has no Canvas write target or Canvas proposal.
+`query` is at most 256 characters; type/category filters, exact `PLP` codes, and result count have fixed limits. Gateway queries Storage, revalidates revision/digest evidence, caps total injected label/content to 12,000 characters, and sends no internal preset ID, local path, raw asset bytes, or unrestricted metadata to the pi Runtime. The returned `diagnostics.promptRetrieval` contains `auditId`, query digest, stale rejection/result counts, degraded/error state, and citations (`referenceCode`, title, revision, digest). The frontend persists citations with the assistant message and renders them outside model-authored Markdown.
 
-The embedded Canvas client renders Runtime validation failures as a visible summary rather than hiding the original failure behind a generic disconnected state. Prompt Library length failures are summarized as `Prompt Library 条目超过上限（实际数量/上限）`; other validation text is whitespace-normalized and limited to 240 characters.
+If retrieval Storage is unavailable, Gateway invokes the Agent with an empty evidence list and returns `degraded: true` plus `prompt_retrieval_unavailable`; the UI makes that state visible. A malformed request, forbidden mode, or unknown exact code fails closed. In `prompt-library` Canvas mode `allowedProposalKinds` remains empty, so retrieval has no Canvas write target.
 
 ### `POST /agent-api/promptcard/runtime/media-analysis`
 

@@ -1,10 +1,23 @@
 # Storage Service API
 
-The local storage service is the durable source of truth for projects, Prompt Library presets, asset metadata/bytes, Recent Capture metadata, image-generation conversations/runs, canvas placements, public references, context packs, canonical Skill packages, and Skill host pins. The frontend reaches it through the Vite proxy prefix `/storage-api/*`; the service itself exposes `/api/*` on port `8002`.
+The local storage service is the durable source of truth for projects, Prompt Library presets, asset metadata/bytes, Recent Capture metadata, image-generation conversations/runs, canvas placements, project document resources, provider-file cleanup retries, public references, typed creative references, context packs, canonical Skill packages, and Skill host pins. The frontend reaches it through the Vite proxy prefix `/storage-api/*`; the service itself exposes `/api/*` on the runtime-selected Storage port (the legacy default is `8002`).
 
 ## Health
 
-`GET /health` returns `serviceVersion`, `schemaVersion`, `storage`, `database`, `pid`, and capabilities including `sqlite`, `assets`, `presetBatch`, `browserImportIdempotency`, `backup`, `recentCaptures`, `projectResources`, `agentConversations`, `skillHub`, and `contextPacks`. The current service reports schema version `15`. Versions 10–15 add public reference codes, immutable Canvas context packs, canonical Skill packages, independent Skill host pins, and exact-revision trust reviews; see [Schema Notes](../database/schema-notes.md).
+`GET /health` returns `serviceVersion`, `schemaVersion`, `storage`, `database`, `pid`, and capabilities including `sqlite`, `assets`, `presetBatch`, `browserImportIdempotency`, `backup`, `recentCaptures`, `projectResources`, `projectDocumentResources`, `agentConversations`, `skillHub`, `contextPacks`, and `promptRetrieval`. The current service reports schema version `19`. Versions 10–19 add public reference codes, immutable Canvas context packs, canonical Skill packages, independent Skill host pins, exact-revision trust reviews, project document resources, durable remote-file cleanup retries, typed creative references, transactional Prompt retrieval, and the profile-scoped Bridge delivery ledger; see [Schema Notes](../database/schema-notes.md).
+
+## Typed Creative References
+
+- `GET /api/projects/references/{projectReferenceCode}/creative/{creativeReferenceCode}`
+
+`creativeReferenceCode` must be an exact `CVD-*` or `CVS-*` code belonging to the exact active `PRJ-*`. Document responses expose the editor-neutral AST, revision and digest. Storyboard responses expose the sequence fields and ordered rows, replacing internal row identities with `rowOrdinal` and replacing an available source Document node identity with its `CVD-*` code. Internal Canvas IDs, row IDs, coordinates, model/connection data, arbitrary metadata, and local paths are never returned. Unknown, cross-project, retired, malformed, or no-longer-referenceable objects fail with structured lifecycle/reference errors. The Canvas context selector admits stable `CVT-*`, `CVM-*`, `CVD-*`, and `CVS-*` objects; its browser Storage client fails closed unless Document AST/revision/digest or Storyboard sequence/ordered rows match the corresponding closed projection.
+
+## Bridge Storyboard Deliveries
+
+- `POST /api/internal/bridge-storyboard-deliveries/preview` (internal authentication only)
+- `POST /api/internal/bridge-storyboard-deliveries/commit` (internal authentication only)
+
+Both routes reuse the schema-v19 profile-scoped delivery ledger and require Gateway to supply an operation context with `bridge:deliver:storyboard`. Create validates one exact source `CVD-*` revision/digest inside the selected CVC before opening a ledger intent. Change validates one exact `CVS-*` revision/digest and closed sequence/row changes; external rows are addressed only by bounded ordinal. Preview and commit are deterministic and replay-safe, and an accepted terminal decision requires exactly one same-project `CVS-*`. These protected adapters do not expose internal Canvas node or row IDs and do not constitute a general Canvas mutation API.
 
 - `GET /health`
 
@@ -15,6 +28,7 @@ Returns service status and the active data directory.
 - `POST /api/assets`
 - `GET /api/assets/{asset_id}`
 - `GET /api/assets/diagnostics`
+- `GET /api/internal/context-packs/{cvcCode}/assets/{PLM-or-CVM}` (internal authentication only)
 
 Asset uploads send the bytes as the request body, the MIME type in `Content-Type`, and the original filename in `X-File-Name`. The service accepts signature-validated image and video asset types supported by the asset store. The service stores files up to 200 MB and returns:
 
@@ -30,6 +44,8 @@ Asset uploads send the bytes as the request body, the MIME type in `Content-Type
 The generated ID is safe to persist in project metadata and Recent Capture metadata. The read endpoint serves the original bytes with their stored content type. Invalid types, empty or oversized bodies return `400`; unknown or malformed IDs return `404`.
 
 `GET /api/assets/diagnostics` checks the asset manifest and reference graph. Active and Trash projects, active and Trash Prompt presets, and Recent Captures all participate in the reference scan. Registering or placing a capture therefore does not require a copied asset.
+
+The internal context-asset route is the only binary read used by the Local Agent Bridge. It accepts no `assetId` or path: Storage resolves an exact public `PLM`/`CVM`, proves that it is included in an active non-revoked `CVC`, rechecks its owner and asset lifecycle, and returns current bytes plus public-reference metadata headers. Gateway applies the external 5 MiB response budget and never forwards the internal ID or relative path.
 
 Succeeded image-generation runs also participate in the reference scan through `outputAssetIds`. Deleting a project or capture record must not make a historical generated output appear orphaned.
 
@@ -168,13 +184,14 @@ Registration returns `400` for invalid modes, empty/blank Prompt fields, or alre
 - `GET /api/agent-conversations/{id}?projectId=...&includeTrash=false`
 - `PATCH /api/agent-conversations/{id}`
 - `PATCH /api/projects/{projectId}/agent-conversations/{id}/model`
+- `PATCH /api/projects/{projectId}/conversations/{id}/interaction`
 - `POST /api/agent-conversations/{id}/turns`
 - `PATCH /api/agent-conversations/{id}/proposals/{proposalId}`
 - `POST /api/agent-conversations/{id}/trash`
 - `POST /api/agent-conversations/{id}/restore`
 - `DELETE /api/agent-conversations/{id}`
 
-Conversations are always owned by one active project and record `entrypoint`, `mode`, title, lifecycle status, timestamps, and an optional `modelBinding` containing `connectionId`, `providerId`, and `modelId`. The project-scoped model route updates or clears that binding. Active and Trash lists are separate, ordered by `updatedAt DESC, id DESC`, and return `{ "conversations": [...], "nextCursor": "..." }`. The detail projection adds ordered `messages`, durable `proposals`, and stored turn results.
+Conversations are always owned by one active project and record `entrypoint`, `mode`, title, lifecycle status, timestamps, optimistic `revision`, `interactionMode`, `boundSkillIds`, and an optional `modelBinding` containing `connectionId`, `providerId`, and `modelId`. The project-scoped model route updates or clears that binding. The interaction route requires `{ "interactionMode": "prompt-edit" | "chat-experimental", "boundSkillIds": [], "expectedRevision": 1 }`; it atomically replaces the conversation-scoped binding and rejects stale revisions. Active and Trash lists are separate, ordered by `updatedAt DESC, id DESC`, and return `{ "conversations": [...], "nextCursor": "..." }`. The detail projection adds ordered `messages`, durable `proposals`, and stored turn results.
 
 Creating a turn requires:
 
@@ -320,6 +337,55 @@ Names are trimmed and must contain 1-80 characters. A folder cannot become its o
 
 Every endpoint verifies that the path project is active and owns the requested IDs. Missing, cross-project, and Trash-project requests all return `404`. Moving a project to Trash preserves its resources but makes them unavailable for editing; restore reveals them unchanged. Permanent project deletion cascades resource metadata without deleting shared image files.
 
+## Project Document Resources And Provider Cleanup
+
+- `POST /api/projects/{projectId}/document-resources`
+- `GET /api/projects/{projectId}/document-resources`
+- `GET /api/projects/{projectId}/document-resources/{resourceId}`
+- `DELETE /api/projects/{projectId}/document-resources/{resourceId}`
+- `POST /api/projects/{projectId}/document-resources/{resourceId}/restore`
+
+Uploads send bytes in the request body, the exact supported MIME type in `Content-Type`, and the URL-encoded original filename in `X-File-Name`. Supported pairs are `.txt`/`text/plain`, `.md`/`text/markdown`, `.pdf`/`application/pdf`, and `.docx`/the Office Open XML document MIME type. Storage validates the extension, MIME type, signature/container, project state, and per-format size before writing. Limits are 5 MiB for TXT/Markdown, 20 MiB for DOCX, and 50 MiB for PDF.
+
+The response contains the opaque resource ID, project ID, original filename, content type, size, SHA-256 digest, extraction kind/status, normalized-text digest when applicable, optimistic revision, lifecycle state, and timestamps. It never returns an absolute path, normalized document body, provider file ID, or credential. TXT/Markdown are strict UTF-8; DOCX extraction uses the pinned `python-docx==1.2.0`; PDF bytes remain canonical local input and have no local OCR fallback.
+
+Document resources are separate from image `project_resources`, Prompt media, and Prompt Library records. Delete moves one resource to its own Trash lifecycle and restore reactivates it. Cross-project access and access through a trashed project fail closed. A turn may attach at most five resource IDs and at most 100 MiB in aggregate; Gateway re-resolves ownership and lifecycle before every invocation.
+
+The following routes are internal-token-only Gateway/Storage coordination and are not browser APIs:
+
+- `GET /api/internal/projects/{projectId}/document-resources/{resourceId}/content`
+- `POST /api/internal/provider-file-cleanup`
+- `GET /api/internal/provider-file-cleanup/due?now=&limit=`
+- `POST /api/internal/provider-file-cleanup/succeeded`
+- `POST /api/internal/provider-file-cleanup/retry`
+- `POST /api/internal/bridge-deliveries/begin`
+- `POST /api/internal/bridge-deliveries/{clientRequestId}/finish`
+- `GET /api/internal/bridge-deliveries/{clientRequestId}?profileId=`
+- `POST /api/internal/bridge-deliveries/reconcile`
+- `POST /api/internal/bridge-prompt-deliveries/preview`
+- `POST /api/internal/bridge-prompt-deliveries/commit`
+- `POST /api/internal/bridge-document-deliveries/preview`
+- `POST /api/internal/bridge-document-deliveries/commit`
+- `POST /api/internal/bridge-image-assets/stage`
+- `POST /api/internal/bridge-image-deliveries/preview`
+- `POST /api/internal/bridge-image-deliveries/commit`
+- `GET /api/internal/bridge-delivery-proposals/{proposalId}?profileId=`
+- `GET /api/internal/bridge-prompt-deliveries/{clientRequestId}?profileId=`
+- `GET /api/internal/context-packs/{cvcCode}/bridge-deliveries?profileId=&state=`
+
+The Bridge delivery routes implement the schema v19 profile-scoped idempotency ledger. `begin` receives trusted operation context separately from the untrusted delivery request; requests containing `profileId`, scopes, client identity, or an operation context are rejected. Only new operations require a current active CVC; replay and status return the first durable result without repeating the mutation. `finish` is compare-by-profile/request/digest, and recovery converts bounded stale `processing` rows to a durable redacted failure. The typed Prompt routes adapt `prompt.create`; the typed Document routes adapt `document.create` and `document.change`. Document changes resolve one exact `CVD-*` inside the selected `CVC-*`, compare its revision/digest and per-leaf expected text digest before recording a preview, validate NFC UTF-8 boundaries, and reject pending-suggestion or overlapping-operation conflicts. Document acceptance requires exactly one same-project `CVD-*`; internal Canvas node IDs never enter the request or proposal. Gateway routes through these protected endpoints, while the browser persists a deterministic native Document or tracked suggestion update and returns only its Storage-owned CVD. Frontend normalization preserves that CVD and the Bridge marker across reload so ledger retry can identify the exact saved result.
+
+The internal image stage route accepts raw bytes plus an `X-PromptCard-Stage-Metadata` JSON envelope from Gateway only. It caps the image at 30 MB, revalidates the CVC and image bytes, records `asset.stage`, and stores the prepared result under deterministic content identity. The external Gateway response omits Storage asset IDs and returns an opaque `AST-*` handle. Image preview/commit accepts only that handle, not a filesystem path or URL. A local review decision may mark the proposal accepted only with one same-project `CVM-*`; the operation never inserts an image-generation run.
+
+The local user interface uses two CVC-scoped review routes:
+
+- `GET /api/context-packs/{cvcCode}/bridge-deliveries?state=pending_review`
+- `POST /api/context-packs/{cvcCode}/bridge-deliveries/{proposalId}/decision`
+
+Commit only creates a pending proposal. The browser records `accepted` only after the existing project save path returns one same-project `CVT-*`; Storage rejects invented or cross-project result codes. Reject requires no result code and never changes project JSON. The internal routes remain Gateway-only; the CVC review routes are the local human-approval surface and do not accept Bridge credentials or expand Bridge scopes.
+
+For Ark PDF input, Gateway uploads a remote file for one invocation and deletes it in `finally`. A failed remote deletion is stored as a redacted cleanup row and retried on Gateway startup with bounded backoff. Public responses and diagnostics expose counts/safe error codes only; remote file IDs are never returned to the browser.
+
 ## Prompt Library
 
 - `GET /api/presets`
@@ -335,6 +401,14 @@ Every endpoint verifies that the path project is active and owns the requested I
 - `DELETE /api/presets/trash`
 
 Preset updates and usage increments require the current revision. The batch endpoint atomically replaces the active Prompt Library: every supplied existing item must have its current revision, new IDs are inserted, and omitted active items move to Trash.
+
+### Prompt retrieval (trusted service callers)
+
+- `POST /api/prompt-retrieval/search`
+- `GET /api/prompt-retrieval/health`
+- `POST /api/prompt-retrieval/rebuild`
+
+Search receives `query`, bounded `types`/`categories`, `limit`, and an authenticated service-supplied `callerKind`/`callerId`. It returns exact Prompt references with revision/digest evidence plus an audit ID; it never returns preset IDs, local paths, or raw asset paths. Gateway resolves the supplied `CVC-*` before invoking search. Rebuild is an explicit maintenance operation for migration or detected drift, not a normal write path.
 
 ## Trash Payloads
 

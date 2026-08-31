@@ -25,7 +25,26 @@ Core frontend schemas:
 - `ImageGenerationCanvasPlacement`
 - `ImageAssetDerivation`
 
-Schema changes should be documented with migration or normalization behavior. The current PromptCard Storage schema is v15. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
+Schema changes should be documented with migration or normalization behavior. The current PromptCard Storage schema is v19. Prefer extending `meta` for Prompt Library metadata rather than changing the top-level `IPreset` shape.
+
+## Prompt Retrieval Index And Audit
+
+Storage schema v18 adds the canonical `presets.retrieval_digest`, `prompt_retrieval_documents`, its external-content FTS5 index, lifecycle triggers, and `prompt_retrieval_audits`. Prompt create/update/trash/restore/delete and the lexical index update in the same SQLite transaction. Store writes calculate the digest before SQL execution, so triggers do not depend on a connection-private SQLite function; an out-of-band payload edit leaves a stale digest and is rejected by freshness validation. The v17-to-v18 migration creates the structures and explicitly rebuilds them from canonical active and trashed Prompt rows without changing Prompt identity or revision.
+
+Search accepts at most 256 query characters, 16 type/category filters, and 20 results. Returned evidence is capped at 12,000 characters and contains only exact `PLP-*` identity, revision/digest, bounded text, score components, matched fields, reason, and safe `PLM-*` media metadata. Before returning each candidate, Storage compares the indexed revision/digest with the canonical Prompt row; stale candidates are rejected, counted, audited, and mark the response degraded. Audit rows retain a query digest and result codes rather than raw query text.
+
+## Bridge Delivery Ledger
+
+Storage schema v19 adds `bridge_delivery_ledger`. Its primary key is the trusted Bridge `profileId` plus client request ID; operation, normalized digest, exact CVC target/source manifests, trusted scopes/client audit metadata, `promptcard-bridge` provenance, state, result, and timestamps persist in one row. The same key and digest replays the first durable status, while a different digest or operation returns `delivery_conflict`. New rows validate an active, unrevoked CVC at its snapshotted project revision before entering `processing`; interrupted rows can be reconciled to a durable `delivery_interrupted` failure. Existing results remain inspectable after later context revocation, but no new operation can use the revoked or stale context. The v18-to-v19 migration creates the table and indexes atomically and never rewrites project JSON.
+
+## Typed Creative References
+
+Storage schema v17 adds `creative_references`, a dedicated stable-reference registry for current Canvas planning objects:
+
+- `CVD-*` identifies an active Canvas Document;
+- `CVS-*` identifies an active Canvas Storyboard.
+
+The table binds one namespace/project/node tuple to one public code without writing that code into project JSON. Fresh databases reconcile supported nodes on startup, and the v16-to-v17 migration creates then reconciles the table transactionally. Resolution is project-scoped and returns only a bounded typed projection: Document AST plus revision/digest, or Storyboard sequence/rows with public source references and row ordinals. Canvas node IDs, row IDs, model bindings, coordinates, arbitrary metadata, and filesystem paths are not exposed. Context packs may snapshot these two namespaces as immutable typed entries; the public code remains stable across project reload and process restart.
 
 ## Three-stage Project Shape
 
@@ -83,7 +102,7 @@ All three asset IDs are foreign-key and diagnostics references. Removing a resou
 
 ## Agent Conversation And Skill Tables
 
-PromptCard Storage schema v9 makes SQLite the durable authority for project Agent conversations and the minimal Skill registry. Schema v9 adds nullable `agent_conversations.model_binding_json`; all v8 conversation and Skill tables remain unchanged.
+PromptCard Storage schema v9 introduced SQLite as the durable authority for project Agent conversations and the minimal Skill registry. It added nullable `agent_conversations.model_binding_json`; all v8 conversation and Skill tables remain unchanged.
 
 Project conversation tables:
 
@@ -128,6 +147,16 @@ Codex files remain derived filesystem state rather than SQLite rows. Cross-insta
 Schema v15 adds `skill_revision_reviews` with primary key `(skill_id, revision)`. Each row stores the canonical revision digest, `trusted | untrusted` decision, and review time. A composite foreign key ties the review to an immutable revision, while insert/update triggers reject a digest that does not equal the canonical `skill_revisions.digest`.
 
 Migration seeds reviews only for revisions whose Skill was already `first-party` or `trusted`; first-party trust is normalized to the review state `trusted`. New external revisions do not inherit another revision's review. Host enablement and Codex repair require the exact `(skill_id, revision, digest)` to remain trusted as well as the Skill's global trust state to permit use. Marking a review untrusted blocks future snapshot execution and repair, but explicit disable/unpublish remains available so revoked or archived content can be removed safely.
+
+## Project Document Resources And Provider Cleanup
+
+Schema v16 adds both `project_document_resources` and `provider_file_cleanup` in one migration.
+
+`project_document_resources` stores the project owner, opaque resource ID, repository-relative local path, original filename, validated content type and size, byte digest, extraction kind/status, normalized text and its digest when applicable, optimistic revision, lifecycle state, and timestamps. It is separate from image `project_resources`, Prompt media, provider identities, and Canvas nodes. Project Trash preserves rows; permanent project deletion cascades their metadata and locally owned document bytes through the document-store cleanup path.
+
+`provider_file_cleanup` stores the minimum durable state required to retry a failed ephemeral provider-file deletion: cleanup/provider/connection identity, remote file identity, attempt timestamps/count, next-attempt time, and one redacted error code. Internal reads may supply the remote identity to the authenticated Gateway worker, but health diagnostics, browser APIs, logs, and public error responses expose only bounded counts or safe codes.
+
+Gateway uploads each PDF for one invocation and attempts deletion in `finally`. A failed deletion is idempotently enqueued; Gateway startup drains due rows with bounded retry/backoff and deletes the row only after provider deletion succeeds or is already complete. Schema v16 does not authorize OCR, permanent provider storage, or a second document authority.
 
 ## Recent Capture Shape
 

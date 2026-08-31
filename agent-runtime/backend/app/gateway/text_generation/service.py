@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.gateway.ark_responses import (
+    ArkResponsesError,
+    ResolvedDocumentAsset,
+    complete_ark_response,
+)
 from app.gateway.model_management.catalog import (
     connection_models_response,
     model_by_id,
@@ -25,7 +30,7 @@ def assigned_text_model() -> dict[str, Any]:
     return resolve_text_model(None)
 
 
-def resolve_text_model(binding: dict[str, Any] | None) -> dict[str, Any]:
+def preflight_text_model(binding: dict[str, Any] | None) -> dict[str, Any]:
     store = get_connection_store()
     if binding is None:
         assignment = store.assignment("chat.primary")
@@ -41,8 +46,6 @@ def resolve_text_model(binding: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(connection_id, str) or not isinstance(model_id, str):
         raise ModelManagementError("invalid_model_binding")
     connection = store.get_connection_config(connection_id)
-    if not connection.get("enabled", True):
-        raise ModelManagementError("connection_disabled")
     model = model_by_id(model_id)
     if model is None:
         raise ModelManagementError("model_not_found")
@@ -54,9 +57,6 @@ def resolve_text_model(binding: dict[str, Any] | None) -> dict[str, Any]:
         raise ModelManagementError("model_provider_mismatch")
     if model_id not in connection.get("agentChatModelIds", []):
         raise ModelManagementError("agent_chat_model_not_configured")
-    available, unavailable_reason = _model_availability(store, connection)
-    if not available:
-        raise ModelManagementError(unavailable_reason or "model_unavailable")
     discovered = connection_models_response(connection_id, str(connection["providerId"]))
     descriptor = next(
         (item for item in discovered["models"] if item["id"] == model_id),
@@ -69,6 +69,29 @@ def resolve_text_model(binding: dict[str, Any] | None) -> dict[str, Any]:
         "providerId": str(connection["providerId"]),
         "model": descriptor,
     }
+
+
+def resolve_text_model(binding: dict[str, Any] | None) -> dict[str, Any]:
+    resolved = preflight_text_model(binding)
+    store = get_connection_store()
+    connection = store.get_connection_config(resolved["connectionId"])
+    available, unavailable_reason = _model_availability(store, connection)
+    if not available:
+        raise ModelManagementError(unavailable_reason or "model_unavailable")
+    return resolved
+
+
+def require_pdf_text_model(binding: dict[str, Any] | None) -> dict[str, Any]:
+    resolved = preflight_text_model(binding)
+    model = resolved["model"]
+    capabilities = model.get("capabilities") or {}
+    if (
+        resolved["providerId"] != "volcengine-ark"
+        or "pdf" not in (capabilities.get("input") or [])
+        or (model.get("integrationGroup") or {}).get("kind") != "sdk"
+    ):
+        raise ModelManagementError("document_input_not_supported")
+    return resolved
 
 
 def complete_sdk_text(
@@ -104,6 +127,44 @@ def complete_sdk_text(
         credential=credential,
         model_id=str(model["id"]),
     )
+
+
+def complete_sdk_text_with_documents(
+    payload: dict[str, Any],
+    *,
+    connection_id: str,
+    model_id: str,
+    pdf_assets: list[ResolvedDocumentAsset],
+) -> dict[str, Any]:
+    if not pdf_assets:
+        return complete_sdk_text(
+            payload,
+            connection_id=connection_id,
+            model_id=model_id,
+        )
+    require_pdf_text_model(
+        {"connectionId": connection_id, "modelId": model_id}
+    )
+    resolved = resolve_text_model(
+        {"connectionId": connection_id, "modelId": model_id}
+    )
+    model = resolved["model"]
+    store = get_connection_store()
+    connection = store.get_connection_config(connection_id)
+    credential = store.credential_store.get(connection_id)
+    if not credential:
+        raise ModelManagementError("credential_missing")
+    try:
+        return complete_ark_response(
+            payload,
+            api_base=str(connection["apiBase"]),
+            credential=credential,
+            model_id=str(model["id"]),
+            pdf_assets=pdf_assets,
+            connection_id=connection_id,
+        )
+    except ArkResponsesError as exc:
+        raise ModelManagementError(exc.code) from None
 
 
 def resolve_pi_native_proxy(connection_id: str, model_id: str) -> dict[str, str]:

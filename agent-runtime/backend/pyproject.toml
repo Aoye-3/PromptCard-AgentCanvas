@@ -11,6 +11,8 @@ dependencies = [
     "keyring==25.7.0",
     "volcengine-python-sdk[ark]==5.0.36",
     "pillow-heif==1.4.0",
+    "python-docx==1.2.0",
+    "python-multipart>=0.0.20",
 ]
 
 [dependency-groups]

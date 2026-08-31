@@ -1,7 +1,10 @@
 import type { CardType, IPreset } from '@/models/Card.model'
-import type { IPromptProject } from '@/models/PromptHistory.model'
+import type { IPromptProject, PlanningDocumentBlockV1 } from '@/models/PromptHistory.model'
+import type { DocumentChangeOperation } from '@/domain/documents/document-suggestions'
+import { parsePlanningDocumentV1 } from '@/domain/documents/planning-document'
 import type { ImageOperationRecipeSnapshot } from '@/domain/image-actions/image-operations'
 import { validatePublicReferenceCode } from '@/domain/reference-codes/reference-code'
+import type { AgentDocumentAttachmentAudit, AgentInteractionMode } from '@/models/Agent.model'
 
 export interface TrashEntry<T> {
   id: string
@@ -230,6 +233,23 @@ export interface ImageAssetImportResult {
   height: number
 }
 
+export interface ProjectDocumentResource {
+  id: string
+  projectId: string
+  originalFilename: string
+  contentType: 'text/plain' | 'text/markdown' | 'application/pdf' |
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  size: number
+  sha256: string
+  extractionKind: 'utf-8' | 'docx' | 'none'
+  extractionStatus: 'complete' | 'not-applicable'
+  normalizedTextDigest: string | null
+  revision: number
+  lifecycleStatus: 'active' | 'trash'
+  createdAt: number
+  updatedAt: number
+}
+
 export interface ImageAssetDerivation {
   id: string
   sourceAssetId: string
@@ -292,6 +312,9 @@ export interface AgentConversationSummary {
   updatedAt: number
   deletedAt?: number | null
   modelBinding?: AgentConversationModelBinding | null
+  interactionMode: AgentInteractionMode
+  boundSkillIds: string[]
+  revision: number
 }
 
 export interface AgentConversationModelBinding {
@@ -301,7 +324,13 @@ export interface AgentConversationModelBinding {
 }
 
 export interface AgentConversationDetail extends AgentConversationSummary {
-  messages: Array<{ id?: string; role: 'user' | 'assistant' | 'system'; text: string; createdAt?: number }>
+  messages: Array<{
+    id?: string
+    role: 'user' | 'assistant' | 'system'
+    text: string
+    createdAt?: number
+    documentAttachments?: AgentDocumentAttachmentAudit[]
+  }>
   proposals: Array<Record<string, unknown>>
   turns: Array<Record<string, unknown>>
 }
@@ -527,13 +556,14 @@ async function isHealthy(): Promise<boolean> {
   }
 }
 
-const projectWritePayload = (project: Partial<IPromptProject>): Partial<IPromptProject> => {
-  const payload = { ...project }
+const projectWritePayload = (project: Partial<IPromptProject>): Record<string, unknown> => {
+  const payload: Record<string, unknown> = { ...project }
   delete payload.referenceCode
-  if (!payload.freeCanvas) return payload
+  if (!project.freeCanvas) return payload
   payload.freeCanvas = {
-    ...payload.freeCanvas,
-    nodes: payload.freeCanvas.nodes.map(node => {
+    ...project.freeCanvas,
+    nodes: project.freeCanvas.nodes.map(node => {
+      if (node.kind === 'unsupported') return structuredClone(node.originalNode)
       const nodePayload = { ...node }
       delete nodePayload.referenceCode
       if (nodePayload.meta.referenceCodePending === true) {
@@ -549,7 +579,7 @@ const projectWritePayload = (project: Partial<IPromptProject>): Partial<IPromptP
 
 export interface ContextPackEntry {
   reference: {
-    namespace: 'canvasTemplate' | 'canvasMedia'
+    namespace: 'canvasTemplate' | 'canvasMedia' | 'canvasDocument' | 'canvasStoryboard'
     code: string
   }
   content: string
@@ -589,6 +619,326 @@ export interface ContextPackCreateRequest {
   nodeCodes: string[]
   placementHint: ContextPackPlacementHint
   creator: 'promptcard-ui'
+}
+
+export type BridgeDeliveryState = 'previewed' | 'pending_review' | 'accepted' | 'rejected' | 'failed'
+export interface BridgeDeliverySkillPin {
+  skillCode: string
+  revision: number
+  digest: string
+  projectionHealth: 'healthy' | 'stale' | 'missing' | 'untrusted' | 'archived'
+}
+
+export interface BridgePromptDelivery {
+  operationContext: {
+    profileId: string
+    scopes: string[]
+    provenance: 'promptcard-bridge'
+    clientInfo?: { name: string; version: string }
+  }
+  request: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    kind: 'prompt.create'
+    target: { cvcCode: string }
+    sourceCodes: string[]
+    skillPins: BridgeDeliverySkillPin[]
+    rationale: string
+    provenance: 'promptcard-bridge'
+    payload: { title: string; userText: string }
+  }
+  proposalId: string
+  state: BridgeDeliveryState
+  disposition: 'original' | 'replay' | 'conflict'
+  resultCodes: string[]
+  message: string
+  createdAt: string
+  updatedAt: string
+  visualProposal: {
+    kind: 'free_canvas_text_create'
+    id: string
+    agentName: string
+    title: string
+    userText: string
+    segments: Array<{ source: 'user'; text: string }>
+    rationale: string
+    status: 'pending' | 'approved' | 'rejected'
+    createdAt: number
+    bridgeDelivery: {
+      profileId: string
+      cvcCode: string
+      clientRequestId: string
+      normalizedRequestDigest: string
+      sourceCodes: string[]
+      skillPins: BridgeDeliverySkillPin[]
+    }
+  }
+}
+
+export interface BridgeImageDelivery {
+  operationContext: {
+    profileId: string
+    scopes: string[]
+    provenance: 'promptcard-bridge'
+    clientInfo?: { name: string; version: string }
+  }
+  request: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    kind: 'image.place'
+    target: {
+      cvcCode: string
+      storyboardCode?: string
+      baseRevision?: number
+      baseDigest?: string
+      shotOrdinal?: number
+    }
+    sourceCodes: string[]
+    skillPins: BridgeDeliverySkillPin[]
+    rationale: string
+    provenance: 'promptcard-bridge'
+    payload: { stagedAssetHandle: string; altText?: string }
+  }
+  proposalId: string
+  state: BridgeDeliveryState
+  disposition: 'original' | 'replay' | 'conflict'
+  resultCodes: string[]
+  message: string
+  createdAt: string
+  updatedAt: string
+  visualProposal: {
+    kind: 'free_canvas_image_place'
+    id: string
+    agentName: string
+    title: string
+    altText: string
+    assetId: string
+    contentType: 'image/png' | 'image/jpeg' | 'image/webp'
+    width: number
+    height: number
+    rationale: string
+    status: 'pending' | 'approved' | 'rejected'
+    createdAt: number
+    bridgeDelivery: {
+      profileId: string
+      cvcCode: string
+      clientRequestId: string
+      normalizedRequestDigest: string
+      sourceCodes: string[]
+      skillPins: BridgeDeliverySkillPin[]
+      target: BridgeImageDelivery['request']['target']
+      stagedAssetHandle: string
+    }
+  }
+}
+
+interface BridgeDocumentDeliveryBase {
+  operationContext: {
+    profileId: string
+    scopes: string[]
+    provenance: 'promptcard-bridge'
+    clientInfo?: { name: string; version: string }
+  }
+  proposalId: string
+  state: BridgeDeliveryState
+  disposition: 'original' | 'replay' | 'conflict'
+  resultCodes: string[]
+  message: string
+  createdAt: string
+  updatedAt: string
+}
+
+interface BridgeDocumentProposalBase {
+  id: string
+  agentName: string
+  rationale: string
+  status: 'pending' | 'approved' | 'rejected'
+  createdAt: number
+  bridgeDelivery: {
+    profileId: string
+    cvcCode: string
+    clientRequestId: string
+    normalizedRequestDigest: string
+    sourceCodes: string[]
+    skillPins: BridgeDeliverySkillPin[]
+  }
+}
+
+type BridgeDocumentBlock = Extract<
+  PlanningDocumentBlockV1,
+  { type: 'paragraph' | 'blockquote' | 'heading' }
+>
+
+export interface BridgeDocumentCreateDelivery extends BridgeDocumentDeliveryBase {
+  request: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    kind: 'document.create'
+    target: { cvcCode: string }
+    sourceCodes: string[]
+    skillPins: BridgeDeliverySkillPin[]
+    rationale: string
+    provenance: 'promptcard-bridge'
+    payload: { title: string; blocks: BridgeDocumentBlock[] }
+  }
+  visualProposal: BridgeDocumentProposalBase & {
+    kind: 'document_create'
+    title: string
+    blocks: BridgeDocumentBlock[]
+  }
+}
+
+export interface BridgeDocumentChangeDelivery extends BridgeDocumentDeliveryBase {
+  request: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    kind: 'document.change'
+    target: { cvcCode: string; documentCode: string; baseRevision: number; baseDigest: string }
+    sourceCodes: string[]
+    skillPins: BridgeDeliverySkillPin[]
+    rationale: string
+    provenance: 'promptcard-bridge'
+    payload: { operations: DocumentChangeOperation[] }
+  }
+  visualProposal: BridgeDocumentProposalBase & {
+    kind: 'document_changes'
+    documentCode: string
+    baseRevision: number
+    baseDigest: string
+    operations: DocumentChangeOperation[]
+  }
+}
+
+export type BridgeDocumentDelivery = BridgeDocumentCreateDelivery | BridgeDocumentChangeDelivery
+
+export interface BridgeStoryboardRowPayload {
+  cutLabel: string
+  timeRange: string
+  subject: string
+  action: string
+  scene: string
+  camera: string
+  lighting: string
+  audio: string
+  duration: string
+}
+
+export interface BridgeStoryboardSequencePayload {
+  name: string
+  description: string
+  style: string
+  constraints: string
+  rows: BridgeStoryboardRowPayload[]
+}
+
+export type BridgeStoryboardChange =
+  | { scope: 'sequence'; field: 'name' | 'description' | 'style' | 'constraints'; value: string }
+  | {
+    scope: 'row'
+    rowOrdinal: number
+    field: 'cutLabel' | 'timeRange' | 'subject' | 'action' | 'scene' | 'camera' | 'lighting' | 'audio' | 'duration'
+    value: string
+  }
+
+interface BridgeStoryboardDeliveryBase extends BridgeDocumentDeliveryBase {}
+
+interface BridgeStoryboardProposalBase extends BridgeDocumentProposalBase {}
+
+export interface BridgeStoryboardCreateDelivery extends BridgeStoryboardDeliveryBase {
+  request: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    kind: 'storyboard.create'
+    target: { cvcCode: string }
+    sourceCodes: string[]
+    skillPins: BridgeDeliverySkillPin[]
+    rationale: string
+    provenance: 'promptcard-bridge'
+    payload: {
+      title: string
+      sourceDocumentCode: string
+      sourceDocumentRevision: number
+      sourceDocumentDigest: string
+      sequence: BridgeStoryboardSequencePayload
+    }
+  }
+  visualProposal: BridgeStoryboardProposalBase & {
+    kind: 'storyboard_create'
+    title: string
+    sourceDocumentCode: string
+    sourceDocumentRevision: number
+    sourceDocumentDigest: string
+    sequence: BridgeStoryboardSequencePayload
+  }
+}
+
+export interface BridgeStoryboardChangeDelivery extends BridgeStoryboardDeliveryBase {
+  request: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    kind: 'storyboard.change'
+    target: { cvcCode: string; storyboardCode: string; baseRevision: number; baseDigest: string }
+    sourceCodes: string[]
+    skillPins: BridgeDeliverySkillPin[]
+    rationale: string
+    provenance: 'promptcard-bridge'
+    payload: { changes: BridgeStoryboardChange[] }
+  }
+  visualProposal: BridgeStoryboardProposalBase & {
+    kind: 'storyboard_changes'
+    storyboardCode: string
+    baseRevision: number
+    baseDigest: string
+    changes: BridgeStoryboardChange[]
+  }
+}
+
+export type BridgeStoryboardDelivery = BridgeStoryboardCreateDelivery | BridgeStoryboardChangeDelivery
+export type BridgeDelivery = BridgePromptDelivery | BridgeImageDelivery | BridgeDocumentDelivery | BridgeStoryboardDelivery
+
+const parseProjectDocumentResource = (value: unknown): ProjectDocumentResource => {
+  if (!value || typeof value !== 'object') {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid document resource.')
+  }
+  const candidate = value as Record<string, unknown>
+  const contentTypes = new Set([
+    'text/plain',
+    'text/markdown',
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ])
+  if (
+    typeof candidate.id !== 'string' ||
+    typeof candidate.projectId !== 'string' ||
+    typeof candidate.originalFilename !== 'string' ||
+    typeof candidate.contentType !== 'string' || !contentTypes.has(candidate.contentType) ||
+    typeof candidate.size !== 'number' ||
+    typeof candidate.sha256 !== 'string' ||
+    !['utf-8', 'docx', 'none'].includes(String(candidate.extractionKind)) ||
+    !['complete', 'not-applicable'].includes(String(candidate.extractionStatus)) ||
+    !(typeof candidate.normalizedTextDigest === 'string' || candidate.normalizedTextDigest === null) ||
+    typeof candidate.revision !== 'number' ||
+    !['active', 'trash'].includes(String(candidate.lifecycleStatus)) ||
+    typeof candidate.createdAt !== 'number' ||
+    typeof candidate.updatedAt !== 'number'
+  ) {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid document resource.')
+  }
+  return {
+    id: candidate.id,
+    projectId: candidate.projectId,
+    originalFilename: candidate.originalFilename,
+    contentType: candidate.contentType as ProjectDocumentResource['contentType'],
+    size: candidate.size,
+    sha256: candidate.sha256,
+    extractionKind: candidate.extractionKind as ProjectDocumentResource['extractionKind'],
+    extractionStatus: candidate.extractionStatus as ProjectDocumentResource['extractionStatus'],
+    normalizedTextDigest: candidate.normalizedTextDigest,
+    revision: candidate.revision,
+    lifecycleStatus: candidate.lifecycleStatus as ProjectDocumentResource['lifecycleStatus'],
+    createdAt: candidate.createdAt,
+    updatedAt: candidate.updatedAt
+  }
 }
 
 export const storageServiceClient = {
@@ -714,6 +1064,58 @@ export const storageServiceClient = {
         method: 'POST',
         body: JSON.stringify(payload)
       })
+    }
+  },
+  projectDocumentResources: {
+    async upload(projectId: string, file: File, signal?: AbortSignal): Promise<ProjectDocumentResource> {
+      const contentType = inferDocumentContentType(file)
+      if (!contentType) {
+        throw new StorageHttpError(
+          400,
+          'invalid_document',
+          'Only TXT, Markdown, PDF, and DOCX documents are supported.'
+        )
+      }
+      const payload = await request<unknown>(
+        `/storage-api/projects/${encodeURIComponent(projectId)}/document-resources`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': contentType,
+            'X-File-Name': encodeURIComponent(file.name)
+          },
+          body: file,
+          signal
+        },
+        60_000
+      )
+      return parseProjectDocumentResource(payload)
+    },
+    async list(projectId: string): Promise<ProjectDocumentResource[]> {
+      const payload = await request<{ resources?: unknown[] }>(
+        `/storage-api/projects/${encodeURIComponent(projectId)}/document-resources`
+      )
+      if (!Array.isArray(payload.resources)) {
+        throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid document list.')
+      }
+      return payload.resources.map(parseProjectDocumentResource)
+    },
+    async get(projectId: string, resourceId: string): Promise<ProjectDocumentResource> {
+      return parseProjectDocumentResource(await request<unknown>(
+        `/storage-api/projects/${encodeURIComponent(projectId)}/document-resources/${encodeURIComponent(resourceId)}`
+      ))
+    },
+    async delete(projectId: string, resourceId: string): Promise<ProjectDocumentResource> {
+      return parseProjectDocumentResource(await request<unknown>(
+        `/storage-api/projects/${encodeURIComponent(projectId)}/document-resources/${encodeURIComponent(resourceId)}`,
+        { method: 'DELETE' }
+      ))
+    },
+    async restore(projectId: string, resourceId: string): Promise<ProjectDocumentResource> {
+      return parseProjectDocumentResource(await request<unknown>(
+        `/storage-api/projects/${encodeURIComponent(projectId)}/document-resources/${encodeURIComponent(resourceId)}/restore`,
+        { method: 'POST' }
+      ))
     }
   },
   imageGenerationRuns: {
@@ -847,6 +1249,20 @@ export const storageServiceClient = {
       return request(`/storage-api/projects/${encodeURIComponent(projectId)}/agent-conversations/${encodeURIComponent(id)}/model`, {
         method: 'PATCH',
         body: JSON.stringify({ modelBinding })
+      })
+    },
+    updateInteraction(
+      id: string,
+      projectId: string,
+      metadata: {
+        interactionMode: AgentInteractionMode
+        boundSkillIds: string[]
+        expectedRevision: number
+      }
+    ): Promise<AgentConversationSummary> {
+      return request(`/storage-api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(id)}/interaction`, {
+        method: 'PATCH',
+        body: JSON.stringify(metadata)
       })
     },
     trash(id: string, projectId: string): Promise<AgentConversationSummary> {
@@ -1011,6 +1427,33 @@ export const storageServiceClient = {
       ))
     }
   },
+  bridgeDeliveries: {
+    async list(cvcCode: string, state: BridgeDeliveryState = 'pending_review'): Promise<BridgeDelivery[]> {
+      const code = requireContextPackCode(cvcCode)
+      const payload = await request<{ deliveries?: unknown[] }>(
+        `/storage-api/context-packs/${encodeURIComponent(code)}/bridge-deliveries?state=${encodeURIComponent(state)}`
+      )
+      if (!Array.isArray(payload.deliveries)) {
+        throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge delivery list.')
+      }
+      return payload.deliveries.map(parseBridgeDelivery)
+    },
+    async decide(
+      cvcCode: string,
+      proposalId: string,
+      decision: 'accepted' | 'rejected',
+      resultCodes: string[]
+    ): Promise<BridgeDelivery> {
+      const code = requireContextPackCode(cvcCode)
+      if (!/^DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(proposalId)) {
+        throw new StorageHttpError(400, 'invalid_delivery_proposal', 'Bridge proposal code is invalid.')
+      }
+      return parseBridgeDelivery(await request<unknown>(
+        `/storage-api/context-packs/${encodeURIComponent(code)}/bridge-deliveries/${encodeURIComponent(proposalId)}/decision`,
+        { method: 'POST', body: JSON.stringify({ decision, resultCodes }) }
+      ))
+    }
+  },
   projects: {
     async getAll(): Promise<IPromptProject[]> {
       return (await request<{ projects: IPromptProject[] }>('/storage-api/projects')).projects
@@ -1157,6 +1600,18 @@ const inferImageImportContentType = (file: File): string | null => {
     heif: 'image/heif'
   }
   return extension ? byExtension[extension] || null : null
+}
+
+const inferDocumentContentType = (file: File): ProjectDocumentResource['contentType'] | null => {
+  const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0]
+  const expected = extension ? {
+    '.txt': 'text/plain',
+    '.md': 'text/markdown',
+    '.pdf': 'application/pdf',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  }[extension] : undefined
+  if (!expected || (file.type && file.type.toLowerCase() !== expected)) return null
+  return expected as ProjectDocumentResource['contentType']
 }
 
 const normalizeImageGenerationRun = (candidate: unknown): ImageGenerationRun[] => {
@@ -1430,6 +1885,600 @@ const parseContextPackInspection = (value: unknown): ContextPackInspection => {
   }
 }
 
+const parseBridgePromptDelivery = (value: unknown): BridgePromptDelivery => {
+  const invalid = (): never => {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge delivery.')
+  }
+  if (!isClosedRecord(value, [
+    'operationContext', 'request', 'proposalId', 'state', 'disposition', 'resultCodes',
+    'message', 'createdAt', 'updatedAt', 'visualProposal'
+  ])) return invalid()
+  if (
+    !isRecord(value.operationContext)
+    || !hasOnlyKeys(value.operationContext, ['profileId', 'scopes', 'provenance'], ['clientInfo'])
+    || typeof value.operationContext.profileId !== 'string'
+    || !Array.isArray(value.operationContext.scopes)
+    || !value.operationContext.scopes.every(scope => typeof scope === 'string')
+    || value.operationContext.provenance !== 'promptcard-bridge'
+    || (value.operationContext.clientInfo !== undefined && (
+      !isClosedRecord(value.operationContext.clientInfo, ['name', 'version'])
+      || typeof value.operationContext.clientInfo.name !== 'string'
+      || typeof value.operationContext.clientInfo.version !== 'string'
+    ))
+    || !isClosedRecord(value.request, [
+      'clientRequestId', 'normalizedRequestDigest', 'kind', 'target', 'sourceCodes',
+      'skillPins', 'rationale', 'provenance', 'payload'
+    ])
+    || typeof value.request.clientRequestId !== 'string'
+    || !isSha256(value.request.normalizedRequestDigest)
+    || value.request.kind !== 'prompt.create'
+    || !isClosedRecord(value.request.target, ['cvcCode'])
+    || !validatePublicReferenceCode(value.request.target.cvcCode, 'CVC')
+    || !Array.isArray(value.request.sourceCodes)
+    || !value.request.sourceCodes.every(code => typeof code === 'string')
+    || !Array.isArray(value.request.skillPins)
+    || !value.request.skillPins.every(isBridgeSkillPin)
+    || typeof value.request.rationale !== 'string'
+    || value.request.provenance !== 'promptcard-bridge'
+    || !isClosedRecord(value.request.payload, ['title', 'userText'])
+    || typeof value.request.payload.title !== 'string'
+    || typeof value.request.payload.userText !== 'string'
+    || typeof value.proposalId !== 'string'
+    || !/^DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value.proposalId)
+    || !['previewed', 'pending_review', 'accepted', 'rejected', 'failed'].includes(String(value.state))
+    || !['original', 'replay', 'conflict'].includes(String(value.disposition))
+    || !Array.isArray(value.resultCodes)
+    || !value.resultCodes.every(code => typeof code === 'string')
+    || typeof value.message !== 'string'
+    || typeof value.createdAt !== 'string'
+    || typeof value.updatedAt !== 'string'
+    || !isClosedRecord(value.visualProposal, [
+      'kind', 'id', 'agentName', 'title', 'userText', 'segments', 'rationale',
+      'status', 'createdAt', 'bridgeDelivery'
+    ])
+    || value.visualProposal.kind !== 'free_canvas_text_create'
+    || value.visualProposal.id !== value.proposalId
+    || typeof value.visualProposal.agentName !== 'string'
+    || typeof value.visualProposal.title !== 'string'
+    || typeof value.visualProposal.userText !== 'string'
+    || !Array.isArray(value.visualProposal.segments)
+    || !value.visualProposal.segments.every(segment => (
+      isClosedRecord(segment, ['source', 'text'])
+      && segment.source === 'user'
+      && typeof segment.text === 'string'
+    ))
+    || typeof value.visualProposal.rationale !== 'string'
+    || !['pending', 'approved', 'rejected'].includes(String(value.visualProposal.status))
+    || typeof value.visualProposal.createdAt !== 'number'
+    || !isClosedRecord(value.visualProposal.bridgeDelivery, [
+      'profileId', 'cvcCode', 'clientRequestId', 'normalizedRequestDigest',
+      'sourceCodes', 'skillPins'
+    ])
+    || value.visualProposal.bridgeDelivery.profileId !== value.operationContext.profileId
+    || value.visualProposal.bridgeDelivery.cvcCode !== value.request.target.cvcCode
+    || value.visualProposal.bridgeDelivery.clientRequestId !== value.request.clientRequestId
+    || value.visualProposal.bridgeDelivery.normalizedRequestDigest !== value.request.normalizedRequestDigest
+    || !Array.isArray(value.visualProposal.bridgeDelivery.sourceCodes)
+    || !Array.isArray(value.visualProposal.bridgeDelivery.skillPins)
+    || !value.visualProposal.bridgeDelivery.skillPins.every(isBridgeSkillPin)
+  ) return invalid()
+  return value as unknown as BridgePromptDelivery
+}
+
+const parseBridgeDelivery = (value: unknown): BridgeDelivery => {
+  if (!isRecord(value) || !isRecord(value.request)) {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge delivery.')
+  }
+  if (value.request.kind === 'prompt.create') return parseBridgePromptDelivery(value)
+  if (value.request.kind === 'image.place') return parseBridgeImageDelivery(value)
+  if (value.request.kind === 'document.create' || value.request.kind === 'document.change') {
+    return parseBridgeDocumentDelivery(value)
+  }
+  if (value.request.kind === 'storyboard.create' || value.request.kind === 'storyboard.change') {
+    return parseBridgeStoryboardDelivery(value)
+  }
+  throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge delivery.')
+}
+
+const parseBridgeDocumentDelivery = (value: unknown): BridgeDocumentDelivery => {
+  const invalid = (): never => {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge document delivery.')
+  }
+  if (!isClosedRecord(value, [
+    'operationContext', 'request', 'proposalId', 'state', 'disposition', 'resultCodes',
+    'message', 'createdAt', 'updatedAt', 'visualProposal'
+  ]) || !isRecord(value.operationContext) || !isRecord(value.request) || !isRecord(value.visualProposal)) {
+    return invalid()
+  }
+  const request = value.request
+  const proposal = value.visualProposal
+  const create = request.kind === 'document.create'
+  if (!create && request.kind !== 'document.change') return invalid()
+  if (
+    !hasOnlyKeys(value.operationContext, ['profileId', 'scopes', 'provenance'], ['clientInfo'])
+    || typeof value.operationContext.profileId !== 'string'
+    || !Array.isArray(value.operationContext.scopes)
+    || !value.operationContext.scopes.every(scope => typeof scope === 'string')
+    || value.operationContext.provenance !== 'promptcard-bridge'
+    || (value.operationContext.clientInfo !== undefined && (
+      !isClosedRecord(value.operationContext.clientInfo, ['name', 'version'])
+      || typeof value.operationContext.clientInfo.name !== 'string'
+      || typeof value.operationContext.clientInfo.version !== 'string'
+    ))
+    || !isClosedRecord(request, [
+      'clientRequestId', 'normalizedRequestDigest', 'kind', 'target', 'sourceCodes',
+      'skillPins', 'rationale', 'provenance', 'payload'
+    ])
+    || typeof request.clientRequestId !== 'string'
+    || !isSha256(request.normalizedRequestDigest)
+    || !Array.isArray(request.sourceCodes)
+    || !request.sourceCodes.every(isBridgeSourceCode)
+    || !Array.isArray(request.skillPins)
+    || !request.skillPins.every(isBridgeSkillPin)
+    || typeof request.rationale !== 'string'
+    || request.provenance !== 'promptcard-bridge'
+    || typeof value.proposalId !== 'string'
+    || !/^DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value.proposalId)
+    || !['previewed', 'pending_review', 'accepted', 'rejected', 'failed'].includes(String(value.state))
+    || !['original', 'replay', 'conflict'].includes(String(value.disposition))
+    || !Array.isArray(value.resultCodes)
+    || !value.resultCodes.every(code => typeof code === 'string')
+    || typeof value.message !== 'string'
+    || typeof value.createdAt !== 'string'
+    || typeof value.updatedAt !== 'string'
+    || !isBridgeDocumentTarget(request.target, create)
+    || !isBridgeDocumentPayload(request.payload, create)
+    || !isBridgeDocumentVisualProposal(proposal, create)
+    || proposal.id !== value.proposalId
+  ) return invalid()
+  const proposalBridge = proposal.bridgeDelivery
+  if (!isRecord(proposalBridge)
+    || proposalBridge.profileId !== value.operationContext.profileId
+    || proposalBridge.cvcCode !== request.target.cvcCode
+    || proposalBridge.clientRequestId !== request.clientRequestId
+    || proposalBridge.normalizedRequestDigest !== request.normalizedRequestDigest
+    || !bridgeValuesEqual(proposalBridge.sourceCodes, request.sourceCodes)
+    || !bridgeValuesEqual(proposalBridge.skillPins, request.skillPins)
+  ) return invalid()
+  if (create) {
+    if (
+      proposal.kind !== 'document_create'
+      || proposal.title !== request.payload.title
+      || !bridgeValuesEqual(proposal.blocks, request.payload.blocks)
+    ) return invalid()
+  } else if (
+    proposal.kind !== 'document_changes'
+    || proposal.documentCode !== request.target.documentCode
+    || proposal.baseRevision !== request.target.baseRevision
+    || proposal.baseDigest !== request.target.baseDigest
+    || !bridgeValuesEqual(proposal.operations, request.payload.operations)
+  ) return invalid()
+  return value as unknown as BridgeDocumentDelivery
+}
+
+const isBridgeDocumentVisualProposal = (value: Record<string, unknown>, create: boolean): boolean => {
+  const keys = create
+    ? ['kind', 'id', 'agentName', 'title', 'blocks', 'rationale', 'status', 'createdAt', 'bridgeDelivery']
+    : ['kind', 'id', 'agentName', 'documentCode', 'baseRevision', 'baseDigest', 'operations', 'rationale', 'status', 'createdAt', 'bridgeDelivery']
+  if (
+    !isClosedRecord(value, keys)
+    || typeof value.agentName !== 'string'
+    || typeof value.rationale !== 'string'
+    || !['pending', 'approved', 'rejected'].includes(String(value.status))
+    || typeof value.createdAt !== 'number'
+    || !isClosedRecord(value.bridgeDelivery, [
+      'profileId', 'cvcCode', 'clientRequestId', 'normalizedRequestDigest', 'sourceCodes', 'skillPins'
+    ])
+    || typeof value.bridgeDelivery.profileId !== 'string'
+    || !validatePublicReferenceCode(value.bridgeDelivery.cvcCode, 'CVC')
+    || typeof value.bridgeDelivery.clientRequestId !== 'string'
+    || !isSha256(value.bridgeDelivery.normalizedRequestDigest)
+    || !Array.isArray(value.bridgeDelivery.sourceCodes)
+    || !value.bridgeDelivery.sourceCodes.every(isBridgeSourceCode)
+    || !Array.isArray(value.bridgeDelivery.skillPins)
+    || !value.bridgeDelivery.skillPins.every(isBridgeSkillPin)
+  ) return false
+  return create
+    ? value.kind === 'document_create' && typeof value.title === 'string' && isBridgeDocumentBlocks(value.blocks)
+    : value.kind === 'document_changes'
+      && Boolean(validatePublicReferenceCode(value.documentCode, 'CVD'))
+      && isNonNegativeInteger(value.baseRevision)
+      && isSha256(value.baseDigest)
+      && isBridgeDocumentOperations(value.operations)
+}
+
+const isBridgeDocumentTarget = (value: unknown, create: boolean): value is Record<string, unknown> => {
+  if (!isRecord(value)) return false
+  if (create) return isClosedRecord(value, ['cvcCode']) && Boolean(validatePublicReferenceCode(value.cvcCode, 'CVC'))
+  return isClosedRecord(value, ['cvcCode', 'documentCode', 'baseRevision', 'baseDigest'])
+    && Boolean(validatePublicReferenceCode(value.cvcCode, 'CVC'))
+    && Boolean(validatePublicReferenceCode(value.documentCode, 'CVD'))
+    && isNonNegativeInteger(value.baseRevision)
+    && isSha256(value.baseDigest)
+}
+
+const isBridgeDocumentPayload = (value: unknown, create: boolean): value is Record<string, unknown> => {
+  if (!isRecord(value)) return false
+  return create
+    ? isClosedRecord(value, ['title', 'blocks'])
+      && typeof value.title === 'string' && value.title.length > 0 && value.title.length <= 500
+      && isBridgeDocumentBlocks(value.blocks)
+    : isClosedRecord(value, ['operations']) && isBridgeDocumentOperations(value.operations)
+}
+
+const isBridgeDocumentBlocks = (value: unknown): value is BridgeDocumentBlock[] => {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 500) return false
+  const ids = new Set<string>()
+  const inline = (item: unknown): boolean => isRecord(item)
+    && hasOnlyKeys(item, ['text'], ['bold', 'italic', 'href'])
+    && typeof item.text === 'string'
+    && item.text.length <= 10_000
+    && (item.bold === undefined || item.bold === true)
+    && (item.italic === undefined || item.italic === true)
+    && (item.href === undefined || (typeof item.href === 'string' && item.href.length > 0 && item.href.length <= 2048))
+  const content = (item: unknown): boolean => Array.isArray(item) && item.length <= 200 && item.every(inline)
+  const uniqueId = (item: unknown): boolean => {
+    if (typeof item !== 'string' || !item || item.length > 128 || ids.has(item)) return false
+    ids.add(item)
+    return true
+  }
+  return value.every(block => {
+    if (!isRecord(block) || !uniqueId(block.id)) return false
+    if (block.type === 'paragraph' || block.type === 'blockquote') {
+      return isClosedRecord(block, ['id', 'type', 'content']) && content(block.content)
+    }
+    if (block.type === 'heading') {
+      return isClosedRecord(block, ['id', 'type', 'level', 'content'])
+        && [1, 2, 3].includes(Number(block.level)) && content(block.content)
+    }
+    return false
+  })
+}
+
+const isBridgeDocumentOperations = (value: unknown): value is DocumentChangeOperation[] => (
+  Array.isArray(value) && value.length > 0 && value.length <= 32 && value.every(operation => {
+    if (!isRecord(operation)
+      || typeof operation.blockId !== 'string' || operation.blockId.length === 0 || operation.blockId.length > 128
+      || !isSha256(operation.expectedTextDigest)) return false
+    if (operation.kind === 'insert') {
+      return isClosedRecord(operation, ['kind', 'blockId', 'utf8Offset', 'text', 'expectedTextDigest'])
+        && isNonNegativeInteger(operation.utf8Offset)
+        && typeof operation.text === 'string' && operation.text.length > 0 && operation.text.length <= 10_000
+    }
+    if (operation.kind === 'delete') {
+      return isClosedRecord(operation, ['kind', 'blockId', 'utf8Start', 'utf8End', 'expectedTextDigest'])
+        && isNonNegativeInteger(operation.utf8Start) && isNonNegativeInteger(operation.utf8End)
+        && Number(operation.utf8End) > Number(operation.utf8Start)
+    }
+    return operation.kind === 'replace'
+      && isClosedRecord(operation, ['kind', 'blockId', 'utf8Start', 'utf8End', 'text', 'expectedTextDigest'])
+      && isNonNegativeInteger(operation.utf8Start) && isNonNegativeInteger(operation.utf8End)
+      && Number(operation.utf8End) > Number(operation.utf8Start)
+      && typeof operation.text === 'string' && operation.text.length > 0 && operation.text.length <= 10_000
+  })
+)
+
+const parseBridgeStoryboardDelivery = (value: unknown): BridgeStoryboardDelivery => {
+  const invalid = (): never => {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge storyboard delivery.')
+  }
+  if (!isClosedRecord(value, [
+    'operationContext', 'request', 'proposalId', 'state', 'disposition', 'resultCodes',
+    'message', 'createdAt', 'updatedAt', 'visualProposal'
+  ]) || !isRecord(value.operationContext) || !isRecord(value.request) || !isRecord(value.visualProposal)) {
+    return invalid()
+  }
+  const request = value.request
+  const proposal = value.visualProposal
+  const create = request.kind === 'storyboard.create'
+  if ((!create && request.kind !== 'storyboard.change')
+    || !hasOnlyKeys(value.operationContext, ['profileId', 'scopes', 'provenance'], ['clientInfo'])
+    || typeof value.operationContext.profileId !== 'string'
+    || !Array.isArray(value.operationContext.scopes)
+    || !value.operationContext.scopes.every(scope => typeof scope === 'string')
+    || value.operationContext.provenance !== 'promptcard-bridge'
+    || (value.operationContext.clientInfo !== undefined && (
+      !isClosedRecord(value.operationContext.clientInfo, ['name', 'version'])
+      || typeof value.operationContext.clientInfo.name !== 'string'
+      || typeof value.operationContext.clientInfo.version !== 'string'
+    ))
+    || !isClosedRecord(request, [
+      'clientRequestId', 'normalizedRequestDigest', 'kind', 'target', 'sourceCodes',
+      'skillPins', 'rationale', 'provenance', 'payload'
+    ])
+    || typeof request.clientRequestId !== 'string'
+    || !isSha256(request.normalizedRequestDigest)
+    || !Array.isArray(request.sourceCodes)
+    || !request.sourceCodes.every(isBridgeSourceCode)
+    || !Array.isArray(request.skillPins)
+    || !request.skillPins.every(isBridgeSkillPin)
+    || typeof request.rationale !== 'string'
+    || request.provenance !== 'promptcard-bridge'
+    || typeof value.proposalId !== 'string'
+    || !/^DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value.proposalId)
+    || !['previewed', 'pending_review', 'accepted', 'rejected', 'failed'].includes(String(value.state))
+    || !['original', 'replay', 'conflict'].includes(String(value.disposition))
+    || !Array.isArray(value.resultCodes)
+    || !value.resultCodes.every(code => typeof code === 'string')
+    || typeof value.message !== 'string'
+    || typeof value.createdAt !== 'string'
+    || typeof value.updatedAt !== 'string'
+    || !isBridgeStoryboardTarget(request.target, create)
+    || !isBridgeStoryboardPayload(request.payload, create)
+    || !isBridgeStoryboardVisualProposal(proposal, create)
+    || proposal.id !== value.proposalId
+  ) return invalid()
+  const proposalBridge = proposal.bridgeDelivery
+  if (!isRecord(proposalBridge)
+    || proposalBridge.profileId !== value.operationContext.profileId
+    || proposalBridge.cvcCode !== request.target.cvcCode
+    || proposalBridge.clientRequestId !== request.clientRequestId
+    || proposalBridge.normalizedRequestDigest !== request.normalizedRequestDigest
+    || !bridgeValuesEqual(proposalBridge.sourceCodes, request.sourceCodes)
+    || !bridgeValuesEqual(proposalBridge.skillPins, request.skillPins)
+  ) return invalid()
+  if (create) {
+    if (proposal.kind !== 'storyboard_create'
+      || proposal.title !== request.payload.title
+      || proposal.sourceDocumentCode !== request.payload.sourceDocumentCode
+      || proposal.sourceDocumentRevision !== request.payload.sourceDocumentRevision
+      || proposal.sourceDocumentDigest !== request.payload.sourceDocumentDigest
+      || !bridgeValuesEqual(proposal.sequence, request.payload.sequence)
+    ) return invalid()
+  } else if (proposal.kind !== 'storyboard_changes'
+    || proposal.storyboardCode !== request.target.storyboardCode
+    || proposal.baseRevision !== request.target.baseRevision
+    || proposal.baseDigest !== request.target.baseDigest
+    || !bridgeValuesEqual(proposal.changes, request.payload.changes)
+  ) return invalid()
+  return value as unknown as BridgeStoryboardDelivery
+}
+
+const isBridgeStoryboardVisualProposal = (value: Record<string, unknown>, create: boolean): boolean => {
+  const keys = create
+    ? [
+        'kind', 'id', 'agentName', 'title', 'sourceDocumentCode', 'sourceDocumentRevision',
+        'sourceDocumentDigest', 'sequence', 'rationale', 'status', 'createdAt', 'bridgeDelivery'
+      ]
+    : [
+        'kind', 'id', 'agentName', 'storyboardCode', 'baseRevision', 'baseDigest',
+        'changes', 'rationale', 'status', 'createdAt', 'bridgeDelivery'
+      ]
+  if (!isClosedRecord(value, keys)
+    || typeof value.agentName !== 'string'
+    || typeof value.rationale !== 'string'
+    || !['pending', 'approved', 'rejected'].includes(String(value.status))
+    || typeof value.createdAt !== 'number'
+    || !isClosedRecord(value.bridgeDelivery, [
+      'profileId', 'cvcCode', 'clientRequestId', 'normalizedRequestDigest', 'sourceCodes', 'skillPins'
+    ])
+    || typeof value.bridgeDelivery.profileId !== 'string'
+    || !validatePublicReferenceCode(value.bridgeDelivery.cvcCode, 'CVC')
+    || typeof value.bridgeDelivery.clientRequestId !== 'string'
+    || !isSha256(value.bridgeDelivery.normalizedRequestDigest)
+    || !Array.isArray(value.bridgeDelivery.sourceCodes)
+    || !value.bridgeDelivery.sourceCodes.every(isBridgeSourceCode)
+    || !Array.isArray(value.bridgeDelivery.skillPins)
+    || !value.bridgeDelivery.skillPins.every(isBridgeSkillPin)
+  ) return false
+  return create
+    ? value.kind === 'storyboard_create'
+      && typeof value.title === 'string' && value.title.length > 0 && value.title.length <= 500
+      && Boolean(validatePublicReferenceCode(value.sourceDocumentCode, 'CVD'))
+      && isNonNegativeInteger(value.sourceDocumentRevision)
+      && isSha256(value.sourceDocumentDigest)
+      && isBridgeStoryboardSequence(value.sequence)
+    : value.kind === 'storyboard_changes'
+      && Boolean(validatePublicReferenceCode(value.storyboardCode, 'CVS'))
+      && isNonNegativeInteger(value.baseRevision)
+      && isSha256(value.baseDigest)
+      && isBridgeStoryboardChanges(value.changes)
+}
+
+const isBridgeStoryboardTarget = (value: unknown, create: boolean): value is Record<string, unknown> => {
+  if (!isRecord(value)) return false
+  if (create) return isClosedRecord(value, ['cvcCode']) && Boolean(validatePublicReferenceCode(value.cvcCode, 'CVC'))
+  return isClosedRecord(value, ['cvcCode', 'storyboardCode', 'baseRevision', 'baseDigest'])
+    && Boolean(validatePublicReferenceCode(value.cvcCode, 'CVC'))
+    && Boolean(validatePublicReferenceCode(value.storyboardCode, 'CVS'))
+    && isNonNegativeInteger(value.baseRevision)
+    && isSha256(value.baseDigest)
+}
+
+const isBridgeStoryboardPayload = (value: unknown, create: boolean): value is Record<string, unknown> => {
+  if (!isRecord(value)) return false
+  if (!create) return isClosedRecord(value, ['changes']) && isBridgeStoryboardChanges(value.changes)
+  return isClosedRecord(value, [
+    'title', 'sourceDocumentCode', 'sourceDocumentRevision', 'sourceDocumentDigest', 'sequence'
+  ])
+    && typeof value.title === 'string' && value.title.length > 0 && value.title.length <= 500
+    && Boolean(validatePublicReferenceCode(value.sourceDocumentCode, 'CVD'))
+    && isNonNegativeInteger(value.sourceDocumentRevision)
+    && isSha256(value.sourceDocumentDigest)
+    && isBridgeStoryboardSequence(value.sequence)
+}
+
+const STORYBOARD_ROW_FIELDS = [
+  'cutLabel', 'timeRange', 'subject', 'action', 'scene',
+  'camera', 'lighting', 'audio', 'duration'
+] as const
+
+const isBridgeStoryboardSequence = (value: unknown): value is BridgeStoryboardSequencePayload => (
+  isClosedRecord(value, ['name', 'description', 'style', 'constraints', 'rows'])
+  && typeof value.name === 'string' && value.name.length > 0 && value.name.length <= 10_000
+  && (['description', 'style', 'constraints'] as const).every(field => (
+    typeof value[field] === 'string' && value[field].length <= 10_000
+  ))
+  && Array.isArray(value.rows) && value.rows.length > 0 && value.rows.length <= 200
+  && value.rows.every(row => isClosedRecord(row, STORYBOARD_ROW_FIELDS)
+    && STORYBOARD_ROW_FIELDS.every(field => typeof row[field] === 'string' && row[field].length <= 10_000))
+)
+
+const isBridgeStoryboardChanges = (value: unknown): value is BridgeStoryboardChange[] => {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 32) return false
+  const identities = new Set<string>()
+  return value.every(change => {
+    if (!isRecord(change) || typeof change.value !== 'string' || change.value.length > 10_000) return false
+    if (change.scope === 'sequence') {
+      const valid = isClosedRecord(change, ['scope', 'field', 'value'])
+        && ['name', 'description', 'style', 'constraints'].includes(String(change.field))
+      const identity = `sequence:${String(change.field)}`
+      if (!valid || identities.has(identity)) return false
+      identities.add(identity)
+      return true
+    }
+    const valid = change.scope === 'row'
+      && isClosedRecord(change, ['scope', 'rowOrdinal', 'field', 'value'])
+      && isNonNegativeInteger(change.rowOrdinal) && change.rowOrdinal <= 199
+      && STORYBOARD_ROW_FIELDS.includes(change.field as typeof STORYBOARD_ROW_FIELDS[number])
+    const identity = `row:${String(change.rowOrdinal)}:${String(change.field)}`
+    if (!valid || identities.has(identity)) return false
+    identities.add(identity)
+    return true
+  })
+}
+
+const isBridgeSourceCode = (value: unknown): boolean => (
+  ['PLP', 'PLM', 'PRJ', 'CVT', 'CVM', 'CVC', 'CVD', 'CVS', 'SKL'].some(prefix => (
+    Boolean(validatePublicReferenceCode(value, prefix as Parameters<typeof validatePublicReferenceCode>[1]))
+  ))
+)
+
+const bridgeValuesEqual = (left: unknown, right: unknown): boolean => {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right)
+      && left.length === right.length && left.every((item, index) => bridgeValuesEqual(item, right[index]))
+  }
+  if (isRecord(left) || isRecord(right)) {
+    if (!isRecord(left) || !isRecord(right)) return false
+    const leftKeys = Object.keys(left).sort()
+    const rightKeys = Object.keys(right).sort()
+    return leftKeys.length === rightKeys.length
+      && leftKeys.every((key, index) => key === rightKeys[index] && bridgeValuesEqual(left[key], right[key]))
+  }
+  return left === right
+}
+
+const parseBridgeImageDelivery = (value: unknown): BridgeImageDelivery => {
+  const invalid = (): never => {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge image delivery.')
+  }
+  if (!isClosedRecord(value, [
+    'operationContext', 'request', 'proposalId', 'state', 'disposition', 'resultCodes',
+    'message', 'createdAt', 'updatedAt', 'visualProposal'
+  ])) return invalid()
+  if (
+    !isRecord(value.operationContext)
+    || !isClosedRecord(value.request, [
+      'clientRequestId', 'normalizedRequestDigest', 'kind', 'target', 'sourceCodes',
+      'skillPins', 'rationale', 'provenance', 'payload'
+    ])
+    || !isRecord(value.request.target)
+    || !isRecord(value.request.payload)
+    || !isClosedRecord(value.visualProposal, [
+      'kind', 'id', 'agentName', 'title', 'altText', 'assetId', 'contentType',
+      'width', 'height', 'rationale', 'status', 'createdAt', 'bridgeDelivery'
+    ])
+    || !isClosedRecord(value.visualProposal.bridgeDelivery, [
+      'profileId', 'cvcCode', 'clientRequestId', 'normalizedRequestDigest',
+      'sourceCodes', 'skillPins', 'target', 'stagedAssetHandle'
+    ])
+  ) return invalid()
+  if (
+    !isRecord(value.operationContext)
+    || !hasOnlyKeys(value.operationContext, ['profileId', 'scopes', 'provenance'], ['clientInfo'])
+    || typeof value.operationContext.profileId !== 'string'
+    || !Array.isArray(value.operationContext.scopes)
+    || !value.operationContext.scopes.every(scope => typeof scope === 'string')
+    || value.operationContext.provenance !== 'promptcard-bridge'
+    || (value.operationContext.clientInfo !== undefined && (
+      !isClosedRecord(value.operationContext.clientInfo, ['name', 'version'])
+      || typeof value.operationContext.clientInfo.name !== 'string'
+      || typeof value.operationContext.clientInfo.version !== 'string'
+    ))
+    || !isClosedRecord(value.request, [
+      'clientRequestId', 'normalizedRequestDigest', 'kind', 'target', 'sourceCodes',
+      'skillPins', 'rationale', 'provenance', 'payload'
+    ])
+    || typeof value.request.clientRequestId !== 'string'
+    || !isSha256(value.request.normalizedRequestDigest)
+    || value.request.kind !== 'image.place'
+    || !isBridgeImageTarget(value.request.target)
+    || !Array.isArray(value.request.sourceCodes)
+    || !value.request.sourceCodes.every(code => typeof code === 'string')
+    || !Array.isArray(value.request.skillPins)
+    || !value.request.skillPins.every(isBridgeSkillPin)
+    || typeof value.request.rationale !== 'string'
+    || value.request.provenance !== 'promptcard-bridge'
+    || !hasOnlyKeys(value.request.payload, ['stagedAssetHandle'], ['altText'])
+    || typeof value.request.payload.stagedAssetHandle !== 'string'
+    || !/^AST-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value.request.payload.stagedAssetHandle)
+    || (value.request.payload.altText !== undefined && typeof value.request.payload.altText !== 'string')
+    || typeof value.proposalId !== 'string'
+    || !/^DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value.proposalId)
+    || !['previewed', 'pending_review', 'accepted', 'rejected', 'failed'].includes(String(value.state))
+    || !['original', 'replay', 'conflict'].includes(String(value.disposition))
+    || !Array.isArray(value.resultCodes)
+    || !value.resultCodes.every(code => typeof code === 'string')
+    || typeof value.message !== 'string'
+    || typeof value.createdAt !== 'string'
+    || typeof value.updatedAt !== 'string'
+    || !isClosedRecord(value.visualProposal, [
+      'kind', 'id', 'agentName', 'title', 'altText', 'assetId', 'contentType',
+      'width', 'height', 'rationale', 'status', 'createdAt', 'bridgeDelivery'
+    ])
+    || value.visualProposal.kind !== 'free_canvas_image_place'
+    || value.visualProposal.id !== value.proposalId
+    || typeof value.visualProposal.agentName !== 'string'
+    || typeof value.visualProposal.title !== 'string'
+    || typeof value.visualProposal.altText !== 'string'
+    || typeof value.visualProposal.assetId !== 'string'
+    || !['image/png', 'image/jpeg', 'image/webp'].includes(String(value.visualProposal.contentType))
+    || !isPositiveInteger(value.visualProposal.width)
+    || !isPositiveInteger(value.visualProposal.height)
+    || typeof value.visualProposal.rationale !== 'string'
+    || !['pending', 'approved', 'rejected'].includes(String(value.visualProposal.status))
+    || typeof value.visualProposal.createdAt !== 'number'
+    || !isClosedRecord(value.visualProposal.bridgeDelivery, [
+      'profileId', 'cvcCode', 'clientRequestId', 'normalizedRequestDigest',
+      'sourceCodes', 'skillPins', 'target', 'stagedAssetHandle'
+    ])
+    || value.visualProposal.bridgeDelivery.profileId !== value.operationContext.profileId
+    || value.visualProposal.bridgeDelivery.cvcCode !== value.request.target.cvcCode
+    || value.visualProposal.bridgeDelivery.clientRequestId !== value.request.clientRequestId
+    || value.visualProposal.bridgeDelivery.normalizedRequestDigest !== value.request.normalizedRequestDigest
+    || value.visualProposal.bridgeDelivery.stagedAssetHandle !== value.request.payload.stagedAssetHandle
+    || !Array.isArray(value.visualProposal.bridgeDelivery.sourceCodes)
+    || !Array.isArray(value.visualProposal.bridgeDelivery.skillPins)
+    || !value.visualProposal.bridgeDelivery.skillPins.every(isBridgeSkillPin)
+    || !isBridgeImageTarget(value.visualProposal.bridgeDelivery.target)
+  ) return invalid()
+  return value as unknown as BridgeImageDelivery
+}
+
+const isBridgeImageTarget = (value: unknown): boolean => {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['cvcCode'],
+    ['storyboardCode', 'baseRevision', 'baseDigest', 'shotOrdinal']
+  ) || !validatePublicReferenceCode(value.cvcCode, 'CVC')) return false
+  const optional = [value.storyboardCode, value.baseRevision, value.baseDigest, value.shotOrdinal]
+  if (optional.every(item => item === undefined)) return true
+  return validatePublicReferenceCode(value.storyboardCode, 'CVS') !== null
+    && isNonNegativeInteger(value.baseRevision)
+    && isSha256(value.baseDigest)
+    && isNonNegativeInteger(value.shotOrdinal)
+    && Number(value.shotOrdinal) <= 199
+}
+
+const isBridgeSkillPin = (value: unknown): boolean => (
+  isClosedRecord(value, ['skillCode', 'revision', 'digest', 'projectionHealth'])
+  && Boolean(validatePublicReferenceCode(value.skillCode, 'SKL'))
+  && isPositiveInteger(value.revision)
+  && isSha256(value.digest)
+  && ['healthy', 'stale', 'missing', 'untrusted', 'archived'].includes(String(value.projectionHealth))
+)
+
 const parseContextPackEntry = (value: unknown): ContextPackEntry[] => {
   if (
     !isClosedRecord(value, ['reference', 'content', 'contentDigest'])
@@ -1442,9 +2491,13 @@ const parseContextPackEntry = (value: unknown): ContextPackEntry[] => {
     ? 'CVT'
     : namespace === 'canvasMedia'
       ? 'CVM'
-      : null
+      : namespace === 'canvasDocument'
+        ? 'CVD'
+        : namespace === 'canvasStoryboard'
+          ? 'CVS'
+          : null
   const code = expectedPrefix ? validatePublicReferenceCode(value.reference.code, expectedPrefix) : null
-  if (!code || (namespace !== 'canvasTemplate' && namespace !== 'canvasMedia') || !isSafeContextEntryContent(value.content, namespace)) return []
+  if (!code || !isContextEntryNamespace(namespace) || !isSafeContextEntryContent(value.content, namespace)) return []
   return [{
     reference: { namespace, code },
     content: value.content,
@@ -1470,7 +2523,10 @@ const parseContextSourceBoundary = (value: unknown): ContextPackSourceBoundary[]
 }
 
 const parseContextNodeCode = (value: unknown): string[] => (
-  parseReferenceCode(value, 'CVT').concat(parseReferenceCode(value, 'CVM'))
+  parseReferenceCode(value, 'CVT')
+    .concat(parseReferenceCode(value, 'CVM'))
+    .concat(parseReferenceCode(value, 'CVD'))
+    .concat(parseReferenceCode(value, 'CVS'))
 )
 
 const parsePromptSourceCode = (value: unknown): string[] => (
@@ -1483,7 +2539,7 @@ const parseContextSourceCode = (value: unknown): string[] => (
 
 const parseReferenceCode = (
   value: unknown,
-  prefix: 'PLP' | 'PLM' | 'CVT' | 'CVM'
+  prefix: 'PLP' | 'PLM' | 'CVT' | 'CVM' | 'CVD' | 'CVS'
 ): string[] => {
   const code = validatePublicReferenceCode(value, prefix)
   return code ? [code] : []
@@ -1491,7 +2547,7 @@ const parseReferenceCode = (
 
 const isSafeContextEntryContent = (
   content: string,
-  namespace: 'canvasTemplate' | 'canvasMedia'
+  namespace: ContextPackEntry['reference']['namespace']
 ): boolean => {
   let value: unknown
   try {
@@ -1506,6 +2562,22 @@ const isSafeContextEntryContent = (
       && typeof value.title === 'string'
       && typeof value.truncated === 'boolean'
   }
+  if (namespace === 'canvasDocument') {
+    if (
+      !isClosedRecord(value, ['kind', 'title', 'revision', 'digest', 'document'])
+      || value.kind !== 'document'
+      || typeof value.title !== 'string'
+      || !isNonNegativeInteger(value.revision)
+      || !isSha256(value.digest)
+      || !isClosedRecord(value.document, ['version', 'blocks', 'suggestions'])
+    ) return false
+    return parsePlanningDocumentV1({
+      ...value.document,
+      revision: value.revision,
+      digest: value.digest
+    }).ok
+  }
+  if (namespace === 'canvasStoryboard') return isSafeStoryboardContextEntry(value)
   if (!isRecord(value)) return false
   const required = ['height', 'kind', 'title', 'width']
   const optional = ['contentType', 'size']
@@ -1516,6 +2588,74 @@ const isSafeContextEntryContent = (
     && typeof value.height === 'number' && Number.isFinite(value.height) && value.height > 0
     && (value.contentType === undefined || typeof value.contentType === 'string')
     && (value.size === undefined || isNonNegativeInteger(value.size))
+}
+
+const isContextEntryNamespace = (
+  value: unknown
+): value is ContextPackEntry['reference']['namespace'] => (
+  value === 'canvasTemplate'
+  || value === 'canvasMedia'
+  || value === 'canvasDocument'
+  || value === 'canvasStoryboard'
+)
+
+const isSafeStoryboardContextEntry = (value: unknown): boolean => {
+  if (
+    !isRecord(value)
+    || !hasOnlyKeys(value, ['kind', 'title', 'revision', 'digest', 'sequence'], ['pendingFieldChanges'])
+    || value.kind !== 'storyboard'
+    || typeof value.title !== 'string'
+    || !isNonNegativeInteger(value.revision)
+    || !isSha256(value.digest)
+    || !isClosedRecord(value.sequence, ['name', 'description', 'style', 'constraints', 'rows'])
+    || typeof value.sequence.name !== 'string'
+    || typeof value.sequence.description !== 'string'
+    || typeof value.sequence.style !== 'string'
+    || typeof value.sequence.constraints !== 'string'
+    || !Array.isArray(value.sequence.rows)
+    || value.sequence.rows.length > 200
+  ) return false
+  const fields = [
+    'ordinal', 'cutLabel', 'timeRange', 'subject', 'action',
+    'scene', 'camera', 'lighting', 'audio', 'duration'
+  ] as const
+  if (!value.sequence.rows.every((row, index) => (
+    isClosedRecord(row, fields)
+    && row.ordinal === index
+    && fields.slice(1).every(field => typeof row[field] === 'string')
+  ))) return false
+  return value.pendingFieldChanges === undefined
+    || isSafeStoryboardPendingFieldChanges(value.pendingFieldChanges, value.sequence.rows.length)
+}
+
+const isSafeStoryboardPendingFieldChanges = (value: unknown, rowCount: number): boolean => {
+  if (!Array.isArray(value) || value.length > 32) return false
+  const identities = new Set<string>()
+  const sequenceFields = new Set(['name', 'description', 'style', 'constraints'])
+  const rowFields = new Set([
+    'cutLabel', 'timeRange', 'subject', 'action', 'scene',
+    'camera', 'lighting', 'audio', 'duration'
+  ])
+  return value.every(change => {
+    if (!isRecord(change)) return false
+    let identity: string
+    if (change.scope === 'sequence') {
+      if (!isClosedRecord(change, ['scope', 'field']) || !sequenceFields.has(String(change.field))) return false
+      identity = `sequence:${change.field}`
+    } else {
+      if (
+        !isClosedRecord(change, ['scope', 'rowOrdinal', 'field'])
+        || change.scope !== 'row'
+        || !isNonNegativeInteger(change.rowOrdinal)
+        || Number(change.rowOrdinal) >= rowCount
+        || !rowFields.has(String(change.field))
+      ) return false
+      identity = `row:${change.rowOrdinal}:${change.field}`
+    }
+    if (identities.has(identity)) return false
+    identities.add(identity)
+    return true
+  })
 }
 
 const requireContextPackCode = (value: string): string => {

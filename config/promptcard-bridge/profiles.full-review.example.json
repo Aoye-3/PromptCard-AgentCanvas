@@ -1,0 +1,18 @@
+{
+  "codex-full-review": {
+    "token": "replace-with-a-different-local-random-token-of-at-least-32-characters",
+    "repositoryScope": "replace-with-this-repository-scope",
+    "scopes": [
+      "bridge:read",
+      "bridge:deliver:document",
+      "bridge:deliver:storyboard",
+      "bridge:deliver:prompt",
+      "bridge:deliver:image",
+      "bridge:status"
+    ],
+    "clientInfo": {
+      "name": "codex",
+      "version": "local"
+    }
+  }
+}

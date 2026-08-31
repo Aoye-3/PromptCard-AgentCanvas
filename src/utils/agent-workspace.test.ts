@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { IPromptProject } from '@/models/PromptHistory.model'
+import type { IFreeCanvasProject, IPromptProject } from '@/models/PromptHistory.model'
 import type { IPage } from '@/stores/card-initial-state'
 import { buildCardWorkspaceContext, buildFreeCanvasWorkspaceContext, buildStoryboardWorkspaceContext, buildThreeStageWorkspaceContext } from './agent-workspace'
 
@@ -352,5 +352,80 @@ describe('agent workspace context', () => {
 
     expect(textNode.presetText).toBe('Template  spacing\n')
     expect(textNode.userText).toBe('  User  spacing\nline  ')
+  })
+
+  it('includes only a bounded Document excerpt and excludes unsupported nodes, selection, and connected edges', () => {
+    const documentBody = `Document ambient excerpt ${'A'.repeat(260)}PRIVATE DOCUMENT TAIL`
+    const freeCanvas: IFreeCanvasProject = {
+      nodes: [
+        {
+          id: 'document-1', kind: 'document', title: 'Creative brief', position: { x: 0, y: 0 }, width: 560, height: 420,
+          document: {
+            version: 1,
+            blocks: [{ id: 'document-block', type: 'paragraph', content: [{ text: documentBody }] }],
+            revision: 4,
+            digest: 'document-digest',
+            suggestions: []
+          },
+          linkedDocumentResourceIds: ['private-resource-id'],
+          meta: {}
+        },
+        {
+          id: 'storyboard-1', kind: 'storyboard', title: 'Opening shots', position: { x: 600, y: 0 }, width: 640, height: 480,
+          sequence: {
+            id: 'sequence-1', name: 'Opening', description: 'PRIVATE STORYBOARD BODY', style: '', constraints: '',
+            rows: [], createdAt: 1, updatedAt: 1, meta: {}
+          },
+          source: {
+            documentNodeId: 'document-1', documentRevision: 4, documentDigest: 'document-digest',
+            documentResourceDigests: ['private-resource-digest'],
+            model: { connectionId: 'connection', providerId: 'provider', modelId: 'model', displayName: 'Model', capabilities: {} }, skills: []
+          },
+          pendingFieldChanges: [], meta: {}
+        },
+        {
+          id: 'future-1', kind: 'unsupported', originalKind: 'future-layout', title: 'Future node',
+          position: { x: 1200, y: 0 }, width: 360, height: 220,
+          originalNode: { id: 'future-1', kind: 'future-layout', secret: 'PRIVATE UNKNOWN PAYLOAD' },
+          meta: {}
+        }
+      ],
+      edges: [
+        { id: 'edge-supported', source: 'document-1', target: 'storyboard-1', label: 'Supported path', createdAt: 1 },
+        { id: 'edge-from-unsupported', source: 'future-1', target: 'document-1', label: 'PRIVATE UNKNOWN EDGE', createdAt: 1 },
+        { id: 'edge-to-unsupported', source: 'storyboard-1', target: 'future-1', label: 'PRIVATE UNKNOWN EDGE', createdAt: 1 }
+      ],
+      viewport: null, selectedNodeId: 'future-1', meta: {}
+    }
+    const project: IPromptProject = {
+      id: 'project-isolated', title: 'Isolated canvas', type: 'free-canvas', revision: 8,
+      pages: [], currentPage: 0, freeCanvas,
+      createdAt: 1, updatedAt: 1, lastOpenedAt: 1, meta: {}
+    }
+
+    const context = buildFreeCanvasWorkspaceContext({ activeProject: project, freeCanvas })
+    const nodes = context.snapshot.nodes as Array<Record<string, unknown>>
+
+    expect(context.snapshot.selectedNodeId).toBe(null)
+    expect(context.snapshot.selectedNode).toBe(null)
+    expect(nodes).toEqual([
+      {
+        id: 'document-1', kind: 'document', title: 'Creative brief', revision: 4,
+        digest: 'document-digest', excerpt: documentBody.slice(0, 240)
+      },
+      { id: 'storyboard-1', kind: 'storyboard', title: 'Opening shots' }
+    ])
+    expect(context.snapshot.edges).toEqual([
+      { id: 'edge-supported', source: 'document-1', target: 'storyboard-1', label: 'Supported path' }
+    ])
+    const serialized = JSON.stringify(context.snapshot)
+    expect(serialized).toContain('Document ambient excerpt')
+    expect(serialized).not.toContain('PRIVATE DOCUMENT TAIL')
+    expect(serialized).not.toContain('private-resource-id')
+    expect(serialized).not.toContain('PRIVATE STORYBOARD BODY')
+    expect(serialized).not.toContain('future-1')
+    expect(serialized).not.toContain('unsupported')
+    expect(serialized).not.toContain('Future node')
+    expect(serialized).not.toContain('PRIVATE UNKNOWN PAYLOAD')
   })
 })

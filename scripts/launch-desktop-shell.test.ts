@@ -1,11 +1,27 @@
 import { describe, expect, test } from 'vitest'
 import { readFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
 import path from 'node:path'
 
 const scriptPath = path.resolve(__dirname, 'launch-desktop-shell.ps1')
 const rustMainPath = path.resolve(__dirname, '..', 'src-tauri', 'src', 'main.rs')
 const rustLibPath = path.resolve(__dirname, '..', 'src-tauri', 'src', 'lib.rs')
 const capabilityPath = path.resolve(__dirname, '..', 'src-tauri', 'capabilities', 'default.json')
+
+function runPowerShellCommand(command: string) {
+  return new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
+    const child = spawn('powershell', ['-NoProfile', '-Command', command], {
+      cwd: path.resolve(__dirname, '..'),
+      windowsHide: true
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', chunk => { stdout += chunk.toString() })
+    child.stderr.on('data', chunk => { stderr += chunk.toString() })
+    child.on('error', reject)
+    child.on('close', code => resolve({ stdout, stderr, code }))
+  })
+}
 
 describe('launch-desktop-shell.ps1', () => {
   test('uses a current desktop executable as the fast launch path', async () => {
@@ -27,6 +43,32 @@ describe('launch-desktop-shell.ps1', () => {
     expect(script).toContain('src-tauri\\tauri.conf.json')
     expect(script).toContain('src-tauri\\capabilities\\default.json')
     expect(script).toContain('src-tauri\\capabilities\\capture-toolbar.json')
+  })
+
+  test('computes the source fingerprint without relying on Get-FileHash', async () => {
+    const escapedScriptPath = scriptPath.replace(/'/g, "''")
+    const escapedRepoRoot = path.resolve(__dirname, '..').replace(/'/g, "''")
+    const command = [
+      'Import-Module Microsoft.PowerShell.Management',
+      'Import-Module Microsoft.PowerShell.Utility',
+      "function global:Get-FileHash { throw 'Get-FileHash unavailable' }",
+      '$taskTokens = $null',
+      '$taskErrors = $null',
+      `$taskAst = [System.Management.Automation.Language.Parser]::ParseFile('${escapedScriptPath}', [ref]$taskTokens, [ref]$taskErrors)`,
+      "if ($taskErrors.Count -gt 0) { $taskErrors | ForEach-Object { Write-Error $_.Message }; exit 1 }",
+      "$taskNames = @('Get-DesktopShellSourceFiles', 'Get-DesktopShellSourceFingerprint')",
+      '$taskFunctions = $taskAst.FindAll({ param($taskNode) $taskNode -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $taskNames -contains $taskNode.Name }, $true)',
+      'foreach ($taskFunction in $taskFunctions) { . ([scriptblock]::Create($taskFunction.Extent.Text)) }',
+      `$RepoRoot = Resolve-Path '${escapedRepoRoot}'`,
+      '$taskFingerprint = Get-DesktopShellSourceFingerprint',
+      "if ($taskFingerprint -notmatch '^[0-9a-f]{64}$') { Write-Error \"Invalid fingerprint: $taskFingerprint\"; exit 1 }",
+      'Write-Output $taskFingerprint'
+    ].join('; ')
+
+    const result = await runPowerShellCommand(command)
+
+    expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0)
+    expect(result.stdout.trim()).toMatch(/^[0-9a-f]{64}$/)
   })
 
   test('serializes desktop launches to prevent duplicate toolbar windows', async () => {

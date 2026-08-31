@@ -1,6 +1,6 @@
 # Skill Host Pins And Projections
 
-PromptCard Storage schema v14 defines Skill host pins and projections; schema v15 adds exact-revision trust reviews and their management operations. Storage remains the authority for host activation. A host never follows a Skill's mutable `currentRevision`: every activation pins one immutable revision and its canonical digest.
+PromptCard Storage schema v14 defines Skill host pins and projections; schema v15 adds exact-revision trust reviews and their management operations, schema v16 adds bounded document-resource/provider-cleanup durability, schema v17 adds typed creative references, schema v18 adds Prompt retrieval documents/audits, and schema v19 adds the Bridge delivery ledger without changing host-pin semantics. Storage remains the authority for host activation. A host never follows a Skill's mutable `currentRevision`: every activation pins one immutable revision and its canonical digest.
 
 ## Ownership Model
 
@@ -60,4 +60,4 @@ The Gateway independently treats the Storage response as untrusted input. Before
 
 ## Delivery Boundary
 
-Task 14 provides the Storage host-pin API, Codex filesystem projection, recovery, health reporting, and Gateway local-Agent snapshot validation. Task 15 adds the Skill Hub management UI, exact-revision review, history/diff, archive/restore, independent host controls, and explicit Codex repair. Task 15.5 freezes the host-neutral Bridge v2 contract in ADR-019. Task 16's bridge router, credentials, broader Gateway read surface, CLI, and MCP server remain unimplemented.
+Task 14 provides the Storage host-pin API, Codex filesystem projection, recovery, health reporting, and Gateway local-Agent snapshot validation. Task 15 adds the Skill Hub management UI, exact-revision review, history/diff, archive/restore, independent host controls, and explicit Codex repair. Task 15.5 freezes the host-neutral Bridge v2 contract in ADR-019. Tasks 16-28 implement the dedicated Bridge credential/router, exact read surface, shared Prompt retrieval, deterministic JSON CLI, ten-Tool STDIO/loopback HTTP MCP, typed review-only delivery, real Codex acceptance, adversarial gate, and optional packaging. Codex Skill reads still use only the repository scope fixed by the trusted profile; a host template cannot move a pin or widen Skill authority.

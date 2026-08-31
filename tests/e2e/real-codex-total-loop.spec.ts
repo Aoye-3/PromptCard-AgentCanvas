@@ -1,0 +1,997 @@
+import { createHash } from 'node:crypto'
+import { readFile, rm, writeFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import {
+  completedPromptCardCalls,
+  materializeManagedCodexImage,
+  runRealCodexPrompt,
+  type RealCodexRun
+} from './support/real-codex-host'
+
+const storageUrl = 'http://127.0.0.1:38102'
+const gatewayUrl = 'http://127.0.0.1:38101/api/promptcard/bridge/v3'
+const repositoryScope = 'real-codex-e2e'
+const bridgeToken = process.env.PROMPTCARD_E2E_BRIDGE_TOKEN || ''
+const bridgePhase = process.env.PROMPTCARD_E2E_BRIDGE_PHASE || ''
+const restartStatePath = resolve('tests/.runtime/real-codex-total-loop-restart-state.json')
+
+interface StoredDocument {
+  revision: number
+  digest: string
+  blocks: Array<{ content?: Array<{ text?: string }> }>
+  suggestions: unknown[]
+}
+
+interface StoredStoryboardRow {
+  cutLabel: string
+  timeRange: string
+  subject: string
+  action: string
+  scene: string
+  camera: string
+  lighting: string
+  audio: string
+  duration: string
+}
+
+interface StoredStoryboardSequence {
+  name: string
+  description: string
+  style: string
+  constraints: string
+  rows: StoredStoryboardRow[]
+}
+
+interface StoredStoryboardFieldChange {
+  scope: 'sequence' | 'row'
+  rowOrdinal?: number
+  field: string
+  previousValue: string
+  newValue: string
+}
+
+interface StoredNode {
+  id: string
+  kind: string
+  title: string
+  referenceCode: string
+  revision?: number
+  digest?: string
+  document?: StoredDocument
+  sequence?: StoredStoryboardSequence
+  pendingFieldChanges?: StoredStoryboardFieldChange[]
+  segments?: Array<{ source: string; text: string }>
+  agentPromptHandoff?: { proposalId: string; conversationId: string }
+  assetId?: string
+  imageUrl?: string
+  provenance?: { model: { capabilities?: Record<string, unknown> } }
+  meta: Record<string, unknown>
+}
+
+interface StoredProject {
+  revision: number
+  freeCanvas: { nodes: StoredNode[] }
+}
+
+interface DeliveryReplay {
+  kind: string
+  preview: Record<string, unknown>
+  commit: Record<string, unknown>
+  resultCode: string
+}
+
+interface RealCodexRestartState {
+  fixture: {
+    suffix: string
+    projectId: string
+    projectTitle: string
+    projectCode: string
+    sourceCode: string
+    skillCode: string
+  }
+  contextCodes: string[]
+  finalCvc: string
+  objectCodes: string[]
+  nodes: {
+    document: { id: string; code: string; text: string }
+    storyboard: { id: string; code: string; camera: string }
+    prompt: { id: string; code: string; text: string }
+    image: { id: string; code: string; assetId: string }
+  }
+  deliveries: DeliveryReplay[]
+  imageStageRequest: Record<string, unknown>
+  stagedAssetHandle: string
+  generatedWorkspacePath: string
+}
+
+test.describe.configure({ mode: 'serial' })
+
+test('real Codex completes reviewable Document, Storyboard, Prompt, and generated-image writeback', async ({
+  context,
+  page,
+  request
+}) => {
+  test.skip(process.env.PROMPTCARD_REAL_CODEX_ACCEPTANCE !== '1', 'requires an explicit real Codex acceptance run')
+  test.skip(bridgePhase === 'recover', 'The restart recovery phase uses the dedicated recovery test.')
+  test.setTimeout(1_500_000)
+  page.setDefaultTimeout(30_000)
+  page.setDefaultNavigationTimeout(120_000)
+  await rm(restartStatePath, { force: true })
+  await cleanupStaleRealCodexFixtures(request)
+  const fixture = await createFixture(request)
+  const contextCodes: string[] = []
+  const deliveries: DeliveryReplay[] = []
+  let generatedWorkspacePath: string | null = null
+  let preparedForRestart = false
+  page.on('dialog', dialog => void dialog.accept())
+
+  try {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await openProject(page, request, fixture.projectId, fixture.projectTitle)
+    const cvcCode = await createContextPack(page, request, fixture.projectId, fixture.sourceCode)
+    contextCodes.push(cvcCode)
+    const title = `Codex reviewed script ${fixture.suffix}`
+    const body = 'A creator waits beneath the rain as the last train leaves the platform.'
+    const previewId = `${fixture.suffix}-document-create-preview`
+    const commitId = `${fixture.suffix}-document-create-commit`
+    const previewDigest = digest(previewId)
+    const commitDigest = digest(commitId)
+
+    const run = await runRealCodexPrompt([
+      'You are a newly connected external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, or non-PromptCard tools.',
+      `Work only in project ${fixture.projectCode} and context ${cvcCode}.`,
+      'First follow the packaged environment: describe Runtime, describe Workspace, read every exact approved Skill pin,',
+      `and resolve the exact source object ${fixture.sourceCode}.`,
+      `Create exactly one review-only Document proposal titled “${title}”.`,
+      `Its one paragraph block must have id “opening” and exact text “${body}”.`,
+      `Use ${fixture.sourceCode} as the only source code and include the exact approved Skill pin from Workspace.`,
+      `Use preview clientRequestId “${previewId}” with normalizedRequestDigest “${previewDigest}”.`,
+      `After preview succeeds, commit that returned proposal using clientRequestId “${commitId}” and digest “${commitDigest}”.`,
+      'Do not create any other proposal. Stop after commit reports pending review.'
+    ].join(' '), 300_000)
+
+    assertSuccessfulCalls(run, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit'
+    ])
+    expect(toolPayload(run, 'promptcard_delivery_commit')).toMatchObject({ state: 'pending_review' })
+
+    await reviewPending(page, title, '接受外部 Agent 文档 提案')
+    const project = await getProject(request, fixture.projectId)
+    const documents = project.freeCanvas.nodes.filter(node => node.kind === 'document' && node.title === title)
+    expect(documents).toHaveLength(1)
+    expect(documents[0].referenceCode).toMatch(/^CVD-/)
+    expect(documentText(documents[0].document!)).toBe(body)
+    expect(documents[0].meta.bridgeDocumentDelivery).toEqual(expect.objectContaining({
+      profileId: 'codex-e2e',
+      cvcCode,
+      sourceCodes: [fixture.sourceCode],
+      skillPins: expect.arrayContaining([
+        expect.objectContaining({ skillCode: fixture.skillCode, revision: 1 })
+      ])
+    }))
+
+    const created = documents[0]
+    deliveries.push(captureDeliveryReplay('document.create', run, created.referenceCode))
+    const changeCvc = await createContextPack(page, request, fixture.projectId, created.referenceCode)
+    contextCodes.push(changeCvc)
+    const replacement = 'A filmmaker waits beneath the rain as the last train leaves the platform.'
+    const changePreviewId = `${fixture.suffix}-document-change-preview`
+    const changeCommitId = `${fixture.suffix}-document-change-commit`
+    const changeRun = await runRealCodexPrompt([
+      'You are a newly connected external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, or non-PromptCard tools.',
+      `Work only in project ${fixture.projectCode} and context ${changeCvc}.`,
+      'Follow the packaged environment: describe Runtime, describe Workspace, read every exact approved Skill pin,',
+      `and resolve the exact accepted Document ${created.referenceCode}.`,
+      `Create exactly one review-only change proposal that replaces the complete text in block “opening” with “${replacement}”.`,
+      'Use the exact Document revision/digest returned by Workspace or reference resolution and preserve native tracked review.',
+      `Use ${created.referenceCode} as the only source code and copy the exact approved Skill pin from Workspace.`,
+      `Use preview clientRequestId “${changePreviewId}” with normalizedRequestDigest “${digest(changePreviewId)}”.`,
+      `After preview succeeds, commit that proposal using clientRequestId “${changeCommitId}” and digest “${digest(changeCommitId)}”.`,
+      'Do not create any other proposal. Stop after commit reports pending review.'
+    ].join(' '), 300_000)
+
+    assertSuccessfulCalls(changeRun, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit'
+    ])
+    expect(toolPayload(changeRun, 'promptcard_delivery_commit')).toMatchObject({ state: 'pending_review' })
+    await reviewPending(page, `修改文档 ${created.referenceCode}`, '接受外部 Agent 文档 提案')
+
+    const projectWithSuggestion = await getProject(request, fixture.projectId)
+    const changed = projectWithSuggestion.freeCanvas.nodes.find(node => node.referenceCode === created.referenceCode)
+    expect(changed?.document?.suggestions.length).toBeGreaterThan(0)
+    expect(documentText(changed!.document!)).toBe(replacement)
+    const documentNode = page.locator(`.react-flow__node[data-id="${created.id}"]`)
+    await expect(documentNode.locator('[data-document-suggestion-kind="insert"]')).toBeVisible()
+    await expect(documentNode.locator('[data-document-suggestion-kind="delete"]')).toBeVisible()
+    await documentNode.getByRole('button', { name: '全部接受修订' }).click()
+    await expect.poll(async () => {
+      const stored = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+        .find(node => node.referenceCode === created.referenceCode)
+      return {
+        text: stored?.document ? documentText(stored.document) : '',
+        suggestions: stored?.document?.suggestions.length ?? -1
+      }
+    }).toEqual({ text: replacement, suggestions: 0 })
+    deliveries.push(captureDeliveryReplay('document.change', changeRun, created.referenceCode))
+
+    const acceptedDocument = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+      .find(node => node.referenceCode === created.referenceCode)
+    expect(acceptedDocument?.document).toBeTruthy()
+    const storyboardCvc = await createContextPack(
+      page, request, fixture.projectId, acceptedDocument!.referenceCode
+    )
+    contextCodes.push(storyboardCvc)
+    const storyboardTitle = `Codex reviewed storyboard ${fixture.suffix}`
+    const storyboardPreviewId = `${fixture.suffix}-storyboard-create-preview`
+    const storyboardCommitId = `${fixture.suffix}-storyboard-create-commit`
+    const storyboardRun = await runRealCodexPrompt([
+      'You are a newly connected external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, or non-PromptCard tools.',
+      `Work only in project ${fixture.projectCode} and context ${storyboardCvc}.`,
+      'Follow the packaged environment: describe Runtime, describe Workspace, read every exact approved Skill pin,',
+      `and resolve the exact accepted Document ${acceptedDocument!.referenceCode}.`,
+      `Create exactly one review-only Storyboard proposal titled “${storyboardTitle}” sourced from that exact Document.`,
+      'Create exactly one sequence with name “Last train”, description “A rainy platform reveal”,',
+      'style “Naturalistic cinema”, constraints “No dialogue”, and exactly one row.',
+      'That row must have cutLabel “1”, timeRange “00:00-00:04”, subject “Filmmaker”,',
+      'action “Waits as the train leaves”, scene “Rainy railway platform at night”, camera “Wide”,',
+      'lighting “Neon reflections”, audio “Rain and departing train”, and duration “4s”.',
+      `Use ${acceptedDocument!.referenceCode} as the only source code and copy the exact approved Skill pin from Workspace.`,
+      `Use preview clientRequestId “${storyboardPreviewId}” with normalizedRequestDigest “${digest(storyboardPreviewId)}”.`,
+      `After preview succeeds, commit that proposal using clientRequestId “${storyboardCommitId}” and digest “${digest(storyboardCommitId)}”.`,
+      'Do not create any other proposal. Stop after commit reports pending review.'
+    ].join(' '), 300_000)
+
+    assertSuccessfulCalls(storyboardRun, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit'
+    ])
+    expect(toolPayload(storyboardRun, 'promptcard_delivery_commit')).toMatchObject({ state: 'pending_review' })
+    await reviewPending(page, storyboardTitle, '接受外部 Agent 分镜 提案')
+
+    const storyboard = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+      .find(node => node.kind === 'storyboard' && node.title === storyboardTitle)
+    expect(storyboard?.referenceCode).toMatch(/^CVS-/)
+    expect(storyboard?.sequence?.rows).toHaveLength(1)
+    expect(storyboard?.sequence?.rows[0].camera).toBe('Wide')
+    expect(storyboard?.pendingFieldChanges).toEqual([])
+    deliveries.push(captureDeliveryReplay('storyboard.create', storyboardRun, storyboard!.referenceCode))
+
+    const storyboardChangeCvc = await createContextPack(
+      page, request, fixture.projectId, storyboard!.referenceCode
+    )
+    contextCodes.push(storyboardChangeCvc)
+    const storyboardChangePreviewId = `${fixture.suffix}-storyboard-change-preview`
+    const storyboardChangeCommitId = `${fixture.suffix}-storyboard-change-commit`
+    const storyboardChangeRun = await runRealCodexPrompt([
+      'You are a newly connected external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, or non-PromptCard tools.',
+      `Work only in project ${fixture.projectCode} and context ${storyboardChangeCvc}.`,
+      'Follow the packaged environment: describe Runtime, describe Workspace, read every exact approved Skill pin,',
+      `and resolve the exact accepted Storyboard ${storyboard!.referenceCode}.`,
+      'Create exactly one review-only Storyboard change proposal for row ordinal 0.',
+      'Change only its camera field from “Wide” to “Close-up”. Preserve native per-field review.',
+      `Use ${storyboard!.referenceCode} as the only source code and copy the exact approved Skill pin from Workspace.`,
+      `Use preview clientRequestId “${storyboardChangePreviewId}” with normalizedRequestDigest “${digest(storyboardChangePreviewId)}”.`,
+      `After preview succeeds, commit that proposal using clientRequestId “${storyboardChangeCommitId}” and digest “${digest(storyboardChangeCommitId)}”.`,
+      'Do not create any other proposal. Stop after commit reports pending review.'
+    ].join(' '), 300_000)
+
+    assertSuccessfulCalls(storyboardChangeRun, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit'
+    ])
+    expect(toolPayload(storyboardChangeRun, 'promptcard_delivery_commit')).toMatchObject({ state: 'pending_review' })
+    await reviewPending(page, `修改分镜 ${storyboard!.referenceCode}`, '接受外部 Agent 分镜 提案')
+
+    const pendingStoryboard = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+      .find(node => node.referenceCode === storyboard!.referenceCode)
+    expect(pendingStoryboard?.sequence?.rows[0].camera).toBe('Wide')
+    expect(pendingStoryboard?.pendingFieldChanges).toEqual([
+      expect.objectContaining({
+        scope: 'row', field: 'camera',
+        previousValue: 'Wide', newValue: 'Close-up'
+      })
+    ])
+    const storyboardNode = page.locator(`.react-flow__node[data-id="${storyboard!.id}"]`)
+    await expect(storyboardNode.getByText('Wide', { exact: true })).toBeVisible()
+    await expect(storyboardNode.getByText('Close-up', { exact: true })).toBeVisible()
+    await storyboardNode.getByRole('button', { name: '接受 camera 修改' }).click()
+    await expect.poll(async () => {
+      const stored = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+        .find(node => node.referenceCode === storyboard!.referenceCode)
+      return {
+        camera: stored?.sequence?.rows[0].camera || '',
+        pending: stored?.pendingFieldChanges?.length ?? -1
+      }
+    }).toEqual({ camera: 'Close-up', pending: 0 })
+
+    const acceptedStoryboard = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+      .find(node => node.referenceCode === storyboard!.referenceCode)
+    expect(acceptedStoryboard?.sequence?.rows[0].camera).toBe('Close-up')
+    deliveries.push(captureDeliveryReplay(
+      'storyboard.change', storyboardChangeRun, acceptedStoryboard!.referenceCode
+    ))
+    const promptCvc = await createContextPack(
+      page, request, fixture.projectId, acceptedStoryboard!.referenceCode
+    )
+    contextCodes.push(promptCvc)
+    const promptTitle = `Codex shot prompt ${fixture.suffix}`
+    const promptText = 'Naturalistic close-up of a filmmaker waiting on a rain-soaked railway platform at night, neon reflections, departing train, no dialogue.'
+    const promptPreviewId = `${fixture.suffix}-prompt-create-preview`
+    const promptCommitId = `${fixture.suffix}-prompt-create-commit`
+    const promptRun = await runRealCodexPrompt([
+      'You are a newly connected external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, or non-PromptCard tools.',
+      `Work only in project ${fixture.projectCode} and context ${promptCvc}.`,
+      'Follow the packaged environment: describe Runtime, describe Workspace, read every exact approved Skill pin,',
+      `and resolve the exact accepted Storyboard ${acceptedStoryboard!.referenceCode}.`,
+      `Create exactly one review-only Prompt proposal titled “${promptTitle}”.`,
+      `Its exact user text must be “${promptText}”.`,
+      `Use ${acceptedStoryboard!.referenceCode} as the only source code and copy the exact approved Skill pin from Workspace.`,
+      `Use preview clientRequestId “${promptPreviewId}” with normalizedRequestDigest “${digest(promptPreviewId)}”.`,
+      `After preview succeeds, commit that proposal using clientRequestId “${promptCommitId}” and digest “${digest(promptCommitId)}”.`,
+      'Do not create any other proposal. Stop after commit reports pending review.'
+    ].join(' '), 300_000)
+
+    assertSuccessfulCalls(promptRun, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit'
+    ])
+    expect(toolPayload(promptRun, 'promptcard_delivery_commit')).toMatchObject({ state: 'pending_review' })
+    await reviewPending(page, promptTitle, '接受外部 Agent Prompt 提案')
+
+    const promptNodes = (await getProject(request, fixture.projectId)).freeCanvas.nodes.filter(node => (
+      node.kind === 'text' && node.title === promptTitle
+    ))
+    expect(promptNodes).toHaveLength(1)
+    expect(promptNodes[0].referenceCode).toMatch(/^CVT-/)
+    expect(promptNodes[0].segments?.map(segment => segment.text).join('')).toBe(promptText)
+    expect(promptNodes[0].segments?.every(segment => segment.source === 'user')).toBe(true)
+    expect(promptNodes[0].provenance?.model.capabilities).toEqual({})
+    expect(promptNodes[0].agentPromptHandoff?.conversationId).toBe(`bridge:codex-e2e:${promptCvc}`)
+    deliveries.push(captureDeliveryReplay('prompt.create', promptRun, promptNodes[0].referenceCode))
+
+    await page.locator(`.react-flow__node[data-id="${acceptedStoryboard!.id}"]`).click({ modifiers: ['Control'] })
+    const imageCvc = await createContextPack(
+      page,
+      request,
+      fixture.projectId,
+      [promptNodes[0].referenceCode, acceptedStoryboard!.referenceCode]
+    )
+    contextCodes.push(imageCvc)
+    const imageGenerationRun = await runRealCodexPrompt([
+      'Use only the built-in image generation tool and do not inspect repository files.',
+      'Generate exactly one cinematic PNG frame from this accepted shot Prompt:',
+      `“${promptText}”`,
+      'The frame must contain no written text. Return only the exact absolute generated artifact path and stop.'
+    ].join(' '), 300_000)
+    const imageArtifact = await materializeManagedCodexImage(
+      imageGenerationRun,
+      `tests/.runtime/real-codex-images/${fixture.suffix}.png`
+    )
+    generatedWorkspacePath = imageArtifact.absoluteWorkspacePath
+
+    const imageStageId = `${fixture.suffix}-image-stage`
+    const imagePreviewId = `${fixture.suffix}-image-place-preview`
+    const imageCommitId = `${fixture.suffix}-image-place-commit`
+    const imageAltText = 'Filmmaker waiting beneath a rainy station canopy at night'
+    const imageRun = await runRealCodexPrompt([
+      'You are a newly connected external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, image generation, or non-PromptCard tools.',
+      `Work only in project ${fixture.projectCode} and context ${imageCvc}.`,
+      'Follow the packaged environment: describe Runtime, describe Workspace, read every exact approved Skill pin,',
+      `and resolve both the exact accepted Prompt ${promptNodes[0].referenceCode} and Storyboard ${acceptedStoryboard!.referenceCode}.`,
+      'Stage exactly one already-generated workspace image with these exact fields:',
+      `clientRequestId “${imageStageId}”, workspaceRelativePath “${imageArtifact.workspaceRelativePath}”,`,
+      `contentDigest “${imageArtifact.contentDigest}”, mediaType “${imageArtifact.mediaType}”, byteLength ${imageArtifact.byteLength}.`,
+      'Use the returned stagedAssetHandle to create exactly one review-only image.place proposal.',
+      `Target context ${imageCvc}, Storyboard ${acceptedStoryboard!.referenceCode}, baseRevision ${acceptedStoryboard!.revision},`,
+      `baseDigest “${acceptedStoryboard!.digest}”, and shotOrdinal 0.`,
+      `Use ${promptNodes[0].referenceCode} as the only source code, copy the exact approved Skill pin from Workspace,`,
+      `and use altText “${imageAltText}”.`,
+      `Use preview clientRequestId “${imagePreviewId}” with normalizedRequestDigest “${digest(imagePreviewId)}”.`,
+      `After preview succeeds, commit that proposal using clientRequestId “${imageCommitId}” and digest “${digest(imageCommitId)}”.`,
+      'Do not create any other proposal. Stop after commit reports pending review.'
+    ].join(' '), 300_000)
+
+    assertSuccessfulCalls(imageRun, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_asset_stage',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit'
+    ])
+    expect(toolPayload(imageRun, 'promptcard_asset_stage')).toMatchObject({
+      stagedAssetHandle: expect.stringMatching(/^AST-/),
+      contentDigest: imageArtifact.contentDigest
+    })
+    expect(toolPayload(imageRun, 'promptcard_delivery_commit')).toMatchObject({ state: 'pending_review' })
+    await reviewPending(page, imageArtifact.filename, '接受外部 Agent 图片 提案')
+
+    const images = (await getProject(request, fixture.projectId)).freeCanvas.nodes.filter(node => (
+      node.kind === 'image'
+      && node.meta.source === 'promptcard-bridge'
+      && (node.meta.bridgeDelivery as { clientRequestId?: unknown } | undefined)?.clientRequestId === imagePreviewId
+    ))
+    expect(images).toHaveLength(1)
+    expect(images[0].referenceCode).toMatch(/^CVM-/)
+    expect(images[0].assetId).toBeTruthy()
+    expect(images[0].imageUrl).toBe(`/storage-api/assets/${images[0].assetId}`)
+    expect(images[0].meta.bridgeDelivery).toEqual(expect.objectContaining({
+      profileId: 'codex-e2e',
+      cvcCode: imageCvc,
+      sourceCodes: [promptNodes[0].referenceCode],
+      target: expect.objectContaining({
+        storyboardCode: acceptedStoryboard!.referenceCode,
+        shotOrdinal: 0
+      }),
+      skillPins: expect.arrayContaining([
+        expect.objectContaining({ skillCode: fixture.skillCode, revision: 1 })
+      ])
+    }))
+    deliveries.push(captureDeliveryReplay('image.place', imageRun, images[0].referenceCode))
+    const generationRuns = await listGenerationRuns(request, fixture.projectId)
+    expect(generationRuns).toEqual([])
+
+    if (bridgePhase === 'prepare') {
+      await selectCanvasNodes(page, [
+        images[0].id,
+        created.id,
+        acceptedStoryboard!.id,
+        promptNodes[0].id
+      ])
+      const finalCvc = await createContextPack(page, request, fixture.projectId, [
+        created.referenceCode,
+        acceptedStoryboard!.referenceCode,
+        promptNodes[0].referenceCode,
+        images[0].referenceCode
+      ])
+      contextCodes.push(finalCvc)
+      expect(deliveries.map(item => item.kind)).toEqual([
+        'document.create',
+        'document.change',
+        'storyboard.create',
+        'storyboard.change',
+        'prompt.create',
+        'image.place'
+      ])
+      const stagePayload = toolPayload(imageRun, 'promptcard_asset_stage')
+      const state: RealCodexRestartState = {
+        fixture,
+        contextCodes,
+        finalCvc,
+        objectCodes: [
+          created.referenceCode,
+          acceptedStoryboard!.referenceCode,
+          promptNodes[0].referenceCode,
+          images[0].referenceCode
+        ],
+        nodes: {
+          document: { id: created.id, code: created.referenceCode, text: replacement },
+          storyboard: {
+            id: acceptedStoryboard!.id,
+            code: acceptedStoryboard!.referenceCode,
+            camera: 'Close-up'
+          },
+          prompt: {
+            id: promptNodes[0].id,
+            code: promptNodes[0].referenceCode,
+            text: promptText
+          },
+          image: {
+            id: images[0].id,
+            code: images[0].referenceCode,
+            assetId: images[0].assetId!
+          }
+        },
+        deliveries,
+        imageStageRequest: toolArguments(imageRun, 'promptcard_asset_stage'),
+        stagedAssetHandle: String(stagePayload.stagedAssetHandle),
+        generatedWorkspacePath: generatedWorkspacePath!
+      }
+      await writeFile(restartStatePath, JSON.stringify(state, null, 2), 'utf8')
+      preparedForRestart = true
+    }
+  } finally {
+    if (!preparedForRestart) {
+      if (generatedWorkspacePath) await rm(generatedWorkspacePath, { force: true })
+      if (!page.isClosed()) {
+        for (const code of contextCodes.reverse()) await revokeContext(request, code)
+        await cleanupFixture(request, fixture)
+      }
+    }
+  }
+})
+
+test('real Codex replays the complete accepted loop after PromptCard and host restart', async ({
+  page,
+  request
+}) => {
+  test.skip(process.env.PROMPTCARD_REAL_CODEX_ACCEPTANCE !== '1', 'requires an explicit real Codex acceptance run')
+  test.skip(bridgePhase !== 'recover', 'Only the restart recovery phase runs this test.')
+  test.setTimeout(1_500_000)
+  page.setDefaultTimeout(30_000)
+  page.setDefaultNavigationTimeout(120_000)
+  const state = JSON.parse(await readFile(restartStatePath, 'utf8')) as RealCodexRestartState
+  let recoveryVerified = false
+
+  try {
+    const statusRequests = state.deliveries.map(delivery => ({
+      clientRequestId: String(delivery.commit.clientRequestId)
+    }))
+    const run = await runRealCodexPrompt([
+      'You are a newly restarted external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, image generation, or non-PromptCard tools.',
+      `Work only in project ${state.fixture.projectCode} and context ${state.finalCvc}.`,
+      'First call promptcard_runtime_describe, then promptcard_workspace_describe for that exact project/context,',
+      'then read every exact approved Skill pin returned by Workspace, and resolve these exact objects in this exact order:',
+      state.objectCodes.join(', '),
+      'After discovery, execute this exact replay plan literally. Do not add, remove, normalize, or regenerate any field:',
+      JSON.stringify({
+        assetStage: state.imageStageRequest,
+        deliveries: state.deliveries.map(delivery => ({
+          kind: delivery.kind,
+          preview: delivery.preview,
+          commit: delivery.commit,
+          status: { clientRequestId: delivery.commit.clientRequestId }
+        }))
+      }),
+      'Call promptcard_asset_stage once with assetStage.',
+      'Then, for each deliveries item in order, call promptcard_delivery_preview with preview,',
+      'promptcard_delivery_commit with commit, and promptcard_delivery_status with status.',
+      'Every operation is an idempotent replay of already accepted work. Stop after the final status call.'
+    ].join(' '), 600_000)
+
+    assertSuccessfulCalls(run, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_asset_stage',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit',
+      'promptcard_delivery_status'
+    ])
+    expect(toolArguments(run, 'promptcard_workspace_describe')).toEqual({
+      projectCode: state.fixture.projectCode,
+      cvcCode: state.finalCvc
+    })
+    expect(toolArgumentsList(run, 'promptcard_reference_resolve')).toEqual(
+      state.objectCodes.map(code => ({ cvcCode: state.finalCvc, code }))
+    )
+    expect(toolArguments(run, 'promptcard_asset_stage')).toEqual(state.imageStageRequest)
+    expect(toolArgumentsList(run, 'promptcard_delivery_preview')).toEqual(
+      state.deliveries.map(delivery => delivery.preview)
+    )
+    expect(toolArgumentsList(run, 'promptcard_delivery_commit')).toEqual(
+      state.deliveries.map(delivery => delivery.commit)
+    )
+    expect(toolArgumentsList(run, 'promptcard_delivery_status')).toEqual(statusRequests)
+
+    expect(toolPayload(run, 'promptcard_asset_stage')).toMatchObject({
+      disposition: 'replay',
+      stagedAssetHandle: state.stagedAssetHandle,
+      state: 'accepted'
+    })
+    for (const payload of toolPayloads(run, 'promptcard_delivery_preview')) {
+      expect(payload).toMatchObject({ disposition: 'replay', state: 'previewed' })
+    }
+    const commitPayloads = toolPayloads(run, 'promptcard_delivery_commit')
+    const statusPayloads = toolPayloads(run, 'promptcard_delivery_status')
+    expect(commitPayloads).toHaveLength(state.deliveries.length)
+    expect(statusPayloads).toHaveLength(state.deliveries.length)
+    for (const [index, delivery] of state.deliveries.entries()) {
+      expect(commitPayloads[index]).toMatchObject({
+        state: 'accepted',
+        resultCodes: [delivery.resultCode]
+      })
+      expect(statusPayloads[index]).toMatchObject({
+        state: 'accepted',
+        resultCodes: [delivery.resultCode]
+      })
+    }
+
+    const conflictRequest = {
+      ...state.deliveries[0].preview,
+      normalizedRequestDigest: digest(`restart-conflict:${String(state.deliveries[0].preview.normalizedRequestDigest)}`)
+    }
+    const conflict = await request.post(`${gatewayUrl}/delivery/preview`, {
+      headers: { authorization: `Bearer ${bridgeToken}` },
+      data: conflictRequest
+    })
+    expect(conflict.status(), await conflict.text()).toBe(409)
+    expect(await conflict.json()).toMatchObject({ detail: { code: 'delivery_conflict' } })
+
+    const project = await getProject(request, state.fixture.projectId)
+    for (const code of state.objectCodes) {
+      expect(project.freeCanvas.nodes.filter(node => node.referenceCode === code)).toHaveLength(1)
+    }
+    const document = project.freeCanvas.nodes.find(node => node.referenceCode === state.nodes.document.code)
+    const storyboard = project.freeCanvas.nodes.find(node => node.referenceCode === state.nodes.storyboard.code)
+    const prompt = project.freeCanvas.nodes.find(node => node.referenceCode === state.nodes.prompt.code)
+    const image = project.freeCanvas.nodes.find(node => node.referenceCode === state.nodes.image.code)
+    expect(document?.id).toBe(state.nodes.document.id)
+    expect(document?.document && documentText(document.document)).toBe(state.nodes.document.text)
+    expect(document?.document?.suggestions).toEqual([])
+    expect(storyboard).toMatchObject({
+      id: state.nodes.storyboard.id,
+      pendingFieldChanges: [],
+      sequence: { rows: [expect.objectContaining({ camera: state.nodes.storyboard.camera })] }
+    })
+    expect(prompt).toMatchObject({
+      id: state.nodes.prompt.id,
+      segments: [expect.objectContaining({ source: 'user' })]
+    })
+    expect(prompt?.segments?.map(segment => segment.text).join('')).toBe(state.nodes.prompt.text)
+    expect(image).toMatchObject({
+      id: state.nodes.image.id,
+      assetId: state.nodes.image.assetId,
+      imageUrl: `/storage-api/assets/${state.nodes.image.assetId}`
+    })
+    expect(await listGenerationRuns(request, state.fixture.projectId)).toEqual([])
+
+    await page.addInitScript(({ key, value }) => {
+      globalThis.localStorage.setItem(key, value)
+    }, {
+      key: `promptcard:active-bridge-context:${state.fixture.projectId}`,
+      value: state.finalCvc
+    })
+    await openProject(page, request, state.fixture.projectId, state.fixture.projectTitle)
+    await expect(page.locator(`.react-flow__node[data-id="${state.nodes.document.id}"]`))
+      .toContainText(state.nodes.document.text)
+    await expect(page.locator(`.react-flow__node[data-id="${state.nodes.storyboard.id}"]`))
+      .toContainText(state.nodes.storyboard.camera)
+    await expect(page.locator(`.react-flow__node[data-id="${state.nodes.prompt.id}"]`))
+      .toContainText(state.nodes.prompt.text)
+    await expect(page.locator(`.react-flow__node[data-id="${state.nodes.image.id}"] img`)).toBeVisible()
+    recoveryVerified = true
+  } finally {
+    if (recoveryVerified && !page.isClosed()) {
+      await rm(state.generatedWorkspacePath, { force: true })
+      for (const code of [...state.contextCodes].reverse()) await revokeContext(request, code)
+      await cleanupFixture(request, state.fixture)
+      await rm(restartStatePath, { force: true })
+    }
+  }
+})
+
+async function selectCanvasNodes(page: Page, nodeIds: string[]) {
+  const modifier = process.platform === 'darwin' ? 'Meta' : 'Control'
+  for (const [index, nodeId] of nodeIds.entries()) {
+    await page.locator(`.react-flow__node[data-id="${nodeId}"]`).click({
+      ...(index > 0 ? { modifiers: [modifier] as ('Meta' | 'Control')[] } : {}),
+      position: { x: 8, y: 8 },
+      timeout: 30_000
+    })
+    await expect(page.locator('.react-flow__node.selected')).toHaveCount(index + 1)
+  }
+}
+
+function assertSuccessfulCalls(run: RealCodexRun, requiredTools: string[]) {
+  const calls = completedPromptCardCalls(run)
+  const tools = calls.map(call => call?.tool)
+  expect(tools[0]).toBe('promptcard_runtime_describe')
+  expect(tools[1]).toBe('promptcard_workspace_describe')
+  const failed = calls.filter(call => call?.status !== 'completed')
+  expect(failed, JSON.stringify(failed, null, 2)).toEqual([])
+  for (const tool of requiredTools) expect(tools).toContain(tool)
+}
+
+function toolPayload(run: RealCodexRun, tool: string): Record<string, unknown> {
+  const text = completedPromptCardCalls(run).find(call => call?.tool === tool)
+    ?.result?.content?.map(item => item.text || '').join('') || '{}'
+  return JSON.parse(text) as Record<string, unknown>
+}
+
+function toolPayloads(run: RealCodexRun, tool: string): Record<string, unknown>[] {
+  return completedPromptCardCalls(run)
+    .filter(call => call?.tool === tool)
+    .map(call => JSON.parse(
+      call?.result?.content?.map(item => item.text || '').join('') || '{}'
+    ) as Record<string, unknown>)
+}
+
+function toolArguments(run: RealCodexRun, tool: string, index = 0): Record<string, unknown> {
+  const call = completedPromptCardCalls(run).filter(item => item?.tool === tool)[index]
+  if (!call?.arguments) throw new Error(`Real Codex did not call ${tool} at index ${index}.`)
+  return call.arguments
+}
+
+function toolArgumentsList(run: RealCodexRun, tool: string): Record<string, unknown>[] {
+  return completedPromptCardCalls(run)
+    .filter(call => call?.tool === tool)
+    .map(call => call?.arguments || {})
+}
+
+function captureDeliveryReplay(kind: string, run: RealCodexRun, resultCode: string): DeliveryReplay {
+  return {
+    kind,
+    preview: toolArguments(run, 'promptcard_delivery_preview'),
+    commit: toolArguments(run, 'promptcard_delivery_commit'),
+    resultCode
+  }
+}
+
+async function createFixture(request: APIRequestContext) {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const projectId = `real-codex-loop-${suffix}`
+  const projectTitle = `Real Codex Loop ${suffix}`
+  const projectResponse = await request.post(`${storageUrl}/api/projects`, {
+    data: {
+      id: projectId,
+      title: projectTitle,
+      type: 'free-canvas',
+      pages: [],
+      currentPage: 0,
+      meta: {},
+      freeCanvas: {
+        nodes: [{
+          id: 'script-source',
+          kind: 'text',
+          title: 'Last train script',
+          position: { x: 120, y: 120 },
+          width: 420,
+          height: 180,
+          fontSize: 'large',
+          segments: [{
+            id: 'source',
+            source: 'user',
+            text: 'EXT. RAILWAY PLATFORM — RAIN — NIGHT. The last train departs.',
+            color: '#111827',
+            createdAt: 1,
+            updatedAt: 1
+          }],
+          meta: {}
+        }],
+        edges: [],
+        selectedNodeId: 'script-source',
+        viewport: { x: 0, y: 0, zoom: 1 },
+        meta: {}
+      }
+    }
+  })
+  expect(projectResponse.ok(), await projectResponse.text()).toBe(true)
+  const project = await projectResponse.json() as {
+    referenceCode: string
+    freeCanvas: { nodes: Array<{ referenceCode: string }> }
+  }
+  const skillId = `real-codex-loop-skill-${suffix}`
+  const skillResponse = await request.post(`${storageUrl}/api/skills`, {
+    data: {
+      id: skillId,
+      slug: `loop-story-planning-${suffix}`,
+      name: 'Real Codex Loop Story Planning',
+      description: 'Turns an explicit script source into reviewable planning assets.',
+      source: 'external',
+      trustState: 'trusted',
+      instructions: 'Keep cause-and-effect explicit. Preserve the rain motif. Every creative write requires human review.',
+      declaredCapabilities: { tools: ['promptcard_delivery_preview', 'promptcard_delivery_commit'] }
+    }
+  })
+  expect(skillResponse.ok(), await skillResponse.text()).toBe(true)
+  const skill = await skillResponse.json() as { referenceCode: string }
+  const pinResponse = await request.put(`${storageUrl}/api/skills/${skill.referenceCode}/host-pins/codex`, {
+    data: {
+      enabled: true,
+      revision: 1,
+      repositoryScope,
+      publicationName: `real-codex-loop-${suffix}`
+    }
+  })
+  expect(pinResponse.ok(), await pinResponse.text()).toBe(true)
+  return {
+    suffix,
+    projectId,
+    projectTitle,
+    projectCode: project.referenceCode,
+    sourceCode: project.freeCanvas.nodes[0].referenceCode,
+    skillCode: skill.referenceCode
+  }
+}
+
+async function openProject(page: Page, request: APIRequestContext, projectId: string, title: string) {
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  const card = page.getByText(title, { exact: true }).locator('xpath=ancestor::article')
+  const saveResponse = page.waitForResponse(response => (
+    response.request().method() === 'PUT'
+    && new URL(response.url()).pathname.endsWith(`/storage-api/projects/${projectId}`)
+  ))
+  await card.getByRole('button', { name: 'Open project' }).click()
+  await saveResponse
+  await expect(page.locator('[data-free-canvas-screen]')).toBeVisible()
+  await waitForStableProjectRevision(request, projectId)
+}
+
+async function createContextPack(
+  page: Page,
+  request: APIRequestContext,
+  projectId: string,
+  expectedCode: string | string[]
+) {
+  await page.getByRole('button', { name: '复制 Agent/MCP 上下文' }).click()
+  const dialog = page.getByRole('dialog', { name: '复制 Agent/MCP 上下文' })
+  for (const code of Array.isArray(expectedCode) ? expectedCode : [expectedCode]) {
+    await expect(dialog.getByText(code, { exact: true })).toBeVisible()
+  }
+  await expect.poll(async () => {
+    const revision = (await getProject(request, projectId)).revision
+    return (await dialog.innerText()).includes(`项目修订 ${revision}`)
+  }).toBe(true)
+  await dialog.getByRole('button', { name: '创建并复制 CVC' }).click()
+  const code = await dialog.getByTestId('context-pack-code').innerText()
+  expect(code).toMatch(/^CVC-/)
+  await dialog.getByRole('button', { name: '关闭 Agent/MCP 上下文' }).click()
+  await expect.poll(async () => {
+    const [project, context] = await Promise.all([
+      getProject(request, projectId),
+      getContextPack(request, code)
+    ])
+    return context.projectRevision === project.revision
+  }, { timeout: 10_000, intervals: [250, 500, 1_000] }).toBe(true)
+  return code
+}
+
+async function waitForStableProjectRevision(request: APIRequestContext, projectId: string) {
+  let previous = -1
+  let stableSamples = 0
+  await expect.poll(async () => {
+    const revision = (await getProject(request, projectId)).revision
+    stableSamples = revision === previous ? stableSamples + 1 : 0
+    previous = revision
+    return stableSamples >= 2
+  }, { timeout: 10_000, intervals: [250, 500, 750, 1_000] }).toBe(true)
+}
+
+async function getContextPack(request: APIRequestContext, code: string) {
+  const response = await request.get(`${storageUrl}/api/context-packs/${code}`)
+  expect(response.ok(), await response.text()).toBe(true)
+  return response.json() as Promise<{ projectRevision: number }>
+}
+
+async function reviewPending(page: Page, title: string, acceptLabel: string) {
+  await page.getByRole('button', { name: '刷新外部 Agent 提案' }).click()
+  const inbox = page.locator('[data-bridge-delivery-inbox]')
+  await expect(inbox.getByText(title, { exact: true })).toBeVisible()
+  await inbox.getByRole('button', { name: acceptLabel }).click()
+  try {
+    await expect(inbox.getByText(title, { exact: true })).toHaveCount(0, { timeout: 30_000 })
+  } catch (error) {
+    const alerts = await inbox.getByRole('alert').allTextContents()
+    throw new Error(`${String(error)} reviewAlerts=${JSON.stringify(alerts)}`)
+  }
+}
+
+async function getProject(request: APIRequestContext, id: string) {
+  const response = await request.get(`${storageUrl}/api/projects/${id}`)
+  expect(response.ok(), await response.text()).toBe(true)
+  return response.json() as Promise<StoredProject>
+}
+
+async function listGenerationRuns(request: APIRequestContext, projectId: string): Promise<unknown[]> {
+  const response = await request.get(`${storageUrl}/api/image-generation-runs?projectId=${projectId}&limit=100`)
+  expect(response.ok(), await response.text()).toBe(true)
+  const body = await response.json() as { runs?: unknown[] }
+  return body.runs || []
+}
+
+function documentText(document: StoredDocument): string {
+  return document.blocks.flatMap(block => block.content || []).map(item => item.text || '').join('')
+}
+
+function digest(value: string): string {
+  return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`
+}
+
+async function revokeContext(request: APIRequestContext, cvcCode: string) {
+  const response = await request.post(`${storageUrl}/api/context-packs/${cvcCode}/revoke`, {
+    data: { actor: 'real-codex-acceptance', reason: 'test-cleanup' }
+  })
+  expect(response.ok(), await response.text()).toBe(true)
+}
+
+async function cleanupFixture(
+  request: APIRequestContext,
+  fixture: Awaited<ReturnType<typeof createFixture>>
+) {
+  const disable = await request.put(`${storageUrl}/api/skills/${fixture.skillCode}/host-pins/codex`, {
+    data: { enabled: false, revision: 1, repositoryScope }
+  })
+  expect(disable.ok(), await disable.text()).toBe(true)
+  const archive = await request.post(`${storageUrl}/api/skills/${fixture.skillCode}/archive`)
+  expect(archive.ok(), await archive.text()).toBe(true)
+  const trash = await request.post(`${storageUrl}/api/projects/trash`, {
+    data: { ids: [fixture.projectId], deletedBy: 'user', deleteReason: 'real-codex-acceptance-cleanup' }
+  })
+  expect(trash.ok(), await trash.text()).toBe(true)
+  const removed = await request.delete(`${storageUrl}/api/projects/trash`, {
+    data: { ids: [fixture.projectId] }
+  })
+  expect(removed.ok(), await removed.text()).toBe(true)
+}
+
+async function cleanupStaleRealCodexFixtures(request: APIRequestContext) {
+  const projectsResponse = await request.get(`${storageUrl}/api/projects`)
+  expect(projectsResponse.ok(), await projectsResponse.text()).toBe(true)
+  const projects = (await projectsResponse.json() as { projects?: Array<{
+    id: string
+    referenceCode: string
+  }> }).projects || []
+  for (const project of projects.filter(item => item.id.startsWith('real-codex-loop-'))) {
+    const contextsResponse = await request.get(
+      `${storageUrl}/api/context-packs?projectCode=${encodeURIComponent(project.referenceCode)}`
+    )
+    expect(contextsResponse.ok(), await contextsResponse.text()).toBe(true)
+    const contexts = (await contextsResponse.json() as {
+      contextPacks?: Array<{ cvcCode: string }>
+    }).contextPacks || []
+    for (const context of contexts) await revokeContext(request, context.cvcCode)
+    const trash = await request.post(`${storageUrl}/api/projects/trash`, {
+      data: {
+        ids: [project.id],
+        deletedBy: 'user',
+        deleteReason: 'stale-real-codex-acceptance-cleanup'
+      }
+    })
+    expect(trash.ok(), await trash.text()).toBe(true)
+    const removed = await request.delete(`${storageUrl}/api/projects/trash`, {
+      data: { ids: [project.id] }
+    })
+    expect(removed.ok(), await removed.text()).toBe(true)
+    const suffix = project.id.slice('real-codex-loop-'.length)
+    await rm(resolve('tests/.runtime/real-codex-images', `${suffix}.png`), { force: true })
+  }
+
+  const skillsResponse = await request.get(`${storageUrl}/api/skills`)
+  expect(skillsResponse.ok(), await skillsResponse.text()).toBe(true)
+  const skills = (await skillsResponse.json() as { skills?: Array<{
+    slug: string
+    referenceCode: string
+    revision: number
+    lifecycleStatus: string
+  }> }).skills || []
+  for (const skill of skills.filter(item => (
+    item.slug.startsWith('loop-story-planning-') && item.lifecycleStatus === 'active'
+  ))) {
+    const disable = await request.put(
+      `${storageUrl}/api/skills/${skill.referenceCode}/host-pins/codex`,
+      {
+        data: {
+          enabled: false,
+          revision: skill.revision,
+          repositoryScope
+        }
+      }
+    )
+    expect(disable.ok(), await disable.text()).toBe(true)
+    const archive = await request.post(`${storageUrl}/api/skills/${skill.referenceCode}/archive`)
+    expect(archive.ok(), await archive.text()).toBe(true)
+  }
+}

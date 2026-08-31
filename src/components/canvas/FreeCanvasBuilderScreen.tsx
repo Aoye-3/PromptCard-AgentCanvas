@@ -34,6 +34,8 @@ import { ImageCropEditor } from '@/components/canvas/ImageCropEditor'
 import {
   ImageGeneratorNode
 } from '@/components/canvas/nodes/ImageGeneratorNode'
+import { DocumentNode } from '@/components/canvas/nodes/DocumentNode'
+import { StoryboardNode } from '@/components/canvas/nodes/StoryboardNode'
 import { ImageGenerationConversationPanel } from '@/components/canvas/image-generation/ImageGenerationConversationPanel'
 import { AnnotationEditorDialog } from '@/components/canvas/image-generation/AnnotationEditorDialog'
 import { RegionEditorDialog } from '@/components/canvas/image-generation/RegionEditorDialog'
@@ -42,6 +44,25 @@ import { ImageNodeActionBar } from '@/components/canvas/image-actions/ImageNodeA
 import { CanvasNodeContextMenu } from '@/components/canvas/image-actions/CanvasNodeContextMenu'
 import { CanvasProjectReferenceCodeAction } from '@/components/canvas/image-actions/CanvasReferenceCodeAction'
 import { CopyCodexContext } from '@/components/canvas/context-packs/CopyCodexContext'
+import { AgentWorkEnvironment } from '@/components/canvas/bridge/AgentWorkEnvironment'
+import { findBridgeNodePosition } from '@/components/canvas/bridge/bridge-node-placement'
+import {
+  createBridgeImageApplication,
+  createBridgeImageNode,
+  inspectBridgeImageApplication
+} from '@/components/canvas/bridge/bridge-image-application'
+import {
+  applyBridgeDocumentChange,
+  createBridgeDocumentApplication,
+  createBridgeDocumentNode,
+  inspectBridgeDocumentApplication
+} from '@/components/canvas/bridge/bridge-document-application'
+import {
+  applyBridgeStoryboardChange,
+  createBridgeStoryboardApplication,
+  createBridgeStoryboardNode,
+  inspectBridgeStoryboardApplication
+} from '@/components/canvas/bridge/bridge-storyboard-application'
 import { CanvasUnsupportedNodeContextMenu } from '@/components/canvas/image-actions/CanvasUnsupportedNodeContextMenu'
 import {
   CanvasTextNodeContextMenu,
@@ -60,6 +81,7 @@ import {
   createFreeCanvasImageNodeFromMedia,
   createFreeCanvasImageGenerationPlaceholder,
   createFreeCanvasImageAnnotation,
+  createFreeCanvasDocumentNode,
   createFreeCanvasTextNode,
   createFreeCanvasAgentRewriteNode,
   createQuickTextNode,
@@ -84,14 +106,22 @@ import {
   updateFreeCanvasTextNodeUserText
 } from '@/domain/free-canvas/free-canvas-project'
 import {
+  applyCanvasLocalCommand,
   createCanvasCommandHistory,
+  discardCanvasCommandHistoryEntry,
   duplicateCanvasImageNode,
   executeCanvasLocalCommand,
+  recoverFailedCanvasHistoryStep,
   redoCanvasLocalCommand,
   undoCanvasLocalCommand,
+  type CanvasCommandHistoryEntry,
   type CanvasLocalCommand
 } from '@/domain/free-canvas/canvas-command-history'
 import { markCanvasNodeReferencePending } from '@/domain/reference-codes/canvas-node-reference-lifecycle'
+import { applyDocumentChangeOperations } from '@/domain/documents/document-suggestions'
+import { createPlanningDocumentV1 } from '@/domain/documents/planning-document'
+import { matchesDocumentPromptHandoffBasis } from '@/domain/documents/prompt-handoff-selection'
+import { applyStoryboardChanges, createStoryboardNode, resolveStoryboardFieldChanges, storyboardDigest, storyboardShotDigest } from '@/domain/storyboard/canvas-storyboard'
 import {
   resolveImageNodeCommands,
   type ImageNodeCommandId,
@@ -164,13 +194,22 @@ import {
 } from '@/services/image-generation-client'
 import {
   storageServiceClient,
+  type BridgeDelivery,
+  type BridgeDocumentChangeDelivery,
+  type BridgeDocumentCreateDelivery,
+  type BridgeDocumentDelivery,
+  type BridgeImageDelivery,
+  type BridgePromptDelivery,
+  type BridgeStoryboardChangeDelivery,
+  type BridgeStoryboardCreateDelivery,
+  type BridgeStoryboardDelivery,
   type ImageGenerationConversationSummary,
   type ImageGenerationRun,
   type ProjectResource
 } from '@/storage/storage-service-client'
-import type { AgentCanvasEdit, AgentWorkspaceProposal, CanvasAgentSelection } from '@/models/Agent.model'
+import type { AgentCanvasEdit, AgentPromptHandoffBasis, AgentWorkspaceProposal, CanvasAgentSelection } from '@/models/Agent.model'
 import type { IPreset } from '@/models/Card.model'
-import type { FreeCanvasImageAnnotationKind, IFreeCanvasImageAnnotation, IFreeCanvasImageGeneratorNode, IFreeCanvasImageNode, IFreeCanvasNode, IFreeCanvasProject, IFreeCanvasTextNode, IPromptProject } from '@/models/PromptHistory.model'
+import type { FreeCanvasImageAnnotationKind, IFreeCanvasImageAnnotation, IFreeCanvasImageGeneratorNode, IFreeCanvasImageNode, IFreeCanvasNode, IFreeCanvasProject, IFreeCanvasTextNode, IPromptProject, PlanningDocumentV1 } from '@/models/PromptHistory.model'
 
 interface FreeCanvasBuilderScreenProps {
   activeProject: IPromptProject
@@ -179,7 +218,7 @@ interface FreeCanvasBuilderScreenProps {
   onRenameProject: () => void
   onSave: () => void
   onChange: (freeCanvas: IFreeCanvasProject) => void
-  onPersistCanvas?: (freeCanvas: IFreeCanvasProject) => Promise<boolean>
+  onPersistCanvas?: (freeCanvas: IFreeCanvasProject) => Promise<boolean | FreeCanvasPersistReceipt>
   previewMode?: boolean
   imageGenerationNodeV1?: boolean
   onConfigureImageModel?: (context: { projectId: string; nodeId?: string; returnTarget: 'free-canvas' }) => void
@@ -195,6 +234,16 @@ type FreeCanvasFlowNodeData = {
   onTextStyleChange: (nodeId: string, updates: Parameters<typeof updateFreeCanvasTextNodeStyle>[2]) => void
   onTextRename: (nodeId: string, title: string) => string | null
   onTextSelectionChange: (nodeId: string, selection?: Omit<CanvasAgentSelection, 'baseContentDigest'>) => void
+  onDocumentChange: (nodeId: string, document: PlanningDocumentV1) => Promise<boolean>
+  onDocumentCollapsedChange: (nodeId: string, collapsed: boolean) => Promise<boolean>
+  onDocumentDelete: (nodeId: string) => void
+  onDocumentToStoryboard: (nodeId: string) => void
+  onDocumentPromptHandoff: (basis: Extract<AgentPromptHandoffBasis, { kind: 'document-selection' }>) => void
+  onStoryboardResolve: (nodeId: string, ids: readonly string[] | 'all', action: 'accept' | 'reject') => void
+  onStoryboardRevise: (nodeId: string) => void
+  onStoryboardPromptHandoff: (nodeId: string, rowId: string) => void
+  documentLocked: boolean
+  storyboardLocked: boolean
   onImageResize: (nodeId: string, frame: { position?: { x: number; y: number }; width: number; height: number }) => void
   resultThumbnailUrl?: string
   onOpenImageHistory: (nodeId: string) => void
@@ -236,6 +285,155 @@ const isComposerReferenceImage = (file: File): boolean =>
 
 const isCanvasImageDrag = (dataTransfer: DataTransfer): boolean =>
   isFileDrag(dataTransfer) || isProjectMaterialDrag(dataTransfer)
+
+type DocumentAuthorityNode = Extract<IFreeCanvasNode, { kind: 'document' }>
+
+const exactCanvasNode = (
+  canvas: IFreeCanvasProject,
+  nodeId: string
+): IFreeCanvasNode | null => {
+  const matching = canvas.nodes.filter(node => node.id === nodeId)
+  return matching.length === 1 ? matching[0] : null
+}
+
+interface ProjectMutationScope {
+  projectId: string
+  epoch: number
+}
+
+export interface FreeCanvasPersistReceipt {
+  saved: true
+  freeCanvas: IFreeCanvasProject
+  editSeq: number
+  projectRevision: number
+}
+
+interface DocumentReconcileLease {
+  projectId: string
+  conversationId: string
+  nodeIds: Set<string>
+}
+
+interface DocumentReconcileState {
+  projectId: string
+  conversationId: string
+  leaseId: string
+  pending: boolean
+  nodeId?: string
+}
+
+interface StoryboardAckRecoveryTarget extends Omit<DocumentReconcileState, 'pending'> {
+  requestId: string
+  editId: string
+}
+
+interface StoryboardAckRecoveryState {
+  token: symbol
+  promise: Promise<boolean>
+  resolve: (applied: boolean) => void
+}
+
+const documentMutationQueueKey = (scope: ProjectMutationScope): string => (
+  `${scope.projectId}:${scope.epoch}`
+)
+
+const sameProjectMutationScope = (
+  left: ProjectMutationScope,
+  right: ProjectMutationScope
+): boolean => left.projectId === right.projectId && left.epoch === right.epoch
+
+const stableSemanticJson = (value: unknown): string => {
+  if (value === undefined) return 'undefined'
+  if (typeof value === 'string') return JSON.stringify(value.normalize('NFC'))
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableSemanticJson).join(',')}]`
+  const record = value as Record<string, unknown>
+  return `{${Object.keys(record)
+    .filter(key => record[key] !== undefined)
+    .sort()
+    .map(key => `${JSON.stringify(key)}:${stableSemanticJson(record[key])}`)
+    .join(',')}}`
+}
+
+const hasExactDocumentAuthority = (
+  canvas: IFreeCanvasProject,
+  nodeId: string,
+  attempted: DocumentAuthorityNode
+): boolean => {
+  const matching = exactCanvasNode(canvas, nodeId)
+  return matching?.kind === 'document'
+    && stableSemanticJson(matching) === stableSemanticJson(attempted)
+}
+
+const hasExactCanvasNodeAuthority = (
+  canvas: IFreeCanvasProject,
+  nodeId: string,
+  attempted: IFreeCanvasNode
+): boolean => {
+  const matching = exactCanvasNode(canvas, nodeId)
+  return matching !== null && stableSemanticJson(matching) === stableSemanticJson(attempted)
+}
+
+const canvasCommandAuthorityImpact = (command: CanvasLocalCommand) => {
+  const nodeIds: string[] = []
+  const edgeIds: string[] = []
+  let nodeOrder = false
+  let edgeOrder = false
+  if (command.kind === 'update-document' || command.kind === 'update-storyboard' || command.kind === 'flip-image') nodeIds.push(command.nodeId)
+  if (command.kind === 'reorder-node') {
+    nodeIds.push(command.nodeId)
+    nodeOrder = true
+  }
+  if (command.kind === 'insert-node') {
+    nodeIds.push(command.node.id)
+    nodeOrder = true
+  }
+  if (command.kind === 'delete-nodes') {
+    nodeIds.push(...command.nodeIds)
+    nodeOrder = true
+    edgeOrder = true
+  }
+  if (command.kind === 'restore-nodes') {
+    nodeIds.push(...command.nodes.map(item => item.node.id))
+    edgeIds.push(...command.edges.map(item => item.edge.id))
+    nodeOrder = true
+    edgeOrder = true
+  }
+  return { nodeIds, edgeIds, nodeOrder, edgeOrder }
+}
+
+const canvasHistoryAuthorityIdentity = (
+  canvas: IFreeCanvasProject,
+  entry: CanvasCommandHistoryEntry
+): string => {
+  const impacts = [entry.undo, entry.redo].map(canvasCommandAuthorityImpact)
+  const nodeIds = [...new Set(impacts.flatMap(impact => impact.nodeIds))].sort()
+  const edgeIds = [...new Set(impacts.flatMap(impact => impact.edgeIds))].sort()
+  return stableSemanticJson({
+    nodes: nodeIds.map(id => ({ id, matches: canvas.nodes.filter(node => node.id === id) })),
+    edges: edgeIds.map(id => ({ id, matches: canvas.edges.filter(edge => edge.id === id) })),
+    nodeOrder: impacts.some(impact => impact.nodeOrder) ? canvas.nodes.map(node => node.id) : undefined,
+    edgeOrder: impacts.some(impact => impact.edgeOrder) ? canvas.edges.map(edge => edge.id) : undefined
+  })
+}
+
+const validCanvasSelection = (
+  canvas: IFreeCanvasProject,
+  nodeId: string | null | undefined
+): string | null => nodeId && canvas.nodes.some(node => node.id === nodeId) ? nodeId : null
+
+const canvasHistoryRecoverySelection = (
+  attempted: IFreeCanvasProject,
+  current: IFreeCanvasProject,
+  recovered: IFreeCanvasProject
+): string | null => {
+  const normalSelection = validCanvasSelection(recovered, recovered.selectedNodeId)
+  const attemptedSelection = attempted.selectedNodeId || null
+  const currentSelection = current.selectedNodeId || null
+  if (currentSelection === attemptedSelection) return normalSelection
+  if (currentSelection === null) return null
+  return validCanvasSelection(recovered, currentSelection) ?? normalSelection
+}
 
 const isTypingTarget = (target: EventTarget | null): boolean => {
   const element = target instanceof HTMLElement ? target : null
@@ -295,6 +493,9 @@ const FreeCanvasBuilderInner = ({
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
   const [resourceLibraryExpanded, setResourceLibraryExpanded] = useState(false)
   const [rightPanelMode, setRightPanelMode] = useState<'agent' | 'image-generation' | 'prompt-library'>('agent')
+  const [activeBridgeCvcCode, setActiveBridgeCvcCode] = useState<string | null>(
+    () => readActiveBridgeContext(activeProject.id)
+  )
   const [previewPreset, setPreviewPreset] = useState<IPreset | null>(null)
   const [quickDrawerOpen, setQuickDrawerOpen] = useState(false)
   const [quickComposerOpen, setQuickComposerOpen] = useState(false)
@@ -313,15 +514,33 @@ const FreeCanvasBuilderInner = ({
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(
     () => freeCanvas.selectedNodeId ? [freeCanvas.selectedNodeId] : []
   )
+  const [documentReconcileLockedNodeIds, setDocumentReconcileLockedNodeIds] = useState<string[]>([])
   const [agentDraftRequest, setAgentDraftRequest] = useState<{
     id: string
-    canvasNode: {
+    content?: string
+    documentWriteContext?: import('@/models/Agent.model').AgentPlanningWriteContext
+    canvasNode?: {
       nodeId: string
       role: 'target' | 'reference'
       mode?: 'complete' | 'rewrite'
       selection?: CanvasAgentSelection
     }
   } | undefined>()
+  const changeActiveBridgeContext = useCallback((code: string | null) => {
+    setActiveBridgeCvcCode(code)
+    writeActiveBridgeContext(activeProject.id, code)
+  }, [activeProject.id])
+  const prepareContextPackRevision = useCallback(async () => {
+    if (!onPersistCanvas) return activeProject.revision
+    const receipt = await onPersistCanvas(freeCanvasRef.current)
+    if (
+      typeof receipt !== 'object'
+      || receipt.saved !== true
+      || !Number.isSafeInteger(receipt.projectRevision)
+      || receipt.projectRevision < 1
+    ) throw new Error('Canvas save did not return an authoritative project revision.')
+    return receipt.projectRevision
+  }, [activeProject.revision, onPersistCanvas])
   const [textSelections, setTextSelections] = useState<Record<string, Omit<CanvasAgentSelection, 'baseContentDigest'>>>({})
   const [nodeContextMenu, setNodeContextMenu] = useState<{
     nodeId: string
@@ -347,6 +566,10 @@ const FreeCanvasBuilderInner = ({
   } | null>(null)
   const [imageAnnotationDocuments, setImageAnnotationDocuments] = useState<Record<string, ImageAnnotationDocument>>({})
   const [optimisticImageTurn, setOptimisticImageTurn] = useState<ImageGenerationTurn | null>(null)
+
+  useEffect(() => {
+    setActiveBridgeCvcCode(readActiveBridgeContext(activeProject.id))
+  }, [activeProject.id])
   const selectedNode = freeCanvas.nodes.find(node => node.id === freeCanvas.selectedNodeId) || null
   const selectedImageNode = selectedNode?.kind === 'image' ? selectedNode : null
   const quickPresets = useMemo(() => presets.filter(isQuickMessagePreset), [presets])
@@ -362,9 +585,19 @@ const FreeCanvasBuilderInner = ({
   const selectedImageNodeRef = useRef<IFreeCanvasImageNode | null>(selectedImageNode)
   const copiedImageNodeRef = useRef<IFreeCanvasImageNode | null>(null)
   const canvasCommandHistoryRef = useRef(createCanvasCommandHistory())
+  const documentMutationQueuesRef = useRef(new Map<string, Promise<void>>())
+  const documentReconcileLocksRef = useRef(new Map<string, DocumentReconcileLease>())
+  const documentReconcileLockedNodeIdsRef = useRef(new Set<string>())
+  const storyboardAckRecoveriesRef = useRef(new Map<string, StoryboardAckRecoveryState>())
+  const storyboardAckRecoveryTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>())
   const fileDragDepthRef = useRef(0)
   const composerFileDragDepthRef = useRef(0)
   const activeProjectIdRef = useRef(activeProject.id)
+  const projectEpochRef = useRef(0)
+  const activeProjectScopeRef = useRef<ProjectMutationScope>({
+    projectId: activeProject.id,
+    epoch: projectEpochRef.current
+  })
   const placementProcessingRef = useRef(false)
   const unpersistedPlacementRunIdsRef = useRef(new Set<string>())
   const activeGenerationRunIdsRef = useRef(new Set<string>())
@@ -453,7 +686,22 @@ const FreeCanvasBuilderInner = ({
     return page
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (activeProjectIdRef.current !== activeProject.id) {
+      projectEpochRef.current += 1
+      activeProjectScopeRef.current = {
+        projectId: activeProject.id,
+        epoch: projectEpochRef.current
+      }
+      canvasCommandHistoryRef.current = createCanvasCommandHistory()
+      const activeProjectNodeIds = new Set(
+        [...documentReconcileLocksRef.current.values()]
+          .filter(lease => lease.projectId === activeProject.id)
+          .flatMap(lease => [...lease.nodeIds])
+      )
+      documentReconcileLockedNodeIdsRef.current = activeProjectNodeIds
+      setDocumentReconcileLockedNodeIds([...activeProjectNodeIds])
+    }
     activeProjectIdRef.current = activeProject.id
     freeCanvasRef.current = freeCanvas
     onChangeRef.current = onChange
@@ -474,7 +722,6 @@ const FreeCanvasBuilderInner = ({
     setNodeContextMenu(null)
     setActiveImageOperationDraft(null)
     setImageOperationPreparing(false)
-    canvasCommandHistoryRef.current = createCanvasCommandHistory()
     setOptimisticImageTurn(null)
     setImageGenerationBusy(false)
     setImageRegionEditorOpen(false)
@@ -1840,6 +2087,443 @@ const FreeCanvasBuilderInner = ({
     }
   }, [commitCanvasSelection])
 
+  const updateDocumentReconcileLease = useCallback((state: DocumentReconcileState) => {
+    if (!state.pending) {
+      documentReconcileLocksRef.current.delete(state.leaseId)
+    } else {
+      const existing = documentReconcileLocksRef.current.get(state.leaseId)
+      const locked = existing?.projectId === state.projectId
+        && existing.conversationId === state.conversationId
+        ? new Set(existing.nodeIds)
+        : new Set<string>()
+      if (state.nodeId) {
+        const target = state.projectId === activeProjectIdRef.current
+          ? exactCanvasNode(freeCanvasRef.current, state.nodeId)
+          : undefined
+        if (
+          state.projectId !== activeProjectIdRef.current
+          || target?.kind === 'document'
+          || target?.kind === 'storyboard'
+        ) {
+          locked.add(state.nodeId)
+        }
+      }
+      documentReconcileLocksRef.current.set(state.leaseId, {
+        projectId: state.projectId,
+        conversationId: state.conversationId,
+        nodeIds: locked
+      })
+    }
+    const next = new Set(
+      [...documentReconcileLocksRef.current.values()]
+        .filter(lease => lease.projectId === activeProjectIdRef.current)
+        .flatMap(lease => [...lease.nodeIds])
+    )
+    documentReconcileLockedNodeIdsRef.current = next
+    setDocumentReconcileLockedNodeIds([...next])
+  }, [])
+
+  const stopStoryboardAckRecovery = useCallback((leaseId: string, applied?: boolean) => {
+    const recovery = storyboardAckRecoveriesRef.current.get(leaseId)
+    storyboardAckRecoveriesRef.current.delete(leaseId)
+    const timer = storyboardAckRecoveryTimersRef.current.get(leaseId)
+    if (timer !== undefined) clearTimeout(timer)
+    storyboardAckRecoveryTimersRef.current.delete(leaseId)
+    if (recovery && applied !== undefined) recovery.resolve(applied)
+  }, [])
+
+  const startStoryboardAckRecovery = useCallback((target: StoryboardAckRecoveryTarget) => {
+    const existing = storyboardAckRecoveriesRef.current.get(target.leaseId)
+    if (existing) return existing.promise
+    const token = Symbol(target.leaseId)
+    let resolveRecovery!: (applied: boolean) => void
+    const promise = new Promise<boolean>(resolve => { resolveRecovery = resolve })
+    storyboardAckRecoveriesRef.current.set(target.leaseId, {
+      token, promise, resolve: resolveRecovery
+    })
+    const isExactResponse = (response: {
+      conversationId?: unknown
+      requestId?: unknown
+      editId?: unknown
+    }) => (
+      response.conversationId === target.conversationId
+      && response.requestId === target.requestId
+      && response.editId === target.editId
+    )
+    const attempt = (delayMs: number) => {
+      const timer = setTimeout(() => {
+        storyboardAckRecoveryTimersRef.current.delete(target.leaseId)
+        if (target.projectId === activeProjectIdRef.current && target.nodeId) {
+          const authority = exactCanvasNode(freeCanvasRef.current, target.nodeId)
+          const marker = authority?.kind === 'document' || authority?.kind === 'storyboard'
+            ? authority.agentAppliedEdit
+            : undefined
+          if (
+            marker?.conversationId !== target.conversationId
+            || marker.requestId !== target.requestId
+            || marker.editId !== target.editId
+          ) {
+            void agentRuntimeService.acknowledgeDocumentEdit(
+              target.projectId,
+              target.conversationId,
+              target.editId,
+              { requestId: target.requestId, status: 'failed', errorCode: 'failed_integrity' }
+            ).catch(() => undefined)
+            updateDocumentReconcileLease({ ...target, pending: false })
+            stopStoryboardAckRecovery(target.leaseId, false)
+            return
+          }
+        }
+        void agentRuntimeService.acknowledgeDocumentEdit(
+          target.projectId,
+          target.conversationId,
+          target.editId,
+          { requestId: target.requestId, status: 'applied' }
+        ).then(response => {
+          if (storyboardAckRecoveriesRef.current.get(target.leaseId)?.token !== token) return
+          if (!isExactResponse(response) || response.status === 'pending_apply') {
+            attempt(Math.min(delayMs * 2, 5_000))
+            return
+          }
+          updateDocumentReconcileLease({ ...target, pending: false })
+          stopStoryboardAckRecovery(target.leaseId, response.status === 'applied')
+        }).catch(() => {
+          if (storyboardAckRecoveriesRef.current.get(target.leaseId)?.token === token) {
+            attempt(Math.min(delayMs * 2, 5_000))
+          }
+        })
+      }, delayMs)
+      storyboardAckRecoveryTimersRef.current.set(target.leaseId, timer)
+    }
+    attempt(100)
+    return promise
+  }, [stopStoryboardAckRecovery, updateDocumentReconcileLease])
+
+  useEffect(() => () => {
+    storyboardAckRecoveriesRef.current.forEach(recovery => recovery.resolve(false))
+    storyboardAckRecoveriesRef.current.clear()
+    storyboardAckRecoveryTimersRef.current.forEach(timer => clearTimeout(timer))
+    storyboardAckRecoveryTimersRef.current.clear()
+  }, [])
+
+  const handleDocumentReconcileStateChange = useCallback(async (state: DocumentReconcileState) => {
+    updateDocumentReconcileLease(state)
+    if (state.pending) {
+      const scope = activeProjectScopeRef.current
+      const currentTail = scope.projectId === state.projectId
+        ? documentMutationQueuesRef.current.get(documentMutationQueueKey(scope))
+        : undefined
+      if (currentTail) await currentTail
+    }
+  }, [updateDocumentReconcileLease])
+
+  const enqueueDocumentMutation = useCallback(<T,>(
+    scope: ProjectMutationScope,
+    operation: () => Promise<T>
+  ): Promise<T> => {
+    const queueKey = documentMutationQueueKey(scope)
+    const previous = documentMutationQueuesRef.current.get(queueKey)
+    const result = previous ? previous.then(operation) : operation()
+    const tail = result.then(() => undefined, () => undefined)
+    documentMutationQueuesRef.current.set(queueKey, tail)
+    void tail.finally(() => {
+      if (documentMutationQueuesRef.current.get(queueKey) === tail) {
+        documentMutationQueuesRef.current.delete(queueKey)
+      }
+    })
+    return result
+  }, [])
+
+  const createDocument = useCallback(() => {
+    const scope = activeProjectScopeRef.current
+    return enqueueDocumentMutation(scope, async () => {
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return
+      const beforeCanvas = freeCanvasRef.current
+      const beforeHistory = canvasCommandHistoryRef.current
+      const node = createFreeCanvasDocumentNode(nextNodePosition(reactFlow, beforeCanvas.nodes.length))
+      const executed = executeCanvasLocalCommand(beforeHistory, beforeCanvas, {
+        kind: 'insert-node',
+        node,
+        index: beforeCanvas.nodes.length
+      })
+      if (executed.project === beforeCanvas) return
+      const attemptedNode = executed.project.nodes.find(
+        (candidate): candidate is DocumentAuthorityNode => candidate.id === node.id && candidate.kind === 'document'
+      )
+      if (!attemptedNode) return
+      canvasCommandHistoryRef.current = executed.history
+      commitCanvasSelection(executed.project, node.id)
+      if (!onPersistCanvas) return
+
+      let saved = false
+      try {
+        saved = Boolean(await onPersistCanvas(executed.project))
+      } catch {
+        saved = false
+      }
+      if (saved) return
+
+      const failedEntry = executed.history.past[executed.history.past.length - 1]
+      const currentCanvas = freeCanvasRef.current
+      const projectIsCurrent = sameProjectMutationScope(activeProjectScopeRef.current, scope)
+      if (projectIsCurrent) {
+        canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
+          canvasCommandHistoryRef.current,
+          failedEntry
+        )
+      }
+      if (!projectIsCurrent || !hasExactDocumentAuthority(currentCanvas, node.id, attemptedNode)) return
+
+      const rolledBack = applyCanvasLocalCommand(currentCanvas, failedEntry.undo)
+      const recovery = {
+        ...rolledBack.project,
+        selectedNodeId: currentCanvas.selectedNodeId === node.id
+          ? beforeCanvas.selectedNodeId
+          : rolledBack.project.selectedNodeId
+      }
+      commitCanvasSelection(recovery, recovery.selectedNodeId || null)
+      try {
+        await onPersistCanvas(recovery)
+      } catch {
+        // The recovery snapshot remains the newest retained request for an explicit retry.
+      }
+      setUploadError('文档创建保存失败，请重试。')
+    })
+  }, [commitCanvasSelection, enqueueDocumentMutation, onPersistCanvas, reactFlow])
+
+  const updateDocumentNode = useCallback((
+    nodeId: string,
+    document: PlanningDocumentV1
+  ): Promise<boolean> => {
+    if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return Promise.resolve(false)
+    const scope = activeProjectScopeRef.current
+    return enqueueDocumentMutation(scope, async () => {
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return true
+      if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return false
+      const beforeCanvas = freeCanvasRef.current
+      const beforeHistory = canvasCommandHistoryRef.current
+      const current = exactCanvasNode(beforeCanvas, nodeId)
+      if (!current || current.kind !== 'document') return false
+      if (current.document.digest === document.digest && current.document.revision === document.revision) return true
+
+      const executed = executeCanvasLocalCommand(beforeHistory, beforeCanvas, {
+        kind: 'update-document',
+        nodeId,
+        document
+      })
+      if (executed.project === beforeCanvas) return false
+      const attemptedNode = exactCanvasNode(executed.project, nodeId)
+      if (!attemptedNode || attemptedNode.kind !== 'document') return false
+      canvasCommandHistoryRef.current = executed.history
+      emitGenerationCanvas(executed.project)
+      if (!onPersistCanvas) return true
+
+      let saved = false
+      try {
+        saved = Boolean(await onPersistCanvas?.(executed.project))
+      } catch {
+        saved = false
+      }
+      if (saved) return true
+
+      const failedEntry = executed.history.past[executed.history.past.length - 1]
+      const currentCanvas = freeCanvasRef.current
+      const projectIsCurrent = sameProjectMutationScope(activeProjectScopeRef.current, scope)
+      if (projectIsCurrent) {
+        canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
+          canvasCommandHistoryRef.current,
+          failedEntry
+        )
+      }
+      if (!projectIsCurrent || !hasExactDocumentAuthority(currentCanvas, nodeId, attemptedNode)) return true
+
+      const recovery = applyCanvasLocalCommand(currentCanvas, failedEntry.undo).project
+      emitGenerationCanvas(recovery)
+      try {
+        await onPersistCanvas?.(recovery)
+      } catch {
+        // Replacing the retained request with recovery is best-effort while Storage is unavailable.
+      }
+      return false
+    })
+  }, [emitGenerationCanvas, enqueueDocumentMutation, onPersistCanvas])
+
+  const requestDocumentStoryboard = useCallback((nodeId: string) => {
+    const node = exactCanvasNode(freeCanvasRef.current, nodeId)
+    if (!node || node.kind !== 'document' || documentReconcileLockedNodeIdsRef.current.has(nodeId)) return
+    setRightPanelMode('agent')
+    setAgentDraftRequest({
+      id: `storyboard-create:${nodeId}:${Date.now()}`,
+      content: `请从文档“${node.title}”的当前有效稿创建分镜表。`,
+      documentWriteContext: { operationKind: 'storyboard_create', documentNodeId: nodeId }
+    })
+  }, [])
+
+  const requestStoryboardRevision = useCallback((nodeId: string) => {
+    const node = exactCanvasNode(freeCanvasRef.current, nodeId)
+    if (
+      !node
+      || node.kind !== 'storyboard'
+      || node.pendingFieldChanges.length > 0
+      || documentReconcileLockedNodeIdsRef.current.has(nodeId)
+    ) return
+    setRightPanelMode('agent')
+    setAgentDraftRequest({
+      id: `storyboard-changes:${nodeId}:${Date.now()}`,
+      content: `请修订分镜表“${node.title}”的字段，并以可逐项审阅的差异返回。`,
+      documentWriteContext: { operationKind: 'storyboard_changes', nodeId }
+    })
+  }, [])
+
+  const requestDocumentPromptHandoff = useCallback((basis: Extract<AgentPromptHandoffBasis, { kind: 'document-selection' }>) => {
+    const node = exactCanvasNode(freeCanvasRef.current, basis.nodeId)
+    if (!node || node.kind !== 'document' || !matchesDocumentPromptHandoffBasis(node.document, basis)) return
+    setRightPanelMode('agent')
+    setAgentDraftRequest({
+      id: `prompt-handoff-document:${basis.nodeId}:${Date.now()}`,
+      content: '请根据已绑定的权威文档选区创建一个新的 Prompt 提案。',
+      documentWriteContext: { operationKind: 'prompt_handoff', basis }
+    })
+  }, [])
+
+  const requestStoryboardPromptHandoff = useCallback((nodeId: string, rowId: string) => {
+    const node = exactCanvasNode(freeCanvasRef.current, nodeId)
+    if (!node || node.kind !== 'storyboard' || node.pendingFieldChanges.length > 0) return
+    const row = node.sequence.rows.find(candidate => candidate.id === rowId)
+    if (!row) return
+    const basis: Extract<AgentPromptHandoffBasis, { kind: 'storyboard-shot' }> = {
+      kind: 'storyboard-shot', nodeId, storyboardRevision: node.revision ?? 0,
+      storyboardDigest: node.digest ?? storyboardDigest(node.sequence, node.pendingFieldChanges),
+      rowId, shotDigest: storyboardShotDigest(row)
+    }
+    setRightPanelMode('agent')
+    setAgentDraftRequest({
+      id: `prompt-handoff-shot:${nodeId}:${rowId}:${Date.now()}`,
+      content: '请根据已绑定的权威分镜镜头创建一个新的 Prompt 提案。',
+      documentWriteContext: { operationKind: 'prompt_handoff', basis }
+    })
+  }, [])
+
+  const resolveStoryboardReview = useCallback((
+    nodeId: string,
+    ids: readonly string[] | 'all',
+    action: 'accept' | 'reject'
+  ) => {
+    if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return
+    const scope = activeProjectScopeRef.current
+    void enqueueDocumentMutation(scope, async () => {
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return
+      if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return
+      const beforeCanvas = freeCanvasRef.current
+      const current = exactCanvasNode(beforeCanvas, nodeId)
+      if (!current || current.kind !== 'storyboard') return
+      let updated: typeof current
+      try {
+        updated = resolveStoryboardFieldChanges(current, ids, action)
+      } catch {
+        return
+      }
+      const executed = executeCanvasLocalCommand(canvasCommandHistoryRef.current, beforeCanvas, {
+        kind: 'update-storyboard',
+        nodeId,
+        storyboard: updated
+      })
+      if (executed.project === beforeCanvas) return
+      const attempted = exactCanvasNode(executed.project, nodeId)
+      if (!attempted || attempted.kind !== 'storyboard') return
+      emitGenerationCanvas(executed.project)
+      if (!onPersistCanvas) {
+        emitGenerationCanvas(beforeCanvas)
+        setUploadError('分镜审阅保存失败，请重试。')
+        return
+      }
+      let saved = false
+      try {
+        saved = Boolean(await onPersistCanvas(executed.project))
+      } catch {
+        saved = false
+      }
+      if (saved) {
+        if (sameProjectMutationScope(activeProjectScopeRef.current, scope)) {
+          canvasCommandHistoryRef.current = executed.history
+        }
+        return
+      }
+      const currentCanvas = freeCanvasRef.current
+      if (
+        sameProjectMutationScope(activeProjectScopeRef.current, scope)
+        && hasExactCanvasNodeAuthority(currentCanvas, nodeId, attempted)
+      ) {
+        emitGenerationCanvas(beforeCanvas)
+        try {
+          await onPersistCanvas(beforeCanvas)
+        } catch {
+          // Replacing the failed retained request with the authoritative pre-review state is best-effort.
+        }
+      }
+      setUploadError('分镜审阅保存失败，请重试。')
+    })
+  }, [emitGenerationCanvas, enqueueDocumentMutation, onPersistCanvas])
+
+  const updateDocumentCollapsed = useCallback((
+    nodeId: string,
+    collapsed: boolean
+  ): Promise<boolean> => {
+    if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return Promise.resolve(false)
+    const scope = activeProjectScopeRef.current
+    return enqueueDocumentMutation(scope, async () => {
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return true
+      if (documentReconcileLockedNodeIdsRef.current.has(nodeId)) return false
+      const beforeCanvas = freeCanvasRef.current
+      const current = exactCanvasNode(beforeCanvas, nodeId)
+      if (!current || current.kind !== 'document') return false
+      if ((current.meta.collapsed === true) === collapsed) return true
+      const previousCollapsed = current.meta.collapsed
+      const next = {
+        ...beforeCanvas,
+        nodes: beforeCanvas.nodes.map(node => node.id === nodeId
+          ? { ...node, meta: { ...node.meta, collapsed } }
+          : node)
+      }
+      const attemptedNode = exactCanvasNode(next, nodeId)
+      if (!attemptedNode || attemptedNode.kind !== 'document') return false
+      emitGenerationCanvas(next)
+      if (!onPersistCanvas) return true
+
+      let saved = false
+      try {
+        saved = Boolean(await onPersistCanvas(next))
+      } catch {
+        saved = false
+      }
+      if (saved) return true
+
+      const currentCanvas = freeCanvasRef.current
+      if (
+        !sameProjectMutationScope(activeProjectScopeRef.current, scope) ||
+        !hasExactDocumentAuthority(currentCanvas, nodeId, attemptedNode)
+      ) return true
+
+      const recovery = {
+        ...currentCanvas,
+        nodes: currentCanvas.nodes.map(node => {
+          if (node.id !== nodeId || node.kind !== 'document') return node
+          const meta = { ...node.meta }
+          if (previousCollapsed === undefined) delete meta.collapsed
+          else meta.collapsed = previousCollapsed
+          return { ...node, meta }
+        })
+      }
+      emitGenerationCanvas(recovery)
+      try {
+        await onPersistCanvas(recovery)
+      } catch {
+        // The recovery snapshot remains the newest retained request for an explicit retry.
+      }
+      return false
+    })
+  }, [emitGenerationCanvas, enqueueDocumentMutation, onPersistCanvas])
+
   const closeNodeContextMenu = useCallback(() => {
     setNodeContextMenu(current => {
       current?.returnFocus?.focus()
@@ -1850,9 +2534,17 @@ const FreeCanvasBuilderInner = ({
   const deleteCanvasNodes = useCallback((nodeId: string) => {
     const current = freeCanvasRef.current
     if (!current.nodes.some(node => node.id === nodeId)) return
-    const nodeIds = selectedNodeIds.includes(nodeId) && selectedNodeIds.length > 0
+    const requestedNodeIds = selectedNodeIds.includes(nodeId) && selectedNodeIds.length > 0
       ? selectedNodeIds
       : [nodeId]
+    const nodeIds = requestedNodeIds.filter(candidateId => {
+      const candidate = current.nodes.find(node => node.id === candidateId)
+      return candidate
+        && !isIsolatedReadOnlyCanvasNode(candidate)
+        && !((candidate.kind === 'document' || candidate.kind === 'storyboard')
+          && documentReconcileLockedNodeIdsRef.current.has(candidate.id))
+    })
+    if (nodeIds.length === 0) return
     applyCanvasCommand({ kind: 'delete-nodes', nodeIds })
     setTextSelections(current => Object.fromEntries(
       Object.entries(current).filter(([candidateId]) => !nodeIds.includes(candidateId))
@@ -1996,6 +2688,77 @@ const FreeCanvasBuilderInner = ({
     deleteCanvasNodes(nodeId)
   }, [addCanvasTextAsComposerReference, copyTextNode, deleteCanvasNodes, sendTextNodeToAgent])
 
+  const applyPersistedCanvasHistoryStep = useCallback((direction: 'undo' | 'redo') => {
+    const scope = activeProjectScopeRef.current
+    const run = async (): Promise<boolean> => {
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return true
+      const beforeCanvas = freeCanvasRef.current
+      const beforeHistory = canvasCommandHistoryRef.current
+      const entry = direction === 'redo'
+        ? beforeHistory.future[0]
+        : beforeHistory.past[beforeHistory.past.length - 1]
+      if (!entry) return true
+      const entryNodeIds = [entry.undo, entry.redo]
+        .flatMap(command => canvasCommandAuthorityImpact(command).nodeIds)
+      if (entryNodeIds.some(nodeId => documentReconcileLockedNodeIdsRef.current.has(nodeId))) return false
+      const applied = direction === 'redo'
+        ? redoCanvasLocalCommand(beforeHistory, beforeCanvas)
+        : undoCanvasLocalCommand(beforeHistory, beforeCanvas)
+      if (applied.project === beforeCanvas) return true
+      const attemptedCanvasAuthority = canvasHistoryAuthorityIdentity(applied.project, entry)
+
+      canvasCommandHistoryRef.current = applied.history
+      commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
+      if (!onPersistCanvas) return true
+
+      let saved = false
+      try {
+        saved = Boolean(await onPersistCanvas(applied.project))
+      } catch {
+        saved = false
+      }
+      if (saved) return true
+
+      const projectIsCurrent = sameProjectMutationScope(activeProjectScopeRef.current, scope)
+      const attemptedAuthorityIsCurrent = canvasHistoryAuthorityIdentity(freeCanvasRef.current, entry)
+        === attemptedCanvasAuthority
+      if (!projectIsCurrent || !attemptedAuthorityIsCurrent) {
+        if (projectIsCurrent) {
+          canvasCommandHistoryRef.current = discardCanvasCommandHistoryEntry(
+            canvasCommandHistoryRef.current,
+            entry
+          )
+        }
+        return true
+      }
+
+      const recoveryCommand = direction === 'redo' ? entry.undo : entry.redo
+      const recoveredCommand = applyCanvasLocalCommand(freeCanvasRef.current, recoveryCommand).project
+      const recoveredSelection = canvasHistoryRecoverySelection(
+        applied.project,
+        freeCanvasRef.current,
+        recoveredCommand
+      )
+      const recovered = { ...recoveredCommand, selectedNodeId: recoveredSelection }
+      canvasCommandHistoryRef.current = recoverFailedCanvasHistoryStep(
+        canvasCommandHistoryRef.current,
+        beforeHistory,
+        entry,
+        direction
+      )
+      commitCanvasSelection(recovered, recoveredSelection)
+      try {
+        await onPersistCanvas(recovered)
+      } catch {
+        // The recovery snapshot remains the newest retained request for an explicit retry.
+      }
+      setUploadError(`画布${direction === 'undo' ? '撤销' : '重做'}保存失败，请重试。`)
+      return false
+    }
+
+    return enqueueDocumentMutation(scope, run)
+  }, [commitCanvasSelection, enqueueDocumentMutation, onPersistCanvas])
+
   useEffect(() => {
     const handleLocalShortcut = (event: KeyboardEvent) => {
       if (isCanvasKeyboardLocked || isTypingTarget(event.target)) return
@@ -2005,26 +2768,20 @@ const FreeCanvasBuilderInner = ({
         deleteCanvasNodes(selectedNodeId)
         return
       }
-      const node = selectedImageNodeRef.current
-      if (!node) return
       const modifier = event.ctrlKey || event.metaKey
       const key = event.key.toLowerCase()
       if (modifier && key === 'z') {
         event.preventDefault()
-        const applied = event.shiftKey
-          ? redoCanvasLocalCommand(canvasCommandHistoryRef.current, freeCanvasRef.current)
-          : undoCanvasLocalCommand(canvasCommandHistoryRef.current, freeCanvasRef.current)
-        canvasCommandHistoryRef.current = applied.history
-        commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
+        void applyPersistedCanvasHistoryStep(event.shiftKey ? 'redo' : 'undo')
         return
       }
       if (modifier && key === 'y') {
         event.preventDefault()
-        const applied = redoCanvasLocalCommand(canvasCommandHistoryRef.current, freeCanvasRef.current)
-        canvasCommandHistoryRef.current = applied.history
-        commitCanvasSelection(applied.project, applied.project.selectedNodeId || null)
+        void applyPersistedCanvasHistoryStep('redo')
         return
       }
+      const node = selectedImageNodeRef.current
+      if (!node) return
       if (modifier && key === 'd') {
         event.preventDefault()
         executeImageCommand(node.id, 'duplicate')
@@ -2047,7 +2804,7 @@ const FreeCanvasBuilderInner = ({
     }
     window.addEventListener('keydown', handleLocalShortcut)
     return () => window.removeEventListener('keydown', handleLocalShortcut)
-  }, [commitCanvasSelection, deleteCanvasNodes, executeImageCommand, isCanvasKeyboardLocked])
+  }, [applyPersistedCanvasHistoryStep, deleteCanvasNodes, executeImageCommand, isCanvasKeyboardLocked])
 
   const maximumOperationInputs = selectedImageModel?.capabilities?.references?.maxCount
     ?? selectedImageModel?.capabilities?.maxReferenceImages
@@ -2272,7 +3029,14 @@ const FreeCanvasBuilderInner = ({
     type: node.kind === 'image-generator' ? 'imageGeneratorNode' : 'freeCanvasNode',
     position: node.position,
     selected: selectedNodeIds.includes(node.id),
-    deletable: !isRunningFreeCanvasImageGeneration(node),
+    draggable: !isIsolatedReadOnlyCanvasNode(node)
+      && !((node.kind === 'document' || node.kind === 'storyboard')
+        && documentReconcileLockedNodeIds.includes(node.id)),
+    connectable: !isNonConnectableCanvasNode(node),
+    deletable: !isIsolatedReadOnlyCanvasNode(node)
+      && !isRunningFreeCanvasImageGeneration(node)
+      && !((node.kind === 'document' || node.kind === 'storyboard')
+        && documentReconcileLockedNodeIds.includes(node.id)),
     initialWidth: node.kind === 'image' ? node.width : undefined,
     initialHeight: node.kind === 'image' ? node.height : undefined,
     style: node.kind === 'image' ? { width: node.width, height: node.height } : undefined,
@@ -2285,6 +3049,16 @@ const FreeCanvasBuilderInner = ({
       onTextStyleChange: updateTextStyle,
       onTextRename: renameTextNode,
       onTextSelectionChange: rememberTextSelection,
+      onDocumentChange: updateDocumentNode,
+      onDocumentCollapsedChange: updateDocumentCollapsed,
+      onDocumentDelete: deleteCanvasNodes,
+      onDocumentToStoryboard: requestDocumentStoryboard,
+      onDocumentPromptHandoff: requestDocumentPromptHandoff,
+      onStoryboardResolve: resolveStoryboardReview,
+      onStoryboardRevise: requestStoryboardRevision,
+      onStoryboardPromptHandoff: requestStoryboardPromptHandoff,
+      documentLocked: node.kind === 'document' && documentReconcileLockedNodeIds.includes(node.id),
+      storyboardLocked: node.kind === 'storyboard' && documentReconcileLockedNodeIds.includes(node.id),
       onImageResize: resizeImageNode,
       resultThumbnailUrl: node.kind === 'image-generator' && node.primaryAssetId
         ? canvasImageAssetUrl(node.primaryAssetId)
@@ -2304,7 +3078,7 @@ const FreeCanvasBuilderInner = ({
         referenceCount: freeCanvas.edges.filter(edge => edge.target === node.id && edge.targetHandle === 'reference-image').length
       } : undefined
     }
-  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, resizeImageNode, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateTextStyle])
+  })), [activeProject.id, continueLegacyImageCreation, copyTextNode, deleteCanvasNodes, documentReconcileLockedNodeIds, editingNodeId, executeImageCommand, freeCanvas.edges, freeCanvas.nodes, onConfigureImageModel, rememberTextSelection, renameTextNode, replaceTextRange, requestDocumentPromptHandoff, requestDocumentStoryboard, requestStoryboardPromptHandoff, requestStoryboardRevision, resizeImageNode, resolveStoryboardReview, selectedImageCommands, selectedImageNode?.id, selectedNodeIds, updateDocumentCollapsed, updateDocumentNode, updateTextStyle])
 
   const [flowNodes, setFlowNodes] = useState<FreeCanvasFlowNode[]>(nodes)
   useEffect(() => {
@@ -2345,7 +3119,16 @@ const FreeCanvasBuilderInner = ({
     if (nonRemovalChanges.length > 0) {
       setFlowNodes(current => applyNodeChanges(nonRemovalChanges, current) as FreeCanvasFlowNode[])
     }
-    const removedNodeIds = changes.filter(change => change.type === 'remove').map(change => change.id)
+    const removedNodeIds = changes
+      .filter(change => change.type === 'remove')
+      .map(change => change.id)
+      .filter(nodeId => {
+        const node = freeCanvasRef.current.nodes.find(candidate => candidate.id === nodeId)
+        return node
+          && !isIsolatedReadOnlyCanvasNode(node)
+          && !((node.kind === 'document' || node.kind === 'storyboard')
+            && documentReconcileLockedNodeIdsRef.current.has(node.id))
+      })
     if (removedNodeIds.length > 0 && !isCanvasKeyboardLocked) {
       const nextCanvas = removeFreeCanvasProjectNodes(freeCanvasRef.current, removedNodeIds)
       commitCanvasSelection(nextCanvas, nextCanvas.selectedNodeId || null)
@@ -2383,9 +3166,10 @@ const FreeCanvasBuilderInner = ({
     setCropNodeId(null)
   }
 
-  const handleNodeClick: NodeMouseHandler<FreeCanvasFlowNode> = (_event, node) => {
+  const handleNodeClick: NodeMouseHandler<FreeCanvasFlowNode> = (event, node) => {
     setNodeContextMenu(null)
     setSelectedEdgeId(null)
+    if (event.ctrlKey || event.metaKey || event.shiftKey) return
     setSelectedNodeId(node.id)
   }
 
@@ -2411,12 +3195,16 @@ const FreeCanvasBuilderInner = ({
   }
 
   const handleNodeDragStop: OnNodeDrag<FreeCanvasFlowNode> = (_event, node) => {
+    if (isIsolatedReadOnlyCanvasNode(node.data.canvasNode)) return
     emitGenerationCanvas(updateFreeCanvasNodePosition(freeCanvasRef.current, node.id, node.position))
   }
 
   const handleConnect: OnConnect = (connection: Connection) => {
     if (!connection.source || !connection.target || connection.source === connection.target) return
+    const sourceNode = freeCanvas.nodes.find(node => node.id === connection.source)
     const targetNode = freeCanvas.nodes.find(node => node.id === connection.target)
+    if (!sourceNode || !targetNode) return
+    if (isNonConnectableCanvasNode(sourceNode) || isNonConnectableCanvasNode(targetNode)) return
     if (targetNode?.kind === 'image-generator') {
       setUploadError('旧图片生成节点为只读预览，不能新增连线。请打开“图片生成”页签继续创作。')
       return
@@ -2439,8 +3227,11 @@ const FreeCanvasBuilderInner = ({
 
   const isValidConnection = useCallback((connection: Connection | Edge) => {
     if (!connection.source || !connection.target || connection.source === connection.target) return false
+    const sourceNode = freeCanvas.nodes.find(node => node.id === connection.source)
     const targetNode = freeCanvas.nodes.find(node => node.id === connection.target)
-    return targetNode?.kind !== 'image-generator'
+    if (!sourceNode || !targetNode) return false
+    if (isNonConnectableCanvasNode(sourceNode) || isNonConnectableCanvasNode(targetNode)) return false
+    return targetNode.kind !== 'image-generator'
   }, [freeCanvas])
 
   const handleEdgeClick: EdgeMouseHandler<Edge> = (_event, edge) => {
@@ -2501,7 +3292,567 @@ const FreeCanvasBuilderInner = ({
     void addImageFiles(files, nextNodePosition(reactFlow, freeCanvas.nodes.length))
   }
 
+  const handleAcceptBridgePromptDelivery = async (
+    delivery: BridgePromptDelivery
+  ): Promise<string[]> => {
+    const scope = activeProjectScopeRef.current
+    if (!onPersistCanvas || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+    const application = await createBridgePromptApplication(delivery)
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const baseCanvas = freeCanvasRef.current
+      const existing = inspectPromptHandoffApplication(baseCanvas, application)
+      if (existing.status === 'conflict') {
+        window.alert('外部 Agent Prompt 标记完整性校验失败，无法应用。')
+        return []
+      }
+      if (existing.status === 'exact') {
+        const saved = baseCanvas.nodes.find(node => node.id === application.nodeId && node.kind === 'text')
+        return saved?.referenceCode ? [saved.referenceCode] : []
+      }
+      const node = createBridgePromptNode(
+        delivery,
+        application,
+        nextBridgeNodePosition(reactFlow, baseCanvas.nodes)
+      )
+      const requestedCanvas = {
+        ...baseCanvas,
+        selectedNodeId: node.id,
+        nodes: [...baseCanvas.nodes, node]
+      }
+      let receipt: boolean | FreeCanvasPersistReceipt = false
+      try {
+        receipt = await onPersistCanvas(requestedCanvas)
+      } catch {
+        receipt = false
+      }
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+      const winningCanvas = authoritativePersistedCanvas(receipt)
+      if (!winningCanvas) return []
+      const winning = inspectPromptHandoffApplication(winningCanvas, application)
+      const liveCanvas = freeCanvasRef.current
+      const liveChanged = canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(baseCanvas)
+        && canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(winningCanvas)
+      if (winning.status === 'exact' && !liveChanged) {
+        const saved = winningCanvas.nodes.find(candidate => (
+          candidate.id === application.nodeId && candidate.kind === 'text'
+        ))
+        if (!saved?.referenceCode) return []
+        commitCanvasSelection(winningCanvas, application.nodeId)
+        return [saved.referenceCode]
+      }
+      if (winning.status === 'conflict') {
+        window.alert('持久化返回的外部 Agent Prompt 标记完整性校验失败。')
+        return []
+      }
+      freeCanvasRef.current = liveChanged ? liveCanvas : winningCanvas
+    }
+    window.alert('Canvas 在保存期间持续变化，请重试外部 Agent Prompt 提案。')
+    return []
+  }
+
+  const handleAcceptBridgeImageDelivery = async (
+    delivery: BridgeImageDelivery
+  ): Promise<string[]> => {
+    const scope = activeProjectScopeRef.current
+    if (!onPersistCanvas || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+    const application = await createBridgeImageApplication(delivery)
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const baseCanvas = freeCanvasRef.current
+      const existing = inspectBridgeImageApplication(baseCanvas, application)
+      if (existing.status === 'conflict') {
+        window.alert('外部 Agent 图片标记完整性校验失败，无法应用。')
+        return []
+      }
+      if (existing.status === 'exact') {
+        const saved = baseCanvas.nodes.find(node => node.id === application.nodeId && node.kind === 'image')
+        return saved?.referenceCode ? [saved.referenceCode] : []
+      }
+      const node = createBridgeImageNode(
+        delivery,
+        application,
+        nextBridgeNodePosition(reactFlow, baseCanvas.nodes)
+      )
+      const requestedCanvas = {
+        ...baseCanvas,
+        selectedNodeId: node.id,
+        nodes: [...baseCanvas.nodes, node]
+      }
+      let receipt: boolean | FreeCanvasPersistReceipt = false
+      try {
+        receipt = await onPersistCanvas(requestedCanvas)
+      } catch {
+        receipt = false
+      }
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+      const winningCanvas = authoritativePersistedCanvas(receipt)
+      if (!winningCanvas) return []
+      const winning = inspectBridgeImageApplication(winningCanvas, application)
+      const liveCanvas = freeCanvasRef.current
+      const liveChanged = canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(baseCanvas)
+        && canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(winningCanvas)
+      if (winning.status === 'exact' && !liveChanged) {
+        const saved = winningCanvas.nodes.find(candidate => (
+          candidate.id === application.nodeId && candidate.kind === 'image'
+        ))
+        if (!saved?.referenceCode) return []
+        commitCanvasSelection(winningCanvas, application.nodeId)
+        return [saved.referenceCode]
+      }
+      if (winning.status === 'conflict') {
+        window.alert('持久化返回的外部 Agent 图片标记完整性校验失败。')
+        return []
+      }
+      freeCanvasRef.current = liveChanged ? liveCanvas : winningCanvas
+    }
+    window.alert('Canvas 在保存期间持续变化，请重试外部 Agent 图片提案。')
+    return []
+  }
+
+  const handleAcceptBridgeDocumentDelivery = async (
+    delivery: BridgeDocumentDelivery
+  ): Promise<string[]> => {
+    const scope = activeProjectScopeRef.current
+    if (!onPersistCanvas || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+    const application = createBridgeDocumentApplication(delivery)
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const baseCanvas = freeCanvasRef.current
+      const existing = inspectBridgeDocumentApplication(baseCanvas, application)
+      if (existing.status === 'conflict') {
+        window.alert('外部 Agent 文档目标已变化或标记冲突，无法应用。')
+        return []
+      }
+      if (existing.status === 'exact') {
+        return existing.node.referenceCode ? [existing.node.referenceCode] : []
+      }
+      let targetNodeId: string
+      let requestedCanvas: IFreeCanvasProject
+      try {
+        if (delivery.request.kind === 'document.create') {
+          const node = createBridgeDocumentNode(
+            delivery as BridgeDocumentCreateDelivery,
+            application,
+            nextBridgeNodePosition(reactFlow, baseCanvas.nodes)
+          )
+          targetNodeId = node.id
+          requestedCanvas = {
+            ...baseCanvas,
+            selectedNodeId: node.id,
+            nodes: [...baseCanvas.nodes, node]
+          }
+        } else {
+          const documentDelivery = delivery as BridgeDocumentChangeDelivery
+          const target = baseCanvas.nodes.find(node => (
+            node.kind === 'document' && node.referenceCode === documentDelivery.request.target.documentCode
+          ))
+          if (!target || target.kind !== 'document') return []
+          const node = applyBridgeDocumentChange(
+            target,
+            documentDelivery,
+            application
+          )
+          targetNodeId = node.id
+          requestedCanvas = {
+            ...baseCanvas,
+            selectedNodeId: node.id,
+            nodes: baseCanvas.nodes.map(candidate => candidate.id === node.id ? node : candidate)
+          }
+        }
+      } catch {
+        window.alert('外部 Agent 文档提案未通过本地完整性校验。')
+        return []
+      }
+      let receipt: boolean | FreeCanvasPersistReceipt = false
+      try {
+        receipt = await onPersistCanvas(requestedCanvas)
+      } catch {
+        receipt = false
+      }
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+      const winningCanvas = authoritativePersistedCanvas(receipt)
+      if (!winningCanvas) return []
+      const winning = inspectBridgeDocumentApplication(winningCanvas, application)
+      const liveCanvas = freeCanvasRef.current
+      const liveChanged = canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(baseCanvas)
+        && canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(winningCanvas)
+      if (winning.status === 'exact' && !liveChanged) {
+        if (!winning.node.referenceCode) return []
+        commitCanvasSelection(winningCanvas, targetNodeId)
+        return [winning.node.referenceCode]
+      }
+      if (winning.status === 'conflict') {
+        window.alert('持久化返回的外部 Agent 文档目标或标记完整性校验失败。')
+        return []
+      }
+      freeCanvasRef.current = liveChanged ? liveCanvas : winningCanvas
+    }
+    window.alert('Canvas 在保存期间持续变化，请重试外部 Agent 文档提案。')
+    return []
+  }
+
+  const handleAcceptBridgeStoryboardDelivery = async (
+    delivery: BridgeStoryboardDelivery
+  ): Promise<string[]> => {
+    const scope = activeProjectScopeRef.current
+    if (!onPersistCanvas || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+    const application = createBridgeStoryboardApplication(delivery)
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const baseCanvas = freeCanvasRef.current
+      const existing = inspectBridgeStoryboardApplication(baseCanvas, application)
+      if (existing.status === 'conflict') {
+        window.alert('外部 Agent 分镜目标已变化或标记冲突，无法应用。')
+        return []
+      }
+      if (existing.status === 'exact') {
+        return existing.node.referenceCode ? [existing.node.referenceCode] : []
+      }
+      let targetNodeId: string
+      let requestedCanvas: IFreeCanvasProject
+      try {
+        if (delivery.request.kind === 'storyboard.create') {
+          const storyboardDelivery = delivery as BridgeStoryboardCreateDelivery
+          const sources = baseCanvas.nodes.filter(node => (
+            node.kind === 'document'
+            && node.referenceCode === storyboardDelivery.request.payload.sourceDocumentCode
+          ))
+          if (sources.length !== 1 || sources[0].kind !== 'document') {
+            window.alert('外部 Agent 分镜来源文档不在当前 Canvas 权威快照中，请刷新后重试。')
+            return []
+          }
+          const node = createBridgeStoryboardNode(
+            storyboardDelivery,
+            application,
+            sources[0],
+            nextBridgeNodePosition(reactFlow, baseCanvas.nodes)
+          )
+          targetNodeId = node.id
+          requestedCanvas = {
+            ...baseCanvas,
+            selectedNodeId: node.id,
+            nodes: [...baseCanvas.nodes, node]
+          }
+        } else {
+          const storyboardDelivery = delivery as BridgeStoryboardChangeDelivery
+          const targets = baseCanvas.nodes.filter(node => (
+            node.kind === 'storyboard'
+            && node.referenceCode === storyboardDelivery.request.target.storyboardCode
+          ))
+          if (targets.length !== 1 || targets[0].kind !== 'storyboard') {
+            window.alert('外部 Agent 分镜目标不在当前 Canvas 权威快照中，请刷新后重试。')
+            return []
+          }
+          const node = applyBridgeStoryboardChange(targets[0], storyboardDelivery, application)
+          targetNodeId = node.id
+          requestedCanvas = {
+            ...baseCanvas,
+            selectedNodeId: node.id,
+            nodes: baseCanvas.nodes.map(candidate => candidate.id === node.id ? node : candidate)
+          }
+        }
+      } catch {
+        window.alert('外部 Agent 分镜提案未通过本地完整性校验。')
+        return []
+      }
+      let receipt: boolean | FreeCanvasPersistReceipt = false
+      try {
+        receipt = await onPersistCanvas(requestedCanvas)
+      } catch {
+        receipt = false
+      }
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+      const winningCanvas = authoritativePersistedCanvas(receipt)
+      if (!winningCanvas) return []
+      const winning = inspectBridgeStoryboardApplication(winningCanvas, application)
+      const liveCanvas = freeCanvasRef.current
+      const liveChanged = canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(baseCanvas)
+        && canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(winningCanvas)
+      if (winning.status === 'exact' && !liveChanged) {
+        if (!winning.node.referenceCode) return []
+        commitCanvasSelection(winningCanvas, targetNodeId)
+        return [winning.node.referenceCode]
+      }
+      if (winning.status === 'conflict') {
+        window.alert('持久化返回的外部 Agent 分镜目标或标记完整性校验失败。')
+        return []
+      }
+      freeCanvasRef.current = liveChanged ? liveCanvas : winningCanvas
+    }
+    window.alert('Canvas 在保存期间持续变化，请重试外部 Agent 分镜提案。')
+    return []
+  }
+
+  const handleAcceptBridgeDelivery = async (delivery: BridgeDelivery): Promise<string[]> => (
+    isBridgePromptDelivery(delivery)
+      ? handleAcceptBridgePromptDelivery(delivery)
+      : isBridgeDocumentDelivery(delivery)
+        ? handleAcceptBridgeDocumentDelivery(delivery)
+        : isBridgeStoryboardDelivery(delivery)
+          ? handleAcceptBridgeStoryboardDelivery(delivery)
+          : handleAcceptBridgeImageDelivery(delivery as BridgeImageDelivery)
+  )
+
   const handleApplyAgentProposal = async (proposal: AgentWorkspaceProposal | AgentCanvasEdit) => {
+    if (
+      proposal.kind === 'document_create'
+      || proposal.kind === 'document_changes'
+      || proposal.kind === 'storyboard_create'
+      || proposal.kind === 'storyboard_changes'
+    ) {
+      const scope = activeProjectScopeRef.current
+      return enqueueDocumentMutation(scope, async () => {
+        const acknowledgeFailure = async (
+          errorCode: 'failed_conflict' | 'failed_integrity' | 'failed_target_missing' | 'save_failed'
+        ) => {
+          try {
+            await agentRuntimeService.acknowledgeDocumentEdit(
+              activeProject.id,
+              proposal.conversationId,
+              proposal.editId,
+              { requestId: proposal.requestId, status: 'failed', errorCode }
+            )
+          } catch {
+            // Failure acknowledgement is advisory; Gateway owns the terminal state.
+          }
+          return false
+        }
+        const confirmAppliedAcknowledgement = async () => {
+          const acknowledgementRequest = () => agentRuntimeService.acknowledgeDocumentEdit(
+            activeProject.id,
+            proposal.conversationId,
+            proposal.editId,
+            { requestId: proposal.requestId, status: 'applied' }
+          )
+          const reconciliationLease = {
+            projectId: activeProject.id,
+            conversationId: proposal.conversationId,
+            leaseId: `saved-agent-edit:${activeProject.id}:${proposal.conversationId}:${proposal.editId}`,
+            nodeId: proposal.nodeId
+          }
+          const recoveryTarget = {
+            ...reconciliationLease,
+            requestId: proposal.requestId,
+            editId: proposal.editId
+          }
+          const retainAmbiguousRecoveryLock = (
+            proposal.kind === 'storyboard_create' || proposal.kind === 'storyboard_changes'
+          )
+          const isExpectedStatus = (status: {
+            conversationId?: unknown
+            requestId?: unknown
+            editId?: unknown
+          }) => (
+            status.conversationId === proposal.conversationId
+            && status.requestId === proposal.requestId
+            && status.editId === proposal.editId
+          )
+          const finishExactStatus = (response: Awaited<ReturnType<typeof acknowledgementRequest>>) => {
+            if (!isExpectedStatus(response)) throw new Error('agent_edit_ack_identity_mismatch')
+            if (response.status === 'pending_apply') {
+              if (retainAmbiguousRecoveryLock) {
+                updateDocumentReconcileLease({ ...reconciliationLease, pending: true })
+                return startStoryboardAckRecovery(recoveryTarget)
+              }
+              return false
+            }
+            stopStoryboardAckRecovery(reconciliationLease.leaseId, response.status === 'applied')
+            updateDocumentReconcileLease({ ...reconciliationLease, pending: false })
+            return response.status === 'applied'
+          }
+          try {
+            return finishExactStatus(await acknowledgementRequest())
+          } catch {
+            try {
+              return finishExactStatus(await acknowledgementRequest())
+            } catch {
+              try {
+                const reconciliation = await agentRuntimeService.reconcileDocumentEdits(
+                  activeProject.id,
+                  proposal.conversationId
+                )
+                if (reconciliation.status === 'idle' || reconciliation.status === 'pending_apply') {
+                  if (retainAmbiguousRecoveryLock) {
+                    updateDocumentReconcileLease({ ...reconciliationLease, pending: true })
+                    return startStoryboardAckRecovery(recoveryTarget)
+                  }
+                  return false
+                }
+                if (!isExpectedStatus(reconciliation)) {
+                  if (retainAmbiguousRecoveryLock) {
+                    updateDocumentReconcileLease({ ...reconciliationLease, pending: true })
+                    return startStoryboardAckRecovery(recoveryTarget)
+                  }
+                  return false
+                }
+                stopStoryboardAckRecovery(
+                  reconciliationLease.leaseId,
+                  reconciliation.status === 'applied'
+                )
+                updateDocumentReconcileLease({ ...reconciliationLease, pending: false })
+                return reconciliation.status === 'applied'
+              } catch {
+                if (retainAmbiguousRecoveryLock) {
+                  updateDocumentReconcileLease({ ...reconciliationLease, pending: true })
+                  return startStoryboardAckRecovery(recoveryTarget)
+                }
+                return false
+              }
+            }
+          }
+        }
+        if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
+
+        const beforeCanvas = freeCanvasRef.current
+        const authorityMatches = beforeCanvas.nodes.filter(node => node.id === proposal.nodeId)
+        if (authorityMatches.length > 1) return acknowledgeFailure('failed_integrity')
+        const existing = authorityMatches[0]
+        if (
+          (existing?.kind === 'document' || existing?.kind === 'storyboard') &&
+          existing.agentAppliedEdit?.conversationId === proposal.conversationId &&
+          existing.agentAppliedEdit.requestId === proposal.requestId &&
+          existing.agentAppliedEdit.editId === proposal.editId &&
+          existing.agentAppliedEdit.resultDigest === proposal.expectedResultDigest &&
+          (existing.kind === 'document'
+            ? existing.document.digest
+            : existing.digest ?? storyboardDigest(existing.sequence, existing.pendingFieldChanges)) === proposal.expectedResultDigest
+        ) {
+          return confirmAppliedAcknowledgement()
+        }
+        if (proposal.base.projectRevision !== activeProject.revision) {
+          return acknowledgeFailure('failed_conflict')
+        }
+
+        const marker = {
+          conversationId: proposal.conversationId,
+          requestId: proposal.requestId,
+          editId: proposal.editId,
+          resultDigest: proposal.expectedResultDigest
+        }
+        const hasExpectedAppliedAuthority = (canvas: IFreeCanvasProject) => {
+          const node = exactCanvasNode(canvas, proposal.nodeId)
+          return (node?.kind === 'document' || node?.kind === 'storyboard')
+            && node.agentAppliedEdit?.conversationId === marker.conversationId
+            && node.agentAppliedEdit.requestId === marker.requestId
+            && node.agentAppliedEdit.editId === marker.editId
+            && node.agentAppliedEdit.resultDigest === marker.resultDigest
+            && (node.kind === 'document'
+              ? node.document.digest
+              : node.digest ?? storyboardDigest(node.sequence, node.pendingFieldChanges)) === proposal.expectedResultDigest
+        }
+        let executed: ReturnType<typeof executeCanvasLocalCommand>
+        try {
+          if (proposal.kind === 'document_create') {
+            if (existing) return acknowledgeFailure('failed_conflict')
+            const document = createPlanningDocumentV1(proposal.payload.blocks)
+            if (document.digest !== proposal.expectedResultDigest) {
+              return acknowledgeFailure('failed_integrity')
+            }
+            executed = executeCanvasLocalCommand(canvasCommandHistoryRef.current, beforeCanvas, {
+              kind: 'insert-node',
+              index: beforeCanvas.nodes.length,
+              node: {
+                id: proposal.nodeId,
+                kind: 'document',
+                title: proposal.payload.title,
+                position: nextNodePosition(reactFlow, beforeCanvas.nodes.length),
+                width: 560,
+                height: 420,
+                document,
+                linkedDocumentResourceIds: [...proposal.payload.linkedDocumentResourceIds],
+                ...(proposal.provenance ? { provenance: proposal.provenance } : {}),
+                agentAppliedEdit: marker,
+                meta: {}
+              }
+            })
+          } else if (proposal.kind === 'document_changes') {
+            if (!existing || existing.kind !== 'document') {
+              return acknowledgeFailure('failed_target_missing')
+            }
+            if (
+              existing.document.revision !== proposal.base.nodeRevision ||
+              existing.document.digest !== proposal.base.nodeDigest
+            ) {
+              return acknowledgeFailure('failed_conflict')
+            }
+            const document = applyDocumentChangeOperations(
+              existing.document,
+              proposal.editId,
+              proposal.payload.operations
+            )
+            if (document.digest !== proposal.expectedResultDigest) {
+              return acknowledgeFailure('failed_integrity')
+            }
+            executed = executeCanvasLocalCommand(canvasCommandHistoryRef.current, beforeCanvas, {
+              kind: 'update-document',
+              nodeId: proposal.nodeId,
+              document
+            })
+          } else if (proposal.kind === 'storyboard_create') {
+            if (existing) return acknowledgeFailure('failed_conflict')
+            const storyboard = createStoryboardNode(
+              proposal,
+              nextNodePosition(reactFlow, beforeCanvas.nodes.length)
+            )
+            executed = executeCanvasLocalCommand(canvasCommandHistoryRef.current, beforeCanvas, {
+              kind: 'insert-node',
+              index: beforeCanvas.nodes.length,
+              node: storyboard
+            })
+          } else {
+            if (!existing || existing.kind !== 'storyboard') {
+              return acknowledgeFailure('failed_target_missing')
+            }
+            const storyboard = applyStoryboardChanges(existing, proposal)
+            executed = executeCanvasLocalCommand(canvasCommandHistoryRef.current, beforeCanvas, {
+              kind: 'update-storyboard',
+              nodeId: proposal.nodeId,
+              storyboard
+            })
+          }
+        } catch {
+          return acknowledgeFailure('failed_integrity')
+        }
+
+        const persistedCanvas = {
+          ...executed.project,
+          nodes: executed.project.nodes.map(node => (
+            node.id === proposal.nodeId && (node.kind === 'document' || node.kind === 'storyboard')
+              ? { ...node, agentAppliedEdit: marker }
+              : node
+          ))
+        }
+        if (!hasExpectedAppliedAuthority(persistedCanvas)) {
+          return acknowledgeFailure('failed_integrity')
+        }
+        emitGenerationCanvas(persistedCanvas)
+        if (!onPersistCanvas) {
+          emitGenerationCanvas(beforeCanvas)
+          return acknowledgeFailure('save_failed')
+        }
+        let receipt: boolean | FreeCanvasPersistReceipt = false
+        try {
+          receipt = await onPersistCanvas(persistedCanvas)
+        } catch {
+          receipt = false
+        }
+        if (!receipt) {
+          if (sameProjectMutationScope(activeProjectScopeRef.current, scope)) {
+            emitGenerationCanvas(beforeCanvas)
+          }
+          return acknowledgeFailure('save_failed')
+        }
+        const authoritativeCanvas = authoritativePersistedCanvas(receipt)
+        if (
+          (authoritativeCanvas && !hasExpectedAppliedAuthority(authoritativeCanvas))
+          || !hasExpectedAppliedAuthority(freeCanvasRef.current)
+        ) {
+          return acknowledgeFailure('failed_integrity')
+        }
+        if (sameProjectMutationScope(activeProjectScopeRef.current, scope)) {
+          canvasCommandHistoryRef.current = executed.history
+        }
+
+        return confirmAppliedAcknowledgement()
+      })
+    }
     if (proposal.kind === 'free_canvas_text_insertions') {
       const currentCanvas = freeCanvasRef.current
       const target = currentCanvas.nodes.find((node): node is IFreeCanvasTextNode => (
@@ -2577,6 +3928,74 @@ const FreeCanvasBuilderInner = ({
     }
     if (proposal.kind === 'free_canvas_text_create') {
       const currentCanvas = freeCanvasRef.current
+      if (proposal.handoffBasis) {
+        const basis = proposal.handoffBasis
+        if (!promptHandoffSourceIsCurrent(currentCanvas, basis)) {
+          window.alert('规划来源已发生变化，请重新生成 Prompt 提案。')
+          return false
+        }
+        const scope = activeProjectScopeRef.current
+        if (!onPersistCanvas || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
+        const application = await createPromptHandoffApplication(proposal)
+        if (!application) {
+          window.alert('Prompt 提案缺少可信的会话或运行来源，请重新生成。')
+          return false
+        }
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          const baseCanvas = freeCanvasRef.current
+          const existing = inspectPromptHandoffApplication(baseCanvas, application)
+          if (existing.status === 'exact') return true
+          if (existing.status === 'conflict') {
+            window.alert('已保存的 Prompt handoff 标记完整性校验失败，无法重复应用。')
+            return false
+          }
+          if (!promptHandoffSourceIsCurrent(baseCanvas, basis)) {
+            window.alert('规划来源已发生变化，请重新生成 Prompt 提案。')
+            return false
+          }
+          const node = createPromptHandoffNode(
+            proposal,
+            application,
+            nextNodePosition(reactFlow, baseCanvas.nodes.length)
+          )
+          const requestedCanvas = {
+            ...baseCanvas,
+            selectedNodeId: node.id,
+            nodes: [...baseCanvas.nodes, node]
+          }
+          let receipt: boolean | FreeCanvasPersistReceipt = false
+          try {
+            receipt = await onPersistCanvas(requestedCanvas)
+          } catch {
+            receipt = false
+          }
+          if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return false
+          const winningCanvas = authoritativePersistedCanvas(receipt)
+          if (!winningCanvas) return false
+          const winning = inspectPromptHandoffApplication(winningCanvas, application)
+          const liveCanvas = freeCanvasRef.current
+          const liveChanged = canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(baseCanvas)
+            && canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(winningCanvas)
+          if (winning.status === 'exact' && !promptHandoffSourceIsCurrent(winningCanvas, basis)) {
+            window.alert('规划来源已发生变化，请重新生成 Prompt 提案。')
+            return false
+          }
+          if (winning.status === 'exact' && !liveChanged) {
+            commitCanvasSelection(winningCanvas, application.nodeId)
+            return true
+          }
+          if (winning.status === 'conflict') {
+            window.alert('持久化返回的 Prompt handoff 标记完整性校验失败。')
+            return false
+          }
+          // A superseding same-project save won, or the Canvas changed while this
+          // save was in flight. The next iteration rebases the same deterministic
+          // application identity onto the latest authoritative Canvas.
+          freeCanvasRef.current = liveChanged ? liveCanvas : winningCanvas
+        }
+        window.alert('Canvas 在保存期间持续变化，请重试 Prompt 提案。')
+        return false
+      }
       if (proposal.sourceNodeId) {
         const source = currentCanvas.nodes.find((node): node is IFreeCanvasTextNode => (
           node.id === proposal.sourceNodeId && node.kind === 'text'
@@ -2685,6 +4104,8 @@ const FreeCanvasBuilderInner = ({
           project={activeProject}
           nodes={freeCanvas.nodes}
           selectedNodeIds={selectedNodeIds}
+          onActiveContextChange={context => changeActiveBridgeContext(context?.cvcCode || null)}
+          prepareProjectRevision={prepareContextPackRevision}
         />
         <ToolbarButton title="Save" onClick={onSave}><Save className="h-4 w-4" /></ToolbarButton>
       </header>
@@ -2769,6 +4190,7 @@ const FreeCanvasBuilderInner = ({
                 />
               )
             }
+            if (contextNode.kind === 'document') return null
             if (contextNode.kind !== 'image') {
               return (
                 <CanvasUnsupportedNodeContextMenu
@@ -2811,6 +4233,7 @@ const FreeCanvasBuilderInner = ({
           quickDrawerOpen={quickDrawerOpen}
           quickPresets={quickPresets}
           onCreateText={createText}
+          onCreateDocument={createDocument}
           onCreateImage={createImage}
           onCreateImageGenerator={openImageGeneration}
           onToggleQuickDrawer={() => setQuickDrawerOpen(value => !value)}
@@ -3249,18 +4672,33 @@ const FreeCanvasBuilderInner = ({
               />
             </div>
           ) : !previewMode ? (
-            <AIChatbotBox
-              title="Free Canvas Agent"
-              mode="free-canvas-workspace"
-              sessionKey={`workspace:free-canvas:${activeProject.id}`}
-              workspaceContext={workspaceContext}
-              onApplyWorkspaceProposal={handleApplyAgentProposal}
-              onApplyCanvasEdit={handleApplyAgentProposal}
-              draftRequest={agentDraftRequest}
-              compact
-              embedded
-              contextLabel={`已读取画布 · ${freeCanvas.nodes.length} 个节点`}
-            />
+            <div className="flex min-h-0 flex-1 flex-col">
+              <AgentWorkEnvironment
+                projectCode={activeProject.referenceCode || ''}
+                projectRevision={activeProject.revision}
+                cvcCode={activeBridgeCvcCode}
+                selectedObjectCodes={freeCanvas.nodes.flatMap(node => (
+                  selectedNodeIds.includes(node.id) && node.referenceCode ? [node.referenceCode] : []
+                ))}
+                onCvcChange={changeActiveBridgeContext}
+                onAccept={handleAcceptBridgeDelivery}
+              />
+              <div className="min-h-0 flex-1">
+                <AIChatbotBox
+                  title="Free Canvas Agent"
+                  mode="free-canvas-workspace"
+                  sessionKey={`workspace:free-canvas:${activeProject.id}`}
+                  workspaceContext={workspaceContext}
+                  onApplyWorkspaceProposal={handleApplyAgentProposal}
+                  onApplyCanvasEdit={handleApplyAgentProposal}
+                  onDocumentReconcileStateChange={handleDocumentReconcileStateChange}
+                  draftRequest={agentDraftRequest}
+                  compact
+                  embedded
+                  contextLabel={`已读取画布 · ${freeCanvas.nodes.length} 个节点`}
+                />
+              </div>
+            </div>
           ) : (
             <div className="p-5 text-sm font-semibold text-gray-400">Preview mode disables Agent Runtime.</div>
           )}
@@ -3304,8 +4742,82 @@ const FreeCanvasNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
   if (node.kind === 'arrow') {
     return <FreeCanvasArrowNodeView node={node} selected={selected} />
   }
+  if (node.kind === 'document') {
+    return (
+      <div className="relative">
+        <DocumentNode
+          node={node}
+          selected={selected}
+          locked={data.documentLocked}
+          onDocumentChange={document => data.onDocumentChange(node.id, document)}
+          onCollapsedChange={collapsed => data.onDocumentCollapsedChange(node.id, collapsed)}
+          onDelete={() => data.onDocumentDelete(node.id)}
+          onPromptHandoff={data.onDocumentPromptHandoff}
+        />
+        {!data.documentLocked && (
+          <button
+            type="button"
+            aria-label={`从文档 ${node.title} 创建分镜表`}
+            className="nodrag absolute right-36 top-2 rounded-md border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-sky-700 shadow-sm hover:bg-sky-50"
+            onClick={() => data.onDocumentToStoryboard(node.id)}
+          >
+            从文档创建分镜表
+          </button>
+        )}
+      </div>
+    )
+  }
+  if (node.kind === 'storyboard') {
+    return (
+      <StoryboardNode
+        node={node}
+        selected={selected}
+        locked={data.storyboardLocked}
+        onRequestRevision={() => data.onStoryboardRevise(node.id)}
+        onPromptHandoff={rowId => data.onStoryboardPromptHandoff(node.id, rowId)}
+        onResolve={(ids, action) => data.onStoryboardResolve(node.id, ids, action)}
+      />
+    )
+  }
+  if (node.kind === 'unsupported') {
+    return <FreeCanvasReadOnlyNodeView node={node} selected={selected} label="不支持的节点" detail={`${node.originalKind} · 原始数据将无损保留`} />
+  }
   return null
 }
+
+const FreeCanvasReadOnlyNodeView = ({
+  node,
+  selected,
+  label,
+  detail
+}: {
+  node: Extract<IFreeCanvasNode, { kind: 'storyboard' | 'unsupported' }>
+  selected: boolean
+  label: string
+  detail: string
+}) => (
+  <article
+    data-read-only-canvas-node={node.kind}
+    role="status"
+    aria-label={`${label}：${node.title}`}
+    className={`rounded-[8px] border bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.12)] ${
+      selected ? 'border-sky-500 ring-2 ring-sky-200' : 'border-gray-200'
+    }`}
+    style={{ width: node.width, minHeight: node.height }}
+  >
+    <span className="text-[11px] font-black uppercase tracking-[0.14em] text-gray-400">{label}</span>
+    <strong className="mt-2 block text-sm text-gray-900">{node.title}</strong>
+    <span className="mt-2 block text-xs text-gray-500">{detail}</span>
+  </article>
+)
+
+const isIsolatedReadOnlyCanvasNode = (node: IFreeCanvasNode): boolean => (
+  node.kind === 'unsupported'
+)
+
+const isNonConnectableCanvasNode = (node: IFreeCanvasNode): boolean => (
+  node.kind === 'document' || node.kind === 'storyboard' || node.kind === 'unsupported'
+)
 
 const ImageGeneratorFlowNode = ({ data, selected }: NodeProps<FreeCanvasFlowNode>) => {
   if (data.canvasNode.kind !== 'image-generator') return null
@@ -5135,6 +6647,7 @@ export const CanvasBottomToolbar = ({
   quickDrawerOpen,
   quickPresets,
   onCreateText,
+  onCreateDocument,
   onCreateImage,
   onCreateImageGenerator,
   onToggleQuickDrawer,
@@ -5146,6 +6659,7 @@ export const CanvasBottomToolbar = ({
   quickDrawerOpen: boolean
   quickPresets: IPreset[]
   onCreateText: () => void
+  onCreateDocument?: () => void
   onCreateImage: () => void
   onCreateImageGenerator?: () => void
   imageGeneratorCreating?: boolean
@@ -5202,6 +6716,9 @@ export const CanvasBottomToolbar = ({
       )}
       <div className="flex items-center gap-1 rounded-full border border-gray-200 bg-white/95 px-3 py-2 shadow-[0_18px_60px_rgba(15,23,42,0.18)] backdrop-blur" data-free-canvas-toolbar>
         <ToolbarButton title="Text" onClick={onCreateText}><Type className="h-4 w-4" /></ToolbarButton>
+        {onCreateDocument && (
+          <ToolbarButton title="Document" ariaLabel="创建规划文档" onClick={onCreateDocument}><BookOpen className="h-4 w-4" /></ToolbarButton>
+        )}
         <ToolbarButton title="Quick messages" onClick={onToggleQuickDrawer}><MessageSquare className="h-4 w-4" /></ToolbarButton>
         <ToolbarButton title="Image" onClick={onCreateImage}><ImageIcon className="h-4 w-4" /></ToolbarButton>
         {onCreateImageGenerator && (
@@ -5512,6 +7029,211 @@ const pythonCanonicalJson = (value: unknown): string => {
   return JSON.stringify(value)
 }
 
+type PromptHandoffProposal = Extract<AgentWorkspaceProposal | AgentCanvasEdit, { kind: 'free_canvas_text_create' }>
+type PromptHandoffApplication = {
+  nodeId: string
+  marker: NonNullable<IFreeCanvasTextNode['agentPromptHandoff']>
+  title: string
+  userText: string
+  provenance: NonNullable<PromptHandoffProposal['provenance']>
+}
+
+const createPromptHandoffApplication = async (
+  proposal: PromptHandoffProposal
+): Promise<PromptHandoffApplication | null> => {
+  if (!proposal.handoffBasis || !proposal.threadId || !proposal.provenance) return null
+  const title = proposal.title?.trim() || 'Agent Prompt'
+  const basisDigest = await sha256Text(pythonCanonicalJson(proposal.handoffBasis))
+  const resultDigest = await sha256Text(pythonCanonicalJson({
+    provenance: proposal.provenance,
+    title,
+    userText: proposal.userText
+  }))
+  const applicationDigest = await sha256Text(pythonCanonicalJson({
+    basisDigest,
+    conversationId: proposal.threadId,
+    proposalId: proposal.id,
+    resultDigest
+  }))
+  return {
+    nodeId: `prompt-handoff-${applicationDigest.slice(7, 39)}`,
+    marker: {
+      version: 1,
+      conversationId: proposal.threadId,
+      proposalId: proposal.id,
+      basisDigest,
+      resultDigest
+    },
+    title,
+    userText: proposal.userText,
+    provenance: proposal.provenance
+  }
+}
+
+const createBridgePromptApplication = async (
+  delivery: BridgePromptDelivery
+): Promise<PromptHandoffApplication> => {
+  const title = delivery.visualProposal.title.trim() || 'External Agent Prompt'
+  const basisDigest = await sha256Text(pythonCanonicalJson({
+    cvcCode: delivery.request.target.cvcCode,
+    normalizedRequestDigest: delivery.request.normalizedRequestDigest,
+    sourceCodes: delivery.request.sourceCodes,
+    skillPins: delivery.request.skillPins
+  }))
+  const provenance: PromptHandoffApplication['provenance'] = {
+    model: {
+      connectionId: `bridge:${delivery.operationContext.profileId}`,
+      providerId: 'external-agent',
+      modelId: delivery.operationContext.clientInfo?.name || delivery.operationContext.profileId,
+      displayName: delivery.visualProposal.agentName,
+      capabilities: {}
+    },
+    skills: delivery.request.skillPins.map(pin => ({
+      skillId: pin.skillCode,
+      revision: pin.revision,
+      digest: pin.digest
+    }))
+  }
+  const resultDigest = await sha256Text(pythonCanonicalJson({
+    provenance,
+    title,
+    userText: delivery.visualProposal.userText
+  }))
+  const conversationId = `bridge:${delivery.operationContext.profileId}:${delivery.request.target.cvcCode}`
+  const applicationDigest = await sha256Text(pythonCanonicalJson({
+    basisDigest,
+    conversationId,
+    proposalId: delivery.proposalId,
+    resultDigest
+  }))
+  return {
+    nodeId: `bridge-prompt-${applicationDigest.slice(7, 39)}`,
+    marker: {
+      version: 1,
+      conversationId,
+      proposalId: delivery.proposalId,
+      basisDigest,
+      resultDigest
+    },
+    title,
+    userText: delivery.visualProposal.userText,
+    provenance
+  }
+}
+
+const isBridgePromptDelivery = (
+  delivery: BridgeDelivery
+): delivery is BridgePromptDelivery => delivery.request.kind === 'prompt.create'
+
+const isBridgeDocumentDelivery = (
+  delivery: BridgeDelivery
+): delivery is BridgeDocumentDelivery => (
+  delivery.request.kind === 'document.create' || delivery.request.kind === 'document.change'
+)
+
+const isBridgeStoryboardDelivery = (
+  delivery: BridgeDelivery
+): delivery is BridgeStoryboardDelivery => (
+  delivery.request.kind === 'storyboard.create' || delivery.request.kind === 'storyboard.change'
+)
+
+const promptHandoffSourceIsCurrent = (
+  canvas: IFreeCanvasProject,
+  basis: AgentPromptHandoffBasis
+): boolean => {
+  const source = exactCanvasNode(canvas, basis.nodeId)
+  return basis.kind === 'document-selection'
+    ? source?.kind === 'document' && matchesDocumentPromptHandoffBasis(source.document, basis)
+    : source?.kind === 'storyboard'
+      && (source.revision ?? 0) === basis.storyboardRevision
+      && (source.digest ?? storyboardDigest(source.sequence, source.pendingFieldChanges)) === basis.storyboardDigest
+      && source.pendingFieldChanges.length === 0
+      && source.sequence.rows.some(row => row.id === basis.rowId && storyboardShotDigest(row) === basis.shotDigest)
+}
+
+const createPromptHandoffNode = (
+  proposal: PromptHandoffProposal,
+  application: PromptHandoffApplication,
+  position: { x: number; y: number }
+): IFreeCanvasTextNode => {
+  const created = createFreeCanvasTextNode(proposal.userText, position)
+  return {
+    ...created,
+    id: application.nodeId,
+    title: application.title,
+    segments: created.segments.map((segment, index) => ({
+      ...segment,
+      id: `${application.nodeId}-user-${index + 1}`,
+      source: 'user'
+    })),
+    provenance: application.provenance,
+    agentPromptHandoff: application.marker
+  }
+}
+
+const createBridgePromptNode = (
+  delivery: BridgePromptDelivery,
+  application: PromptHandoffApplication,
+  position: { x: number; y: number }
+): IFreeCanvasTextNode => {
+  const created = createFreeCanvasTextNode(delivery.visualProposal.userText, position)
+  return {
+    ...created,
+    id: application.nodeId,
+    title: application.title,
+    segments: created.segments.map((segment, index) => ({
+      ...segment,
+      id: `${application.nodeId}-user-${index + 1}`,
+      source: 'user'
+    })),
+    provenance: application.provenance,
+    agentPromptHandoff: application.marker
+  }
+}
+
+const inspectPromptHandoffApplication = (
+  canvas: IFreeCanvasProject,
+  application: PromptHandoffApplication
+): { status: 'missing' | 'exact' | 'conflict' } => {
+  const identityMatches = canvas.nodes.filter((node): node is IFreeCanvasTextNode => (
+    node.kind === 'text'
+    && node.agentPromptHandoff?.conversationId === application.marker.conversationId
+    && node.agentPromptHandoff?.proposalId === application.marker.proposalId
+  ))
+  const deterministicMatches = canvas.nodes.filter(node => node.id === application.nodeId)
+  if (identityMatches.length === 0 && deterministicMatches.length === 0) return { status: 'missing' }
+  if (identityMatches.length !== 1
+    || deterministicMatches.length !== 1
+    || deterministicMatches[0] !== identityMatches[0]
+  ) return { status: 'conflict' }
+  const node = identityMatches[0]
+  const marker = node.agentPromptHandoff
+  if (!marker || Object.keys(marker).sort().join(',') !== 'basisDigest,conversationId,proposalId,resultDigest,version') {
+    return { status: 'conflict' }
+  }
+  const exact = marker.version === 1
+    && marker.conversationId === application.marker.conversationId
+    && marker.proposalId === application.marker.proposalId
+    && marker.basisDigest === application.marker.basisDigest
+    && marker.resultDigest === application.marker.resultDigest
+    && node.title === application.title
+    && pythonCanonicalJson(node.provenance) === pythonCanonicalJson(application.provenance)
+    && node.segments.length > 0
+    && node.segments.every(segment => segment.source === 'user')
+    && freeCanvasUserText(node) === application.userText
+  return { status: exact ? 'exact' : 'conflict' }
+}
+
+const authoritativePersistedCanvas = (
+  receipt: boolean | FreeCanvasPersistReceipt
+): IFreeCanvasProject | null => (
+  typeof receipt === 'object' && receipt.saved === true && receipt.freeCanvas
+    ? receipt.freeCanvas
+    : null
+)
+
+const canvasSnapshotIdentity = (canvas: IFreeCanvasProject): string => JSON.stringify(canvas)
+
 const freeCanvasTemplateDigest = (node: IFreeCanvasTextNode): Promise<string> => sha256Text(pythonCanonicalJson({
   presetText: freeCanvasPresetText(node),
   segments: node.segments.filter(segment => segment.source === 'preset').map(segment => ({
@@ -5534,6 +7256,28 @@ const freeCanvasSegmentsDigest = (node: IFreeCanvasTextNode): Promise<string> =>
 const nodeTypes = {
   freeCanvasNode: FreeCanvasNode,
   imageGeneratorNode: ImageGeneratorFlowNode
+}
+
+const activeBridgeContextKey = (projectId: string): string => (
+  `promptcard:active-bridge-context:${projectId}`
+)
+
+const readActiveBridgeContext = (projectId: string): string | null => {
+  try {
+    const value = globalThis.localStorage?.getItem(activeBridgeContextKey(projectId))
+    return value && /^CVC-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+const writeActiveBridgeContext = (projectId: string, cvcCode: string | null): void => {
+  try {
+    if (cvcCode) globalThis.localStorage?.setItem(activeBridgeContextKey(projectId), cvcCode)
+    else globalThis.localStorage?.removeItem(activeBridgeContextKey(projectId))
+  } catch {
+    // Local UI preference is optional; Storage remains authoritative.
+  }
 }
 
 const createLocalId = (prefix: string): string => globalThis.crypto?.randomUUID?.()
@@ -5643,6 +7387,14 @@ const imageGenerationRequestToDraft = (
 
 const nextNodePosition = (reactFlow: ReturnType<typeof useReactFlow<FreeCanvasFlowNode>>, count: number) => (
   reactFlow.screenToFlowPosition({ x: window.innerWidth / 2 + count * 20, y: window.innerHeight / 2 + count * 16 })
+)
+
+const nextBridgeNodePosition = (
+  reactFlow: ReturnType<typeof useReactFlow<FreeCanvasFlowNode>>,
+  nodes: IFreeCanvasProject['nodes']
+) => findBridgeNodePosition(
+  nodes,
+  reactFlow.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
 )
 
 const clampUnit = (value: number, max = 1): number =>

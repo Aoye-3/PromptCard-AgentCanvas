@@ -1,0 +1,14 @@
+{
+  "name": "bounded image staging request",
+  "entryPoint": "assetStageRequest",
+  "schemaId": "https://schemas.promptcard.dev/promptcard-bridge/v3/asset-stage-request.schema.json",
+  "expectedSchemaValidity": true,
+  "instance": {
+    "clientRequestId": "asset-stage-001",
+    "cvcCode": "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "workspaceRelativePath": "outputs/opening-shot.png",
+    "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "mediaType": "image/png",
+    "byteLength": 4096
+  }
+}
