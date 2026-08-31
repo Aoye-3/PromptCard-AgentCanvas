@@ -2,7 +2,7 @@
 
 ## Status
 
-Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-26C are implemented on `feat/skill-document-storyboard-loop`, including passing real-Codex first-contact discovery and Document create/change review slices. The remaining merge gate continues from the accepted Document into Storyboard → Prompt → generated-image writeback, then proves four-kind replay and restart in one real-Codex loop.
+Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-26C are implemented on `feat/skill-document-storyboard-loop`, including passing real-Codex first-contact discovery plus Document and Storyboard create/change review slices. The remaining merge gate continues from the accepted Storyboard into Prompt → generated-image writeback, then proves four-kind replay and restart in one real-Codex loop.
 
 ## Current Normative Boundary
 

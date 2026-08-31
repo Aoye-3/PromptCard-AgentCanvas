@@ -12,12 +12,44 @@ interface StoredDocument {
   suggestions: unknown[]
 }
 
+interface StoredStoryboardRow {
+  cutLabel: string
+  timeRange: string
+  subject: string
+  action: string
+  scene: string
+  camera: string
+  lighting: string
+  audio: string
+  duration: string
+}
+
+interface StoredStoryboardSequence {
+  name: string
+  description: string
+  style: string
+  constraints: string
+  rows: StoredStoryboardRow[]
+}
+
+interface StoredStoryboardFieldChange {
+  scope: 'sequence' | 'row'
+  rowOrdinal?: number
+  field: string
+  previousValue: string
+  newValue: string
+}
+
 interface StoredNode {
   id: string
   kind: string
   title: string
   referenceCode: string
+  revision?: number
+  digest?: string
   document?: StoredDocument
+  sequence?: StoredStoryboardSequence
+  pendingFieldChanges?: StoredStoryboardFieldChange[]
   meta: Record<string, unknown>
 }
 
@@ -28,13 +60,13 @@ interface StoredProject {
 
 test.describe.configure({ mode: 'serial' })
 
-test('real Codex creates and changes a reviewable Document through the packaged work environment', async ({
+test('real Codex creates and changes reviewable Document and Storyboard objects', async ({
   context,
   page,
   request
 }) => {
   test.skip(process.env.PROMPTCARD_REAL_CODEX_ACCEPTANCE !== '1', 'requires an explicit real Codex acceptance run')
-  test.setTimeout(480_000)
+  test.setTimeout(900_000)
   const fixture = await createFixture(request)
   const contextCodes: string[] = []
   page.on('dialog', dialog => void dialog.accept())
@@ -135,6 +167,105 @@ test('real Codex creates and changes a reviewable Document through the packaged 
         suggestions: stored?.document?.suggestions.length ?? -1
       }
     }).toEqual({ text: replacement, suggestions: 0 })
+
+    const acceptedDocument = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+      .find(node => node.referenceCode === created.referenceCode)
+    expect(acceptedDocument?.document).toBeTruthy()
+    const storyboardCvc = await createContextPack(
+      page, request, fixture.projectId, acceptedDocument!.referenceCode
+    )
+    contextCodes.push(storyboardCvc)
+    const storyboardTitle = `Codex reviewed storyboard ${fixture.suffix}`
+    const storyboardPreviewId = `${fixture.suffix}-storyboard-create-preview`
+    const storyboardCommitId = `${fixture.suffix}-storyboard-create-commit`
+    const storyboardRun = await runRealCodexPrompt([
+      'You are a newly connected external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, or non-PromptCard tools.',
+      `Work only in project ${fixture.projectCode} and context ${storyboardCvc}.`,
+      'Follow the packaged environment: describe Runtime, describe Workspace, read every exact approved Skill pin,',
+      `and resolve the exact accepted Document ${acceptedDocument!.referenceCode}.`,
+      `Create exactly one review-only Storyboard proposal titled “${storyboardTitle}” sourced from that exact Document.`,
+      'Create exactly one sequence with name “Last train”, description “A rainy platform reveal”,',
+      'style “Naturalistic cinema”, constraints “No dialogue”, and exactly one row.',
+      'That row must have cutLabel “1”, timeRange “00:00-00:04”, subject “Filmmaker”,',
+      'action “Waits as the train leaves”, scene “Rainy railway platform at night”, camera “Wide”,',
+      'lighting “Neon reflections”, audio “Rain and departing train”, and duration “4s”.',
+      `Use ${acceptedDocument!.referenceCode} as the only source code and copy the exact approved Skill pin from Workspace.`,
+      `Use preview clientRequestId “${storyboardPreviewId}” with normalizedRequestDigest “${digest(storyboardPreviewId)}”.`,
+      `After preview succeeds, commit that proposal using clientRequestId “${storyboardCommitId}” and digest “${digest(storyboardCommitId)}”.`,
+      'Do not create any other proposal. Stop after commit reports pending review.'
+    ].join(' '), 300_000)
+
+    assertSuccessfulCalls(storyboardRun, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit'
+    ])
+    expect(toolPayload(storyboardRun, 'promptcard_delivery_commit')).toMatchObject({ state: 'pending_review' })
+    await reviewPending(page, storyboardTitle, '接受外部 Agent 分镜 提案')
+
+    const storyboard = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+      .find(node => node.kind === 'storyboard' && node.title === storyboardTitle)
+    expect(storyboard?.referenceCode).toMatch(/^CVS-/)
+    expect(storyboard?.sequence?.rows).toHaveLength(1)
+    expect(storyboard?.sequence?.rows[0].camera).toBe('Wide')
+    expect(storyboard?.pendingFieldChanges).toEqual([])
+
+    const storyboardChangeCvc = await createContextPack(
+      page, request, fixture.projectId, storyboard!.referenceCode
+    )
+    contextCodes.push(storyboardChangeCvc)
+    const storyboardChangePreviewId = `${fixture.suffix}-storyboard-change-preview`
+    const storyboardChangeCommitId = `${fixture.suffix}-storyboard-change-commit`
+    const storyboardChangeRun = await runRealCodexPrompt([
+      'You are a newly connected external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, or non-PromptCard tools.',
+      `Work only in project ${fixture.projectCode} and context ${storyboardChangeCvc}.`,
+      'Follow the packaged environment: describe Runtime, describe Workspace, read every exact approved Skill pin,',
+      `and resolve the exact accepted Storyboard ${storyboard!.referenceCode}.`,
+      'Create exactly one review-only Storyboard change proposal for row ordinal 0.',
+      'Change only its camera field from “Wide” to “Close-up”. Preserve native per-field review.',
+      `Use ${storyboard!.referenceCode} as the only source code and copy the exact approved Skill pin from Workspace.`,
+      `Use preview clientRequestId “${storyboardChangePreviewId}” with normalizedRequestDigest “${digest(storyboardChangePreviewId)}”.`,
+      `After preview succeeds, commit that proposal using clientRequestId “${storyboardChangeCommitId}” and digest “${digest(storyboardChangeCommitId)}”.`,
+      'Do not create any other proposal. Stop after commit reports pending review.'
+    ].join(' '), 300_000)
+
+    assertSuccessfulCalls(storyboardChangeRun, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit'
+    ])
+    expect(toolPayload(storyboardChangeRun, 'promptcard_delivery_commit')).toMatchObject({ state: 'pending_review' })
+    await reviewPending(page, `修改分镜 ${storyboard!.referenceCode}`, '接受外部 Agent 分镜 提案')
+
+    const pendingStoryboard = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+      .find(node => node.referenceCode === storyboard!.referenceCode)
+    expect(pendingStoryboard?.sequence?.rows[0].camera).toBe('Wide')
+    expect(pendingStoryboard?.pendingFieldChanges).toEqual([
+      expect.objectContaining({
+        scope: 'row', field: 'camera',
+        previousValue: 'Wide', newValue: 'Close-up'
+      })
+    ])
+    const storyboardNode = page.locator(`.react-flow__node[data-id="${storyboard!.id}"]`)
+    await expect(storyboardNode.getByText('Wide', { exact: true })).toBeVisible()
+    await expect(storyboardNode.getByText('Close-up', { exact: true })).toBeVisible()
+    await storyboardNode.getByRole('button', { name: '接受 camera 修改' }).click()
+    await expect.poll(async () => {
+      const stored = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+        .find(node => node.referenceCode === storyboard!.referenceCode)
+      return {
+        camera: stored?.sequence?.rows[0].camera || '',
+        pending: stored?.pendingFieldChanges?.length ?? -1
+      }
+    }).toEqual({ camera: 'Close-up', pending: 0 })
   } finally {
     for (const code of contextCodes.reverse()) await revokeContext(request, code)
     await cleanupFixture(request, fixture)

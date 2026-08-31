@@ -25,7 +25,7 @@ const snapshot = () => ({
     }],
     contractVersion: '3.0.0',
     bootstrapSkill: {
-      name: 'promptcard-bootstrap', revision: 4, digest: DIGEST,
+      name: 'promptcard-bootstrap', revision: 5, digest: DIGEST,
       instructions: 'Use the explicit Workspace and preview before commit.'
     },
     tools: [{

@@ -106,7 +106,7 @@ describe('agent runtime message contract', () => {
         }],
         contractVersion: '3.0.0',
         bootstrapSkill: {
-          name: 'promptcard-bootstrap', revision: 4, digest,
+          name: 'promptcard-bootstrap', revision: 5, digest,
           instructions: 'Use the explicit Workspace and preview before commit.'
         },
         tools: [{

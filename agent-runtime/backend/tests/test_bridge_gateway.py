@@ -80,10 +80,12 @@ def test_bridge_runtime_describe_requires_a_separate_trusted_profile(client):
     body = response.json()
     assert body["contractVersion"] == "3.0.0"
     assert body["bootstrapSkill"]["name"] == "promptcard-bootstrap"
-    assert body["bootstrapSkill"]["revision"] == 4
+    assert body["bootstrapSkill"]["revision"] == 5
     assert "document.create" in body["bootstrapSkill"]["instructions"]
     assert "documentEditEvidence.blocks" in body["bootstrapSkill"]["instructions"]
     assert "payload is exactly `{operations: [...]}`" in body["bootstrapSkill"]["instructions"]
+    assert "Each row contains exactly" in body["bootstrapSkill"]["instructions"]
+    assert "payload is exactly `{changes: [...]}`" in body["bootstrapSkill"]["instructions"]
     assert "do not pass `promptcard-bootstrap`" in body["bootstrapSkill"]["instructions"]
     assert {tool["name"] for tool in body["tools"]} == {
         "promptcard_runtime_describe",

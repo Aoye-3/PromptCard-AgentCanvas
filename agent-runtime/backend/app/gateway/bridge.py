@@ -60,11 +60,17 @@ Bootstrap Skill; do not pass `promptcard-bootstrap` to `promptcard_skill_read`.
      utf8End, expectedTextDigest}`; replace is `{kind: "replace", blockId,
      utf8Start, utf8End, text, expectedTextDigest}`. Copy `textDigest` into
      `expectedTextDigest`; use `utf8Length` as the end of a full-block change.
-   - `storyboard.create`: target `{cvcCode}`; payload `{title,
+   - `storyboard.create`: target `{cvcCode}`; payload is exactly `{title,
      sourceDocumentCode, sourceDocumentRevision, sourceDocumentDigest,
-     sequence}` using the Tool schema.
+     sequence}`. Sequence is exactly `{name, description, style, constraints,
+     rows}`. Each row contains exactly the string fields `cutLabel`,
+     `timeRange`, `subject`, `action`, `scene`, `camera`, `lighting`, `audio`,
+     and `duration`; include every field even when its value is empty.
    - `storyboard.change`: target `{cvcCode, storyboardCode, baseRevision,
-     baseDigest}`; payload `{changes}` using the Tool schema.
+     baseDigest}`; payload is exactly `{changes: [...]}`. A sequence change is
+     `{scope: "sequence", field, value}` where field is `name`, `description`,
+     `style`, or `constraints`. A row change is `{scope: "row", rowOrdinal,
+     field, value}` where field is one of the nine row fields listed above.
    - `prompt.create`: target `{cvcCode}`; payload `{title, userText}`.
    - `image.place`: target `{cvcCode}` plus optional exact Storyboard fields;
      payload `{stagedAssetHandle}` plus optional `altText`.
@@ -99,7 +105,7 @@ def bridge_contract_description() -> dict[str, Any]:
         "serverName": "promptcard-bridge",
         "bootstrapSkill": {
             "name": "promptcard-bootstrap",
-            "revision": 4,
+            "revision": 5,
             "digest": "sha256:" + hashlib.sha256(_BOOTSTRAP_TEXT.encode("utf-8")).hexdigest(),
             "instructions": _BOOTSTRAP_TEXT,
         },
