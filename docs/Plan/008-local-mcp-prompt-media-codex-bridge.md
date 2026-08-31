@@ -2,7 +2,7 @@
 
 ## Status
 
-Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-26C are implemented on `feat/skill-document-storyboard-loop`, including passing real-Codex first-contact discovery plus Document/Storyboard create/change and Prompt create review slices. The remaining merge gate continues from the accepted Prompt into generated-image writeback, then proves four-kind replay and restart in one real-Codex loop.
+Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-26C are implemented on `feat/skill-document-storyboard-loop`, including passing real-Codex first-contact discovery and the complete Document/Storyboard create/change, Prompt create, and generated-image review chain. The remaining merge gate proves four-kind replay, digest conflict, and process restart recovery against that accepted real-Codex loop.
 
 ## Current Normative Boundary
 
@@ -747,10 +747,10 @@ Additional rules:
 **Acceptance:**
 
 - [ ] Repeated delivery does not create duplicate assets or nodes.
-- [ ] A Prompt node or image targets the Canvas identified by the `CVC` pack.
+- [x] A Prompt node or image targets the Canvas identified by the `CVC` pack.
 - [ ] Project save failure leaves delivery pending and recoverable.
-- [ ] No bridge-delivered asset is recorded as a Seedream/provider generation run.
-- [ ] PromptCard shows provenance and the source codes used.
+- [x] No bridge-delivered asset is recorded as a Seedream/provider generation run.
+- [x] PromptCard shows provenance and the source codes used.
 
 ### Phase 6: Hardening and Distribution
 

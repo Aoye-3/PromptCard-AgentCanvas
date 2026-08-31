@@ -147,6 +147,28 @@ test('previews, copies, inspects after focus change and revokes one immutable CV
   }
 })
 
+test('keeps modifier multi-selection when preparing an explicit multi-object CVC', async ({ context, page, request }) => {
+  test.setTimeout(90_000)
+  let fixture: Awaited<ReturnType<typeof createProjectFixture>> | null = null
+  try {
+    fixture = await createProjectFixture(request, 'multi-selection', [textNode(), secondTextNode()])
+    await preparePage(context, page, fixture.title)
+    await page.getByTestId('rf__node-task11-text').click()
+    await page.getByTestId('rf__node-task11-second').click({
+      modifiers: [process.platform === 'darwin' ? 'Meta' : 'Control']
+    })
+    await expect(page.locator('.react-flow__node.selected')).toHaveCount(2)
+
+    await page.getByRole('button', { name: '复制 Agent/MCP 上下文' }).click()
+    const dialog = page.getByRole('dialog', { name: '复制 Agent/MCP 上下文' })
+    const references = fixture.stored.freeCanvas.nodes.map((node: { referenceCode: string }) => node.referenceCode)
+    await expect(dialog.getByRole('listitem')).toHaveCount(2)
+    for (const code of references) await expect(dialog.getByText(code, { exact: true })).toBeVisible()
+  } finally {
+    if (fixture) await deleteProjectFixture(request, fixture.id)
+  }
+})
+
 const createProjectFixture = async (request: APIRequestContext, label: string, nodes: Array<Record<string, unknown>>) => {
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
   const id = `context-${label}-${suffix}`
@@ -173,6 +195,10 @@ const textNode = () => ({
 const focusTextNode = () => ({
   id: 'task11-focus', kind: 'text', title: 'Focus project text', position: { x: 120, y: 120 }, width: 420, height: 180,
   fontSize: 'large', segments: [], meta: {}
+})
+const secondTextNode = () => ({
+  id: 'task11-second', kind: 'text', title: 'Task 11 second', position: { x: 600, y: 120 }, width: 420, height: 180,
+  fontSize: 'large', segments: [{ id: 'second-segment', source: 'user', text: 'Second explicit context object', color: '#111827', createdAt: 1, updatedAt: 1 }], meta: {}
 })
 const imageNode = (assetId: string) => ({
   id: 'task11-image', kind: 'image', title: 'Task 11 image', position: { x: 560, y: 120 }, width: 320, height: 240,

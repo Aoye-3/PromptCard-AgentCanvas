@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto'
+import { rm } from 'node:fs/promises'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { completedPromptCardCalls, runRealCodexPrompt, type RealCodexRun } from './support/real-codex-host'
+import {
+  completedPromptCardCalls,
+  materializeManagedCodexImage,
+  runRealCodexPrompt,
+  type RealCodexRun
+} from './support/real-codex-host'
 
 const storageUrl = 'http://127.0.0.1:38102'
 const repositoryScope = 'real-codex-e2e'
@@ -52,6 +58,8 @@ interface StoredNode {
   pendingFieldChanges?: StoredStoryboardFieldChange[]
   segments?: Array<{ source: string; text: string }>
   agentPromptHandoff?: { proposalId: string; conversationId: string }
+  assetId?: string
+  imageUrl?: string
   provenance?: { model: { capabilities?: Record<string, unknown> } }
   meta: Record<string, unknown>
 }
@@ -63,7 +71,7 @@ interface StoredProject {
 
 test.describe.configure({ mode: 'serial' })
 
-test('real Codex creates and changes reviewable Document, Storyboard, and Prompt objects', async ({
+test('real Codex completes reviewable Document, Storyboard, Prompt, and generated-image writeback', async ({
   context,
   page,
   request
@@ -72,6 +80,7 @@ test('real Codex creates and changes reviewable Document, Storyboard, and Prompt
   test.setTimeout(900_000)
   const fixture = await createFixture(request)
   const contextCodes: string[] = []
+  let generatedWorkspacePath: string | null = null
   page.on('dialog', dialog => void dialog.accept())
 
   try {
@@ -315,7 +324,89 @@ test('real Codex creates and changes reviewable Document, Storyboard, and Prompt
     expect(promptNodes[0].segments?.every(segment => segment.source === 'user')).toBe(true)
     expect(promptNodes[0].provenance?.model.capabilities).toEqual({})
     expect(promptNodes[0].agentPromptHandoff?.conversationId).toBe(`bridge:codex-e2e:${promptCvc}`)
+
+    await page.locator(`.react-flow__node[data-id="${acceptedStoryboard!.id}"]`).click({ modifiers: ['Control'] })
+    const imageCvc = await createContextPack(
+      page,
+      request,
+      fixture.projectId,
+      [promptNodes[0].referenceCode, acceptedStoryboard!.referenceCode]
+    )
+    contextCodes.push(imageCvc)
+    const imageGenerationRun = await runRealCodexPrompt([
+      'Use only the built-in image generation tool and do not inspect repository files.',
+      'Generate exactly one cinematic PNG frame from this accepted shot Prompt:',
+      `“${promptText}”`,
+      'The frame must contain no written text. Return only the exact absolute generated artifact path and stop.'
+    ].join(' '), 300_000)
+    const imageArtifact = await materializeManagedCodexImage(
+      imageGenerationRun,
+      `tests/.runtime/real-codex-images/${fixture.suffix}.png`
+    )
+    generatedWorkspacePath = imageArtifact.absoluteWorkspacePath
+
+    const imageStageId = `${fixture.suffix}-image-stage`
+    const imagePreviewId = `${fixture.suffix}-image-place-preview`
+    const imageCommitId = `${fixture.suffix}-image-place-commit`
+    const imageAltText = 'Filmmaker waiting beneath a rainy station canopy at night'
+    const imageRun = await runRealCodexPrompt([
+      'You are a newly connected external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, image generation, or non-PromptCard tools.',
+      `Work only in project ${fixture.projectCode} and context ${imageCvc}.`,
+      'Follow the packaged environment: describe Runtime, describe Workspace, read every exact approved Skill pin,',
+      `and resolve both the exact accepted Prompt ${promptNodes[0].referenceCode} and Storyboard ${acceptedStoryboard!.referenceCode}.`,
+      'Stage exactly one already-generated workspace image with these exact fields:',
+      `clientRequestId “${imageStageId}”, workspaceRelativePath “${imageArtifact.workspaceRelativePath}”,`,
+      `contentDigest “${imageArtifact.contentDigest}”, mediaType “${imageArtifact.mediaType}”, byteLength ${imageArtifact.byteLength}.`,
+      'Use the returned stagedAssetHandle to create exactly one review-only image.place proposal.',
+      `Target context ${imageCvc}, Storyboard ${acceptedStoryboard!.referenceCode}, baseRevision ${acceptedStoryboard!.revision},`,
+      `baseDigest “${acceptedStoryboard!.digest}”, and shotOrdinal 0.`,
+      `Use ${promptNodes[0].referenceCode} as the only source code, copy the exact approved Skill pin from Workspace,`,
+      `and use altText “${imageAltText}”.`,
+      `Use preview clientRequestId “${imagePreviewId}” with normalizedRequestDigest “${digest(imagePreviewId)}”.`,
+      `After preview succeeds, commit that proposal using clientRequestId “${imageCommitId}” and digest “${digest(imageCommitId)}”.`,
+      'Do not create any other proposal. Stop after commit reports pending review.'
+    ].join(' '), 300_000)
+
+    assertSuccessfulCalls(imageRun, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_asset_stage',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit'
+    ])
+    expect(toolPayload(imageRun, 'promptcard_asset_stage')).toMatchObject({
+      stagedAssetHandle: expect.stringMatching(/^AST-/),
+      contentDigest: imageArtifact.contentDigest
+    })
+    expect(toolPayload(imageRun, 'promptcard_delivery_commit')).toMatchObject({ state: 'pending_review' })
+    await reviewPending(page, imageArtifact.filename, '接受外部 Agent 图片 提案')
+
+    const images = (await getProject(request, fixture.projectId)).freeCanvas.nodes.filter(node => (
+      node.kind === 'image'
+      && node.meta.source === 'promptcard-bridge'
+      && (node.meta.bridgeDelivery as { clientRequestId?: unknown } | undefined)?.clientRequestId === imagePreviewId
+    ))
+    expect(images).toHaveLength(1)
+    expect(images[0].referenceCode).toMatch(/^CVM-/)
+    expect(images[0].assetId).toBeTruthy()
+    expect(images[0].imageUrl).toBe(`/storage-api/assets/${images[0].assetId}`)
+    expect(images[0].meta.bridgeDelivery).toEqual(expect.objectContaining({
+      profileId: 'codex-e2e',
+      cvcCode: imageCvc,
+      sourceCodes: [promptNodes[0].referenceCode],
+      target: expect.objectContaining({
+        storyboardCode: acceptedStoryboard!.referenceCode,
+        shotOrdinal: 0
+      }),
+      skillPins: [expect.objectContaining({ skillCode: fixture.skillCode, revision: 1 })]
+    }))
+    const generationRuns = await listGenerationRuns(request, fixture.projectId)
+    expect(generationRuns).toEqual([])
   } finally {
+    if (generatedWorkspacePath) await rm(generatedWorkspacePath, { force: true })
     for (const code of contextCodes.reverse()) await revokeContext(request, code)
     await cleanupFixture(request, fixture)
   }
@@ -431,11 +522,13 @@ async function createContextPack(
   page: Page,
   request: APIRequestContext,
   projectId: string,
-  expectedCode: string
+  expectedCode: string | string[]
 ) {
   await page.getByRole('button', { name: '复制 Agent/MCP 上下文' }).click()
   const dialog = page.getByRole('dialog', { name: '复制 Agent/MCP 上下文' })
-  await expect(dialog.getByRole('listitem')).toContainText(expectedCode)
+  for (const code of Array.isArray(expectedCode) ? expectedCode : [expectedCode]) {
+    await expect(dialog.getByText(code, { exact: true })).toBeVisible()
+  }
   await expect.poll(async () => {
     const revision = (await getProject(request, projectId)).revision
     return (await dialog.innerText()).includes(`项目修订 ${revision}`)
@@ -488,6 +581,13 @@ async function getProject(request: APIRequestContext, id: string) {
   const response = await request.get(`${storageUrl}/api/projects/${id}`)
   expect(response.ok(), await response.text()).toBe(true)
   return response.json() as Promise<StoredProject>
+}
+
+async function listGenerationRuns(request: APIRequestContext, projectId: string): Promise<unknown[]> {
+  const response = await request.get(`${storageUrl}/api/image-generation-runs?projectId=${projectId}&limit=100`)
+  expect(response.ok(), await response.text()).toBe(true)
+  const body = await response.json() as { runs?: unknown[] }
+  return body.runs || []
 }
 
 function documentText(document: StoredDocument): string {

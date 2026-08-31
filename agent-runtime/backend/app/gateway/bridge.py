@@ -72,8 +72,14 @@ Bootstrap Skill; do not pass `promptcard-bootstrap` to `promptcard_skill_read`.
      `style`, or `constraints`. A row change is `{scope: "row", rowOrdinal,
      field, value}` where field is one of the nine row fields listed above.
    - `prompt.create`: target `{cvcCode}`; payload `{title, userText}`.
-   - `image.place`: target `{cvcCode}` plus optional exact Storyboard fields;
-     payload `{stagedAssetHandle}` plus optional `altText`.
+   - Before `image.place`, call `promptcard_asset_stage` with exactly
+     `{clientRequestId, cvcCode, workspaceRelativePath, contentDigest,
+     mediaType, byteLength}`. The path is relative to the configured workspace;
+     `contentDigest` is `sha256:<64 lowercase hex>`. Use only the returned
+     opaque `stagedAssetHandle`, never the path, as delivery input.
+   - `image.place`: target `{cvcCode}` plus optional exact Storyboard fields
+     `{storyboardCode, baseRevision, baseDigest, shotOrdinal}`; payload
+     `{stagedAssetHandle}` plus optional `altText`.
 6. After preview succeeds, call `promptcard_delivery_commit` with only the same
    preview `clientRequestId`, its `normalizedRequestDigest`, and returned
    `proposalId`. Stop at `pending_review`; PromptCard applies nothing until the
@@ -105,7 +111,7 @@ def bridge_contract_description() -> dict[str, Any]:
         "serverName": "promptcard-bridge",
         "bootstrapSkill": {
             "name": "promptcard-bootstrap",
-            "revision": 5,
+            "revision": 6,
             "digest": "sha256:" + hashlib.sha256(_BOOTSTRAP_TEXT.encode("utf-8")).hexdigest(),
             "instructions": _BOOTSTRAP_TEXT,
         },

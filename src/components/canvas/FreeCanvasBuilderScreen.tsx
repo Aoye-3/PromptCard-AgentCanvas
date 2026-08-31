@@ -3165,9 +3165,10 @@ const FreeCanvasBuilderInner = ({
     setCropNodeId(null)
   }
 
-  const handleNodeClick: NodeMouseHandler<FreeCanvasFlowNode> = (_event, node) => {
+  const handleNodeClick: NodeMouseHandler<FreeCanvasFlowNode> = (event, node) => {
     setNodeContextMenu(null)
     setSelectedEdgeId(null)
+    if (event.ctrlKey || event.metaKey || event.shiftKey) return
     setSelectedNodeId(node.id)
   }
 
