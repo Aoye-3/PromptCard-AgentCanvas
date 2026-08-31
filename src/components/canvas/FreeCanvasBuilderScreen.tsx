@@ -50,6 +50,12 @@ import {
   createBridgeImageNode,
   inspectBridgeImageApplication
 } from '@/components/canvas/bridge/bridge-image-application'
+import {
+  applyBridgeDocumentChange,
+  createBridgeDocumentApplication,
+  createBridgeDocumentNode,
+  inspectBridgeDocumentApplication
+} from '@/components/canvas/bridge/bridge-document-application'
 import { CanvasUnsupportedNodeContextMenu } from '@/components/canvas/image-actions/CanvasUnsupportedNodeContextMenu'
 import {
   CanvasTextNodeContextMenu,
@@ -182,6 +188,9 @@ import {
 import {
   storageServiceClient,
   type BridgeDelivery,
+  type BridgeDocumentChangeDelivery,
+  type BridgeDocumentCreateDelivery,
+  type BridgeDocumentDelivery,
   type BridgeImageDelivery,
   type BridgePromptDelivery,
   type ImageGenerationConversationSummary,
@@ -3372,10 +3381,93 @@ const FreeCanvasBuilderInner = ({
     return []
   }
 
+  const handleAcceptBridgeDocumentDelivery = async (
+    delivery: BridgeDocumentDelivery
+  ): Promise<string[]> => {
+    const scope = activeProjectScopeRef.current
+    if (!onPersistCanvas || !sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+    const application = createBridgeDocumentApplication(delivery)
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const baseCanvas = freeCanvasRef.current
+      const existing = inspectBridgeDocumentApplication(baseCanvas, application)
+      if (existing.status === 'conflict') {
+        window.alert('外部 Agent 文档目标已变化或标记冲突，无法应用。')
+        return []
+      }
+      if (existing.status === 'exact') {
+        return existing.node.referenceCode ? [existing.node.referenceCode] : []
+      }
+      let targetNodeId: string
+      let requestedCanvas: IFreeCanvasProject
+      try {
+        if (delivery.request.kind === 'document.create') {
+          const node = createBridgeDocumentNode(
+            delivery as BridgeDocumentCreateDelivery,
+            application,
+            nextNodePosition(reactFlow, baseCanvas.nodes.length)
+          )
+          targetNodeId = node.id
+          requestedCanvas = {
+            ...baseCanvas,
+            selectedNodeId: node.id,
+            nodes: [...baseCanvas.nodes, node]
+          }
+        } else {
+          const documentDelivery = delivery as BridgeDocumentChangeDelivery
+          const target = baseCanvas.nodes.find(node => (
+            node.kind === 'document' && node.referenceCode === documentDelivery.request.target.documentCode
+          ))
+          if (!target || target.kind !== 'document') return []
+          const node = applyBridgeDocumentChange(
+            target,
+            documentDelivery,
+            application
+          )
+          targetNodeId = node.id
+          requestedCanvas = {
+            ...baseCanvas,
+            selectedNodeId: node.id,
+            nodes: baseCanvas.nodes.map(candidate => candidate.id === node.id ? node : candidate)
+          }
+        }
+      } catch {
+        window.alert('外部 Agent 文档提案未通过本地完整性校验。')
+        return []
+      }
+      let receipt: boolean | FreeCanvasPersistReceipt = false
+      try {
+        receipt = await onPersistCanvas(requestedCanvas)
+      } catch {
+        receipt = false
+      }
+      if (!sameProjectMutationScope(activeProjectScopeRef.current, scope)) return []
+      const winningCanvas = authoritativePersistedCanvas(receipt)
+      if (!winningCanvas) return []
+      const winning = inspectBridgeDocumentApplication(winningCanvas, application)
+      const liveCanvas = freeCanvasRef.current
+      const liveChanged = canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(baseCanvas)
+        && canvasSnapshotIdentity(liveCanvas) !== canvasSnapshotIdentity(winningCanvas)
+      if (winning.status === 'exact' && !liveChanged) {
+        if (!winning.node.referenceCode) return []
+        commitCanvasSelection(winningCanvas, targetNodeId)
+        return [winning.node.referenceCode]
+      }
+      if (winning.status === 'conflict') {
+        window.alert('持久化返回的外部 Agent 文档目标或标记完整性校验失败。')
+        return []
+      }
+      freeCanvasRef.current = liveChanged ? liveCanvas : winningCanvas
+    }
+    window.alert('Canvas 在保存期间持续变化，请重试外部 Agent 文档提案。')
+    return []
+  }
+
   const handleAcceptBridgeDelivery = async (delivery: BridgeDelivery): Promise<string[]> => (
     isBridgePromptDelivery(delivery)
       ? handleAcceptBridgePromptDelivery(delivery)
-      : handleAcceptBridgeImageDelivery(delivery as BridgeImageDelivery)
+      : isBridgeDocumentDelivery(delivery)
+        ? handleAcceptBridgeDocumentDelivery(delivery)
+        : handleAcceptBridgeImageDelivery(delivery as BridgeImageDelivery)
   )
 
   const handleApplyAgentProposal = async (proposal: AgentWorkspaceProposal | AgentCanvasEdit) => {
@@ -6908,6 +7000,12 @@ const createBridgePromptApplication = async (
 const isBridgePromptDelivery = (
   delivery: BridgeDelivery
 ): delivery is BridgePromptDelivery => delivery.request.kind === 'prompt.create'
+
+const isBridgeDocumentDelivery = (
+  delivery: BridgeDelivery
+): delivery is BridgeDocumentDelivery => (
+  delivery.request.kind === 'document.create' || delivery.request.kind === 'document.change'
+)
 
 const promptHandoffSourceIsCurrent = (
   canvas: IFreeCanvasProject,

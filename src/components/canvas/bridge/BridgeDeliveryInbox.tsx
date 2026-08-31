@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   storageServiceClient,
   type BridgeDelivery,
+  type BridgeDocumentDelivery,
   type BridgePromptDelivery
 } from '@/storage/storage-service-client'
 
@@ -11,6 +12,24 @@ type BridgeDeliveryClient = Pick<typeof storageServiceClient.bridgeDeliveries, '
 const isPromptDelivery = (delivery: BridgeDelivery): delivery is BridgePromptDelivery => (
   delivery.request.kind === 'prompt.create'
 )
+const isDocumentDelivery = (delivery: BridgeDelivery): delivery is BridgeDocumentDelivery => (
+  delivery.request.kind === 'document.create' || delivery.request.kind === 'document.change'
+)
+const deliveryLabel = (delivery: BridgeDelivery): string => {
+  if (isPromptDelivery(delivery)) return 'Prompt'
+  if (isDocumentDelivery(delivery)) return '文档'
+  return '图片'
+}
+const deliveryTitle = (delivery: BridgeDelivery): string => {
+  if (delivery.visualProposal.kind === 'document_changes') return `修改文档 ${delivery.visualProposal.documentCode}`
+  if (delivery.visualProposal.kind === 'document_create') return delivery.visualProposal.title
+  return delivery.visualProposal.title
+}
+const deliveryKindLabel = (delivery: BridgeDelivery): string => {
+  if (delivery.request.kind === 'prompt.create') return 'Prompt 创建'
+  if (delivery.request.kind === 'image.place') return '图片放置'
+  return delivery.request.kind === 'document.create' ? 'Document 创建' : 'Document 修改'
+}
 
 interface BridgeDeliveryInboxProps {
   cvcCode: string | null
@@ -102,10 +121,10 @@ export const BridgeDeliveryInbox = ({
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <strong className="block truncate text-xs text-gray-950" data-bridge-delivery-title>
-                  {delivery.visualProposal.title}
+                  {deliveryTitle(delivery)}
                 </strong>
                 <span className="text-[10px] font-semibold text-sky-700">
-                  {delivery.visualProposal.agentName} · {delivery.request.kind === 'prompt.create' ? 'Prompt 创建' : '图片放置'}
+                  {delivery.visualProposal.agentName} · {deliveryKindLabel(delivery)}
                 </span>
               </div>
               <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">待确认</span>
@@ -114,6 +133,12 @@ export const BridgeDeliveryInbox = ({
               <p className="mt-2 line-clamp-4 whitespace-pre-wrap text-xs leading-5 text-gray-700">
                 {delivery.visualProposal.userText}
               </p>
+            ) : isDocumentDelivery(delivery) ? (
+              <div className="mt-2 rounded-md bg-gray-50 p-2 text-[10px] leading-4 text-gray-600">
+                {delivery.request.kind === 'document.create'
+                  ? <p>{delivery.request.payload.blocks.length} 个结构化内容块</p>
+                  : <p>{delivery.request.payload.operations.length} 项红删绿增修改 · 基于 revision {delivery.request.target.baseRevision}</p>}
+              </div>
             ) : (
               <div className="mt-2 grid grid-cols-[88px_1fr] gap-2">
                 <img
@@ -133,10 +158,20 @@ export const BridgeDeliveryInbox = ({
               </div>
             )}
             <p className="mt-2 text-[10px] leading-4 text-gray-500">{delivery.visualProposal.rationale}</p>
+            <p
+              className="mt-1 break-all text-[10px] leading-4 text-gray-400"
+              data-bridge-delivery-provenance
+            >
+              来源 {delivery.request.sourceCodes.length > 0 ? delivery.request.sourceCodes.join(', ') : '无'}
+              {' · '}Skill {delivery.request.skillPins.length > 0
+                ? delivery.request.skillPins.map(pin => `${pin.skillCode}@${pin.revision}`).join(', ')
+                : '无'}
+              {' · '}{delivery.request.clientRequestId}
+            </p>
             <div className="mt-3 flex justify-end gap-2">
               <button
                 type="button"
-                aria-label={`拒绝外部 Agent ${delivery.request.kind === 'prompt.create' ? 'Prompt' : '图片'} 提案`}
+                aria-label={`拒绝外部 Agent ${deliveryLabel(delivery)} 提案`}
                 disabled={busyId !== null}
                 className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs font-bold text-gray-600 disabled:opacity-50"
                 onClick={() => void decide(delivery, 'rejected')}
@@ -145,7 +180,7 @@ export const BridgeDeliveryInbox = ({
               </button>
               <button
                 type="button"
-                aria-label={`接受外部 Agent ${delivery.request.kind === 'prompt.create' ? 'Prompt' : '图片'} 提案`}
+                aria-label={`接受外部 Agent ${deliveryLabel(delivery)} 提案`}
                 disabled={busyId !== null}
                 className="inline-flex items-center gap-1 rounded-md bg-gray-950 px-2 py-1 text-xs font-bold text-white disabled:opacity-50"
                 onClick={() => void decide(delivery, 'accepted')}

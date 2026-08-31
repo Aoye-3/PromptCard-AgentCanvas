@@ -1,7 +1,12 @@
 import { act, create } from 'react-test-renderer'
 import { describe, expect, it, vi } from 'vitest'
 import { BridgeDeliveryInbox } from './BridgeDeliveryInbox'
-import type { BridgeImageDelivery, BridgePromptDelivery } from '@/storage/storage-service-client'
+import type {
+  BridgeDocumentChangeDelivery,
+  BridgeDocumentCreateDelivery,
+  BridgeImageDelivery,
+  BridgePromptDelivery
+} from '@/storage/storage-service-client'
 
 
 const delivery = (): BridgePromptDelivery => ({
@@ -58,6 +63,60 @@ const imageDelivery = (): BridgeImageDelivery => ({
     }
   }
 })
+
+const documentCreateDelivery = (): BridgeDocumentCreateDelivery => ({
+  operationContext: {
+    profileId: 'codex-local', scopes: ['bridge:deliver:document'], provenance: 'promptcard-bridge',
+    clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'document-create-1', normalizedRequestDigest: `sha256:${'d'.repeat(64)}`,
+    kind: 'document.create', target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+    sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'],
+    skillPins: [{ skillCode: 'SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV', revision: 3, digest: `sha256:${'e'.repeat(64)}` }],
+    rationale: 'Create the script analysis.', provenance: 'promptcard-bridge',
+    payload: { title: 'Script analysis', blocks: [{ id: 'opening', type: 'paragraph', content: [{ text: 'Rain.' }] }] }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAT', state: 'pending_review', disposition: 'original',
+  resultCodes: [], message: 'waiting', createdAt: '2026-08-31T00:00:00.000Z', updatedAt: '2026-08-31T00:00:00.000Z',
+  visualProposal: {
+    kind: 'document_create', id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAT', agentName: 'codex',
+    title: 'Script analysis', blocks: [{ id: 'opening', type: 'paragraph', content: [{ text: 'Rain.' }] }],
+    rationale: 'Create the script analysis.', status: 'pending', createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local', cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ', clientRequestId: 'document-create-1',
+      normalizedRequestDigest: `sha256:${'d'.repeat(64)}`, sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'],
+      skillPins: [{ skillCode: 'SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV', revision: 3, digest: `sha256:${'e'.repeat(64)}` }]
+    }
+  }
+})
+
+const documentChangeDelivery = (): BridgeDocumentChangeDelivery => {
+  const created = documentCreateDelivery()
+  const operation = {
+    kind: 'replace' as const, blockId: 'opening', utf8Start: 0, utf8End: 4, text: 'Storm',
+    expectedTextDigest: `sha256:${'f'.repeat(64)}`
+  }
+  return {
+    ...created,
+    request: {
+      ...created.request,
+      clientRequestId: 'document-change-1', kind: 'document.change',
+      target: {
+        cvcCode: created.request.target.cvcCode, documentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+        baseRevision: 2, baseDigest: `sha256:${'a'.repeat(64)}`
+      },
+      payload: { operations: [operation] }
+    },
+    proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAS',
+    visualProposal: {
+      ...created.visualProposal,
+      kind: 'document_changes', id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAS',
+      documentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW', baseRevision: 2,
+      baseDigest: `sha256:${'a'.repeat(64)}`, operations: [operation]
+    }
+  }
+}
 
 describe('BridgeDeliveryInbox', () => {
   it('shows an external Prompt proposal and records acceptance after durable apply', async () => {
@@ -168,6 +227,35 @@ describe('BridgeDeliveryInbox', () => {
       item.proposalId,
       'accepted',
       ['CVM-01ARZ3NDEKTSV4RRFFQ69G5FAW']
+    )
+    renderer.unmount()
+  })
+
+  it.each([
+    ['创建', documentCreateDelivery(), 'Script analysis'],
+    ['修改', documentChangeDelivery(), '修改文档 CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW']
+  ])('shows Document %s proposals with exact provenance and records the CVD', async (_label, item, title) => {
+    const client = {
+      list: vi.fn().mockResolvedValue([item]),
+      decide: vi.fn().mockResolvedValue({ ...item, state: 'accepted' })
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(<BridgeDeliveryInbox
+        cvcCode={item.request.target.cvcCode}
+        client={client}
+        onAccept={vi.fn().mockResolvedValue(['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY'])}
+      />)
+    })
+
+    expect(renderer.root.findByProps({ 'data-bridge-delivery-title': true }).children).toContain(title)
+    expect(renderer.root.findByProps({ 'data-bridge-delivery-provenance': true }).children.join('')).toContain('SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV@3')
+    expect(renderer.root.findByProps({ 'data-bridge-delivery-provenance': true }).children.join('')).toContain('CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW')
+    await act(async () => {
+      await renderer.root.findByProps({ 'aria-label': '接受外部 Agent 文档 提案' }).props.onClick()
+    })
+    expect(client.decide).toHaveBeenCalledWith(
+      item.request.target.cvcCode, item.proposalId, 'accepted', ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY']
     )
     renderer.unmount()
   })

@@ -7,6 +7,8 @@
 - State: Task 26A Storage and Gateway sub-slices complete; stop before Canvas integration
 - Merge state: feature branch only; do not merge or push `main` until the real Codex closed loop passes
 
+Superseded for resume purposes by [Task 26A Canvas checkpoint](./2026-08-31-task-26a-canvas-checkpoint.md).
+
 ## Completed At This Checkpoint
 
 The public Bridge v3 Gateway now carries `document.create` and `document.change` through the already-published MCP/CLI delivery contract into the Storage-owned Document ledger.

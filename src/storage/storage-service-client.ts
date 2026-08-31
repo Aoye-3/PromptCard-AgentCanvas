@@ -1,5 +1,6 @@
 import type { CardType, IPreset } from '@/models/Card.model'
-import type { IPromptProject } from '@/models/PromptHistory.model'
+import type { IPromptProject, PlanningDocumentBlockV1 } from '@/models/PromptHistory.model'
+import type { DocumentChangeOperation } from '@/domain/documents/document-suggestions'
 import type { ImageOperationRecipeSnapshot } from '@/domain/image-actions/image-operations'
 import { validatePublicReferenceCode } from '@/domain/reference-codes/reference-code'
 import type { AgentDocumentAttachmentAudit, AgentInteractionMode } from '@/models/Agent.model'
@@ -724,7 +725,85 @@ export interface BridgeImageDelivery {
   }
 }
 
-export type BridgeDelivery = BridgePromptDelivery | BridgeImageDelivery
+interface BridgeDocumentDeliveryBase {
+  operationContext: {
+    profileId: string
+    scopes: string[]
+    provenance: 'promptcard-bridge'
+    clientInfo?: { name: string; version: string }
+  }
+  proposalId: string
+  state: BridgeDeliveryState
+  disposition: 'original' | 'replay' | 'conflict'
+  resultCodes: string[]
+  message: string
+  createdAt: string
+  updatedAt: string
+}
+
+interface BridgeDocumentProposalBase {
+  id: string
+  agentName: string
+  rationale: string
+  status: 'pending' | 'approved' | 'rejected'
+  createdAt: number
+  bridgeDelivery: {
+    profileId: string
+    cvcCode: string
+    clientRequestId: string
+    normalizedRequestDigest: string
+    sourceCodes: string[]
+    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+  }
+}
+
+type BridgeDocumentBlock = Extract<
+  PlanningDocumentBlockV1,
+  { type: 'paragraph' | 'blockquote' | 'heading' }
+>
+
+export interface BridgeDocumentCreateDelivery extends BridgeDocumentDeliveryBase {
+  request: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    kind: 'document.create'
+    target: { cvcCode: string }
+    sourceCodes: string[]
+    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    rationale: string
+    provenance: 'promptcard-bridge'
+    payload: { title: string; blocks: BridgeDocumentBlock[] }
+  }
+  visualProposal: BridgeDocumentProposalBase & {
+    kind: 'document_create'
+    title: string
+    blocks: BridgeDocumentBlock[]
+  }
+}
+
+export interface BridgeDocumentChangeDelivery extends BridgeDocumentDeliveryBase {
+  request: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    kind: 'document.change'
+    target: { cvcCode: string; documentCode: string; baseRevision: number; baseDigest: string }
+    sourceCodes: string[]
+    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    rationale: string
+    provenance: 'promptcard-bridge'
+    payload: { operations: DocumentChangeOperation[] }
+  }
+  visualProposal: BridgeDocumentProposalBase & {
+    kind: 'document_changes'
+    documentCode: string
+    baseRevision: number
+    baseDigest: string
+    operations: DocumentChangeOperation[]
+  }
+}
+
+export type BridgeDocumentDelivery = BridgeDocumentCreateDelivery | BridgeDocumentChangeDelivery
+export type BridgeDelivery = BridgePromptDelivery | BridgeImageDelivery | BridgeDocumentDelivery
 
 const parseProjectDocumentResource = (value: unknown): ProjectDocumentResource => {
   if (!value || typeof value !== 'object') {
@@ -1801,7 +1880,209 @@ const parseBridgeDelivery = (value: unknown): BridgeDelivery => {
   }
   if (value.request.kind === 'prompt.create') return parseBridgePromptDelivery(value)
   if (value.request.kind === 'image.place') return parseBridgeImageDelivery(value)
+  if (value.request.kind === 'document.create' || value.request.kind === 'document.change') {
+    return parseBridgeDocumentDelivery(value)
+  }
   throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge delivery.')
+}
+
+const parseBridgeDocumentDelivery = (value: unknown): BridgeDocumentDelivery => {
+  const invalid = (): never => {
+    throw new StorageHttpError(502, 'invalid_storage_response', 'Storage returned an invalid Bridge document delivery.')
+  }
+  if (!isClosedRecord(value, [
+    'operationContext', 'request', 'proposalId', 'state', 'disposition', 'resultCodes',
+    'message', 'createdAt', 'updatedAt', 'visualProposal'
+  ]) || !isRecord(value.operationContext) || !isRecord(value.request) || !isRecord(value.visualProposal)) {
+    return invalid()
+  }
+  const request = value.request
+  const proposal = value.visualProposal
+  const create = request.kind === 'document.create'
+  if (!create && request.kind !== 'document.change') return invalid()
+  if (
+    !hasOnlyKeys(value.operationContext, ['profileId', 'scopes', 'provenance'], ['clientInfo'])
+    || typeof value.operationContext.profileId !== 'string'
+    || !Array.isArray(value.operationContext.scopes)
+    || !value.operationContext.scopes.every(scope => typeof scope === 'string')
+    || value.operationContext.provenance !== 'promptcard-bridge'
+    || (value.operationContext.clientInfo !== undefined && (
+      !isClosedRecord(value.operationContext.clientInfo, ['name', 'version'])
+      || typeof value.operationContext.clientInfo.name !== 'string'
+      || typeof value.operationContext.clientInfo.version !== 'string'
+    ))
+    || !isClosedRecord(request, [
+      'clientRequestId', 'normalizedRequestDigest', 'kind', 'target', 'sourceCodes',
+      'skillPins', 'rationale', 'provenance', 'payload'
+    ])
+    || typeof request.clientRequestId !== 'string'
+    || !isSha256(request.normalizedRequestDigest)
+    || !Array.isArray(request.sourceCodes)
+    || !request.sourceCodes.every(isBridgeSourceCode)
+    || !Array.isArray(request.skillPins)
+    || !request.skillPins.every(isBridgeSkillPin)
+    || typeof request.rationale !== 'string'
+    || request.provenance !== 'promptcard-bridge'
+    || typeof value.proposalId !== 'string'
+    || !/^DVP-[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value.proposalId)
+    || !['previewed', 'pending_review', 'accepted', 'rejected', 'failed'].includes(String(value.state))
+    || !['original', 'replay', 'conflict'].includes(String(value.disposition))
+    || !Array.isArray(value.resultCodes)
+    || !value.resultCodes.every(code => typeof code === 'string')
+    || typeof value.message !== 'string'
+    || typeof value.createdAt !== 'string'
+    || typeof value.updatedAt !== 'string'
+    || !isBridgeDocumentTarget(request.target, create)
+    || !isBridgeDocumentPayload(request.payload, create)
+    || !isBridgeDocumentVisualProposal(proposal, create)
+    || proposal.id !== value.proposalId
+  ) return invalid()
+  const proposalBridge = proposal.bridgeDelivery
+  if (!isRecord(proposalBridge)
+    || proposalBridge.profileId !== value.operationContext.profileId
+    || proposalBridge.cvcCode !== request.target.cvcCode
+    || proposalBridge.clientRequestId !== request.clientRequestId
+    || proposalBridge.normalizedRequestDigest !== request.normalizedRequestDigest
+    || !bridgeValuesEqual(proposalBridge.sourceCodes, request.sourceCodes)
+    || !bridgeValuesEqual(proposalBridge.skillPins, request.skillPins)
+  ) return invalid()
+  if (create) {
+    if (
+      proposal.kind !== 'document_create'
+      || proposal.title !== request.payload.title
+      || !bridgeValuesEqual(proposal.blocks, request.payload.blocks)
+    ) return invalid()
+  } else if (
+    proposal.kind !== 'document_changes'
+    || proposal.documentCode !== request.target.documentCode
+    || proposal.baseRevision !== request.target.baseRevision
+    || proposal.baseDigest !== request.target.baseDigest
+    || !bridgeValuesEqual(proposal.operations, request.payload.operations)
+  ) return invalid()
+  return value as unknown as BridgeDocumentDelivery
+}
+
+const isBridgeDocumentVisualProposal = (value: Record<string, unknown>, create: boolean): boolean => {
+  const keys = create
+    ? ['kind', 'id', 'agentName', 'title', 'blocks', 'rationale', 'status', 'createdAt', 'bridgeDelivery']
+    : ['kind', 'id', 'agentName', 'documentCode', 'baseRevision', 'baseDigest', 'operations', 'rationale', 'status', 'createdAt', 'bridgeDelivery']
+  if (
+    !isClosedRecord(value, keys)
+    || typeof value.agentName !== 'string'
+    || typeof value.rationale !== 'string'
+    || !['pending', 'approved', 'rejected'].includes(String(value.status))
+    || typeof value.createdAt !== 'number'
+    || !isClosedRecord(value.bridgeDelivery, [
+      'profileId', 'cvcCode', 'clientRequestId', 'normalizedRequestDigest', 'sourceCodes', 'skillPins'
+    ])
+    || typeof value.bridgeDelivery.profileId !== 'string'
+    || !validatePublicReferenceCode(value.bridgeDelivery.cvcCode, 'CVC')
+    || typeof value.bridgeDelivery.clientRequestId !== 'string'
+    || !isSha256(value.bridgeDelivery.normalizedRequestDigest)
+    || !Array.isArray(value.bridgeDelivery.sourceCodes)
+    || !value.bridgeDelivery.sourceCodes.every(isBridgeSourceCode)
+    || !Array.isArray(value.bridgeDelivery.skillPins)
+    || !value.bridgeDelivery.skillPins.every(isBridgeSkillPin)
+  ) return false
+  return create
+    ? value.kind === 'document_create' && typeof value.title === 'string' && isBridgeDocumentBlocks(value.blocks)
+    : value.kind === 'document_changes'
+      && Boolean(validatePublicReferenceCode(value.documentCode, 'CVD'))
+      && isNonNegativeInteger(value.baseRevision)
+      && isSha256(value.baseDigest)
+      && isBridgeDocumentOperations(value.operations)
+}
+
+const isBridgeDocumentTarget = (value: unknown, create: boolean): value is Record<string, unknown> => {
+  if (!isRecord(value)) return false
+  if (create) return isClosedRecord(value, ['cvcCode']) && Boolean(validatePublicReferenceCode(value.cvcCode, 'CVC'))
+  return isClosedRecord(value, ['cvcCode', 'documentCode', 'baseRevision', 'baseDigest'])
+    && Boolean(validatePublicReferenceCode(value.cvcCode, 'CVC'))
+    && Boolean(validatePublicReferenceCode(value.documentCode, 'CVD'))
+    && isNonNegativeInteger(value.baseRevision)
+    && isSha256(value.baseDigest)
+}
+
+const isBridgeDocumentPayload = (value: unknown, create: boolean): value is Record<string, unknown> => {
+  if (!isRecord(value)) return false
+  return create
+    ? isClosedRecord(value, ['title', 'blocks'])
+      && typeof value.title === 'string' && value.title.length > 0 && value.title.length <= 500
+      && isBridgeDocumentBlocks(value.blocks)
+    : isClosedRecord(value, ['operations']) && isBridgeDocumentOperations(value.operations)
+}
+
+const isBridgeDocumentBlocks = (value: unknown): value is BridgeDocumentBlock[] => {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 500) return false
+  const ids = new Set<string>()
+  const inline = (item: unknown): boolean => isRecord(item)
+    && hasOnlyKeys(item, ['text'], ['bold', 'italic', 'href'])
+    && typeof item.text === 'string'
+    && item.text.length <= 10_000
+    && (item.bold === undefined || item.bold === true)
+    && (item.italic === undefined || item.italic === true)
+    && (item.href === undefined || (typeof item.href === 'string' && item.href.length > 0 && item.href.length <= 2048))
+  const content = (item: unknown): boolean => Array.isArray(item) && item.length <= 200 && item.every(inline)
+  const uniqueId = (item: unknown): boolean => {
+    if (typeof item !== 'string' || !item || item.length > 128 || ids.has(item)) return false
+    ids.add(item)
+    return true
+  }
+  return value.every(block => {
+    if (!isRecord(block) || !uniqueId(block.id)) return false
+    if (block.type === 'paragraph' || block.type === 'blockquote') {
+      return isClosedRecord(block, ['id', 'type', 'content']) && content(block.content)
+    }
+    if (block.type === 'heading') {
+      return isClosedRecord(block, ['id', 'type', 'level', 'content'])
+        && [1, 2, 3].includes(Number(block.level)) && content(block.content)
+    }
+    return false
+  })
+}
+
+const isBridgeDocumentOperations = (value: unknown): value is DocumentChangeOperation[] => (
+  Array.isArray(value) && value.length > 0 && value.length <= 32 && value.every(operation => {
+    if (!isRecord(operation)
+      || typeof operation.blockId !== 'string' || operation.blockId.length === 0 || operation.blockId.length > 128
+      || !isSha256(operation.expectedTextDigest)) return false
+    if (operation.kind === 'insert') {
+      return isClosedRecord(operation, ['kind', 'blockId', 'utf8Offset', 'text', 'expectedTextDigest'])
+        && isNonNegativeInteger(operation.utf8Offset)
+        && typeof operation.text === 'string' && operation.text.length > 0 && operation.text.length <= 10_000
+    }
+    if (operation.kind === 'delete') {
+      return isClosedRecord(operation, ['kind', 'blockId', 'utf8Start', 'utf8End', 'expectedTextDigest'])
+        && isNonNegativeInteger(operation.utf8Start) && isNonNegativeInteger(operation.utf8End)
+        && Number(operation.utf8End) > Number(operation.utf8Start)
+    }
+    return operation.kind === 'replace'
+      && isClosedRecord(operation, ['kind', 'blockId', 'utf8Start', 'utf8End', 'text', 'expectedTextDigest'])
+      && isNonNegativeInteger(operation.utf8Start) && isNonNegativeInteger(operation.utf8End)
+      && Number(operation.utf8End) > Number(operation.utf8Start)
+      && typeof operation.text === 'string' && operation.text.length > 0 && operation.text.length <= 10_000
+  })
+)
+
+const isBridgeSourceCode = (value: unknown): boolean => (
+  ['PLP', 'PLM', 'PRJ', 'CVT', 'CVM', 'CVC', 'CVD', 'CVS', 'SKL'].some(prefix => (
+    Boolean(validatePublicReferenceCode(value, prefix as Parameters<typeof validatePublicReferenceCode>[1]))
+  ))
+)
+
+const bridgeValuesEqual = (left: unknown, right: unknown): boolean => {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right)
+      && left.length === right.length && left.every((item, index) => bridgeValuesEqual(item, right[index]))
+  }
+  if (isRecord(left) || isRecord(right)) {
+    if (!isRecord(left) || !isRecord(right)) return false
+    const leftKeys = Object.keys(left).sort()
+    const rightKeys = Object.keys(right).sort()
+    return leftKeys.length === rightKeys.length
+      && leftKeys.every((key, index) => key === rightKeys[index] && bridgeValuesEqual(left[key], right[key]))
+  }
+  return left === right
 }
 
 const parseBridgeImageDelivery = (value: unknown): BridgeImageDelivery => {

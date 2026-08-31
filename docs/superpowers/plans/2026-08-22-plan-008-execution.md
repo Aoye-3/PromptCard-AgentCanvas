@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Tasks 16-26 complete; Task 26A Storage and Gateway Document adapters verified and Canvas review/application next; final real-Codex closed-loop gate remains the merge condition`
+- Status: `Tasks 16-26 complete; Task 26A Storage, Gateway, and native Canvas Document adapters implemented with process-level replay/recovery verification next; final real-Codex closed-loop gate remains the merge condition`
 - Date: `2026-08-31`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -892,18 +892,20 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Implement `document.create` and `document.change` on the same preview/commit/status ledger, resolving only exact CVC/CVD/revision/digest targets. Reuse the editor-neutral AST, suggestion rendering, conflict checks, save coordinator, and single/all accept/reject mechanisms already implemented for the local Agent.
 
-**Status:** In progress on `feat/skill-document-storyboard-loop` (2026-08-31). The first checkpoint completes the Storage adapter and protected internal routes; the second completes Gateway validation/routing through the existing MCP contract. Native Canvas review/application remains open. Task 26B is still locked.
+**Status:** In progress on `feat/skill-document-storyboard-loop` (2026-08-31). Storage, Gateway, and browser/Canvas adapters are implemented. A real process-level preview/commit/accept/restart/replay probe remains before Task 26A completes and Task 26B unlocks.
 
 **Checkpoint evidence:** Storage now validates the closed v3 create/change request shapes, canonicalizes public references and NFC text, checks exact `CVC/CVD/revision/digest` plus per-leaf digest/UTF-8 boundaries before `ledger.begin`, rejects pending-suggestion and overlapping-range conflicts, persists deterministic visual proposals, and routes terminal decisions through same-project `CVD-*` validation. Preview, commit, replay, pending-review listing, rejection/acceptance, and process restart all use the existing profile-scoped v19 ledger. Focused Document plus Prompt/Image regression passes 15 tests and 4 subtests; touched Python passes Ruff.
 
 **Gateway checkpoint evidence:** the v3 router now uses closed discriminated models for Document create/change, rejects internal-node targets and absent Document scope before Storage, strips optional `None` fields, canonicalizes CVC/CVD/source references, preserves trusted profile context separately, and routes commit from the Storage-owned proposal kind. Status continues through the shared read-only ledger endpoint. The Bridge Gateway suite passes 29 tests; v1/v2/v3 contracts pass 52, CLI passes 8, MCP passes 10, Agent Runtime checks pass, and touched Python passes Ruff.
 
+**Canvas checkpoint evidence:** the browser Storage client now accepts only closed create/change records and verifies exact request/proposal/provenance parity. The Bridge Inbox presents create/change intent plus Agent, Skill revision, source and request identities. Acceptance uses deterministic Bridge markers, creates the existing native Document type, resolves change targets only by CVD/base revision/base digest, and compiles modifications through `applyDocumentChangeOperations` so the established single/all red-delete/green-add review remains authoritative. Canvas persistence must return one CVD before ledger acceptance. Focused parser/Inbox/application tests pass 55 cases; native Document suggestion, node, and normalization regression passes 119 cases. A discovered CVD-loss bug in Document normalization is fixed and covered by restart-style normalization tests.
+
 **Acceptance criteria:**
 
-- [ ] Create and change payloads are bounded, canonical, and never expose internal node IDs.
-- [ ] Stale base revisions/digests fail before a proposal can be applied.
+- [x] Create and change payloads are bounded, canonical, and never expose internal node IDs.
+- [x] Stale base revisions/digests fail before a proposal can be applied.
 - [ ] Restart/replay creates exactly one proposal and one accepted Document result.
-- [ ] Red-delete/green-add review and terminal acceptance/rejection preserve external Agent, Skill revision, source codes, and request identity.
+- [x] Red-delete/green-add review and terminal acceptance/rejection preserve external Agent, Skill revision, source codes, and request identity.
 
 **Dependencies:** Tasks 23-24.
 

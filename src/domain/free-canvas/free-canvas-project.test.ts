@@ -1052,6 +1052,19 @@ describe('free canvas project domain', () => {
     expect(normalized.nodes[0]).not.toHaveProperty('provenance')
   })
 
+  test('preserves a Document CVD across Canvas normalization', () => {
+    const node = {
+      ...createFreeCanvasDocumentNode({ x: 12, y: 34 }, 100),
+      referenceCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'
+    }
+
+    const normalized = normalizeFreeCanvasProject({ nodes: [node], edges: [], meta: {} }, 101)
+
+    expect(normalized.nodes[0]).toMatchObject({
+      kind: 'document', referenceCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'
+    })
+  })
+
   test.each([
     ['marker without provenance', (node: Record<string, unknown>) => { delete node.provenance }],
     ['provenance without marker', (node: Record<string, unknown>) => { delete node.agentAppliedEdit }],

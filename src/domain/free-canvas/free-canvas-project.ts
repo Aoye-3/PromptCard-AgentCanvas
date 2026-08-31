@@ -1109,6 +1109,7 @@ const normalizeDocumentNode = (
     position: normalizePosition(node.position),
     width: Number(node.width || 560),
     height: Number(node.height || 420),
+    ...(typeof node.referenceCode === 'string' ? { referenceCode: node.referenceCode } : {}),
     document: parsed.document,
     linkedDocumentResourceIds: Array.isArray(node.linkedDocumentResourceIds)
       ? node.linkedDocumentResourceIds.filter((resourceId): resourceId is string => typeof resourceId === 'string')

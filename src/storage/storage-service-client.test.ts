@@ -208,6 +208,45 @@ describe('storageServiceClient', () => {
     expect(result[0].visualProposal.kind).toBe('free_canvas_image_place')
   })
 
+  test.each([
+    ['create', bridgeDocumentCreateDelivery()],
+    ['change', bridgeDocumentChangeDelivery()]
+  ])('parses a typed bridge document %s delivery without internal node identity', async (_label, delivery) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ deliveries: [delivery] })))
+
+    const result = await storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )
+
+    expect(result).toEqual([delivery])
+    expect(result[0].request.kind).toBe(delivery.request.kind)
+    expect(JSON.stringify(result[0])).not.toContain('nodeId')
+  })
+
+  test.each([
+    ['an internal write target', () => ({
+      ...bridgeDocumentChangeDelivery(),
+      request: {
+        ...bridgeDocumentChangeDelivery().request,
+        target: { ...bridgeDocumentChangeDelivery().request.target, nodeId: 'secret-node' }
+      }
+    })],
+    ['a visual proposal whose document code differs from its target', () => ({
+      ...bridgeDocumentChangeDelivery(),
+      visualProposal: {
+        ...bridgeDocumentChangeDelivery().visualProposal,
+        documentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY'
+      }
+    })]
+  ])('fails closed when a Document delivery contains %s', async (_label, buildDelivery) => {
+    const delivery = buildDelivery()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ deliveries: [delivery] })))
+
+    await expect(storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )).rejects.toMatchObject({ code: 'invalid_storage_response' })
+  })
+
   test('reports storage health without throwing', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -1274,6 +1313,79 @@ const bridgeImageDelivery = () => ({
       skillPins: [],
       target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
       stagedAssetHandle: 'AST-01ARZ3NDEKTSV4RRFFQ69G5FAV'
+    }
+  }
+})
+
+const bridgeDocumentCreateDelivery = () => ({
+  operationContext: {
+    profileId: 'codex-local', scopes: ['bridge:deliver:document'],
+    provenance: 'promptcard-bridge', clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'document-create-preview', normalizedRequestDigest: `sha256:${'d'.repeat(64)}`,
+    kind: 'document.create', target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+    sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: [],
+    rationale: 'Create the script analysis.', provenance: 'promptcard-bridge',
+    payload: {
+      title: 'Script analysis',
+      blocks: [{ id: 'opening', type: 'paragraph', content: [{ text: 'A rainy opening.' }] }]
+    }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAT', state: 'pending_review',
+  disposition: 'original', resultCodes: [], message: 'waiting',
+  createdAt: '2026-08-31T00:00:00.000Z', updatedAt: '2026-08-31T00:00:00.000Z',
+  visualProposal: {
+    kind: 'document_create', id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAT', agentName: 'codex',
+    title: 'Script analysis',
+    blocks: [{ id: 'opening', type: 'paragraph', content: [{ text: 'A rainy opening.' }] }],
+    rationale: 'Create the script analysis.', status: 'pending', createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local', cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      clientRequestId: 'document-create-preview', normalizedRequestDigest: `sha256:${'d'.repeat(64)}`,
+      sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: []
+    }
+  }
+})
+
+const bridgeDocumentChangeDelivery = () => ({
+  operationContext: {
+    profileId: 'codex-local', scopes: ['bridge:deliver:document'],
+    provenance: 'promptcard-bridge', clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'document-change-preview', normalizedRequestDigest: `sha256:${'e'.repeat(64)}`,
+    kind: 'document.change',
+    target: {
+      cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      documentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      baseRevision: 2, baseDigest: `sha256:${'a'.repeat(64)}`
+    },
+    sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: [],
+    rationale: 'Clarify the opening.', provenance: 'promptcard-bridge',
+    payload: {
+      operations: [{
+        kind: 'replace', blockId: 'opening', utf8Start: 0, utf8End: 5, text: 'First',
+        expectedTextDigest: `sha256:${'f'.repeat(64)}`
+      }]
+    }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAS', state: 'pending_review',
+  disposition: 'original', resultCodes: [], message: 'waiting',
+  createdAt: '2026-08-31T00:00:00.000Z', updatedAt: '2026-08-31T00:00:00.000Z',
+  visualProposal: {
+    kind: 'document_changes', id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAS', agentName: 'codex',
+    documentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    baseRevision: 2, baseDigest: `sha256:${'a'.repeat(64)}`,
+    operations: [{
+      kind: 'replace', blockId: 'opening', utf8Start: 0, utf8End: 5, text: 'First',
+      expectedTextDigest: `sha256:${'f'.repeat(64)}`
+    }],
+    rationale: 'Clarify the opening.', status: 'pending', createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local', cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      clientRequestId: 'document-change-preview', normalizedRequestDigest: `sha256:${'e'.repeat(64)}`,
+      sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: []
     }
   }
 })
