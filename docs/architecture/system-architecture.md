@@ -107,9 +107,11 @@ The Canvas right rail presents a redacted Agent work environment rather than emb
 
 External Agents continue to authenticate independently through their Bridge Bearer profile and operate only on explicit immutable CVC membership. The task-copy path includes exact PRJ/CVC/object references and a Bootstrap-first discovery sequence; screenshots and current UI focus are never authority. Delivery proposals remain in the existing Document, Storyboard, Prompt, and image review/application paths, so the environment panel is not a second editor or a generic Canvas mutation surface.
 
+Bridge-created Document, Storyboard, Prompt, and image nodes use conservative collision-free Canvas slots so a large proposal cannot cover another proposal's review controls. This is a presentation-only allocator applied at the four external create/place adapters; ordinary user-created node placement and the Storage-owned delivery target/provenance rules remain unchanged.
+
 ## Deferred
 
 - video media analysis;
-- the final real-Codex four-kind acceptance loop, adversarial hardening, and optional Bridge distribution packaging;
+- adversarial hardening, full release gates, and optional Bridge distribution packaging;
 - production multi-user authentication;
 - general Canvas write tools, automatic Skill matching, local OCR, and asset/plugin node types.

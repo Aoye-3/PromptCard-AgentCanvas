@@ -1,15 +1,26 @@
+param(
+  [switch]$RealCodex
+)
+
 $ErrorActionPreference = 'Stop'
 
 $runner = (Resolve-Path (Join-Path $PSScriptRoot 'run-e2e-tests.ps1')).Path
-$spec = 'tests/e2e/bridge-document-delivery.spec.ts'
+$spec = if ($RealCodex) {
+  'tests/e2e/real-codex-total-loop.spec.ts'
+}
+else {
+  'tests/e2e/bridge-document-delivery.spec.ts'
+}
+$acceptanceMode = if ($RealCodex) { '--real-codex' } else { '--real-gateway' }
+$acceptanceName = if ($RealCodex) { 'Real Codex' } else { 'Bridge' }
 $previousPhase = $env:PROMPTCARD_E2E_BRIDGE_PHASE
 $exitCode = 1
 
 try {
   foreach ($phase in @('prepare', 'recover')) {
-    Write-Host "Running Bridge restart acceptance phase: $phase"
+    Write-Host "Running $acceptanceName restart acceptance phase: $phase"
     $env:PROMPTCARD_E2E_BRIDGE_PHASE = $phase
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner --real-gateway $spec --workers=1
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner $acceptanceMode $spec --workers=1
     if ($LASTEXITCODE -ne 0) {
       $exitCode = $LASTEXITCODE
       break

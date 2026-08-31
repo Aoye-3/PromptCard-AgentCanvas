@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { rm, writeFile } from 'node:fs/promises'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import {
@@ -10,7 +10,9 @@ import {
 } from './support/real-codex-host'
 
 const storageUrl = 'http://127.0.0.1:38102'
+const gatewayUrl = 'http://127.0.0.1:38101/api/promptcard/bridge/v3'
 const repositoryScope = 'real-codex-e2e'
+const bridgeToken = process.env.PROMPTCARD_E2E_BRIDGE_TOKEN || ''
 const bridgePhase = process.env.PROMPTCARD_E2E_BRIDGE_PHASE || ''
 const restartStatePath = resolve('tests/.runtime/real-codex-total-loop-restart-state.json')
 
@@ -112,7 +114,11 @@ test('real Codex completes reviewable Document, Storyboard, Prompt, and generate
 }) => {
   test.skip(process.env.PROMPTCARD_REAL_CODEX_ACCEPTANCE !== '1', 'requires an explicit real Codex acceptance run')
   test.skip(bridgePhase === 'recover', 'The restart recovery phase uses the dedicated recovery test.')
-  test.setTimeout(900_000)
+  test.setTimeout(1_500_000)
+  page.setDefaultTimeout(30_000)
+  page.setDefaultNavigationTimeout(120_000)
+  await rm(restartStatePath, { force: true })
+  await cleanupStaleRealCodexFixtures(request)
   const fixture = await createFixture(request)
   const contextCodes: string[] = []
   const deliveries: DeliveryReplay[] = []
@@ -166,7 +172,9 @@ test('real Codex completes reviewable Document, Storyboard, Prompt, and generate
       profileId: 'codex-e2e',
       cvcCode,
       sourceCodes: [fixture.sourceCode],
-      skillPins: [expect.objectContaining({ skillCode: fixture.skillCode, revision: 1 })]
+      skillPins: expect.arrayContaining([
+        expect.objectContaining({ skillCode: fixture.skillCode, revision: 1 })
+      ])
     }))
 
     const created = documents[0]
@@ -445,17 +453,21 @@ test('real Codex completes reviewable Document, Storyboard, Prompt, and generate
         storyboardCode: acceptedStoryboard!.referenceCode,
         shotOrdinal: 0
       }),
-      skillPins: [expect.objectContaining({ skillCode: fixture.skillCode, revision: 1 })]
+      skillPins: expect.arrayContaining([
+        expect.objectContaining({ skillCode: fixture.skillCode, revision: 1 })
+      ])
     }))
     deliveries.push(captureDeliveryReplay('image.place', imageRun, images[0].referenceCode))
     const generationRuns = await listGenerationRuns(request, fixture.projectId)
     expect(generationRuns).toEqual([])
 
     if (bridgePhase === 'prepare') {
-      await page.locator(`.react-flow__node[data-id="${images[0].id}"]`).click()
-      for (const nodeId of [created.id, acceptedStoryboard!.id, promptNodes[0].id]) {
-        await page.locator(`.react-flow__node[data-id="${nodeId}"]`).click({ modifiers: ['Control'] })
-      }
+      await selectCanvasNodes(page, [
+        images[0].id,
+        created.id,
+        acceptedStoryboard!.id,
+        promptNodes[0].id
+      ])
       const finalCvc = await createContextPack(page, request, fixture.projectId, [
         created.referenceCode,
         acceptedStoryboard!.referenceCode,
@@ -511,11 +523,177 @@ test('real Codex completes reviewable Document, Storyboard, Prompt, and generate
   } finally {
     if (!preparedForRestart) {
       if (generatedWorkspacePath) await rm(generatedWorkspacePath, { force: true })
-      for (const code of contextCodes.reverse()) await revokeContext(request, code)
-      await cleanupFixture(request, fixture)
+      if (!page.isClosed()) {
+        for (const code of contextCodes.reverse()) await revokeContext(request, code)
+        await cleanupFixture(request, fixture)
+      }
     }
   }
 })
+
+test('real Codex replays the complete accepted loop after PromptCard and host restart', async ({
+  page,
+  request
+}) => {
+  test.skip(process.env.PROMPTCARD_REAL_CODEX_ACCEPTANCE !== '1', 'requires an explicit real Codex acceptance run')
+  test.skip(bridgePhase !== 'recover', 'Only the restart recovery phase runs this test.')
+  test.setTimeout(1_500_000)
+  page.setDefaultTimeout(30_000)
+  page.setDefaultNavigationTimeout(120_000)
+  const state = JSON.parse(await readFile(restartStatePath, 'utf8')) as RealCodexRestartState
+  let recoveryVerified = false
+
+  try {
+    const statusRequests = state.deliveries.map(delivery => ({
+      clientRequestId: String(delivery.commit.clientRequestId)
+    }))
+    const run = await runRealCodexPrompt([
+      'You are a newly restarted external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, image generation, or non-PromptCard tools.',
+      `Work only in project ${state.fixture.projectCode} and context ${state.finalCvc}.`,
+      'First call promptcard_runtime_describe, then promptcard_workspace_describe for that exact project/context,',
+      'then read every exact approved Skill pin returned by Workspace, and resolve these exact objects in this exact order:',
+      state.objectCodes.join(', '),
+      'After discovery, execute this exact replay plan literally. Do not add, remove, normalize, or regenerate any field:',
+      JSON.stringify({
+        assetStage: state.imageStageRequest,
+        deliveries: state.deliveries.map(delivery => ({
+          kind: delivery.kind,
+          preview: delivery.preview,
+          commit: delivery.commit,
+          status: { clientRequestId: delivery.commit.clientRequestId }
+        }))
+      }),
+      'Call promptcard_asset_stage once with assetStage.',
+      'Then, for each deliveries item in order, call promptcard_delivery_preview with preview,',
+      'promptcard_delivery_commit with commit, and promptcard_delivery_status with status.',
+      'Every operation is an idempotent replay of already accepted work. Stop after the final status call.'
+    ].join(' '), 600_000)
+
+    assertSuccessfulCalls(run, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_asset_stage',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit',
+      'promptcard_delivery_status'
+    ])
+    expect(toolArguments(run, 'promptcard_workspace_describe')).toEqual({
+      projectCode: state.fixture.projectCode,
+      cvcCode: state.finalCvc
+    })
+    expect(toolArgumentsList(run, 'promptcard_reference_resolve')).toEqual(
+      state.objectCodes.map(code => ({ cvcCode: state.finalCvc, code }))
+    )
+    expect(toolArguments(run, 'promptcard_asset_stage')).toEqual(state.imageStageRequest)
+    expect(toolArgumentsList(run, 'promptcard_delivery_preview')).toEqual(
+      state.deliveries.map(delivery => delivery.preview)
+    )
+    expect(toolArgumentsList(run, 'promptcard_delivery_commit')).toEqual(
+      state.deliveries.map(delivery => delivery.commit)
+    )
+    expect(toolArgumentsList(run, 'promptcard_delivery_status')).toEqual(statusRequests)
+
+    expect(toolPayload(run, 'promptcard_asset_stage')).toMatchObject({
+      disposition: 'replay',
+      stagedAssetHandle: state.stagedAssetHandle,
+      state: 'accepted'
+    })
+    for (const payload of toolPayloads(run, 'promptcard_delivery_preview')) {
+      expect(payload).toMatchObject({ disposition: 'replay', state: 'previewed' })
+    }
+    const commitPayloads = toolPayloads(run, 'promptcard_delivery_commit')
+    const statusPayloads = toolPayloads(run, 'promptcard_delivery_status')
+    expect(commitPayloads).toHaveLength(state.deliveries.length)
+    expect(statusPayloads).toHaveLength(state.deliveries.length)
+    for (const [index, delivery] of state.deliveries.entries()) {
+      expect(commitPayloads[index]).toMatchObject({
+        state: 'accepted',
+        resultCodes: [delivery.resultCode]
+      })
+      expect(statusPayloads[index]).toMatchObject({
+        state: 'accepted',
+        resultCodes: [delivery.resultCode]
+      })
+    }
+
+    const conflictRequest = {
+      ...state.deliveries[0].preview,
+      normalizedRequestDigest: digest(`restart-conflict:${String(state.deliveries[0].preview.normalizedRequestDigest)}`)
+    }
+    const conflict = await request.post(`${gatewayUrl}/delivery/preview`, {
+      headers: { authorization: `Bearer ${bridgeToken}` },
+      data: conflictRequest
+    })
+    expect(conflict.status(), await conflict.text()).toBe(409)
+    expect(await conflict.json()).toMatchObject({ detail: { code: 'delivery_conflict' } })
+
+    const project = await getProject(request, state.fixture.projectId)
+    for (const code of state.objectCodes) {
+      expect(project.freeCanvas.nodes.filter(node => node.referenceCode === code)).toHaveLength(1)
+    }
+    const document = project.freeCanvas.nodes.find(node => node.referenceCode === state.nodes.document.code)
+    const storyboard = project.freeCanvas.nodes.find(node => node.referenceCode === state.nodes.storyboard.code)
+    const prompt = project.freeCanvas.nodes.find(node => node.referenceCode === state.nodes.prompt.code)
+    const image = project.freeCanvas.nodes.find(node => node.referenceCode === state.nodes.image.code)
+    expect(document?.id).toBe(state.nodes.document.id)
+    expect(document?.document && documentText(document.document)).toBe(state.nodes.document.text)
+    expect(document?.document?.suggestions).toEqual([])
+    expect(storyboard).toMatchObject({
+      id: state.nodes.storyboard.id,
+      pendingFieldChanges: [],
+      sequence: { rows: [expect.objectContaining({ camera: state.nodes.storyboard.camera })] }
+    })
+    expect(prompt).toMatchObject({
+      id: state.nodes.prompt.id,
+      segments: [expect.objectContaining({ source: 'user' })]
+    })
+    expect(prompt?.segments?.map(segment => segment.text).join('')).toBe(state.nodes.prompt.text)
+    expect(image).toMatchObject({
+      id: state.nodes.image.id,
+      assetId: state.nodes.image.assetId,
+      imageUrl: `/storage-api/assets/${state.nodes.image.assetId}`
+    })
+    expect(await listGenerationRuns(request, state.fixture.projectId)).toEqual([])
+
+    await page.addInitScript(({ key, value }) => {
+      globalThis.localStorage.setItem(key, value)
+    }, {
+      key: `promptcard:active-bridge-context:${state.fixture.projectId}`,
+      value: state.finalCvc
+    })
+    await openProject(page, request, state.fixture.projectId, state.fixture.projectTitle)
+    await expect(page.locator(`.react-flow__node[data-id="${state.nodes.document.id}"]`))
+      .toContainText(state.nodes.document.text)
+    await expect(page.locator(`.react-flow__node[data-id="${state.nodes.storyboard.id}"]`))
+      .toContainText(state.nodes.storyboard.camera)
+    await expect(page.locator(`.react-flow__node[data-id="${state.nodes.prompt.id}"]`))
+      .toContainText(state.nodes.prompt.text)
+    await expect(page.locator(`.react-flow__node[data-id="${state.nodes.image.id}"] img`)).toBeVisible()
+    recoveryVerified = true
+  } finally {
+    if (recoveryVerified && !page.isClosed()) {
+      await rm(state.generatedWorkspacePath, { force: true })
+      for (const code of [...state.contextCodes].reverse()) await revokeContext(request, code)
+      await cleanupFixture(request, state.fixture)
+      await rm(restartStatePath, { force: true })
+    }
+  }
+})
+
+async function selectCanvasNodes(page: Page, nodeIds: string[]) {
+  const modifier = process.platform === 'darwin' ? 'Meta' : 'Control'
+  for (const [index, nodeId] of nodeIds.entries()) {
+    await page.locator(`.react-flow__node[data-id="${nodeId}"]`).click({
+      ...(index > 0 ? { modifiers: [modifier] as ('Meta' | 'Control')[] } : {}),
+      position: { x: 8, y: 8 },
+      timeout: 30_000
+    })
+    await expect(page.locator('.react-flow__node.selected')).toHaveCount(index + 1)
+  }
+}
 
 function assertSuccessfulCalls(run: RealCodexRun, requiredTools: string[]) {
   const calls = completedPromptCardCalls(run)
@@ -533,10 +711,24 @@ function toolPayload(run: RealCodexRun, tool: string): Record<string, unknown> {
   return JSON.parse(text) as Record<string, unknown>
 }
 
+function toolPayloads(run: RealCodexRun, tool: string): Record<string, unknown>[] {
+  return completedPromptCardCalls(run)
+    .filter(call => call?.tool === tool)
+    .map(call => JSON.parse(
+      call?.result?.content?.map(item => item.text || '').join('') || '{}'
+    ) as Record<string, unknown>)
+}
+
 function toolArguments(run: RealCodexRun, tool: string, index = 0): Record<string, unknown> {
   const call = completedPromptCardCalls(run).filter(item => item?.tool === tool)[index]
   if (!call?.arguments) throw new Error(`Real Codex did not call ${tool} at index ${index}.`)
   return call.arguments
+}
+
+function toolArgumentsList(run: RealCodexRun, tool: string): Record<string, unknown>[] {
+  return completedPromptCardCalls(run)
+    .filter(call => call?.tool === tool)
+    .map(call => call?.arguments || {})
 }
 
 function captureDeliveryReplay(kind: string, run: RealCodexRun, resultCode: string): DeliveryReplay {
@@ -743,4 +935,63 @@ async function cleanupFixture(
     data: { ids: [fixture.projectId] }
   })
   expect(removed.ok(), await removed.text()).toBe(true)
+}
+
+async function cleanupStaleRealCodexFixtures(request: APIRequestContext) {
+  const projectsResponse = await request.get(`${storageUrl}/api/projects`)
+  expect(projectsResponse.ok(), await projectsResponse.text()).toBe(true)
+  const projects = (await projectsResponse.json() as { projects?: Array<{
+    id: string
+    referenceCode: string
+  }> }).projects || []
+  for (const project of projects.filter(item => item.id.startsWith('real-codex-loop-'))) {
+    const contextsResponse = await request.get(
+      `${storageUrl}/api/context-packs?projectCode=${encodeURIComponent(project.referenceCode)}`
+    )
+    expect(contextsResponse.ok(), await contextsResponse.text()).toBe(true)
+    const contexts = (await contextsResponse.json() as {
+      contextPacks?: Array<{ cvcCode: string }>
+    }).contextPacks || []
+    for (const context of contexts) await revokeContext(request, context.cvcCode)
+    const trash = await request.post(`${storageUrl}/api/projects/trash`, {
+      data: {
+        ids: [project.id],
+        deletedBy: 'user',
+        deleteReason: 'stale-real-codex-acceptance-cleanup'
+      }
+    })
+    expect(trash.ok(), await trash.text()).toBe(true)
+    const removed = await request.delete(`${storageUrl}/api/projects/trash`, {
+      data: { ids: [project.id] }
+    })
+    expect(removed.ok(), await removed.text()).toBe(true)
+    const suffix = project.id.slice('real-codex-loop-'.length)
+    await rm(resolve('tests/.runtime/real-codex-images', `${suffix}.png`), { force: true })
+  }
+
+  const skillsResponse = await request.get(`${storageUrl}/api/skills`)
+  expect(skillsResponse.ok(), await skillsResponse.text()).toBe(true)
+  const skills = (await skillsResponse.json() as { skills?: Array<{
+    slug: string
+    referenceCode: string
+    revision: number
+    lifecycleStatus: string
+  }> }).skills || []
+  for (const skill of skills.filter(item => (
+    item.slug.startsWith('loop-story-planning-') && item.lifecycleStatus === 'active'
+  ))) {
+    const disable = await request.put(
+      `${storageUrl}/api/skills/${skill.referenceCode}/host-pins/codex`,
+      {
+        data: {
+          enabled: false,
+          revision: skill.revision,
+          repositoryScope
+        }
+      }
+    )
+    expect(disable.ok(), await disable.text()).toBe(true)
+    const archive = await request.post(`${storageUrl}/api/skills/${skill.referenceCode}/archive`)
+    expect(archive.ok(), await archive.text()).toBe(true)
+  }
 }

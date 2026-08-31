@@ -45,6 +45,7 @@ import { CanvasNodeContextMenu } from '@/components/canvas/image-actions/CanvasN
 import { CanvasProjectReferenceCodeAction } from '@/components/canvas/image-actions/CanvasReferenceCodeAction'
 import { CopyCodexContext } from '@/components/canvas/context-packs/CopyCodexContext'
 import { AgentWorkEnvironment } from '@/components/canvas/bridge/AgentWorkEnvironment'
+import { findBridgeNodePosition } from '@/components/canvas/bridge/bridge-node-placement'
 import {
   createBridgeImageApplication,
   createBridgeImageNode,
@@ -3311,7 +3312,7 @@ const FreeCanvasBuilderInner = ({
       const node = createBridgePromptNode(
         delivery,
         application,
-        nextNodePosition(reactFlow, baseCanvas.nodes.length)
+        nextBridgeNodePosition(reactFlow, baseCanvas.nodes)
       )
       const requestedCanvas = {
         ...baseCanvas,
@@ -3369,7 +3370,7 @@ const FreeCanvasBuilderInner = ({
       const node = createBridgeImageNode(
         delivery,
         application,
-        nextNodePosition(reactFlow, baseCanvas.nodes.length)
+        nextBridgeNodePosition(reactFlow, baseCanvas.nodes)
       )
       const requestedCanvas = {
         ...baseCanvas,
@@ -3430,7 +3431,7 @@ const FreeCanvasBuilderInner = ({
           const node = createBridgeDocumentNode(
             delivery as BridgeDocumentCreateDelivery,
             application,
-            nextNodePosition(reactFlow, baseCanvas.nodes.length)
+            nextBridgeNodePosition(reactFlow, baseCanvas.nodes)
           )
           targetNodeId = node.id
           requestedCanvas = {
@@ -3521,7 +3522,7 @@ const FreeCanvasBuilderInner = ({
             storyboardDelivery,
             application,
             sources[0],
-            nextNodePosition(reactFlow, baseCanvas.nodes.length)
+            nextBridgeNodePosition(reactFlow, baseCanvas.nodes)
           )
           targetNodeId = node.id
           requestedCanvas = {
@@ -7386,6 +7387,14 @@ const imageGenerationRequestToDraft = (
 
 const nextNodePosition = (reactFlow: ReturnType<typeof useReactFlow<FreeCanvasFlowNode>>, count: number) => (
   reactFlow.screenToFlowPosition({ x: window.innerWidth / 2 + count * 20, y: window.innerHeight / 2 + count * 16 })
+)
+
+const nextBridgeNodePosition = (
+  reactFlow: ReturnType<typeof useReactFlow<FreeCanvasFlowNode>>,
+  nodes: IFreeCanvasProject['nodes']
+) => findBridgeNodePosition(
+  nodes,
+  reactFlow.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
 )
 
 const clampUnit = (value: number, max = 1): number =>

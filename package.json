@@ -34,6 +34,7 @@
     "test:e2e:bridge": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-e2e-tests.ps1 --real-gateway tests/e2e/bridge-document-delivery.spec.ts --workers=1",
     "test:e2e:real-codex-discovery": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-e2e-tests.ps1 --real-codex tests/e2e/real-codex-discovery.spec.ts --workers=1",
     "test:e2e:real-codex-loop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-e2e-tests.ps1 --real-codex tests/e2e/real-codex-total-loop.spec.ts --workers=1",
+    "test:e2e:real-codex-restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-bridge-restart-e2e.ps1 -RealCodex",
     "test:e2e:bridge-restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-bridge-restart-e2e.ps1"
   },
   "dependencies": {
