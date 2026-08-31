@@ -21,6 +21,10 @@ import {
   isValidStoryboardSourceProvenance
 } from '@/domain/storyboard/canvas-storyboard'
 import { sha256Utf8 } from '@/domain/documents/planning-document'
+import {
+  parseAgentWorkEnvironmentSnapshot,
+  type AgentWorkEnvironmentSnapshot
+} from '@/domain/bridge/agent-work-environment'
 
 export type PromptLanguageMode = 'zh' | 'en' | 'mixed'
 
@@ -293,6 +297,21 @@ const validateAgentCanvasEdits = (value: unknown): AgentCanvasEdit[] => {
 
 export const agentRuntimeService = {
   health: () => requestJson<Record<string, unknown>>(`${PROMPTCARD_RUNTIME_BASE}/status`),
+
+  bridgeEnvironment: async (query: {
+    projectCode?: string
+    cvcCode?: string | null
+    profileId?: string | null
+  } = {}): Promise<AgentWorkEnvironmentSnapshot> => {
+    const parameters = new URLSearchParams()
+    if (query.projectCode) parameters.set('projectCode', query.projectCode)
+    if (query.cvcCode) parameters.set('cvcCode', query.cvcCode)
+    if (query.profileId) parameters.set('profileId', query.profileId)
+    const suffix = parameters.size > 0 ? `?${parameters.toString()}` : ''
+    return parseAgentWorkEnvironmentSnapshot(await requestJson<unknown>(
+      `${PROMPTCARD_RUNTIME_BASE}/bridge-environment${suffix}`
+    ))
+  },
 
   bootstrap: () =>
     requestJson<{ user?: unknown; expires_in?: number }>(

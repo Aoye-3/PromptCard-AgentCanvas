@@ -1,5 +1,6 @@
 """Small local-session gate for PromptCard's desktop runtime."""
 
+import time
 from collections.abc import Callable
 
 from fastapi import Request, Response
@@ -44,6 +45,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     content={"detail": "PromptCard bridge credential required."},
                 )
             request.state.bridge_principal = principal
+            activity = getattr(request.app.state, "bridge_profile_activity", None)
+            if not isinstance(activity, dict):
+                activity = {}
+                request.app.state.bridge_profile_activity = activity
+            activity[principal.profile_id] = int(time.time() * 1000)
             return await call_next(request)
         if is_valid_internal_auth_token(
             request.headers.get(INTERNAL_AUTH_HEADER_NAME)

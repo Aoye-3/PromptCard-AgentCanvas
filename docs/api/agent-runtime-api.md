@@ -38,6 +38,21 @@ Required process environment is intentionally small:
 
 The MCP process has no direct SQLite, shell, keyring, arbitrary-filesystem, or general network Tool. Only `promptcard_asset_stage` reads a caller-declared relative path; it resolves both root and candidate through the filesystem, rejects traversal and symlink/junction escape, validates regular-file status, 30 MiB size, image signature, declared length, and SHA-256, then uploads multipart bytes to Gateway. Codex is the first real acceptance host; other MCP hosts use the identical Tool names, schemas, permissions, and results.
 
+### Browser Agent work-environment view
+
+`GET /agent-api/promptcard/runtime/bridge-environment` is the authenticated local-browser view used by the Canvas Agent work-environment panel. Optional `projectCode`, `cvcCode`, and `profileId` query parameters select the project/context/profile to display. They do not authorize an external Bridge request.
+
+The response is a closed, redacted composition of:
+
+- Gateway health and Bridge configuration state;
+- configured profile IDs, client labels, fixed scopes, repository-scoped boolean, and bounded recent-activity state;
+- Bridge v3 contract version, Bootstrap Skill identity, Tool descriptions, writeback kinds, and fixed constraints;
+- when both references are explicit and valid, the PRJ/CVC revision/digest, exact Skill pins, public creative objects, CVC member `objectCodes`, and pending delivery count.
+
+The response never contains a Bridge token, repository path, internal Canvas node ID, arbitrary file path, or provider credential. `profileId` changes display only; the external caller's Bearer profile remains authority. Recent activity means a valid Bridge Bearer request was observed within the bounded display window and is telemetry, not a durable connection or permission grant. A CVC is switched in the browser only after the Storage inspection confirms the requested project and confirms that the CVC is not revoked.
+
+`objectCodes` is derived from `resolve.entries[].reference.code`. It is deliberately separate from context-pack `sourceCodes`, which describe dependencies/evidence and must not be interpreted as CVC membership or write authority.
+
 ## PromptCard Runtime Boundary
 
 Authenticated browser mutations are protected by the Runtime CSRF middleware. The maintained frontend client sends the session cookie with `credentials: "include"`, reads the CSRF cookie, and copies it to `X-CSRF-Token`. Direct callers that omit or mismatch the token receive a structured rejection before model, keyring, Storage, or provider work begins.

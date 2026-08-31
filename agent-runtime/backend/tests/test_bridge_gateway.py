@@ -179,6 +179,7 @@ def test_workspace_describe_resolves_explicit_project_context_and_skill_pins(
         "revoked": False,
         "skills": [],
         "objects": [],
+        "objectCodes": [],
         "pendingDeliveries": 0,
     }
     assert all(call[0] == "GET" for call in calls)
@@ -271,6 +272,10 @@ def test_workspace_describe_lists_only_typed_creative_objects(client, monkeypatc
             "digest": DIGEST,
             "title": "Script",
         }
+    ]
+    assert response.json()["objectCodes"] == [
+        document_code,
+        "CVT-01ARZ3NDEKTSV4RRFFQ69G5FAV",
     ]
 
 

@@ -61,6 +61,19 @@ def resolve_bridge_principal(authorization: str | None) -> BridgePrincipal | Non
     return matched
 
 
+def configured_bridge_principals() -> dict[str, BridgePrincipal]:
+    """Return configured principals without exposing their bearer credentials."""
+    return {
+        profile_id: BridgePrincipal(
+            profile_id=profile_id,
+            scopes=frozenset(profile["scopes"]),
+            client_info=profile.get("clientInfo"),
+            repository_scope=profile.get("repositoryScope"),
+        )
+        for profile_id, profile in _configured_profiles().items()
+    }
+
+
 def require_bridge_principal(request: Request) -> BridgePrincipal:
     principal = getattr(request.state, "bridge_principal", None)
     if not isinstance(principal, BridgePrincipal):

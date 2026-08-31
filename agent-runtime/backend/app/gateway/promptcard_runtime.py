@@ -23,6 +23,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from app.gateway.ark_responses import ResolvedDocumentAsset
+from app.gateway.bridge import bridge_contract_description, workspace_description
+from app.gateway.bridge_auth import (
+    BridgeConfigurationError,
+    configured_bridge_principals,
+)
 from app.gateway.csrf_middleware import is_secure_request
 from app.gateway.image_generation.service import PromptCardStorageClient, StorageGatewayError
 from app.gateway.internal_auth import create_internal_auth_headers
@@ -316,6 +321,100 @@ class PromptCardRuntimeService:
             "tools": {"ok": text_agent["ok"], "count": 4},
             "storage": await _storage_health(),
             "textAgent": text_agent,
+        }
+
+    async def bridge_environment(
+        self,
+        request: Request,
+        project_code: str | None,
+        cvc_code: str | None,
+        profile_id: str | None,
+    ) -> dict[str, Any]:
+        contract = bridge_contract_description()
+        try:
+            principals = configured_bridge_principals()
+            configuration_error = None
+        except BridgeConfigurationError:
+            principals = {}
+            configuration_error = "bridge_profiles_invalid"
+        activity = getattr(request.app.state, "bridge_profile_activity", {})
+        if not isinstance(activity, dict):
+            activity = {}
+        now = int(time.time() * 1000)
+        profiles = []
+        for configured_id in sorted(principals):
+            principal = principals[configured_id]
+            last_seen = activity.get(configured_id)
+            safe_last_seen = last_seen if isinstance(last_seen, int) and last_seen >= 0 else None
+            profiles.append(
+                {
+                    "profileId": configured_id,
+                    "scopes": sorted(principal.scopes),
+                    **(
+                        {"clientInfo": dict(principal.client_info)}
+                        if principal.client_info is not None
+                        else {}
+                    ),
+                    "repositoryScoped": principal.repository_scope is not None,
+                    "lastSeenAt": safe_last_seen,
+                    "connectionState": (
+                        "recently_active"
+                        if safe_last_seen is not None and now - safe_last_seen <= 60_000
+                        else "configured"
+                    ),
+                }
+            )
+        selected_id = profile_id if profile_id in principals else None
+        if selected_id is None and profiles:
+            selected_id = max(
+                profiles,
+                key=lambda item: (item["lastSeenAt"] or -1, item["profileId"]),
+            )["profileId"]
+        workspace: dict[str, Any]
+        if project_code is None or cvc_code is None:
+            workspace = {
+                "state": "context_required",
+                "errorCode": "explicit_context_required",
+            }
+        elif selected_id is None:
+            workspace = {
+                "state": "unavailable",
+                "errorCode": configuration_error or "bridge_profile_unavailable",
+            }
+        elif "bridge:read" not in principals[selected_id].scopes:
+            workspace = {
+                "state": "unavailable",
+                "errorCode": "bridge_read_scope_required",
+            }
+        else:
+            try:
+                description = await workspace_description(
+                    principals[selected_id], project_code, cvc_code
+                )
+            except HTTPException as exc:
+                detail = exc.detail
+                error_code = (
+                    detail.get("code")
+                    if isinstance(detail, dict) and isinstance(detail.get("code"), str)
+                    else "workspace_unavailable"
+                )
+                workspace = {"state": "unavailable", "errorCode": error_code}
+            else:
+                workspace = {"state": "ready", **description}
+        return {
+            "gateway": {"ok": True, "service": "promptcard-runtime"},
+            "bridge": {
+                "configured": bool(principals),
+                "configurationError": configuration_error,
+                "selectedProfileId": selected_id,
+                "profiles": profiles,
+                "contractVersion": contract["contractVersion"],
+                "bootstrapSkill": contract["bootstrapSkill"],
+                "tools": contract["tools"],
+                "writebackKinds": contract["writebackKinds"],
+                "constraints": contract["constraints"],
+            },
+            "workspace": workspace,
         }
 
     async def bootstrap(self, request: Request, response: Response) -> dict[str, Any]:

@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Tasks 16-26 complete; Task 26A Storage, Gateway, and native Canvas Document adapters implemented with process-level replay/recovery verification next; final real-Codex closed-loop gate remains the merge condition`
+- Status: `Tasks 16-26B complete; Task 26C work-environment implementation checkpoint passed; real Codex discovery and the final four-kind closed loop remain the merge condition`
 - Date: `2026-08-31`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -935,12 +935,20 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Turn the existing CVC selector and review inbox into one Agent work-environment surface showing Bridge connection/profile/scopes, explicit PRJ/CVC revision, exact Skill pins/projection health, available Tools/object kinds, pending deliveries, request failures, and source Agent. “Send to Agent” emits exact object/CVC references and a copyable task description; it never asks the Agent to infer a target from a screenshot.
 
+**Status:** Implementation checkpoint passed on `feat/skill-document-storyboard-loop` (2026-08-31). The Canvas now exposes one redacted Agent work-environment surface backed by a local-session Runtime snapshot. It shows configured/recently-active Bridge profiles and fixed scopes, explicit PRJ/CVC authority and revision, Bootstrap Skill, exact trusted Skill pins and projection health, Tool/writeback capability, pending/failed deliveries, and external provenance. The browser may select what to display, but cannot mint or expand a Bridge principal. CVC changes are accepted only after Storage verifies project ownership and non-revocation.
+
+**Implementation evidence:** `GET /api/promptcard/runtime/bridge-environment` reuses the Bridge v3 contract/workspace resolvers but returns a closed redacted browser view: no Bearer credential, repository path, internal node ID, or arbitrary filesystem path is exposed. `objectCodes` comes only from immutable CVC entry references; dependency `sourceCodes` cannot become write authority. A valid external Bearer request records bounded recent-activity telemetry for display only. The exact task builder requires one PRJ, one CVC, and selected creative object codes that are members of the resolved CVC, then emits the Bootstrap → runtime → workspace sequence and the preview-before-commit rule. The unified Inbox lists pending proposals and recent failures while all four writeback kinds continue to use their existing native review/application paths.
+
+**Verification evidence:** Bridge Gateway/environment regression 35 passed; strict Runtime client/domain/component/Inbox tests 115 passed; v1-v3 contracts 52 passed; Bridge CLI 8 passed; MCP 10 passed; TypeScript, touched Ruff/ESLint, and production build passed. The real Storage + Gateway + Vite + Chromium scenario passed in 57.3 seconds and proved recent external profile activity, explicit CVC activation, profile/scopes, Bootstrap/Tools, exact `1/1` object authorization and task copy, plus fail-closed rejection of a CVC owned by another project. See the [Task 26C checkpoint](../../reviews/2026-08-31-task-26c-agent-work-environment-checkpoint.md).
+
 **Acceptance criteria:**
 
 - [ ] A newly connected Codex can discover Bootstrap → runtime → workspace → exact Skill/reference reads without prior internal-schema knowledge.
-- [ ] The user can see and change the explicit CVC authority and understand stale/revoked/unavailable failures.
-- [ ] All four proposal kinds reuse their native Canvas review UI and expose provenance/status consistently.
-- [ ] UI preference persistence never becomes Bridge authority; Storage and trusted profile checks remain decisive.
+- [x] The user can see and change the explicit CVC authority and understand stale/revoked/unavailable failures.
+- [x] All four proposal kinds reuse their native Canvas review UI and expose provenance/status consistently.
+- [x] UI preference persistence never becomes Bridge authority; Storage and trusted profile checks remain decisive.
+
+The remaining unchecked criterion requires a real Codex MCP session, not a simulated browser or direct Gateway call. It is intentionally carried into the final real-Codex acceptance rather than inferred from the passing UI checkpoint.
 
 **Dependencies:** Tasks 16-26B.
 

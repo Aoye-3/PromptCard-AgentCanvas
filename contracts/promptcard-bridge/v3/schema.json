@@ -36,6 +36,15 @@
         }
       ]
     },
+    "WorkspaceObjectCode": {
+      "$id": "https://schemas.promptcard.dev/promptcard-bridge/v3/workspace-object-code.schema.json",
+      "oneOf": [
+        { "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-template-code.schema.json" },
+        { "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/canvas-media-code.schema.json" },
+        { "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v3/document-code.schema.json" },
+        { "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v3/storyboard-code.schema.json" }
+      ]
+    },
     "BridgeScope": {
       "$id": "https://schemas.promptcard.dev/promptcard-bridge/v3/bridge-scope.schema.json",
       "enum": [
@@ -177,9 +186,15 @@
           "maxItems": 256,
           "items": { "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v3/workspace-object.schema.json" }
         },
+        "objectCodes": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v3/workspace-object-code.schema.json" }
+        },
         "pendingDeliveries": { "type": "integer", "minimum": 0 }
       },
-      "required": ["projectCode", "cvcCode", "contextRevision", "contextDigest", "revoked", "skills", "objects", "pendingDeliveries"],
+      "required": ["projectCode", "cvcCode", "contextRevision", "contextDigest", "revoked", "skills", "objects", "objectCodes", "pendingDeliveries"],
       "additionalProperties": false
     },
     "PromptSearchRequest": {

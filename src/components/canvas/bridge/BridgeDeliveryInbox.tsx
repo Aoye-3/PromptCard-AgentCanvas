@@ -52,6 +52,7 @@ export const BridgeDeliveryInbox = ({
   onAccept
 }: BridgeDeliveryInboxProps) => {
   const [deliveries, setDeliveries] = useState<BridgeDelivery[]>([])
+  const [failedDeliveries, setFailedDeliveries] = useState<BridgeDelivery[]>([])
   const [loading, setLoading] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -59,12 +60,15 @@ export const BridgeDeliveryInbox = ({
   const refresh = useCallback(async () => {
     if (!cvcCode) {
       setDeliveries([])
+      setFailedDeliveries([])
       return
     }
     setLoading(true)
     setError(null)
     try {
-      setDeliveries(await client.list(cvcCode, 'pending_review'))
+      const items = await client.list(cvcCode)
+      setDeliveries(items.filter(item => item.state === 'pending_review'))
+      setFailedDeliveries(items.filter(item => item.state === 'failed').slice(0, 5))
     } catch {
       setError('无法读取外部 Agent 提案，请检查 Storage 服务。')
     } finally {
@@ -106,7 +110,7 @@ export const BridgeDeliveryInbox = ({
         <div className="flex min-w-0 items-center gap-2">
           <Bot className="h-4 w-4 shrink-0 text-sky-700" />
           <div className="min-w-0">
-            <h3 className="text-xs font-black text-gray-900">外部 Agent 待审阅</h3>
+            <h3 className="text-xs font-black text-gray-900">外部 Agent 提案与状态</h3>
             <p className="truncate text-[10px] font-semibold text-gray-500" title={cvcCode}>{cvcCode}</p>
           </div>
         </div>
@@ -203,6 +207,23 @@ export const BridgeDeliveryInbox = ({
                 <Check className="h-3 w-3" />接受并保存
               </button>
             </div>
+          </article>
+        ))}
+        {failedDeliveries.map(delivery => (
+          <article key={delivery.proposalId} className="rounded-lg border border-rose-200 bg-rose-50/60 p-3" data-bridge-delivery-failure>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <strong className="block truncate text-xs text-gray-950">{deliveryTitle(delivery)}</strong>
+                <span className="text-[10px] font-semibold text-rose-700">
+                  {delivery.visualProposal.agentName} · {deliveryKindLabel(delivery)}
+                </span>
+              </div>
+              <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-700">失败</span>
+            </div>
+            <p className="mt-2 text-[10px] leading-4 text-rose-700">{delivery.message || '外部 Agent 请求失败。'}</p>
+            <p className="mt-1 break-all text-[10px] leading-4 text-gray-500">
+              profile {delivery.operationContext.profileId} · {delivery.request.clientRequestId}
+            </p>
           </article>
         ))}
       </div>

@@ -44,7 +44,7 @@ import { ImageNodeActionBar } from '@/components/canvas/image-actions/ImageNodeA
 import { CanvasNodeContextMenu } from '@/components/canvas/image-actions/CanvasNodeContextMenu'
 import { CanvasProjectReferenceCodeAction } from '@/components/canvas/image-actions/CanvasReferenceCodeAction'
 import { CopyCodexContext } from '@/components/canvas/context-packs/CopyCodexContext'
-import { BridgeDeliveryInbox } from '@/components/canvas/bridge/BridgeDeliveryInbox'
+import { AgentWorkEnvironment } from '@/components/canvas/bridge/AgentWorkEnvironment'
 import {
   createBridgeImageApplication,
   createBridgeImageNode,
@@ -524,6 +524,10 @@ const FreeCanvasBuilderInner = ({
       selection?: CanvasAgentSelection
     }
   } | undefined>()
+  const changeActiveBridgeContext = useCallback((code: string | null) => {
+    setActiveBridgeCvcCode(code)
+    writeActiveBridgeContext(activeProject.id, code)
+  }, [activeProject.id])
   const [textSelections, setTextSelections] = useState<Record<string, Omit<CanvasAgentSelection, 'baseContentDigest'>>>({})
   const [nodeContextMenu, setNodeContextMenu] = useState<{
     nodeId: string
@@ -4086,11 +4090,7 @@ const FreeCanvasBuilderInner = ({
           project={activeProject}
           nodes={freeCanvas.nodes}
           selectedNodeIds={selectedNodeIds}
-          onActiveContextChange={context => {
-            const code = context?.cvcCode || null
-            setActiveBridgeCvcCode(code)
-            writeActiveBridgeContext(activeProject.id, code)
-          }}
+          onActiveContextChange={context => changeActiveBridgeContext(context?.cvcCode || null)}
         />
         <ToolbarButton title="Save" onClick={onSave}><Save className="h-4 w-4" /></ToolbarButton>
       </header>
@@ -4658,8 +4658,14 @@ const FreeCanvasBuilderInner = ({
             </div>
           ) : !previewMode ? (
             <div className="flex min-h-0 flex-1 flex-col">
-              <BridgeDeliveryInbox
+              <AgentWorkEnvironment
+                projectCode={activeProject.referenceCode || ''}
+                projectRevision={activeProject.revision}
                 cvcCode={activeBridgeCvcCode}
+                selectedObjectCodes={freeCanvas.nodes.flatMap(node => (
+                  selectedNodeIds.includes(node.id) && node.referenceCode ? [node.referenceCode] : []
+                ))}
+                onCvcChange={changeActiveBridgeContext}
                 onAccept={handleAcceptBridgeDelivery}
               />
               <div className="min-h-0 flex-1">

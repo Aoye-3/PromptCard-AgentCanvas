@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import StreamingResponse
 
@@ -43,6 +43,18 @@ class PromptCardRuntimeMessageResponse(BaseModel):
 @router.get("/status")
 async def status(request: Request) -> dict[str, Any]:
     return await runtime_service.status(request)
+
+
+@router.get("/bridge-environment")
+async def bridge_environment(
+    request: Request,
+    project_code: str | None = Query(default=None, alias="projectCode"),
+    cvc_code: str | None = Query(default=None, alias="cvcCode"),
+    profile_id: str | None = Query(default=None, alias="profileId"),
+) -> dict[str, Any]:
+    return await runtime_service.bridge_environment(
+        request, project_code, cvc_code, profile_id
+    )
 
 
 @router.post("/bootstrap")

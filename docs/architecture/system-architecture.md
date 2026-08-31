@@ -101,9 +101,15 @@ Image generation remains a separate Gateway module using `image.primary`. Image 
 
 Browser code continues to use `/agent-api` and `/storage-api`; only launch/proxy configuration knows concrete ports.
 
+## External Agent Work Environment
+
+The Canvas right rail presents a redacted Agent work environment rather than embedding an external Agent chat. It combines local Gateway health, configured/recently-active Bridge profiles, fixed scopes, explicit PRJ/CVC revision, Bootstrap and exact Skill pins, Tool/writeback capability, pending proposals, recent failures, and external provenance. This surface is observational and interactive only at the local-browser boundary: selecting a profile changes the view, while selecting a CVC first requires an authoritative Storage ownership/revocation inspection.
+
+External Agents continue to authenticate independently through their Bridge Bearer profile and operate only on explicit immutable CVC membership. The task-copy path includes exact PRJ/CVC/object references and a Bootstrap-first discovery sequence; screenshots and current UI focus are never authority. Delivery proposals remain in the existing Document, Storyboard, Prompt, and image review/application paths, so the environment panel is not a second editor or a generic Canvas mutation surface.
+
 ## Deferred
 
 - video media analysis;
-- typed Bridge delivery, visual proposal review, and the final real-Codex acceptance loop;
+- the final real-Codex four-kind acceptance loop, adversarial hardening, and optional Bridge distribution packaging;
 - production multi-user authentication;
 - general Canvas write tools, automatic Skill matching, local OCR, and asset/plugin node types.

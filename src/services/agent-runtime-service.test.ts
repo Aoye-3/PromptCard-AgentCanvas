@@ -94,6 +94,45 @@ afterEach(() => {
 })
 
 describe('agent runtime message contract', () => {
+  it('loads a strict Bridge work environment with explicit project, CVC, and profile', async () => {
+    const digest = `sha256:${'a'.repeat(64)}`
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      gateway: { ok: true, service: 'promptcard-runtime' },
+      bridge: {
+        configured: true, configurationError: null, selectedProfileId: 'codex-local',
+        profiles: [{
+          profileId: 'codex-local', scopes: ['bridge:read'], repositoryScoped: true,
+          lastSeenAt: null, connectionState: 'configured'
+        }],
+        contractVersion: '3.0.0',
+        bootstrapSkill: { name: 'promptcard-bootstrap', revision: 1, digest },
+        tools: [{
+          name: 'promptcard_runtime_describe', mode: 'read',
+          requiredScopes: ['bridge:read'], description: 'Describe.'
+        }],
+        writebackKinds: ['document.create'],
+        constraints: {
+          explicitContextRequired: true, userApprovalRequired: true,
+          promptCreateOnly: true, arbitraryPathsAccepted: false
+        }
+      },
+      workspace: { state: 'context_required', errorCode: 'explicit_context_required' }
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await agentRuntimeService.bridgeEnvironment({
+      projectCode: 'PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      profileId: 'codex-local'
+    })
+
+    expect(result.bridge.selectedProfileId).toBe('codex-local')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/agent-api/promptcard/runtime/bridge-environment?projectCode=PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAV&cvcCode=CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV&profileId=codex-local',
+      { credentials: 'include' }
+    )
+  })
+
   it('serializes only a bounded Prompt retrieval request and rejects browser snapshots', async () => {
     const fetchMock = vi.fn().mockResolvedValue(successfulMessageResponse())
     vi.stubGlobal('fetch', fetchMock)

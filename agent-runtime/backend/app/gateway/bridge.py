@@ -41,8 +41,7 @@ and exact references. All writes are proposals and require user review.
 """
 
 
-def runtime_description(principal: BridgePrincipal) -> dict[str, Any]:
-    require_bridge_scope(principal, "bridge:read")
+def bridge_contract_description() -> dict[str, Any]:
     delivery_scopes = [
         "bridge:deliver:document",
         "bridge:deliver:storyboard",
@@ -88,6 +87,11 @@ def runtime_description(principal: BridgePrincipal) -> dict[str, Any]:
     }
 
 
+def runtime_description(principal: BridgePrincipal) -> dict[str, Any]:
+    require_bridge_scope(principal, "bridge:read")
+    return bridge_contract_description()
+
+
 async def workspace_description(
     principal: BridgePrincipal,
     project_code: str,
@@ -118,6 +122,22 @@ async def workspace_description(
     pending_deliveries = pending.get("deliveries")
     if not isinstance(pending_deliveries, list):
         raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+    resolved_entries = resolved.get("entries")
+    if (
+        not isinstance(resolved_entries, list)
+        or len(resolved_entries) > 256
+        or any(
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("reference"), dict)
+            or not isinstance(entry["reference"].get("code"), str)
+            or _REFERENCE_PATTERN.fullmatch(entry["reference"]["code"]) is None
+            for entry in resolved_entries
+        )
+    ):
+        raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+    object_codes = [entry["reference"]["code"].upper() for entry in resolved_entries]
+    if len(object_codes) != len(set(object_codes)):
+        raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
     return {
         "projectCode": project,
         "cvcCode": context,
@@ -125,7 +145,8 @@ async def workspace_description(
         "contextDigest": snapshot_digest,
         "revoked": inspection.get("revokedAt") is not None,
         "skills": await _workspace_skills(principal),
-        "objects": _workspace_objects(resolved.get("entries")),
+        "objects": _workspace_objects(resolved_entries),
+        "objectCodes": object_codes,
         "pendingDeliveries": len(pending_deliveries),
     }
 

@@ -164,6 +164,28 @@ const storyboardCreateDelivery = (): BridgeStoryboardCreateDelivery => ({
 })
 
 describe('BridgeDeliveryInbox', () => {
+  it('shows failed requests with source profile and failure reason without review actions', async () => {
+    const item = {
+      ...delivery(),
+      state: 'failed' as const,
+      message: 'staged_asset_expired'
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(<BridgeDeliveryInbox
+        cvcCode={item.request.target.cvcCode}
+        client={{ list: vi.fn().mockResolvedValue([item]), decide: vi.fn() }}
+        onAccept={vi.fn().mockResolvedValue([])}
+      />)
+    })
+
+    renderer.root.findByProps({ 'data-bridge-delivery-failure': true })
+    expect(JSON.stringify(renderer.toJSON())).toContain('staged_asset_expired')
+    expect(JSON.stringify(renderer.toJSON())).toContain('codex-local')
+    expect(renderer.root.findAllByProps({ 'aria-label': '接受外部 Agent Prompt 提案' })).toHaveLength(0)
+    renderer.unmount()
+  })
+
   it('shows an external Prompt proposal and records acceptance after durable apply', async () => {
     const item = delivery()
     const client = {
