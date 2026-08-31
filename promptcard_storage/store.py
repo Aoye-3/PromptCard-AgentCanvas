@@ -5380,6 +5380,29 @@ class SqliteStore:
             }
         else:
             sequence = node["sequence"]
+            row_ordinals = {
+                row.get("id"): ordinal
+                for ordinal, row in enumerate(sequence.get("rows", []))
+                if isinstance(row, dict) and isinstance(row.get("id"), str)
+            }
+            pending_field_changes = []
+            for change in node.get("pendingFieldChanges") or []:
+                if not isinstance(change, dict):
+                    continue
+                scope = change.get("scope")
+                field = change.get("field")
+                if scope == "sequence" and isinstance(field, str):
+                    pending_field_changes.append({
+                        "scope": "sequence", "field": field,
+                    })
+                    continue
+                if scope != "row" or not isinstance(field, str):
+                    continue
+                ordinal = row_ordinals.get(change.get("rowId"))
+                if ordinal is not None:
+                    pending_field_changes.append({
+                        "scope": "row", "rowOrdinal": ordinal, "field": field,
+                    })
             content = {
                 "kind": "storyboard",
                 "title": title,
@@ -5412,6 +5435,7 @@ class SqliteStore:
                         if isinstance(row, dict)
                     ],
                 },
+                "pendingFieldChanges": pending_field_changes,
             }
         return _canonical_json(content)
 

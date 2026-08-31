@@ -917,13 +917,17 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Implement `storyboard.create` and `storyboard.change` through the same ledger. Resolve exact CVS/revision/digest targets, compile ordinal-addressed external changes into the existing structured sequence proposal, and reuse per-shot/per-field review rather than creating another editor.
 
-**Status:** Foundation checkpoint pushed on `feat/skill-document-storyboard-loop` (2026-08-31). Storage and Gateway now accept the closed v3 Storyboard unions through the shared profile-scoped ledger; the browser parser rejects hidden node/row identities, and the native adapter deterministically converts external row ordinals to stable Canvas row IDs. The Inbox can identify and summarize Storyboard proposals. Canvas save-coordinator integration, pending-field projection, real-process create/change/review, replay, and restart evidence remain open, so none of the Task 26B acceptance criteria are checked yet. See [Task 26B foundation checkpoint](../../reviews/2026-08-31-task-26b-foundation-checkpoint.md).
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). Storage, Gateway, strict browser parsing, native Canvas persistence, per-field review, replay, and two-process restart recovery pass. Task 26C is unlocked; `main` remains unchanged until the final real Codex total loop passes. See the [Task 26B completion checkpoint](../../reviews/2026-08-31-task-26b-complete-checkpoint.md); the earlier foundation note remains historical evidence.
+
+**Implementation evidence:** Storyboard create proves the exact source `CVD/revision/digest` inside the selected CVC and deterministically creates one native sequence with Bridge/Skill/source provenance. Storyboard change proves exact `CVS/revision/digest`, accepts only bounded external row ordinals, and compiles them into the existing native `pendingFieldChanges` review model. CVC projection exposes only pending-field identities (`scope`, optional `rowOrdinal`, `field`), so a field already under review is rejected before ledger creation without leaking internal IDs or values. Browser normalization now preserves the Storage-owned `CVS-*`; this defect was exposed by the real acceptance loop and fixed with a focused regression.
+
+**Verification evidence:** Storage Storyboard delivery 6 passed; Bridge Gateway 32 passed; strict Storage client, Bridge Inbox, native Storyboard adapter, and Free Canvas normalization 141 passed; TypeScript, touched Ruff, and production build passed. `npm.cmd run test:e2e:bridge` passed the real Document and Storyboard scenarios with two phase-gated skips. `npm.cmd run test:e2e:bridge-restart` passed prepare and recover in separate owned service lifetimes: accepted Document and Storyboard identities, one pending Storyboard field proposal, exact sources, status, UI CVC preference, native field acceptance, replay, and unique `CVS-*` result all survived restart. Build retained only the pre-existing CSS selector/chunk-size warnings; pytest retained only inaccessible cache warnings.
 
 **Acceptance criteria:**
 
-- [ ] Storyboard create/change preserves the canonical sequence and source Document evidence.
-- [ ] Stale base, invalid ordinal, and already-changed field fail closed.
-- [ ] Per-field accept/reject, save/retry, restart, and replay remain deterministic and auditable.
+- [x] Storyboard create/change preserves the canonical sequence and source Document evidence.
+- [x] Stale base, invalid ordinal, and already-changed field fail closed.
+- [x] Per-field accept/reject, save/retry, restart, and replay remain deterministic and auditable.
 
 **Dependencies:** Tasks 23 and 26A.
 

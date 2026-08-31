@@ -1265,6 +1265,7 @@ const normalizeStoryboardNode = (
       position: normalizePosition(node.position),
       width: Number(node.width || 640),
       height: Number(node.height || 480),
+      ...(typeof node.referenceCode === 'string' ? { referenceCode: node.referenceCode } : {}),
       sequence,
       source: cloneStructuredValue(node.source),
       pendingFieldChanges,

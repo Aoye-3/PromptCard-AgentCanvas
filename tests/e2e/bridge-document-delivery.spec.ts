@@ -30,12 +30,48 @@ interface StoredCanvasNode {
   title: string
   referenceCode: string
   document?: StoredDocument
+  sequence?: StoredStoryboardSequence
+  source?: StoredStoryboardSource
+  pendingFieldChanges?: StoredStoryboardFieldChange[]
+  revision?: number
+  digest?: string
   meta: Record<string, unknown>
 }
 
 interface StoredDocumentNode extends StoredCanvasNode {
   kind: 'document'
   document: StoredDocument
+}
+
+interface StoredStoryboardRow {
+  id: string
+  camera: string
+}
+
+interface StoredStoryboardSequence {
+  rows: StoredStoryboardRow[]
+}
+
+interface StoredStoryboardSource {
+  documentNodeId: string
+  documentRevision: number
+  documentDigest: string
+}
+
+interface StoredStoryboardFieldChange {
+  scope: 'sequence' | 'row'
+  field: string
+  previousValue: string
+  newValue: string
+}
+
+interface StoredStoryboardNode extends StoredCanvasNode {
+  kind: 'storyboard'
+  sequence: StoredStoryboardSequence
+  source: StoredStoryboardSource
+  pendingFieldChanges: StoredStoryboardFieldChange[]
+  revision: number
+  digest: string
 }
 
 interface StoredProject {
@@ -53,6 +89,22 @@ interface RestartState {
   documentCode: string
   createRequest: ReturnType<typeof documentCreateRequest>
   commitRequest: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    proposalId: string
+  }
+  storyboardCvc: string
+  storyboardNodeId: string
+  storyboardCode: string
+  storyboardTitle: string
+  storyboardCreateRequest: Record<string, unknown>
+  storyboardCreateCommitRequest: {
+    clientRequestId: string
+    normalizedRequestDigest: string
+    proposalId: string
+  }
+  storyboardChangeRequest: Record<string, unknown>
+  storyboardChangeCommitRequest: {
     clientRequestId: string
     normalizedRequestDigest: string
     proposalId: string
@@ -209,9 +261,182 @@ test('real Gateway creates and changes a reviewed Document without duplicate app
   }
 })
 
-test('prepare an accepted Document for process restart recovery', async ({ context, page, request }) => {
+test('real Gateway creates and changes a native Storyboard with field review and replay', async ({ context, page, request }) => {
+  test.skip(!bridgeToken, 'Run through npm run test:e2e:bridge so the real Gateway profile is configured.')
+  test.skip(Boolean(bridgePhase), 'The restart runner uses the dedicated prepare/recover tests.')
+
+  const fixture = await createProjectFixture(request)
+  const contextCodes: string[] = []
+  const dialogMessages: string[] = []
+  page.on('dialog', dialog => {
+    dialogMessages.push(dialog.message())
+    void dialog.accept()
+  })
+
+  try {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await openProject(page, fixture.id, fixture.title)
+    const sourceCvc = await createContextPack(page, request, fixture.id, fixture.sourceCode)
+    contextCodes.push(sourceCvc)
+
+    const documentRequest = documentCreateRequest(fixture, sourceCvc, 'storyboard-source')
+    const documentPreview = await bridgePost(request, '/delivery/preview', documentRequest)
+    await bridgePost(request, '/delivery/commit', {
+      clientRequestId: `${fixture.id}-storyboard-source-document-commit`,
+      normalizedRequestDigest: digest(`${fixture.id}:storyboard-source-document-commit`),
+      proposalId: documentPreview.proposalId
+    })
+    await reviewPendingDocument(page, documentRequest.payload.title)
+    const documentNode = requiredDocumentNode(
+      await getProject(request, fixture.id), documentRequest.payload.title
+    )
+
+    const documentCvc = await createContextPack(page, request, fixture.id, documentNode.referenceCode)
+    contextCodes.push(documentCvc)
+    const createRequest = {
+      clientRequestId: `${fixture.id}-storyboard-create-preview`,
+      normalizedRequestDigest: digest(`${fixture.id}:storyboard-create-preview`),
+      kind: 'storyboard.create',
+      target: { cvcCode: documentCvc },
+      sourceCodes: [documentNode.referenceCode],
+      skillPins: [],
+      rationale: 'Turn the accepted Document into a reviewable Storyboard.',
+      provenance: 'promptcard-bridge',
+      payload: {
+        title: 'Bridge-reviewed storyboard',
+        sourceDocumentCode: documentNode.referenceCode,
+        sourceDocumentRevision: documentNode.document.revision,
+        sourceDocumentDigest: documentNode.document.digest,
+        sequence: {
+          name: 'Opening sequence', description: 'Rainy reveal', style: 'Naturalistic', constraints: 'No dialogue',
+          rows: [{
+            cutLabel: '1', timeRange: '00:00-00:04', subject: 'Empty street', action: 'Rain falls',
+            scene: 'Night exterior', camera: 'Wide', lighting: 'Neon reflections', audio: 'Rain', duration: '4s'
+          }]
+        }
+      }
+    }
+    const createPreview = await bridgePost(request, '/delivery/preview', createRequest)
+    const createCommitRequest = {
+      clientRequestId: `${fixture.id}-storyboard-create-commit`,
+      normalizedRequestDigest: digest(`${fixture.id}:storyboard-create-commit`),
+      proposalId: createPreview.proposalId
+    }
+    await bridgePost(request, '/delivery/commit', createCommitRequest)
+    try {
+      await reviewPendingStoryboard(page, createRequest.payload.title, dialogMessages)
+    } catch (error) {
+      const diagnosticProject = await getProject(request, fixture.id)
+      const diagnosticNode = diagnosticProject.freeCanvas.nodes.find(node => node.kind === 'storyboard')
+      throw new Error(`${String(error)} storedStoryboard=${JSON.stringify(diagnosticNode)}`)
+    }
+
+    const created = requiredStoryboardNode(
+      await getProject(request, fixture.id), createRequest.payload.title
+    )
+    expect(created.referenceCode).toMatch(/^CVS-/)
+    expect(created.source).toMatchObject({
+      documentNodeId: documentNode.id,
+      documentRevision: documentNode.document.revision,
+      documentDigest: documentNode.document.digest
+    })
+    expect(created.pendingFieldChanges).toEqual([])
+    expect(created.sequence.rows[0].camera).toBe('Wide')
+
+    const replayPreview = await bridgePost(request, '/delivery/preview', createRequest)
+    expect(replayPreview.proposalId).toBe(createPreview.proposalId)
+    expect(replayPreview.disposition).toBe('replay')
+    const replayCommit = await bridgePost(request, '/delivery/commit', createCommitRequest)
+    expect(replayCommit.state).toBe('accepted')
+    expect((await getProject(request, fixture.id)).freeCanvas.nodes.filter(
+      node => node.referenceCode === created.referenceCode
+    )).toHaveLength(1)
+
+    const storyboardCvc = await createContextPack(page, request, fixture.id, created.referenceCode)
+    contextCodes.push(storyboardCvc)
+    const workspace = await bridgeGet(
+      request,
+      `/workspace?projectCode=${fixture.projectCode}&cvcCode=${storyboardCvc}`
+    )
+    expect(workspace.objects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reference: { namespace: 'canvasStoryboard', code: created.referenceCode } })
+    ]))
+
+    const changeRequest = {
+      clientRequestId: `${fixture.id}-storyboard-change-preview`,
+      normalizedRequestDigest: digest(`${fixture.id}:storyboard-change-preview`),
+      kind: 'storyboard.change',
+      target: {
+        cvcCode: storyboardCvc,
+        storyboardCode: created.referenceCode,
+        baseRevision: created.revision,
+        baseDigest: created.digest
+      },
+      sourceCodes: [created.referenceCode],
+      skillPins: [],
+      rationale: 'Tighten the first shot while preserving field review.',
+      provenance: 'promptcard-bridge',
+      payload: {
+        changes: [{ scope: 'row', rowOrdinal: 0, field: 'camera', value: 'Close-up' }]
+      }
+    }
+    const changePreview = await bridgePost(request, '/delivery/preview', changeRequest)
+    const changeCommitRequest = {
+      clientRequestId: `${fixture.id}-storyboard-change-commit`,
+      normalizedRequestDigest: digest(`${fixture.id}:storyboard-change-commit`),
+      proposalId: changePreview.proposalId
+    }
+    await bridgePost(request, '/delivery/commit', changeCommitRequest)
+    await reviewPendingStoryboard(page, `修改分镜 ${created.referenceCode}`, dialogMessages)
+
+    const pending = requiredStoryboardNode(
+      await getProject(request, fixture.id), createRequest.payload.title
+    )
+    expect(pending.sequence.rows[0].camera).toBe('Wide')
+    expect(pending.pendingFieldChanges).toEqual([
+      expect.objectContaining({
+        scope: 'row', field: 'camera', previousValue: 'Wide', newValue: 'Close-up'
+      })
+    ])
+    const storyboardUi = page.locator(`.react-flow__node[data-id="${created.id}"]`)
+    await expect(storyboardUi.getByText('Wide', { exact: true })).toBeVisible()
+    await expect(storyboardUi.getByText('Close-up', { exact: true })).toBeVisible()
+    await storyboardUi.getByRole('button', { name: '接受 camera 修改' }).click()
+    await expect.poll(async () => {
+      const saved = requiredStoryboardNode(
+        await getProject(request, fixture.id), createRequest.payload.title
+      )
+      return { camera: saved.sequence.rows[0].camera, pending: saved.pendingFieldChanges.length }
+    }).toEqual({ camera: 'Close-up', pending: 0 })
+
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await openProject(page, fixture.id, fixture.title, false)
+    await expect(page.locator(`.react-flow__node[data-id="${created.id}"]`)).toContainText('Close-up')
+    const status = await bridgeGet(
+      request,
+      `/delivery/status?clientRequestId=${encodeURIComponent(changeCommitRequest.clientRequestId)}`
+    )
+    expect(status.state).toBe('accepted')
+    expect(status.resultCodes).toEqual([created.referenceCode])
+    expect((await getProject(request, fixture.id)).freeCanvas.nodes.filter(
+      node => node.referenceCode === created.referenceCode
+    )).toHaveLength(1)
+  } finally {
+    if (!page.isClosed()) {
+      for (const code of contextCodes) await revokeContext(request, code)
+      await deleteProjectFixture(request, fixture.id)
+    }
+  }
+})
+
+test('prepare accepted Document and pending Storyboard change for process restart recovery', async ({ context, page, request }) => {
   test.skip(bridgePhase !== 'prepare', 'Only the restart acceptance prepare phase runs this test.')
   const fixture = await createProjectFixture(request)
+  const dialogMessages: string[] = []
+  page.on('dialog', dialog => {
+    dialogMessages.push(dialog.message())
+    void dialog.accept()
+  })
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await openProject(page, fixture.id, fixture.title)
   const sourceCvc = await createContextPack(page, request, fixture.id, fixture.sourceCode)
@@ -228,6 +453,65 @@ test('prepare an accepted Document for process restart recovery', async ({ conte
   const documentNode = requiredDocumentNode(stored, createRequest.payload.title)
   const documentCvc = await createContextPack(page, request, fixture.id, documentNode.referenceCode)
 
+  const storyboardTitle = 'Restart-safe storyboard'
+  const storyboardCreateRequest = {
+    clientRequestId: `${fixture.id}-restart-storyboard-create-preview`,
+    normalizedRequestDigest: digest(`${fixture.id}:restart-storyboard-create-preview`),
+    kind: 'storyboard.create',
+    target: { cvcCode: documentCvc },
+    sourceCodes: [documentNode.referenceCode],
+    skillPins: [],
+    rationale: 'Create a Storyboard whose review state survives a process restart.',
+    provenance: 'promptcard-bridge',
+    payload: {
+      title: storyboardTitle,
+      sourceDocumentCode: documentNode.referenceCode,
+      sourceDocumentRevision: documentNode.document.revision,
+      sourceDocumentDigest: documentNode.document.digest,
+      sequence: {
+        name: 'Restart sequence', description: 'Durable rain reveal', style: 'Naturalistic', constraints: 'No dialogue',
+        rows: [{
+          cutLabel: '1', timeRange: '00:00-00:04', subject: 'Empty street', action: 'Rain falls',
+          scene: 'Night exterior', camera: 'Wide', lighting: 'Neon reflections', audio: 'Rain', duration: '4s'
+        }]
+      }
+    }
+  }
+  const storyboardCreatePreview = await bridgePost(request, '/delivery/preview', storyboardCreateRequest)
+  const storyboardCreateCommitRequest = {
+    clientRequestId: `${fixture.id}-restart-storyboard-create-commit`,
+    normalizedRequestDigest: digest(`${fixture.id}:restart-storyboard-create-commit`),
+    proposalId: storyboardCreatePreview.proposalId
+  }
+  await bridgePost(request, '/delivery/commit', storyboardCreateCommitRequest)
+  await reviewPendingStoryboard(page, storyboardTitle, dialogMessages)
+  const storyboardNode = requiredStoryboardNode(await getProject(request, fixture.id), storyboardTitle)
+  const storyboardCvc = await createContextPack(page, request, fixture.id, storyboardNode.referenceCode)
+  const storyboardChangeRequest = {
+    clientRequestId: `${fixture.id}-restart-storyboard-change-preview`,
+    normalizedRequestDigest: digest(`${fixture.id}:restart-storyboard-change-preview`),
+    kind: 'storyboard.change',
+    target: {
+      cvcCode: storyboardCvc,
+      storyboardCode: storyboardNode.referenceCode,
+      baseRevision: storyboardNode.revision,
+      baseDigest: storyboardNode.digest
+    },
+    sourceCodes: [storyboardNode.referenceCode],
+    skillPins: [],
+    rationale: 'Keep this field-level change pending across restart.',
+    provenance: 'promptcard-bridge',
+    payload: { changes: [{ scope: 'row', rowOrdinal: 0, field: 'camera', value: 'Close-up' }] }
+  }
+  const storyboardChangePreview = await bridgePost(request, '/delivery/preview', storyboardChangeRequest)
+  const storyboardChangeCommitRequest = {
+    clientRequestId: `${fixture.id}-restart-storyboard-change-commit`,
+    normalizedRequestDigest: digest(`${fixture.id}:restart-storyboard-change-commit`),
+    proposalId: storyboardChangePreview.proposalId
+  }
+  const pendingChange = await bridgePost(request, '/delivery/commit', storyboardChangeCommitRequest)
+  expect(pendingChange.state).toBe('pending_review')
+
   await writeFile(restartStatePath, JSON.stringify({
     fixture,
     sourceCvc,
@@ -235,11 +519,19 @@ test('prepare an accepted Document for process restart recovery', async ({ conte
     documentNodeId: documentNode.id,
     documentCode: documentNode.referenceCode,
     createRequest,
-    commitRequest
+    commitRequest,
+    storyboardCvc,
+    storyboardNodeId: storyboardNode.id,
+    storyboardCode: storyboardNode.referenceCode,
+    storyboardTitle,
+    storyboardCreateRequest,
+    storyboardCreateCommitRequest,
+    storyboardChangeRequest,
+    storyboardChangeCommitRequest
   }, null, 2), 'utf8')
 })
 
-test('recovers and replays the accepted Document after real service restart', async ({ page, request }) => {
+test('recovers Document and completes pending Storyboard review after real service restart', async ({ page, request }) => {
   test.skip(bridgePhase !== 'recover', 'Only the restart acceptance recovery phase runs this test.')
   const state = JSON.parse(await readFile(restartStatePath, 'utf8')) as RestartState
   try {
@@ -260,12 +552,31 @@ test('recovers and replays the accepted Document after real service restart', as
     const replayCommit = await bridgePost(request, '/delivery/commit', state.commitRequest)
     expect(replayCommit.state).toBe('accepted')
 
+    const storyboardCreateStatus = await bridgeGet(
+      request,
+      `/delivery/status?clientRequestId=${encodeURIComponent(state.storyboardCreateCommitRequest.clientRequestId)}`
+    )
+    expect(storyboardCreateStatus.state).toBe('accepted')
+    expect(storyboardCreateStatus.resultCodes).toEqual([state.storyboardCode])
+    const pendingStoryboardStatus = await bridgeGet(
+      request,
+      `/delivery/status?clientRequestId=${encodeURIComponent(state.storyboardChangeCommitRequest.clientRequestId)}`
+    )
+    expect(pendingStoryboardStatus.state).toBe('pending_review')
+
     const workspace = await bridgeGet(
       request,
       `/workspace?projectCode=${state.fixture.projectCode}&cvcCode=${state.documentCvc}`
     )
     expect(workspace.objects).toEqual(expect.arrayContaining([
       expect.objectContaining({ reference: { namespace: 'canvasDocument', code: state.documentCode } })
+    ]))
+    const storyboardWorkspace = await bridgeGet(
+      request,
+      `/workspace?projectCode=${state.fixture.projectCode}&cvcCode=${state.storyboardCvc}`
+    )
+    expect(storyboardWorkspace.objects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reference: { namespace: 'canvasStoryboard', code: state.storyboardCode } })
     ]))
 
     const stored = await getProject(request, state.fixture.id)
@@ -279,13 +590,81 @@ test('recovers and replays the accepted Document after real service restart', as
       sourceCodes: [state.fixture.sourceCode],
       skillPins: []
     })
+    const storyboards = stored.freeCanvas.nodes.filter(node => node.referenceCode === state.storyboardCode)
+    expect(storyboards).toHaveLength(1)
+    expect(storyboards[0]).toMatchObject({
+      id: state.storyboardNodeId,
+      kind: 'storyboard',
+      meta: {
+        bridgeStoryboardDelivery: expect.objectContaining({
+          proposalId: state.storyboardCreateCommitRequest.proposalId,
+          profileId: 'codex-e2e',
+          sourceCodes: [state.documentCode]
+        })
+      }
+    })
 
+    await page.addInitScript(({ key, value }) => {
+      globalThis.localStorage.setItem(key, value)
+    }, {
+      key: `promptcard:active-bridge-context:${state.fixture.id}`,
+      value: state.storyboardCvc
+    })
     await openProject(page, state.fixture.id, state.fixture.title)
     const restoredNode = page.locator(`.react-flow__node[data-id="${state.documentNodeId}"]`)
     await expect(restoredNode).toContainText('A rainy opening.')
+    const dialogMessages: string[] = []
+    page.on('dialog', dialog => {
+      dialogMessages.push(dialog.message())
+      void dialog.accept()
+    })
+    await reviewPendingStoryboard(page, `修改分镜 ${state.storyboardCode}`, dialogMessages)
+    const storyboardUi = page.locator(`.react-flow__node[data-id="${state.storyboardNodeId}"]`)
+    await expect(storyboardUi.getByText('Wide', { exact: true })).toBeVisible()
+    await expect(storyboardUi.getByText('Close-up', { exact: true })).toBeVisible()
+    await storyboardUi.getByRole('button', { name: '接受 camera 修改' }).click()
+    await expect.poll(async () => {
+      const saved = requiredStoryboardNode(await getProject(request, state.fixture.id), state.storyboardTitle)
+      return { camera: saved.sequence.rows[0].camera, pending: saved.pendingFieldChanges.length }
+    }).toEqual({ camera: 'Close-up', pending: 0 })
+
+    const acceptedStoryboardStatus = await bridgeGet(
+      request,
+      `/delivery/status?clientRequestId=${encodeURIComponent(state.storyboardChangeCommitRequest.clientRequestId)}`
+    )
+    expect(acceptedStoryboardStatus.state).toBe('accepted')
+    expect(acceptedStoryboardStatus.resultCodes).toEqual([state.storyboardCode])
+    const createReplay = await bridgePost(request, '/delivery/preview', state.storyboardCreateRequest)
+    expect(createReplay).toMatchObject({
+      proposalId: state.storyboardCreateCommitRequest.proposalId,
+      disposition: 'replay',
+      state: 'previewed'
+    })
+    const createCommitReplay = await bridgePost(
+      request, '/delivery/commit', state.storyboardCreateCommitRequest
+    )
+    expect(createCommitReplay).toMatchObject({
+      state: 'accepted', resultCodes: [state.storyboardCode]
+    })
+    const changeReplay = await bridgePost(request, '/delivery/preview', state.storyboardChangeRequest)
+    expect(changeReplay).toMatchObject({
+      proposalId: state.storyboardChangeCommitRequest.proposalId,
+      disposition: 'replay',
+      state: 'previewed'
+    })
+    const changeCommitReplay = await bridgePost(
+      request, '/delivery/commit', state.storyboardChangeCommitRequest
+    )
+    expect(changeCommitReplay).toMatchObject({
+      state: 'accepted', resultCodes: [state.storyboardCode]
+    })
+    expect((await getProject(request, state.fixture.id)).freeCanvas.nodes.filter(
+      node => node.referenceCode === state.storyboardCode
+    )).toHaveLength(1)
   } finally {
     if (!page.isClosed()) {
       await revokeContext(request, state.documentCvc)
+      await revokeContext(request, state.storyboardCvc)
       await revokeContext(request, state.sourceCvc)
       await deleteProjectFixture(request, state.fixture.id)
       await unlink(restartStatePath)
@@ -397,6 +776,21 @@ async function reviewPendingDocument(page: Page, title: string) {
   await expect(inbox.getByText(title, { exact: true })).toHaveCount(0)
 }
 
+async function reviewPendingStoryboard(page: Page, title: string, dialogMessages: string[]) {
+  const refresh = page.getByRole('button', { name: '刷新外部 Agent 提案' })
+  await expect(refresh).toBeVisible({ timeout: 15_000 })
+  await refresh.click()
+  const inbox = page.locator('[data-bridge-delivery-inbox]')
+  await expect(inbox.getByText(title, { exact: true })).toBeVisible()
+  await inbox.getByRole('button', { name: '接受外部 Agent 分镜 提案' }).click()
+  try {
+    await expect(inbox.getByText(title, { exact: true })).toHaveCount(0, { timeout: 30_000 })
+  } catch {
+    const errors = await inbox.getByRole('alert').allTextContents()
+    throw new Error(`Storyboard review did not persist. dialogs=${JSON.stringify(dialogMessages)} errors=${JSON.stringify(errors)}`)
+  }
+}
+
 async function getProject(request: APIRequestContext, id: string) {
   const response = await request.get(`${storageUrl}/api/projects/${id}`)
   expect(response.ok(), await response.text()).toBe(true)
@@ -406,6 +800,14 @@ async function getProject(request: APIRequestContext, id: string) {
 function requiredDocumentNode(project: StoredProject, title: string): StoredDocumentNode {
   const node = project.freeCanvas.nodes.find((candidate): candidate is StoredDocumentNode => (
     candidate.kind === 'document' && candidate.title === title
+  ))
+  expect(node).toBeTruthy()
+  return node
+}
+
+function requiredStoryboardNode(project: StoredProject, title: string): StoredStoryboardNode {
+  const node = project.freeCanvas.nodes.find((candidate): candidate is StoredStoryboardNode => (
+    candidate.kind === 'storyboard' && candidate.title === title
   ))
   expect(node).toBeTruthy()
   return node

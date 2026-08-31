@@ -1,5 +1,7 @@
 # Task 26B Storyboard Foundation Checkpoint Handoff
 
+> Historical checkpoint: Task 26B is now complete. Continue from the [completion checkpoint](./2026-08-31-task-26b-complete-checkpoint.md).
+
 ## Checkpoint
 
 - Date: 2026-08-31

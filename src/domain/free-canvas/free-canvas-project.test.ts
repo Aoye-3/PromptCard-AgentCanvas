@@ -704,6 +704,7 @@ describe('free canvas project domain', () => {
     const digest = storyboardDigest(sequence, [])
     const strictNode = {
       id: 'storyboard-strict', kind: 'storyboard', title: 'Strict shots', position: { x: 0, y: 0 },
+      referenceCode: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAV',
       width: 680, height: 440, sequence,
       source: {
         documentNodeId: 'document-1', documentRevision: 4, documentDigest: `sha256:${'a'.repeat(64)}`,
@@ -736,7 +737,10 @@ describe('free canvas project domain', () => {
       nodes: [{ ...strictNode, digest: `sha256:${'f'.repeat(64)}` }] as never, edges: [], meta: {}
     }, 100)
 
-    expect(valid.nodes[0]).toMatchObject({ kind: 'storyboard', revision: 0, digest, agentAppliedEdit: strictNode.agentAppliedEdit })
+    expect(valid.nodes[0]).toMatchObject({
+      kind: 'storyboard', referenceCode: strictNode.referenceCode,
+      revision: 0, digest, agentAppliedEdit: strictNode.agentAppliedEdit
+    })
     expect(exactSkillBoundary.nodes[0]).toMatchObject({ kind: 'storyboard', id: 'storyboard-strict' })
     expect(corrupt.nodes[0]).toMatchObject({
       kind: 'unsupported', originalKind: 'storyboard',

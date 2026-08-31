@@ -390,7 +390,9 @@ def _validate_storyboard_authority(
     rows = sequence.get("rows") if isinstance(sequence, dict) else None
     if not isinstance(rows, list):
         raise BridgeDeliveryValidationError("storyboard_target_invalid")
-    pending = content.get("pendingFieldChanges", [])
+    if "pendingFieldChanges" not in content:
+        raise BridgeDeliveryValidationError("storyboard_target_invalid")
+    pending = content["pendingFieldChanges"]
     if not isinstance(pending, list):
         raise BridgeDeliveryValidationError("storyboard_target_invalid")
     pending_identities = {

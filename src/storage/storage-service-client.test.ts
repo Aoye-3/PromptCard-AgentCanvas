@@ -184,6 +184,49 @@ describe('storageServiceClient', () => {
     await expect(storageServiceClient.contextPacks.inspect(inspection.cvcCode)).resolves.toEqual(inspection)
   })
 
+  test('accepts bounded Storyboard pending-field identities and rejects hidden row ids', async () => {
+    const storyboardEntry = {
+      reference: { namespace: 'canvasStoryboard' as const, code: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAX' },
+      content: JSON.stringify({
+        kind: 'storyboard', title: 'Shots', revision: 1, digest: `sha256:${'d'.repeat(64)}`,
+        sequence: {
+          name: 'Shots', description: '', style: '', constraints: '',
+          rows: [{ ordinal: 0, cutLabel: '1', timeRange: '', subject: 'Hero', action: 'Walks', scene: 'Street', camera: 'Wide', lighting: 'Night', audio: 'Rain', duration: '3s' }]
+        },
+        pendingFieldChanges: [{ scope: 'row', rowOrdinal: 0, field: 'camera' }]
+      }),
+      contentDigest: `sha256:${'e'.repeat(64)}`
+    }
+    const inspection = {
+      ...contextPackInspection(),
+      entries: [storyboardEntry],
+      sourceBoundaries: [{
+        nodeCode: storyboardEntry.reference.code,
+        promptLibraryReferences: [], canvasMediaReferences: []
+      }],
+      placementHint: {
+        mode: 'after-selection' as const,
+        anchorNodeCodes: [storyboardEntry.reference.code]
+      }
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(inspection)))
+    await expect(storageServiceClient.contextPacks.inspect(inspection.cvcCode)).resolves.toEqual(inspection)
+
+    const hidden = {
+      ...inspection,
+      entries: [{
+        ...storyboardEntry,
+        content: JSON.stringify({
+          ...JSON.parse(storyboardEntry.content),
+          pendingFieldChanges: [{ scope: 'row', rowOrdinal: 0, rowId: 'internal-row', field: 'camera' }]
+        })
+      }]
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(hidden)))
+    await expect(storageServiceClient.contextPacks.inspect(hidden.cvcCode))
+      .rejects.toMatchObject({ code: 'invalid_storage_response' })
+  })
+
   test.each([
     ['an unknown root field', { internalId: 'secret-id' }],
     ['a malformed typed reference', { entries: [{

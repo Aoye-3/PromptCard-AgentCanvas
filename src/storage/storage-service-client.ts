@@ -2594,7 +2594,8 @@ const isContextEntryNamespace = (
 
 const isSafeStoryboardContextEntry = (value: unknown): boolean => {
   if (
-    !isClosedRecord(value, ['kind', 'title', 'revision', 'digest', 'sequence'])
+    !isRecord(value)
+    || !hasOnlyKeys(value, ['kind', 'title', 'revision', 'digest', 'sequence'], ['pendingFieldChanges'])
     || value.kind !== 'storyboard'
     || typeof value.title !== 'string'
     || !isNonNegativeInteger(value.revision)
@@ -2611,11 +2612,43 @@ const isSafeStoryboardContextEntry = (value: unknown): boolean => {
     'ordinal', 'cutLabel', 'timeRange', 'subject', 'action',
     'scene', 'camera', 'lighting', 'audio', 'duration'
   ] as const
-  return value.sequence.rows.every((row, index) => (
+  if (!value.sequence.rows.every((row, index) => (
     isClosedRecord(row, fields)
     && row.ordinal === index
     && fields.slice(1).every(field => typeof row[field] === 'string')
-  ))
+  ))) return false
+  return value.pendingFieldChanges === undefined
+    || isSafeStoryboardPendingFieldChanges(value.pendingFieldChanges, value.sequence.rows.length)
+}
+
+const isSafeStoryboardPendingFieldChanges = (value: unknown, rowCount: number): boolean => {
+  if (!Array.isArray(value) || value.length > 32) return false
+  const identities = new Set<string>()
+  const sequenceFields = new Set(['name', 'description', 'style', 'constraints'])
+  const rowFields = new Set([
+    'cutLabel', 'timeRange', 'subject', 'action', 'scene',
+    'camera', 'lighting', 'audio', 'duration'
+  ])
+  return value.every(change => {
+    if (!isRecord(change)) return false
+    let identity: string
+    if (change.scope === 'sequence') {
+      if (!isClosedRecord(change, ['scope', 'field']) || !sequenceFields.has(String(change.field))) return false
+      identity = `sequence:${change.field}`
+    } else {
+      if (
+        !isClosedRecord(change, ['scope', 'rowOrdinal', 'field'])
+        || change.scope !== 'row'
+        || !isNonNegativeInteger(change.rowOrdinal)
+        || Number(change.rowOrdinal) >= rowCount
+        || !rowFields.has(String(change.field))
+      ) return false
+      identity = `row:${change.rowOrdinal}:${change.field}`
+    }
+    if (identities.has(identity)) return false
+    identities.add(identity)
+    return true
+  })
 }
 
 const requireContextPackCode = (value: string): string => {

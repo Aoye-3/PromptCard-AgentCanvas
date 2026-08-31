@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -266,6 +267,66 @@ class BridgeStoryboardDeliveryV19Test(unittest.TestCase):
         self.assertEqual(preview["visualProposal"]["kind"], "storyboard_changes")
         self.assertEqual(preview["visualProposal"]["changes"][0]["rowOrdinal"], 0)
         self.assertNotIn("row-internal", str(preview))
+
+    def test_change_rejects_a_field_already_pending_in_the_context_snapshot(self) -> None:
+        pending_project = project()
+        pending_project["id"] = "project-pending"
+        pending_project["title"] = "Pending storyboard project"
+        pending_project["freeCanvas"]["nodes"][1]["pendingFieldChanges"] = [{
+            "id": "internal-change-id",
+            "editId": "internal-edit-id",
+            "scope": "row",
+            "rowId": "row-internal",
+            "field": "duration",
+            "previousValue": "4s",
+            "newValue": "3s",
+        }]
+        created = self.store.create_project(pending_project)
+        document_code = next(
+            node["referenceCode"] for node in created["freeCanvas"]["nodes"]
+            if node["kind"] == "document"
+        )
+        storyboard_code = next(
+            node["referenceCode"] for node in created["freeCanvas"]["nodes"]
+            if node["kind"] == "storyboard"
+        )
+        context = self.store.create_context_pack({
+            "projectCode": created["referenceCode"],
+            "projectRevision": created["revision"],
+            "nodeCodes": [document_code, storyboard_code],
+            "placementHint": {
+                "mode": "after-selection",
+                "anchorNodeCodes": [storyboard_code],
+            },
+            "creator": "test",
+        })
+        storyboard_entry = next(
+            entry for entry in context["entries"]
+            if entry["reference"]["code"] == storyboard_code
+        )
+        storyboard_content = json.loads(storyboard_entry["content"])
+        self.assertEqual(storyboard_content["pendingFieldChanges"], [{
+            "scope": "row", "rowOrdinal": 0, "field": "duration",
+        }])
+        self.assertNotIn("internal-change-id", storyboard_entry["content"])
+        self.assertNotIn("row-internal", storyboard_entry["content"])
+
+        request = self.change_request()
+        request["clientRequestId"] = "storyboard-pending-field"
+        request["target"] = {
+            "cvcCode": context["cvcCode"],
+            "storyboardCode": storyboard_code,
+            "baseRevision": 1,
+            "baseDigest": DIGEST_B,
+        }
+        request["sourceCodes"] = [storyboard_code]
+        with self.assertRaises(BridgeDeliveryValidationError) as rejected:
+            self.store.preview_bridge_storyboard_delivery(
+                self.operation_context(), request
+            )
+        self.assertEqual(rejected.exception.code, "storyboard_change_conflict")
+        with self.assertRaises(MissingItem):
+            self.store.get_bridge_delivery("codex-local", request["clientRequestId"])
 
     def test_storyboard_decision_requires_one_storyboard_code(self) -> None:
         preview = self.store.preview_bridge_storyboard_delivery(
