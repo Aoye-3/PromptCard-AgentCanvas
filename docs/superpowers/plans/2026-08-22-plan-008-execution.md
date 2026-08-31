@@ -950,6 +950,8 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 Task 26C is complete. The final real-Codex acceptance remains broader: one host must perform all four typed writebacks, user review, duplicate replay, and process restart as a single creative loop before `main` moves.
 
+**Final-loop checkpoint (2026-08-31):** the repository now contains the first real-Codex total-loop slice: fixture creation, explicit user-created CVC, Bootstrap-first discovery, exact Skill/source reads, Document preview/commit, visual acceptance, and durable provenance assertions. Its first RED run reached the real MCP write Tool and exposed a v3 integration defect rather than a prompting failure: MCP emitted the normative four-field Skill pin, but Gateway rejected `projectionHealth` before routing. Gateway, Storage, and browser parsing are now aligned with Bridge v3 and fail stale health closed. Focused gates pass (contracts 52, Gateway 32, Storage 10 plus 4 subtests, browser 63, MCP 10, TypeScript). The actual Codex Document slice must be rerun before extending the same scenario to Document change, Storyboard, Prompt, Codex-generated image, replay, and restart; this checkpoint does not satisfy Checkpoint 5 and does not move `main`.
+
 **Dependencies:** Tasks 16-26B.
 
 ### Checkpoint 5: Delivery

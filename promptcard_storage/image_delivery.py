@@ -400,7 +400,9 @@ def _image_preview_request(value: Any) -> dict[str, Any]:
     normalized_pins = []
     seen_pins: set[str] = set()
     for pin in pins:
-        if not isinstance(pin, dict) or set(pin) != {"skillCode", "revision", "digest"}:
+        if not isinstance(pin, dict) or set(pin) != {
+            "skillCode", "revision", "digest", "projectionHealth"
+        }:
             raise BridgeDeliveryValidationError("delivery_source_manifest_invalid")
         try:
             skill_code = parse_reference_code(
@@ -414,6 +416,9 @@ def _image_preview_request(value: Any) -> dict[str, Any]:
             or pin["revision"] < 1
             or not isinstance(pin.get("digest"), str)
             or _DIGEST.fullmatch(pin["digest"]) is None
+            or pin.get("projectionHealth") not in {
+                "healthy", "stale", "missing", "untrusted", "archived"
+            }
         ):
             raise BridgeDeliveryValidationError("delivery_source_manifest_invalid")
         seen_pins.add(skill_code)

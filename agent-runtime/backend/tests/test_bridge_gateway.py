@@ -563,13 +563,19 @@ def test_skill_read_rejects_an_unhealthy_codex_projection(client, monkeypatch):
 
 def test_prompt_delivery_preview_commit_and_status_use_trusted_profile(client, monkeypatch):
     proposal_id = "DVP-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    skill_pin = {
+        "skillCode": "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "revision": 3,
+        "digest": DIGEST,
+        "projectionHealth": "healthy",
+    }
     preview_request = {
         "clientRequestId": "preview-1",
         "normalizedRequestDigest": DIGEST,
         "kind": "prompt.create",
         "target": {"cvcCode": CVC},
         "sourceCodes": [],
-        "skillPins": [],
+        "skillPins": [skill_pin],
         "rationale": "Create a prompt.",
         "provenance": "promptcard-bridge",
         "payload": {"title": "Opening", "userText": "Wide shot"},
@@ -597,7 +603,11 @@ def test_prompt_delivery_preview_commit_and_status_use_trusted_profile(client, m
             return _delivery_record(preview_request, proposal_id, "pending_review")
         raise AssertionError((method, path, kwargs))
 
+    async def workspace_skills(_principal):
+        return [skill_pin]
+
     monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    monkeypatch.setattr("app.gateway.bridge._workspace_skills", workspace_skills)
     preview = client.post(
         "/api/promptcard/bridge/v3/delivery/preview",
         json=preview_request,
@@ -1169,6 +1179,7 @@ def test_prompt_delivery_rejects_unapproved_skill_pin(client, monkeypatch):
                 "skillCode": skill_code,
                 "revision": 3,
                 "digest": DIGEST,
+                "projectionHealth": "healthy",
             }],
             "rationale": "Create a prompt.",
             "provenance": "promptcard-bridge",

@@ -17,6 +17,9 @@ $playwrightArgs = @($args)
 $useRealCodex = $playwrightArgs -contains '--real-codex'
 $useRealGateway = ($playwrightArgs -contains '--real-gateway') -or $useRealCodex
 $playwrightArgs = @($playwrightArgs | Where-Object { $_ -notin @('--real-gateway', '--real-codex') })
+if ($useRealCodex) {
+  $timeoutSeconds = 1800
+}
 
 if ($env:PROMPTCARD_E2E_RUNNER_TIMEOUT_SECONDS) {
   $parsedTimeout = 0

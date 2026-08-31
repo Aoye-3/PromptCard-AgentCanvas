@@ -39,6 +39,7 @@ class SkillPinPayload(BaseModel):
     skillCode: str
     revision: int = Field(ge=1)
     digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    projectionHealth: Literal["healthy", "stale", "missing", "untrusted", "archived"]
 
 
 class DeliveryTargetPayload(BaseModel):

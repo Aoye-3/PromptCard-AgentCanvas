@@ -622,6 +622,12 @@ export interface ContextPackCreateRequest {
 }
 
 export type BridgeDeliveryState = 'previewed' | 'pending_review' | 'accepted' | 'rejected' | 'failed'
+export interface BridgeDeliverySkillPin {
+  skillCode: string
+  revision: number
+  digest: string
+  projectionHealth: 'healthy' | 'stale' | 'missing' | 'untrusted' | 'archived'
+}
 
 export interface BridgePromptDelivery {
   operationContext: {
@@ -636,7 +642,7 @@ export interface BridgePromptDelivery {
     kind: 'prompt.create'
     target: { cvcCode: string }
     sourceCodes: string[]
-    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    skillPins: BridgeDeliverySkillPin[]
     rationale: string
     provenance: 'promptcard-bridge'
     payload: { title: string; userText: string }
@@ -664,7 +670,7 @@ export interface BridgePromptDelivery {
       clientRequestId: string
       normalizedRequestDigest: string
       sourceCodes: string[]
-      skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+      skillPins: BridgeDeliverySkillPin[]
     }
   }
 }
@@ -688,7 +694,7 @@ export interface BridgeImageDelivery {
       shotOrdinal?: number
     }
     sourceCodes: string[]
-    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    skillPins: BridgeDeliverySkillPin[]
     rationale: string
     provenance: 'promptcard-bridge'
     payload: { stagedAssetHandle: string; altText?: string }
@@ -719,7 +725,7 @@ export interface BridgeImageDelivery {
       clientRequestId: string
       normalizedRequestDigest: string
       sourceCodes: string[]
-      skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+      skillPins: BridgeDeliverySkillPin[]
       target: BridgeImageDelivery['request']['target']
       stagedAssetHandle: string
     }
@@ -754,7 +760,7 @@ interface BridgeDocumentProposalBase {
     clientRequestId: string
     normalizedRequestDigest: string
     sourceCodes: string[]
-    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    skillPins: BridgeDeliverySkillPin[]
   }
 }
 
@@ -770,7 +776,7 @@ export interface BridgeDocumentCreateDelivery extends BridgeDocumentDeliveryBase
     kind: 'document.create'
     target: { cvcCode: string }
     sourceCodes: string[]
-    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    skillPins: BridgeDeliverySkillPin[]
     rationale: string
     provenance: 'promptcard-bridge'
     payload: { title: string; blocks: BridgeDocumentBlock[] }
@@ -789,7 +795,7 @@ export interface BridgeDocumentChangeDelivery extends BridgeDocumentDeliveryBase
     kind: 'document.change'
     target: { cvcCode: string; documentCode: string; baseRevision: number; baseDigest: string }
     sourceCodes: string[]
-    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    skillPins: BridgeDeliverySkillPin[]
     rationale: string
     provenance: 'promptcard-bridge'
     payload: { operations: DocumentChangeOperation[] }
@@ -845,7 +851,7 @@ export interface BridgeStoryboardCreateDelivery extends BridgeStoryboardDelivery
     kind: 'storyboard.create'
     target: { cvcCode: string }
     sourceCodes: string[]
-    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    skillPins: BridgeDeliverySkillPin[]
     rationale: string
     provenance: 'promptcard-bridge'
     payload: {
@@ -873,7 +879,7 @@ export interface BridgeStoryboardChangeDelivery extends BridgeStoryboardDelivery
     kind: 'storyboard.change'
     target: { cvcCode: string; storyboardCode: string; baseRevision: number; baseDigest: string }
     sourceCodes: string[]
-    skillPins: Array<{ skillCode: string; revision: number; digest: string }>
+    skillPins: BridgeDeliverySkillPin[]
     rationale: string
     provenance: 'promptcard-bridge'
     payload: { changes: BridgeStoryboardChange[] }
@@ -2466,10 +2472,11 @@ const isBridgeImageTarget = (value: unknown): boolean => {
 }
 
 const isBridgeSkillPin = (value: unknown): boolean => (
-  isClosedRecord(value, ['skillCode', 'revision', 'digest'])
+  isClosedRecord(value, ['skillCode', 'revision', 'digest', 'projectionHealth'])
   && Boolean(validatePublicReferenceCode(value.skillCode, 'SKL'))
   && isPositiveInteger(value.revision)
   && isSha256(value.digest)
+  && ['healthy', 'stale', 'missing', 'untrusted', 'archived'].includes(String(value.projectionHealth))
 )
 
 const parseContextPackEntry = (value: unknown): ContextPackEntry[] => {

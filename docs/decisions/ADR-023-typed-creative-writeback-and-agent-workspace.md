@@ -26,6 +26,7 @@ Reusing internal Canvas node IDs, UI focus, fuzzy titles, or arbitrary filesyste
 8. A single profile-scoped ledger owns preview, commit, status, replay, conflict, recovery, provenance, and result identities for all six operations.
 9. The built-in `promptcard-bootstrap` Skill and the `promptcard_runtime_describe` / `promptcard_workspace_describe` Tools are progressive-disclosure entry points. Workspace discovery requires an explicit `PRJ` and `CVC`; current UI focus is never authority.
 10. Read, Document, Storyboard, Prompt, image, and status authority use independent scopes. Client name/version are audit metadata only and cannot select behavior or permissions.
+11. Every write request repeats the exact approved Skill pin as the closed four-field value `skillCode`, `revision`, `digest`, and `projectionHealth`. Gateway re-resolves the trusted Workspace and rejects a changed health value as `skill_pin_stale`; Storage and browser parsing preserve the same evidence instead of accepting a transport-specific subset.
 
 ## Consequences
 
@@ -48,6 +49,8 @@ Task 26A's first checkpoint implements the Storage-owned Document delivery kerne
 Task 26A's second checkpoint implements the Gateway adapter without adding a client-specific MCP path. The public v3 router validates a discriminated closed Document request, strips absent optional fields, canonicalizes CVC/CVD/source references, rechecks exact enabled Skill pins, and requires the independent Document delivery scope. Preview and proposal-kind commit route only to internal-token Document Storage endpoints; status remains the existing read-only ledger lookup.
 
 Task 26A's third checkpoint implements the browser/Canvas adapter. The Storage client fails closed on unknown fields, internal targets, mismatched CVD/base/proposal data, or divergent provenance. The Inbox exposes Agent, exact Skill revision, source references, request identity, and create/change intent. Acceptance creates one deterministic native Document or converts exact CVD-targeted operations into the existing tracked suggestion representation; it does not acknowledge the ledger until Canvas persistence returns one CVD. A Canvas-side Bridge marker detects retries and tampering, while the public CVD is preserved by node normalization so restart does not erase external authority. Task 26A remains open only for the real process-level preview/commit/browser/restart probe; Storyboard work does not start before that evidence.
+
+The final real-Codex loop harness exposed one cross-layer drift that isolated fixtures had not exercised: Bridge v3 and MCP correctly required `projectionHealth`, while Gateway, Storage, and the browser still accepted only the other three Skill-pin fields. A newly connected Codex therefore discovered the workspace successfully but received HTTP 422 on its first valid Document preview. All runtime layers now consume the normative four-field pin and Gateway compares its health with the currently trusted Workspace before forwarding the proposal. Contract, Gateway, Storage, browser, TypeScript, and MCP focused gates cover this correction; the real Codex Document rerun remains the next acceptance step.
 
 ## Alternatives Considered
 

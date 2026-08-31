@@ -74,7 +74,7 @@ const documentCreateDelivery = (): BridgeDocumentCreateDelivery => ({
     clientRequestId: 'document-create-1', normalizedRequestDigest: `sha256:${'d'.repeat(64)}`,
     kind: 'document.create', target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
     sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'],
-    skillPins: [{ skillCode: 'SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV', revision: 3, digest: `sha256:${'e'.repeat(64)}` }],
+    skillPins: [{ skillCode: 'SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV', revision: 3, digest: `sha256:${'e'.repeat(64)}`, projectionHealth: 'healthy' }],
     rationale: 'Create the script analysis.', provenance: 'promptcard-bridge',
     payload: { title: 'Script analysis', blocks: [{ id: 'opening', type: 'paragraph', content: [{ text: 'Rain.' }] }] }
   },
@@ -87,7 +87,7 @@ const documentCreateDelivery = (): BridgeDocumentCreateDelivery => ({
     bridgeDelivery: {
       profileId: 'codex-local', cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ', clientRequestId: 'document-create-1',
       normalizedRequestDigest: `sha256:${'d'.repeat(64)}`, sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'],
-      skillPins: [{ skillCode: 'SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV', revision: 3, digest: `sha256:${'e'.repeat(64)}` }]
+      skillPins: [{ skillCode: 'SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV', revision: 3, digest: `sha256:${'e'.repeat(64)}`, projectionHealth: 'healthy' }]
     }
   }
 })

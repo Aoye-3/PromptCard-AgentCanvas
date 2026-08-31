@@ -106,7 +106,12 @@ class BridgeImageDeliveryV19Test(unittest.TestCase):
             "kind": "image.place",
             "target": {"cvcCode": self.context["cvcCode"]},
             "sourceCodes": [self.created["referenceCode"]],
-            "skillPins": [],
+            "skillPins": [{
+                "skillCode": "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "revision": 1,
+                "digest": DIGEST_A,
+                "projectionHealth": "healthy",
+            }],
             "rationale": "Place the generated frame.",
             "provenance": "promptcard-bridge",
             "payload": {"stagedAssetHandle": handle, "altText": "Rainy street"},

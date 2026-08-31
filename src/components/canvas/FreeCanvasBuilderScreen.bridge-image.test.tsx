@@ -23,7 +23,8 @@ const delivery = (): BridgeImageDelivery => ({
     skillPins: [{
       skillCode: 'SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV',
       revision: 3,
-      digest: `sha256:${'b'.repeat(64)}`
+      digest: `sha256:${'b'.repeat(64)}`,
+      projectionHealth: 'healthy'
     }],
     rationale: 'Place the generated opening frame.',
     provenance: 'promptcard-bridge',
@@ -61,7 +62,8 @@ const delivery = (): BridgeImageDelivery => ({
       skillPins: [{
         skillCode: 'SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV',
         revision: 3,
-        digest: `sha256:${'b'.repeat(64)}`
+        digest: `sha256:${'b'.repeat(64)}`,
+        projectionHealth: 'healthy'
       }],
       target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
       stagedAssetHandle: 'AST-01ARZ3NDEKTSV4RRFFQ69G5FAV'

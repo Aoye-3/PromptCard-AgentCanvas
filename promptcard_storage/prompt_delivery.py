@@ -234,7 +234,9 @@ def _commit_request(value: Any) -> dict[str, Any]:
 
 
 def _skill_pin(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != {"skillCode", "revision", "digest"}:
+    if not isinstance(value, dict) or set(value) != {
+        "skillCode", "revision", "digest", "projectionHealth"
+    }:
         raise BridgeDeliveryValidationError("delivery_source_manifest_invalid")
     try:
         code = parse_reference_code(value["skillCode"], expected_namespace="SKL").code
@@ -244,7 +246,15 @@ def _skill_pin(value: Any) -> dict[str, Any]:
     if type(revision) is not int or revision < 1:
         raise BridgeDeliveryValidationError("delivery_source_manifest_invalid")
     _digest(value.get("digest"))
-    return {"skillCode": code, "revision": revision, "digest": value["digest"]}
+    projection_health = value.get("projectionHealth")
+    if projection_health not in {"healthy", "stale", "missing", "untrusted", "archived"}:
+        raise BridgeDeliveryValidationError("delivery_source_manifest_invalid")
+    return {
+        "skillCode": code,
+        "revision": revision,
+        "digest": value["digest"],
+        "projectionHealth": projection_health,
+    }
 
 
 def _result_codes(values: Any, decision: str) -> list[str]:

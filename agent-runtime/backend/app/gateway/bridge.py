@@ -402,6 +402,10 @@ async def _validate_delivery_sources_and_skills(
                 raise HTTPException(
                     status_code=409, detail={"code": "skill_projection_unhealthy"}
                 )
+            if pin.get("projectionHealth") != approved["projectionHealth"]:
+                raise HTTPException(
+                    status_code=409, detail={"code": "skill_pin_stale"}
+                )
             if (
                 approved["revision"] != pin.get("revision")
                 or approved["digest"] != pin.get("digest")

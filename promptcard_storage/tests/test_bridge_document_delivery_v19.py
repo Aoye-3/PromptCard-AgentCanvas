@@ -100,7 +100,12 @@ class BridgeDocumentDeliveryV19Test(unittest.TestCase):
             "kind": "document.create",
             "target": {"cvcCode": self.context["cvcCode"]},
             "sourceCodes": [self.document_code],
-            "skillPins": [],
+            "skillPins": [{
+                "skillCode": "SKL-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "revision": 1,
+                "digest": DIGEST_A,
+                "projectionHealth": "healthy",
+            }],
             "rationale": "Create the reviewed script analysis.",
             "provenance": "promptcard-bridge",
             "payload": {
