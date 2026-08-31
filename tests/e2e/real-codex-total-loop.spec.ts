@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { rm } from 'node:fs/promises'
+import { rm, writeFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import {
   completedPromptCardCalls,
@@ -10,6 +11,8 @@ import {
 
 const storageUrl = 'http://127.0.0.1:38102'
 const repositoryScope = 'real-codex-e2e'
+const bridgePhase = process.env.PROMPTCARD_E2E_BRIDGE_PHASE || ''
+const restartStatePath = resolve('tests/.runtime/real-codex-total-loop-restart-state.json')
 
 interface StoredDocument {
   revision: number
@@ -69,6 +72,37 @@ interface StoredProject {
   freeCanvas: { nodes: StoredNode[] }
 }
 
+interface DeliveryReplay {
+  kind: string
+  preview: Record<string, unknown>
+  commit: Record<string, unknown>
+  resultCode: string
+}
+
+interface RealCodexRestartState {
+  fixture: {
+    suffix: string
+    projectId: string
+    projectTitle: string
+    projectCode: string
+    sourceCode: string
+    skillCode: string
+  }
+  contextCodes: string[]
+  finalCvc: string
+  objectCodes: string[]
+  nodes: {
+    document: { id: string; code: string; text: string }
+    storyboard: { id: string; code: string; camera: string }
+    prompt: { id: string; code: string; text: string }
+    image: { id: string; code: string; assetId: string }
+  }
+  deliveries: DeliveryReplay[]
+  imageStageRequest: Record<string, unknown>
+  stagedAssetHandle: string
+  generatedWorkspacePath: string
+}
+
 test.describe.configure({ mode: 'serial' })
 
 test('real Codex completes reviewable Document, Storyboard, Prompt, and generated-image writeback', async ({
@@ -77,10 +111,13 @@ test('real Codex completes reviewable Document, Storyboard, Prompt, and generate
   request
 }) => {
   test.skip(process.env.PROMPTCARD_REAL_CODEX_ACCEPTANCE !== '1', 'requires an explicit real Codex acceptance run')
+  test.skip(bridgePhase === 'recover', 'The restart recovery phase uses the dedicated recovery test.')
   test.setTimeout(900_000)
   const fixture = await createFixture(request)
   const contextCodes: string[] = []
+  const deliveries: DeliveryReplay[] = []
   let generatedWorkspacePath: string | null = null
+  let preparedForRestart = false
   page.on('dialog', dialog => void dialog.accept())
 
   try {
@@ -133,6 +170,7 @@ test('real Codex completes reviewable Document, Storyboard, Prompt, and generate
     }))
 
     const created = documents[0]
+    deliveries.push(captureDeliveryReplay('document.create', run, created.referenceCode))
     const changeCvc = await createContextPack(page, request, fixture.projectId, created.referenceCode)
     contextCodes.push(changeCvc)
     const replacement = 'A filmmaker waits beneath the rain as the last train leaves the platform.'
@@ -179,6 +217,7 @@ test('real Codex completes reviewable Document, Storyboard, Prompt, and generate
         suggestions: stored?.document?.suggestions.length ?? -1
       }
     }).toEqual({ text: replacement, suggestions: 0 })
+    deliveries.push(captureDeliveryReplay('document.change', changeRun, created.referenceCode))
 
     const acceptedDocument = (await getProject(request, fixture.projectId)).freeCanvas.nodes
       .find(node => node.referenceCode === created.referenceCode)
@@ -225,6 +264,7 @@ test('real Codex completes reviewable Document, Storyboard, Prompt, and generate
     expect(storyboard?.sequence?.rows).toHaveLength(1)
     expect(storyboard?.sequence?.rows[0].camera).toBe('Wide')
     expect(storyboard?.pendingFieldChanges).toEqual([])
+    deliveries.push(captureDeliveryReplay('storyboard.create', storyboardRun, storyboard!.referenceCode))
 
     const storyboardChangeCvc = await createContextPack(
       page, request, fixture.projectId, storyboard!.referenceCode
@@ -282,6 +322,9 @@ test('real Codex completes reviewable Document, Storyboard, Prompt, and generate
     const acceptedStoryboard = (await getProject(request, fixture.projectId)).freeCanvas.nodes
       .find(node => node.referenceCode === storyboard!.referenceCode)
     expect(acceptedStoryboard?.sequence?.rows[0].camera).toBe('Close-up')
+    deliveries.push(captureDeliveryReplay(
+      'storyboard.change', storyboardChangeRun, acceptedStoryboard!.referenceCode
+    ))
     const promptCvc = await createContextPack(
       page, request, fixture.projectId, acceptedStoryboard!.referenceCode
     )
@@ -324,6 +367,7 @@ test('real Codex completes reviewable Document, Storyboard, Prompt, and generate
     expect(promptNodes[0].segments?.every(segment => segment.source === 'user')).toBe(true)
     expect(promptNodes[0].provenance?.model.capabilities).toEqual({})
     expect(promptNodes[0].agentPromptHandoff?.conversationId).toBe(`bridge:codex-e2e:${promptCvc}`)
+    deliveries.push(captureDeliveryReplay('prompt.create', promptRun, promptNodes[0].referenceCode))
 
     await page.locator(`.react-flow__node[data-id="${acceptedStoryboard!.id}"]`).click({ modifiers: ['Control'] })
     const imageCvc = await createContextPack(
@@ -403,12 +447,73 @@ test('real Codex completes reviewable Document, Storyboard, Prompt, and generate
       }),
       skillPins: [expect.objectContaining({ skillCode: fixture.skillCode, revision: 1 })]
     }))
+    deliveries.push(captureDeliveryReplay('image.place', imageRun, images[0].referenceCode))
     const generationRuns = await listGenerationRuns(request, fixture.projectId)
     expect(generationRuns).toEqual([])
+
+    if (bridgePhase === 'prepare') {
+      await page.locator(`.react-flow__node[data-id="${images[0].id}"]`).click()
+      for (const nodeId of [created.id, acceptedStoryboard!.id, promptNodes[0].id]) {
+        await page.locator(`.react-flow__node[data-id="${nodeId}"]`).click({ modifiers: ['Control'] })
+      }
+      const finalCvc = await createContextPack(page, request, fixture.projectId, [
+        created.referenceCode,
+        acceptedStoryboard!.referenceCode,
+        promptNodes[0].referenceCode,
+        images[0].referenceCode
+      ])
+      contextCodes.push(finalCvc)
+      expect(deliveries.map(item => item.kind)).toEqual([
+        'document.create',
+        'document.change',
+        'storyboard.create',
+        'storyboard.change',
+        'prompt.create',
+        'image.place'
+      ])
+      const stagePayload = toolPayload(imageRun, 'promptcard_asset_stage')
+      const state: RealCodexRestartState = {
+        fixture,
+        contextCodes,
+        finalCvc,
+        objectCodes: [
+          created.referenceCode,
+          acceptedStoryboard!.referenceCode,
+          promptNodes[0].referenceCode,
+          images[0].referenceCode
+        ],
+        nodes: {
+          document: { id: created.id, code: created.referenceCode, text: replacement },
+          storyboard: {
+            id: acceptedStoryboard!.id,
+            code: acceptedStoryboard!.referenceCode,
+            camera: 'Close-up'
+          },
+          prompt: {
+            id: promptNodes[0].id,
+            code: promptNodes[0].referenceCode,
+            text: promptText
+          },
+          image: {
+            id: images[0].id,
+            code: images[0].referenceCode,
+            assetId: images[0].assetId!
+          }
+        },
+        deliveries,
+        imageStageRequest: toolArguments(imageRun, 'promptcard_asset_stage'),
+        stagedAssetHandle: String(stagePayload.stagedAssetHandle),
+        generatedWorkspacePath: generatedWorkspacePath!
+      }
+      await writeFile(restartStatePath, JSON.stringify(state, null, 2), 'utf8')
+      preparedForRestart = true
+    }
   } finally {
-    if (generatedWorkspacePath) await rm(generatedWorkspacePath, { force: true })
-    for (const code of contextCodes.reverse()) await revokeContext(request, code)
-    await cleanupFixture(request, fixture)
+    if (!preparedForRestart) {
+      if (generatedWorkspacePath) await rm(generatedWorkspacePath, { force: true })
+      for (const code of contextCodes.reverse()) await revokeContext(request, code)
+      await cleanupFixture(request, fixture)
+    }
   }
 })
 
@@ -426,6 +531,21 @@ function toolPayload(run: RealCodexRun, tool: string): Record<string, unknown> {
   const text = completedPromptCardCalls(run).find(call => call?.tool === tool)
     ?.result?.content?.map(item => item.text || '').join('') || '{}'
   return JSON.parse(text) as Record<string, unknown>
+}
+
+function toolArguments(run: RealCodexRun, tool: string, index = 0): Record<string, unknown> {
+  const call = completedPromptCardCalls(run).filter(item => item?.tool === tool)[index]
+  if (!call?.arguments) throw new Error(`Real Codex did not call ${tool} at index ${index}.`)
+  return call.arguments
+}
+
+function captureDeliveryReplay(kind: string, run: RealCodexRun, resultCode: string): DeliveryReplay {
+  return {
+    kind,
+    preview: toolArguments(run, 'promptcard_delivery_preview'),
+    commit: toolArguments(run, 'promptcard_delivery_commit'),
+    resultCode
+  }
 }
 
 async function createFixture(request: APIRequestContext) {
