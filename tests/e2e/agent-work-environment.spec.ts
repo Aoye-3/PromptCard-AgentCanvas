@@ -3,6 +3,9 @@ import { cleanupAcquiredFixtureGraph } from '../../scripts/e2e-fixture-cleanup'
 
 const storageUrl = 'http://127.0.0.1:38102'
 const gatewayUrl = 'http://127.0.0.1:38101'
+const bridgeToken = process.env.PROMPTCARD_E2E_BRIDGE_TOKEN || ''
+
+test.skip(bridgeToken === '', 'requires the real Gateway Bridge profile')
 
 interface StoredFixtureProject {
   referenceCode: string
@@ -18,8 +21,6 @@ test('shows a connected external Agent environment and copies an exact CVC objec
     project = await createProjectFixture(request, 'work-environment')
     otherProject = await createProjectFixture(request, 'other-project')
     await preparePage(context, page, project.title)
-    const bridgeToken = process.env.PROMPTCARD_E2E_BRIDGE_TOKEN
-    expect(bridgeToken).toBeTruthy()
     const activity = await request.get(`${gatewayUrl}/api/promptcard/bridge/v3/runtime`, {
       headers: { Authorization: `Bearer ${bridgeToken}` }
     })

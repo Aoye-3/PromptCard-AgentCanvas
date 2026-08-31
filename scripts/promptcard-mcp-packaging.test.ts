@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { access, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { describe, expect, test } from 'vitest'
@@ -124,5 +124,27 @@ describe('PromptCard optional MCP package', () => {
     expect(guide).toContain('https://developers.openai.com/codex/mcp/')
     expect(guide).toContain('TRAE')
     expect(guide).toContain('候选')
+
+    const maintainedDocuments = [
+      path.join(repoRoot, 'README.md'),
+      path.join(repoRoot, 'docs', 'README.md'),
+      path.join(repoRoot, 'docs', 'operations', 'README.md'),
+      path.join(repoRoot, 'docs', 'operations', 'local-agent-bridge.md'),
+      path.join(repoRoot, 'promptcard-mcp', 'README.md'),
+      path.join(configRoot, 'README.md')
+    ]
+    const missing: string[] = []
+    for (const document of maintainedDocuments) {
+      const markdown = await readFile(document, 'utf8')
+      for (const match of markdown.matchAll(/\]\((\.\.?\/[^)#]+)(?:#[^)]+)?\)/g)) {
+        const target = path.resolve(path.dirname(document), decodeURIComponent(match[1]))
+        try {
+          await access(target)
+        } catch {
+          missing.push(`${path.relative(repoRoot, document)} -> ${match[1]}`)
+        }
+      }
+    }
+    expect(missing).toEqual([])
   })
 })

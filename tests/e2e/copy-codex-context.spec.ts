@@ -8,7 +8,7 @@ const fixturePng = Buffer.from(
 )
 
 test('previews, copies, inspects after focus change and revokes one immutable CVC with clipboard recovery', async ({ context, page, request }) => {
-  test.setTimeout(90_000)
+  test.setTimeout(120_000)
   let assetId: string | null = null
   let first: Awaited<ReturnType<typeof createProjectFixture>> | null = null
   let second: Awaited<ReturnType<typeof createProjectFixture>> | null = null

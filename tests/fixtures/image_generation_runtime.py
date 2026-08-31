@@ -229,6 +229,35 @@ def runtime_status() -> dict[str, Any]:
     }
 
 
+@app.get("/api/promptcard/runtime/bridge-environment")
+def bridge_environment() -> dict[str, Any]:
+    return {
+        "gateway": {"ok": True, "service": "promptcard-runtime"},
+        "bridge": {
+            "configured": False,
+            "configurationError": None,
+            "selectedProfileId": None,
+            "profiles": [],
+            "contractVersion": "3.0.0",
+            "bootstrapSkill": {
+                "name": "promptcard-bootstrap",
+                "revision": 1,
+                "digest": f"sha256:{'0' * 64}",
+                "instructions": "Call promptcard_runtime_describe before using an explicit project context.",
+            },
+            "tools": [],
+            "writebackKinds": [],
+            "constraints": {
+                "explicitContextRequired": True,
+                "userApprovalRequired": True,
+                "promptCreateOnly": True,
+                "arbitraryPathsAccepted": False,
+            },
+        },
+        "workspace": {"state": "unavailable", "errorCode": "bridge_not_configured"},
+    }
+
+
 @app.post("/api/promptcard/runtime/bootstrap")
 def runtime_bootstrap() -> dict[str, Any]:
     return {

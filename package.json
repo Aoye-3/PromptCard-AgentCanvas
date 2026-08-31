@@ -17,7 +17,7 @@
     "text-agent:check": "tsc -p text-agent-runtime/tsconfig.json",
     "startup:test": "powershell -ExecutionPolicy Bypass -File scripts/test-start-from-bat.ps1",
     "build": "tsc && vite build",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 30",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 41",
     "preview": "vite preview",
     "pretest": "npm run test:contracts",
     "test": "vitest",

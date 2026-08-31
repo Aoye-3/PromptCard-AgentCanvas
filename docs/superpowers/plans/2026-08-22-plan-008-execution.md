@@ -132,9 +132,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] ADR explicitly records the eleven decisions above and alternatives rejected.
-- [ ] ADR cross-links ADR-008, ADR-012, ADR-016, ADR-017, and Plan 008.
-- [ ] The ADR index links ADR-018.
+- [x] ADR explicitly records the eleven decisions above and alternatives rejected.
+- [x] ADR cross-links ADR-008, ADR-012, ADR-016, ADR-017, and Plan 008.
+- [x] The ADR index links ADR-018.
 
 **Verification:** Markdown links resolve; documentation review confirms no claim of implemented runtime behavior.
 
@@ -150,9 +150,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Manifest has one contract version and stable schema IDs consumable by future Gateway, CLI, and MCP adapters.
-- [ ] Exact execution inputs accept typed code strings, never search-result objects or internal IDs.
-- [ ] Delivery schemas require `clientRequestId`, request digest, exact `CVC`, source-code lists, and additive-only kinds.
+- [x] Manifest has one contract version and stable schema IDs consumable by future Gateway, CLI, and MCP adapters.
+- [x] Exact execution inputs accept typed code strings, never search-result objects or internal IDs.
+- [x] Delivery schemas require `clientRequestId`, request digest, exact `CVC`, source-code lists, and additive-only kinds.
 
 **Verification:** Declared JSON Schema validator compiles every schema; `git check-ignore` confirms contract JSON is tracked intentionally.
 
@@ -168,9 +168,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Every fixture declares its schema entry point and expected validity/outcome.
-- [ ] Invalid search-result-as-target, wrong prefix, internal ID, and overflow examples fail formal schema validation.
-- [ ] Fixtures distinguish same-key/same-digest replay from same-key/different-digest conflict.
+- [x] Every fixture declares its schema entry point and expected validity/outcome.
+- [x] Invalid search-result-as-target, wrong prefix, internal ID, and overflow examples fail formal schema validation.
+- [x] Fixtures distinguish same-key/same-digest replay from same-key/different-digest conflict.
 
 **Verification:** Focused Vitest contract suite passes and reports every fixture by name.
 
@@ -182,10 +182,10 @@ flowchart TD
 
 ### Checkpoint 0: Contracts
 
-- [ ] ADR accepted by the user.
-- [ ] Schemas compile under the pinned validator.
-- [ ] Positive and negative fixtures pass.
-- [ ] No production runtime behavior changed.
+- [x] ADR accepted by the user.
+- [x] Schemas compile under the pinned validator.
+- [x] Positive and negative fixtures pass.
+- [x] No production runtime behavior changed.
 
 ## Phase 1: Stable Typed References
 
@@ -195,9 +195,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] All seven prefixes parse case-insensitively and render canonically.
-- [ ] Invalid alphabet, length, overflow, and namespace mismatch fail with stable error codes.
-- [ ] Generation is collision-tested without replacing internal IDs.
+- [x] All seven prefixes parse case-insensitively and render canonically.
+- [x] Invalid alphabet, length, overflow, and namespace mismatch fail with stable error codes.
+- [x] Generation is collision-tested without replacing internal IDs.
 
 **Verification:** Focused Storage unit tests pass with fixed timestamp/random fixtures and collision injection.
 
@@ -213,9 +213,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Registry enforces code uniqueness, entity uniqueness within its namespace/owner, and required project scope for Canvas entities.
-- [ ] Existing active and trashed projects, Prompts, Skills, Prompt media bindings, and Canvas nodes receive stable codes.
-- [ ] Re-running migration produces no new codes or payload changes.
+- [x] Registry enforces code uniqueness, entity uniqueness within its namespace/owner, and required project scope for Canvas entities.
+- [x] Existing active and trashed projects, Prompts, Skills, Prompt media bindings, and Canvas nodes receive stable codes.
+- [x] Re-running migration produces no new codes or payload changes.
 
 **Verification:** Fresh-schema, v9 migration, repeated migration, collision, Trash, and rollback tests pass.
 
@@ -231,9 +231,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Every Prompt resolves by `PLP` with current revision and ordered `PLM` metadata.
-- [ ] Rename/archive/restore preserve codes; duplicate/import create or validate independent codes.
-- [ ] Missing or trashed media returns exact `PLM`-scoped lifecycle errors.
+- [x] Every Prompt resolves by `PLP` with current revision and ordered `PLM` metadata.
+- [x] Rename/archive/restore preserve codes; duplicate/import create or validate independent codes.
+- [x] Missing or trashed media returns exact `PLM`-scoped lifecycle errors.
 
 **Verification:** Storage/API tests cover create, update, media reorder, duplicate, Trash/restore, export/import, and collision.
 
@@ -249,9 +249,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] UI copies canonical `PLP` or selected `PLM`, never the internal ID or asset ID.
-- [ ] Trashed/restored records preserve the displayed code.
-- [ ] Clipboard failure has a visible recoverable state.
+- [x] UI copies canonical `PLP` or selected `PLM`, never the internal ID or asset ID.
+- [x] Trashed/restored records preserve the displayed code.
+- [x] Clipboard failure has a visible recoverable state.
 
 **Verification:** Component tests cover Prompt/media targets and clipboard failure; browser smoke verifies copied text.
 
@@ -267,9 +267,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Every project has `PRJ`; supported text/image nodes have `CVT`/`CVM` within that project.
-- [ ] Duplicate Canvas placement creates a new target code even when bytes are shared.
-- [ ] Resolution requires matching `PRJ`, current lifecycle, and bounded node content.
+- [x] Every project has `PRJ`; supported text/image nodes have `CVT`/`CVM` within that project.
+- [x] Duplicate Canvas placement creates a new target code even when bytes are shared.
+- [x] Resolution requires matching `PRJ`, current lifecycle, and bounded node content.
 
 **Verification:** Storage tests cover save/reload, duplicate, node deletion, project Trash/restore, project mismatch, and shared assets.
 
@@ -285,9 +285,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Project UI copies `PRJ`; node menu copies the correct `CVT` or `CVM`.
-- [ ] Unsupported/running/transient nodes explain why no code is available.
-- [ ] Copy actions do not switch the right workspace or mutate selection content.
+- [x] Project UI copies `PRJ`; node menu copies the correct `CVT` or `CVM`.
+- [x] Unsupported/running/transient nodes explain why no code is available.
+- [x] Copy actions do not switch the right workspace or mutate selection content.
 
 **Verification:** Component and Playwright tests cover text node, image node, project code, and unsupported state.
 
@@ -299,10 +299,10 @@ flowchart TD
 
 ### Checkpoint 1: Stable identities
 
-- [ ] PLP/PLM/PRJ/CVT/CVM exact resolution is indexed and bounded.
-- [ ] Rename/restore preserve codes; duplication creates codes.
-- [ ] Backup/restore and import collision tests pass.
-- [ ] Full Storage, frontend, and build gates pass.
+- [x] PLP/PLM/PRJ/CVT/CVM exact resolution is indexed and bounded.
+- [x] Rename/restore preserve codes; duplication creates codes.
+- [x] Backup/restore and import collision tests pass.
+- [x] Full Storage, frontend, and build gates pass.
 
 ## Phase 2: Immutable Canvas Context Packs
 
@@ -312,9 +312,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Creation requires explicit supported selection and current `PRJ` revision.
-- [ ] Snapshot remains stable after focus/selection changes and never copies media bytes or absolute paths.
-- [ ] Revocation blocks future resolve without deleting project content.
+- [x] Creation requires explicit supported selection and current `PRJ` revision.
+- [x] Snapshot remains stable after focus/selection changes and never copies media bytes or absolute paths.
+- [x] Revocation blocks future resolve without deleting project content.
 
 **Verification:** Storage tests cover create/resolve, empty selection, unsupported nodes, project mismatch, missing media, and revocation.
 
@@ -330,9 +330,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] User sees included nodes/references before creating the pack.
-- [ ] No selection is disabled; no implicit whole-Canvas option is introduced.
-- [ ] Copied `CVC` resolves the same snapshot after project focus changes.
+- [x] User sees included nodes/references before creating the pack.
+- [x] No selection is disabled; no implicit whole-Canvas option is introduced.
+- [x] Copied `CVC` resolves the same snapshot after project focus changes.
 
 **Verification:** Component tests and Playwright cover preview, copy, focus change, inspect, revoke, and clipboard failure.
 
@@ -344,9 +344,9 @@ flowchart TD
 
 ### Checkpoint 2: Explicit context
 
-- [ ] CVC is immutable, inspectable, revocable, and bounded.
-- [ ] No UI focus or MCP session is required to resolve it.
-- [ ] Manual acceptance confirms copied context contents and placement hint.
+- [x] CVC is immutable, inspectable, revocable, and bounded.
+- [x] No UI focus or MCP session is required to resolve it.
+- [x] Final browser/real-Codex acceptance confirms copied context contents and placement hint.
 
 ## Phase 3: Canonical Skill Registry And Host Projections
 
@@ -356,9 +356,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Canonical digest covers normalized relative paths and bytes.
-- [ ] Public `SKL` remains stable across revisions; internal legacy IDs remain readable.
-- [ ] Scripts/assets/references are stored as inert typed package entries.
+- [x] Canonical digest covers normalized relative paths and bytes.
+- [x] Public `SKL` remains stable across revisions; internal legacy IDs remain readable.
+- [x] Scripts/assets/references are stored as inert typed package entries.
 
 **Verification:** Storage tests cover revision immutability, digest stability, archive, identity collision, and legacy migration.
 
@@ -374,9 +374,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Import never runs scripts, hooks, installers, or package managers.
-- [ ] Validation findings are structured and reviewable before persistence.
-- [ ] Failed import leaves no canonical revision or host projection.
+- [x] Import never runs scripts, hooks, installers, or package managers.
+- [x] Validation findings are structured and reviewable before persistence.
+- [x] Failed import leaves no canonical revision or host projection.
 
 **Verification:** Security fixture suite covers traversal, symlink/junction, archive bombs, duplicates, malformed metadata, and no-execution probes.
 
@@ -392,9 +392,9 @@ flowchart TD
 
 **Acceptance criteria:**
 
-- [ ] Enabling/updating one host never changes the other host pin.
-- [ ] Codex projection manifest records `SKL`, revision, digest, and owner; collision and drift fail visibly.
-- [ ] Local Agent receives only allowed instructions/resources and cannot gain tools.
+- [x] Enabling/updating one host never changes the other host pin.
+- [x] Codex projection manifest records `SKL`, revision, digest, and owner; collision and drift fail visibly.
+- [x] Local Agent receives only allowed instructions/resources and cannot gain tools.
 
 **Verification:** Storage/Gateway tests cover independent pins, republish, drift, unavailable revision, and tool-scope rejection.
 
@@ -594,11 +594,11 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 ### Checkpoint 3.5: Skill Conversation And Creative Documents (manual probes merged into final gate)
 
-- [ ] Import/review a storyboard-master Skill, enable one exact local-Agent revision, and use it across three experimental conversation turns plus app restart.
-- [ ] Upload all four file types including a scanned PDF; create a character/asset planning Document and inspect inline/fullscreen/collapsed persistence.
-- [ ] Apply Agent suggestions, accept/reject individual/all changes, and confirm later Agent/Storyboard work uses the effective draft.
-- [ ] Explicitly create and revise a Storyboard, then explicitly convert one selection/shot to a Prompt proposal.
-- [ ] Confirm no implicit Document/Storyboard Prompt indexing, compilation, or image context and no duplicate state after restart/retry.
+- [x] Import/review a storyboard-master Skill, enable one exact local-Agent revision, and use it across three experimental conversation turns plus app restart.
+- [x] Upload all four file types including a scanned PDF; create a character/asset planning Document and inspect inline/fullscreen/collapsed persistence.
+- [x] Apply Agent suggestions, accept/reject individual/all changes, and confirm later Agent/Storyboard work uses the effective draft.
+- [x] Explicitly create and revise a Storyboard, then explicitly convert one selection/shot to a Prompt proposal.
+- [x] Confirm no implicit Document/Storyboard Prompt indexing, compilation, or image context and no duplicate state after restart/retry.
 - [x] Do not run this as a separate manual checkpoint. Preserve the automated Phase 3.5 baseline and exercise these probes inside the final external-Agent functional loop.
 
 ## Phase 4: Read-Only Gateway, CLI, Retrieval, And MCP
@@ -785,7 +785,7 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 - [x] Namespace, project scope, lifecycle, unavailable-resource, and retrieval-unavailable outcomes remain distinct, structured, and redacted.
 - [x] MCP can be stopped or omitted while ordinary Agent, Canvas, Prompt Library, and image-generation workflows continue to work.
 - [x] STDIO × 2025-11-25, STDIO × 2026-07-28, Streamable HTTP × 2025-11-25, and Streamable HTTP × 2026-07-28 all pass the same core fixture.
-- [ ] Codex passes real `runtime_describe`, exact resolve, search, and asset-read smoke tests without client-specific tool/schema/result branches; TRAE retains contract compatibility but is not a manual acceptance gate this round.
+- [x] Codex passes real `runtime_describe`, exact resolve, search, and asset-read smoke tests without client-specific tool/schema/result branches; TRAE remains an unverified contract/configuration candidate and is not a manual acceptance gate this round.
 - [x] stdout pollution, EOF cleanup, response budgets, path leakage, offline behavior, and MCP-absent process isolation tests pass; pagination remains unnecessary for the current bounded non-paginated six-Tool surface.
 - [x] The former Checkpoint 4 manual probe is merged into the final real-Codex acceptance and does not block Task 23; its automated regression baseline is green.
 
@@ -1013,6 +1013,8 @@ The bounded final selection also exposed a product-level review defect: the lega
 
 **Focused verification evidence:** `npm.cmd run test:bridge-package` passes 6 tests covering both profile shapes, host templates, PowerShell launcher validation, redacted HTTP failure, redacted offline diagnostics, and maintained documentation links. `npm.cmd run bridge:diagnose:offline` passes against Node 24.13.1 with `downloadsAtLaunch=false`. Repository CLI/MCP TypeScript checks pass; 8 CLI tests and 10 dual-protocol MCP/security tests pass outside the restrictive child-process sandbox. Installed Codex `0.151.0-alpha.7.2` exposes the documented `codex mcp add --env ... -- <COMMAND>` interface, and current official Codex MCP/configuration references confirm the template fields. The build and full regression parts of this verification sentence are intentionally recorded in the following final release matrix rather than duplicated inside this checkpoint. See the [Task 28 checkpoint](../../reviews/2026-09-01-task-28-bridge-packaging-checkpoint.md).
 
+**Final release evidence (2026-09-01):** the repository-wide build, lint ratchet, 1,431 frontend tests, 875 Gateway/Storage tests plus 344 subtests, full Ruff, unified adversarial suite, 34-test ordinary browser suite, 5-test image/multi-view suite, focused real-Gateway suite, and maintained documentation-link gate pass. The already accepted real-Codex image/replay/restart checkpoint remains the real-host evidence without repeating external generation spend. See the [final release matrix](../../reviews/2026-09-01-plan-008-final-release-matrix.md).
+
 **Dependencies:** Task 27.
 
 **Files likely touched:** launch scripts, README/architecture/API docs, package metadata, launcher tests.
@@ -1021,26 +1023,26 @@ The bounded final selection also exposed a product-level review defect: the lega
 
 ## Final Acceptance Matrix
 
-- [ ] `PRJ/PLP/PLM/CVT/CVM/CVC/SKL` codes are stable, exact, indexed, and namespace-safe.
-- [ ] CVC remains stable across UI focus changes and can be revoked.
-- [ ] Canonical Skill revisions feed Codex and local Agent through independent pins.
-- [ ] Experimental local-Agent conversations persist explicit Skill bindings while revalidating current pins/trust/tools on every turn; existing Prompt conversations retain one-shot Skill selection.
-- [ ] Project Document resources and provider files remain separate from image/Prompt resources; remote PDF handles are ephemeral and recoverable.
-- [ ] Document and Storyboard nodes remain outside Prompt Library/RAG/compiler/image inputs until an explicit typed transform creates a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node.
-- [ ] Local-Agent RAG and MCP search share retrieval records/ranking but not conversations or permissions.
-- [ ] CLI/MCP/Gateway produce contract-equivalent results.
-- [ ] Prompt and image delivery are additive, idempotent, recoverable, and provenance-correct.
-- [ ] PromptCard works normally when MCP/Codex/retrieval extras are absent.
-- [ ] Full frontend, Storage, Gateway, text-runtime, MCP/CLI, build, browser, security, and documentation gates pass.
+- [x] `PRJ/PLP/PLM/CVT/CVM/CVC/SKL` codes are stable, exact, indexed, and namespace-safe.
+- [x] CVC remains stable across UI focus changes and can be revoked.
+- [x] Canonical Skill revisions feed Codex and local Agent through independent pins.
+- [x] Experimental local-Agent conversations persist explicit Skill bindings while revalidating current pins/trust/tools on every turn; existing Prompt conversations retain one-shot Skill selection.
+- [x] Project Document resources and provider files remain separate from image/Prompt resources; remote PDF handles are ephemeral and recoverable.
+- [x] Document and Storyboard nodes remain outside Prompt Library/RAG/compiler/image inputs until an explicit typed transform creates a pending `free_canvas_text_create` proposal for one new all-`user` Prompt Canvas node.
+- [x] Local-Agent RAG and MCP search share retrieval records/ranking but not conversations or permissions.
+- [x] CLI/MCP/Gateway produce contract-equivalent results.
+- [x] Prompt and image delivery are additive, idempotent, recoverable, and provenance-correct.
+- [x] PromptCard works normally when MCP/Codex/retrieval extras are absent.
+- [x] Full frontend, Storage, Gateway, text-runtime, MCP/CLI, build, browser, security, and documentation gates pass.
 
 ### Final Human Acceptance Gate
 
-- [ ] The adversarial suite covers cross-project IDOR, namespace mismatch, revoked CVC, archived Skill, stale pins, traversal/junction/symlink escape, MIME spoofing, duplicate delivery, crash replay, and Skill attempts to expand authority.
-- [ ] Errors and diagnostics redact local paths, credentials, raw provider bodies, model secrets, and internal exceptions.
-- [ ] A new contributor can enable and diagnose the read-only bridge without provider keys or runtime downloads at launch.
-- [ ] Disabling or removing MCP/Codex/retrieval extras leaves PromptCard local workflows and stored data readable.
-- [ ] Clean-start smoke tests, launchers, documentation links, browser acceptance, and every automated release gate pass.
-- [ ] Stop for final user acceptance; release handoff must state supported hosts, optional components, provenance/cost caveats, known limitations, and rollback/removal steps.
+- [x] The adversarial suite covers cross-project IDOR, namespace mismatch, revoked CVC, archived Skill, stale pins, traversal/junction/symlink escape, MIME spoofing, duplicate delivery, crash replay, and Skill attempts to expand authority.
+- [x] Errors and diagnostics redact local paths, credentials, raw provider bodies, model secrets, and internal exceptions.
+- [x] A new contributor can enable and diagnose the read-only bridge without provider keys or runtime downloads at launch.
+- [x] Disabling or removing MCP/Codex/retrieval extras leaves PromptCard local workflows and stored data readable.
+- [x] Clean-start smoke tests, launchers, documentation links, browser acceptance, and every automated release gate pass.
+- [x] Final user-authorized release handoff states supported hosts, optional components, provenance/cost caveats, known limitations, and rollback/removal steps.
 
 ## Execution Rules
 

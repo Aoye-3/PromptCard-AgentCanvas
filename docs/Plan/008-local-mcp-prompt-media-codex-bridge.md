@@ -2,7 +2,7 @@
 
 ## Status
 
-Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes were merged into and satisfied by the final real-Codex closed-loop gate. Tasks 16-28 are implemented on `feat/skill-document-storyboard-loop`: Codex passed first-contact discovery, the complete Document/Storyboard create/change → Prompt create → generated-image review chain, four-kind replay, digest conflict, process restart recovery, the adversarial boundary matrix, and optional Bridge packaging/diagnostics. The remaining merge gate is the repository-wide build, regression, browser, security, and documentation matrix; `main` remains unchanged until it passes.
+Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes were merged into and satisfied by the final real-Codex closed-loop gate. Tasks 16-28 and the repository-wide release matrix are complete on `feat/skill-document-storyboard-loop`: Codex passed first-contact discovery, the complete Document/Storyboard create/change → Prompt create → generated-image review chain, four-kind replay, digest conflict, process restart recovery, the adversarial boundary matrix, optional Bridge packaging/diagnostics, and all build/regression/browser/security/documentation gates. The branch is ready for its authorized merge into `main`.
 
 ## Current Normative Boundary
 

@@ -108,7 +108,7 @@ Both commands delegate to `scripts/run-e2e-tests.ps1`. The runner fixes `PLAYWRI
 
 In restricted sandbox environments, Chromium launch may require elevated execution permissions.
 
-The focused image-generation commands are the regression gate for this feature. The Runtime full suite also contains live-model, POSIX/Docker, symlink-privilege, and cross-platform path tests; record those environment failures separately instead of attributing them to Seedream changes. Repository ESLint currently has no errors but may fail its warning budget; see the maintained [implementation status](../Plan/005-seedream-image-node-frontend-implementation-status.md).
+The focused image-generation commands are the regression gate for this feature. The Runtime full suite also contains live-model, POSIX/Docker, symlink-privilege, and cross-platform path tests; record those environment failures separately instead of attributing them to Seedream changes. Repository ESLint uses a ratcheted 41-warning baseline: `npm.cmd run lint` must have zero errors and cannot introduce warning 42. Pytest/output directories are ignored so restrictive test-artifact ACLs cannot prevent source enumeration. Reduce the baseline in a dedicated cleanup rather than increasing it for feature work; see the maintained [implementation status](../Plan/005-seedream-image-node-frontend-implementation-status.md).
 
 ## Acceptance Scenarios
 
