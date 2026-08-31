@@ -310,4 +310,4 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 ## 当前状态
 
-PMAgent-Canvas 仍处于活跃开发阶段。受控 Local Agent Bridge / MCP 的真实 Codex 四类写回、可视化审阅、相同请求幂等重放、不同摘要冲突拒绝、服务与宿主重启恢复已经通过。当前剩余门槛是 Phase 6 对抗性边界、可选 Bridge 打包与全仓发布门禁；只有这些门禁全绿并完成最终验收后，功能分支才会合入 `main`。浏览器连接器与 Asset Shelf 不在本轮范围。对外使用前请以仓库中的实际实现和技术文档为准。
+PMAgent-Canvas 仍处于活跃开发阶段。受控 Local Agent Bridge / MCP 的真实 Codex 四类写回、可视化审阅、相同请求幂等重放、不同摘要冲突拒绝、服务与宿主重启恢复已经通过。Phase 6 的统一对抗性边界门禁也已通过：它覆盖跨项目/跨上下文访问、撤销 CVC、失信或归档 Skill、scope 伪造、路径与 junction 逃逸、MIME/摘要欺骗、重复/崩溃重放、错误脱敏以及 MCP 缺席时的普通 Canvas/Agent 启动回归；真实 Gateway 攻击链还促使无效凭据响应统一为稳定的 `bridge_credential_required`。当前剩余门槛是可选 Bridge 打包、贡献者诊断与全仓发布门禁；只有这些门禁全绿并完成最终验收后，功能分支才会合入 `main`。浏览器连接器与 Asset Shelf 不在本轮范围。对外使用前请以仓库中的实际实现和技术文档为准。

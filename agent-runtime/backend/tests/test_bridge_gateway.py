@@ -64,14 +64,15 @@ def auth_headers(token: str = TOKEN) -> dict[str, str]:
 
 
 def test_bridge_runtime_describe_requires_a_separate_trusted_profile(client):
-    assert client.get("/api/promptcard/bridge/v3/runtime").status_code == 401
-    assert (
-        client.get(
-            "/api/promptcard/bridge/v3/runtime",
-            headers=auth_headers("wrong-token-that-is-also-long-enough-to-parse"),
-        ).status_code
-        == 401
+    missing = client.get("/api/promptcard/bridge/v3/runtime")
+    wrong = client.get(
+        "/api/promptcard/bridge/v3/runtime",
+        headers=auth_headers("wrong-token-that-is-also-long-enough-to-parse"),
     )
+    assert missing.status_code == 401
+    assert wrong.status_code == 401
+    assert missing.json() == {"detail": {"code": "bridge_credential_required"}}
+    assert wrong.json() == {"detail": {"code": "bridge_credential_required"}}
 
     response = client.get(
         "/api/promptcard/bridge/v3/runtime", headers=auth_headers()

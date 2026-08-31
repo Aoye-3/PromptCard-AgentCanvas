@@ -29,6 +29,7 @@
     "mcp:http": "node --experimental-strip-types promptcard-mcp/src/http-entry.ts",
     "mcp:check": "tsc -p promptcard-mcp/tsconfig.json",
     "test:mcp": "node --experimental-strip-types --test promptcard-mcp/tests/*.test.ts",
+    "test:bridge-adversarial": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-bridge-adversarial-tests.ps1",
     "test:frontend": "powershell -ExecutionPolicy Bypass -File scripts/run-frontend-tests.ps1",
     "test:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-e2e-tests.ps1",
     "test:e2e:bridge": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-e2e-tests.ps1 --real-gateway tests/e2e/bridge-document-delivery.spec.ts --workers=1",

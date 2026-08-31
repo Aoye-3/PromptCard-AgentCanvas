@@ -975,15 +975,19 @@ The bounded final selection also exposed a product-level review defect: the lega
 
 ### Task 27: Run the adversarial boundary suite
 
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). The repository now owns one repeatable `npm.cmd run test:bridge-adversarial` gate spanning contracts, CLI, both MCP transports, MCP-absent ordinary workflows, Storage/CVC/Skill/delivery kernels, Gateway/profile/retrieval/redaction adapters, and a real Gateway attack chain. The first real run exposed unstructured missing-credential text; the middleware now returns stable redacted `bridge_credential_required` / `bridge_configuration_invalid` codes. Task 28 is unlocked; `main` remains unchanged.
+
 **Description:** Add end-to-end negative coverage across reference, Skill, retrieval, MCP, multipart, and delivery boundaries.
 
 **Acceptance criteria:**
 
-- [ ] Tests cover cross-project IDOR, namespace mismatch, revoked CVC, archived Skill, stale pins, traversal/junction/symlink escape, MIME spoofing, duplicate delivery, crash replay, and Skill attempts to expand authority.
-- [ ] Responses redact paths, credentials, raw provider bodies, and internal exceptions.
-- [ ] MCP/Agent outages leave ordinary PromptCard workflows functional.
+- [x] Tests cover cross-project IDOR, namespace mismatch, revoked CVC, archived Skill, stale pins, traversal/junction/symlink escape, MIME spoofing, duplicate delivery, crash replay, and Skill attempts to expand authority.
+- [x] Responses redact paths, credentials, raw provider bodies, and internal exceptions.
+- [x] MCP/Agent outages leave ordinary PromptCard workflows functional.
 
 **Verification:** Full automated matrix passes with no secrets, open ports, orphan processes, or unexpected network calls.
+
+**Verification evidence:** `npm.cmd run test:bridge-adversarial` passes 52 v1-v3 contract tests, 8 deterministic CLI tests, 10 STDIO/HTTP MCP tests, 186 MCP-absent Canvas/Agent/startup tests, 87 Storage tests plus 36 subtests (1 platform skip), 55 Gateway/environment/Skill resolver tests, and one real Gateway cross-project/revoked-context/profile-forgery E2E. The E2E runner owns and releases its Storage, Gateway, and Vite processes; ports 38100-38102 are clear after completion. See the [Task 27 checkpoint](../../reviews/2026-08-31-task-27-adversarial-boundary-checkpoint.md).
 
 **Dependencies:** Checkpoint 5.
 

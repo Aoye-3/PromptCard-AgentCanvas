@@ -37,12 +37,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             except BridgeConfigurationError:
                 return JSONResponse(
                     status_code=503,
-                    content={"detail": "PromptCard bridge configuration is invalid."},
+                    content={"detail": {"code": "bridge_configuration_invalid"}},
                 )
             if principal is None:
                 return JSONResponse(
                     status_code=401,
-                    content={"detail": "PromptCard bridge credential required."},
+                    content={"detail": {"code": "bridge_credential_required"}},
                 )
             request.state.bridge_principal = principal
             activity = getattr(request.app.state, "bridge_profile_activity", None)
