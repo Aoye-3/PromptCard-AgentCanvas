@@ -31,6 +31,8 @@ The repository CLI in `promptcard-bridge-cli/` calls only these Gateway routes, 
 
 `promptcard-mcp/` wraps that same client with ten closed-schema Tools: six bounded reads plus delivery preview, delivery commit, delivery status, and image staging. `npm.cmd run mcp:stdio` reserves stdout for JSON-RPC. `npm.cmd run mcp:http` binds only `127.0.0.1` (default port `8142`), serves `/mcp`, validates loopback Host/Origin, and requires a separate `PROMPTCARD_MCP_HTTP_TOKEN`. Both transports support the 2025-11-25 and 2026-07-28 protocol eras from one server factory; no legacy SSE endpoint exists. Preview/commit are idempotent, proposal-only mutations; status is read-only and never repeats a mutation.
 
+The optional distribution entrypoint is `scripts/start-promptcard-mcp.ps1`. It accepts only a loopback Bridge origin, verifies an existing Node 22.6+ runtime and locked MCP dependency, performs no install/download, and starts either the STDIO or loopback HTTP entrypoint. `scripts/diagnose-promptcard-bridge.ps1` reports a redacted packaging check and optionally a live runtime-description probe. Contributor setup, Codex registration, candidate-host labeling, scope upgrade, provenance/cost caveats, six-layer failure isolation, and removal are maintained in the [operations guide](../operations/local-agent-bridge.md).
+
 Required process environment is intentionally small:
 
 - both transports: `PROMPTCARD_BRIDGE_URL`, `PROMPTCARD_BRIDGE_TOKEN`;

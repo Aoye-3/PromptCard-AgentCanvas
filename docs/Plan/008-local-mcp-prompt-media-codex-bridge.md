@@ -2,13 +2,13 @@
 
 ## Status
 
-Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes are merged into the final real-Codex closed-loop gate. Tasks 16-26C are implemented on `feat/skill-document-storyboard-loop`, including passing real-Codex first-contact discovery and the complete Document/Storyboard create/change, Prompt create, and generated-image review chain. The remaining merge gate proves four-kind replay, digest conflict, and process restart recovery against that accepted real-Codex loop.
+Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes were merged into and satisfied by the final real-Codex closed-loop gate. Tasks 16-28 are implemented on `feat/skill-document-storyboard-loop`: Codex passed first-contact discovery, the complete Document/Storyboard create/change → Prompt create → generated-image review chain, four-kind replay, digest conflict, process restart recovery, the adversarial boundary matrix, and optional Bridge packaging/diagnostics. The remaining merge gate is the repository-wide build, regression, browser, security, and documentation matrix; `main` remains unchanged until it passes.
 
 ## Current Normative Boundary
 
 This plan began with Codex-specific product language. That historical design remains useful for reference identities, retrieval, and delivery flows, but it is no longer normative where it makes MCP, Gateway, CLI, retrieval, or delivery Codex-only.
 
-[ADR-019](../decisions/ADR-019-generic-local-agent-bridge-boundary.md) and the [Plan 008 execution ledger](../superpowers/plans/2026-08-22-plan-008-execution.md) define the current `PromptCard Local Agent Bridge`: a host-neutral core with trusted profiles/scopes, v2 `promptcard-bridge` provenance, STDIO plus loopback Streamable HTTP, and Codex/TRAE as initial acceptance adapters. Codex `.agents/skills` and the local-Agent snapshot remain accurately named concrete Host Adapters. Doubao and MarsCode remain “待验证”.
+[ADR-019](../decisions/ADR-019-generic-local-agent-bridge-boundary.md) and the [Plan 008 execution ledger](../superpowers/plans/2026-08-22-plan-008-execution.md) define the current `PromptCard Local Agent Bridge`: a host-neutral core with trusted profiles/scopes, v2 `promptcard-bridge` provenance, and STDIO plus loopback Streamable HTTP. Codex is the first verified real host. TRAE is a configuration/contract candidate only; Doubao and MarsCode remain “待验证”. Codex `.agents/skills` and the local-Agent snapshot remain accurately named concrete Host Adapters.
 
 Task 15, Task 15.5, and Tasks 15.6-15.10 are implemented and technically accepted; see the [Task 15.5 acceptance package](../reviews/2026-08-24-task-15-5-technical-acceptance.md) and [Checkpoint 3.5 acceptance package](../reviews/2026-08-27-task-15-10-technical-acceptance.md). On 2026-08-30 the user folded the remaining manual probes into final real-Codex acceptance and authorized Task 16. Bridge v3 and ADR-023 now freeze the typed Document/Storyboard/Prompt/image writeback boundary; runtime implementation follows the execution ledger.
 

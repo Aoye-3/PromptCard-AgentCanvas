@@ -164,6 +164,7 @@ NewVison/Prompt Guide/
 !src-tauri/capabilities/**/*.json
 !public/**/*.json
 !tests/fixtures/image-generation-status.json
+!config/promptcard-bridge/*.json
 tests/.runtime/
 .cache/
 /remotion-video/
@@ -172,6 +173,7 @@ public/prompt-library-presets.json
 *.yaml
 *.yml
 *.toml
+!config/promptcard-bridge/*.toml
 !src-tauri/Cargo.toml
 !src-tauri/permissions/**/*.toml
 *.ini

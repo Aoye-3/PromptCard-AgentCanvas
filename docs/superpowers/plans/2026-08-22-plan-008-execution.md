@@ -997,17 +997,21 @@ The bounded final selection also exposed a product-level review defect: the lega
 
 ### Task 28: Package and document the optional bridge
 
+**Status:** Implementation and focused checkpoint complete on `feat/skill-document-storyboard-loop` (2026-09-01). The optional package now owns a PowerShell 5.1-compatible locked launcher for STDIO/loopback HTTP, redacted offline/live diagnostics, least-authority and full-review Gateway profile examples, a current Codex TOML example, and a clearly unverified TRAE candidate. The maintained operations guide covers first contact, explicit scope upgrade, six failure layers, provenance/cost, removal, host claims, and contributor verification. Task 28 does not move `main`; the repository-wide build/regression/browser/security/documentation matrix remains the final release gate.
+
 **Description:** Add locked launchers, Codex/TRAE configuration templates, diagnostics, verified/candidate host documentation, provenance/cost caveats, and contributor verification commands. Doubao web/desktop and MarsCode remain “待验证” until backed by official MCP-host evidence and a real smoke test.
 
 **Acceptance criteria:**
 
-- [ ] New contributor can enable read-only MCP without provider keys or runtime downloads at launch.
-- [ ] Documentation distinguishes discovery, resolution, generation host, delivery, Storage, and Canvas failures.
-- [ ] Disabling/removing MCP leaves PromptCard local workflows and data readable.
-- [ ] Configuration templates may differ by host, but core tool names, schemas, scopes, permissions, budgets, and results do not.
-- [ ] Supported-host claims link to official evidence and an acceptance run; unverified candidates are not presented as compatible.
+- [x] New contributor can enable read-only MCP without provider keys or runtime downloads at launch.
+- [x] Documentation distinguishes discovery, resolution, generation host, delivery, Storage, and Canvas failures.
+- [x] Disabling/removing MCP leaves PromptCard local workflows and data readable.
+- [x] Configuration templates may differ by host, but core tool names, schemas, scopes, permissions, budgets, and results do not.
+- [x] Supported-host claims link to official evidence and an acceptance run; unverified candidates are not presented as compatible.
 
 **Verification:** Clean local install/start smoke, launcher tests, documentation link check, build, and full regression suite pass.
+
+**Focused verification evidence:** `npm.cmd run test:bridge-package` passes 6 tests covering both profile shapes, host templates, PowerShell launcher validation, redacted HTTP failure, redacted offline diagnostics, and maintained documentation links. `npm.cmd run bridge:diagnose:offline` passes against Node 24.13.1 with `downloadsAtLaunch=false`. Repository CLI/MCP TypeScript checks pass; 8 CLI tests and 10 dual-protocol MCP/security tests pass outside the restrictive child-process sandbox. Installed Codex `0.151.0-alpha.7.2` exposes the documented `codex mcp add --env ... -- <COMMAND>` interface, and current official Codex MCP/configuration references confirm the template fields. The build and full regression parts of this verification sentence are intentionally recorded in the following final release matrix rather than duplicated inside this checkpoint. See the [Task 28 checkpoint](../../reviews/2026-09-01-task-28-bridge-packaging-checkpoint.md).
 
 **Dependencies:** Task 27.
 

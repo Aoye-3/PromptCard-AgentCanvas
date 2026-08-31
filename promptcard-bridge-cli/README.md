@@ -7,6 +7,8 @@ Required environment:
 - `PROMPTCARD_BRIDGE_URL`: loopback HTTP origin such as `http://127.0.0.1:8000`;
 - `PROMPTCARD_BRIDGE_TOKEN`: high-entropy credential for one trusted Bridge profile.
 
+For locked MCP launch, diagnostics, profiles, host status, and removal, use the maintained [Local Agent Bridge operations guide](../docs/operations/local-agent-bridge.md). The CLI intentionally remains a read-only diagnostic/query surface; typed writes are exposed only as review-only MCP proposals behind explicit delivery scopes.
+
 Commands:
 
 ```text

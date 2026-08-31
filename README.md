@@ -276,6 +276,8 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 ### PromptCard Local Agent Bridge 与 Prompt 库 RAG
 
+贡献者和本地使用者请从 [Local Agent Bridge 与 MCP 运维指南](./docs/operations/local-agent-bridge.md) 启用：首轮只读配置不需要任何模型供应商密钥，启动器不会下载运行时；Codex 已通过真实闭环验收，TRAE 仍是未验证候选，不作为兼容性声明。
+
 当前已经完成 Skill Hub 管理工作流、宿主中立的 Bridge v1/v2 合同边界，以及承载 Document、Storyboard、Prompt 与图片提案的 Bridge v3 合同。Storage v19 在 v18 事务化 Prompt FTS5 检索与稳定 `CVD-*` / `CVS-*` 外部引用之上，增加统一的 profile-scoped 写回账本；独立凭据保护的 Gateway、确定性 JSON CLI 和 repository-owned MCP 已能让外部 Agent 从明确选择的 `PRJ-*` / `CVC-*` 工作上下文发现对象、精确 Skill pin、带 revision/digest 的 Prompt 证据及明确授权的媒体，并通过同一合同提交、排队和查询待审阅的创作提案。
 
 - 外部 Agent 应用是创作入口；PMAgent-Canvas 不内嵌某一家的聊天界面，也不按客户端名称分叉核心工具、schema、权限或结果。
@@ -310,4 +312,4 @@ PromptCard Storage release gate (use the existing workspace virtual environment 
 
 ## 当前状态
 
-PMAgent-Canvas 仍处于活跃开发阶段。受控 Local Agent Bridge / MCP 的真实 Codex 四类写回、可视化审阅、相同请求幂等重放、不同摘要冲突拒绝、服务与宿主重启恢复已经通过。Phase 6 的统一对抗性边界门禁也已通过：它覆盖跨项目/跨上下文访问、撤销 CVC、失信或归档 Skill、scope 伪造、路径与 junction 逃逸、MIME/摘要欺骗、重复/崩溃重放、错误脱敏以及 MCP 缺席时的普通 Canvas/Agent 启动回归；真实 Gateway 攻击链还促使无效凭据响应统一为稳定的 `bridge_credential_required`。当前剩余门槛是可选 Bridge 打包、贡献者诊断与全仓发布门禁；只有这些门禁全绿并完成最终验收后，功能分支才会合入 `main`。浏览器连接器与 Asset Shelf 不在本轮范围。对外使用前请以仓库中的实际实现和技术文档为准。
+PMAgent-Canvas 仍处于活跃开发阶段。受控 Local Agent Bridge / MCP 的真实 Codex 四类写回、可视化审阅、相同请求幂等重放、不同摘要冲突拒绝、服务与宿主重启恢复已经通过。Phase 6 的统一对抗性边界门禁也已通过：它覆盖跨项目/跨上下文访问、撤销 CVC、失信或归档 Skill、scope 伪造、路径与 junction 逃逸、MIME/摘要欺骗、重复/崩溃重放、错误脱敏以及 MCP 缺席时的普通 Canvas/Agent 启动回归；真实 Gateway 攻击链还促使无效凭据响应统一为稳定的 `bridge_credential_required`。可选 Bridge 启动器、只读/全审阅配置模板、贡献者诊断、宿主状态和移除说明也已完成 focused gate；当前只剩全仓构建、回归、浏览器、安全与文档发布矩阵。只有完整矩阵通过并完成最终验收后，功能分支才会合入 `main`。浏览器连接器与 Asset Shelf 不在本轮范围。对外使用前请以仓库中的实际实现和技术文档为准。

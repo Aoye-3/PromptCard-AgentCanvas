@@ -112,6 +112,6 @@ Bridge-created Document, Storyboard, Prompt, and image nodes use conservative co
 ## Deferred
 
 - video media analysis;
-- adversarial hardening, full release gates, and optional Bridge distribution packaging;
+- the repository-wide final release gate and future signed/distributed Bridge packaging beyond the repository-owned optional launcher;
 - production multi-user authentication;
 - general Canvas write tools, automatic Skill matching, local OCR, and asset/plugin node types.
