@@ -273,6 +273,14 @@ async def delivery_preview(
             "bridge:deliver:document",
             "/api/internal/bridge-document-deliveries/preview",
         ),
+        "storyboard.create": (
+            "bridge:deliver:storyboard",
+            "/api/internal/bridge-storyboard-deliveries/preview",
+        ),
+        "storyboard.change": (
+            "bridge:deliver:storyboard",
+            "/api/internal/bridge-storyboard-deliveries/preview",
+        ),
         "prompt.create": (
             "bridge:deliver:prompt",
             "/api/internal/bridge-prompt-deliveries/preview",
@@ -384,10 +392,20 @@ async def _validate_delivery_sources_and_skills(
         normalized_target["documentCode"] = _canonical_reference(
             target.get("documentCode"), "CVD"
         )
+    if request.get("kind") == "storyboard.change":
+        normalized_target["storyboardCode"] = _canonical_reference(
+            target.get("storyboardCode"), "CVS"
+        )
+    normalized_payload = dict(request.get("payload") or {})
+    if request.get("kind") == "storyboard.create":
+        normalized_payload["sourceDocumentCode"] = _canonical_reference(
+            normalized_payload.get("sourceDocumentCode"), "CVD"
+        )
     return {
         **request,
         "target": normalized_target,
         "sourceCodes": canonical_sources,
+        "payload": normalized_payload,
     }
 
 
@@ -461,6 +479,14 @@ async def delivery_commit(
         "document.change": (
             "bridge:deliver:document",
             "/api/internal/bridge-document-deliveries/commit",
+        ),
+        "storyboard.create": (
+            "bridge:deliver:storyboard",
+            "/api/internal/bridge-storyboard-deliveries/commit",
+        ),
+        "storyboard.change": (
+            "bridge:deliver:storyboard",
+            "/api/internal/bridge-storyboard-deliveries/commit",
         ),
         "prompt.create": (
             "bridge:deliver:prompt",

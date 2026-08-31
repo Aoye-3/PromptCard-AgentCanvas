@@ -5,7 +5,8 @@ import type {
   BridgeDocumentChangeDelivery,
   BridgeDocumentCreateDelivery,
   BridgeImageDelivery,
-  BridgePromptDelivery
+  BridgePromptDelivery,
+  BridgeStoryboardCreateDelivery
 } from '@/storage/storage-service-client'
 
 
@@ -117,6 +118,50 @@ const documentChangeDelivery = (): BridgeDocumentChangeDelivery => {
     }
   }
 }
+
+const storyboardCreateDelivery = (): BridgeStoryboardCreateDelivery => ({
+  operationContext: {
+    profileId: 'codex-local', scopes: ['bridge:deliver:storyboard'], provenance: 'promptcard-bridge',
+    clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'storyboard-create-1', normalizedRequestDigest: `sha256:${'b'.repeat(64)}`,
+    kind: 'storyboard.create', target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+    sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: [],
+    rationale: 'Create the storyboard.', provenance: 'promptcard-bridge',
+    payload: {
+      title: 'Opening storyboard', sourceDocumentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      sourceDocumentRevision: 2, sourceDocumentDigest: `sha256:${'c'.repeat(64)}`,
+      sequence: {
+        name: 'Opening', description: '', style: '', constraints: '',
+        rows: [{
+          cutLabel: '1', timeRange: '00:00-00:03', subject: 'Hero', action: 'Looks up',
+          scene: 'Rainy street', camera: 'Wide', lighting: 'Night', audio: 'Rain', duration: '3s'
+        }]
+      }
+    }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAR', state: 'pending_review', disposition: 'original',
+  resultCodes: [], message: 'waiting', createdAt: '2026-08-31T00:00:00.000Z', updatedAt: '2026-08-31T00:00:00.000Z',
+  visualProposal: {
+    kind: 'storyboard_create', id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAR', agentName: 'codex',
+    title: 'Opening storyboard', sourceDocumentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    sourceDocumentRevision: 2, sourceDocumentDigest: `sha256:${'c'.repeat(64)}`,
+    sequence: {
+      name: 'Opening', description: '', style: '', constraints: '',
+      rows: [{
+        cutLabel: '1', timeRange: '00:00-00:03', subject: 'Hero', action: 'Looks up',
+        scene: 'Rainy street', camera: 'Wide', lighting: 'Night', audio: 'Rain', duration: '3s'
+      }]
+    },
+    rationale: 'Create the storyboard.', status: 'pending', createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local', cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      clientRequestId: 'storyboard-create-1', normalizedRequestDigest: `sha256:${'b'.repeat(64)}`,
+      sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: []
+    }
+  }
+})
 
 describe('BridgeDeliveryInbox', () => {
   it('shows an external Prompt proposal and records acceptance after durable apply', async () => {
@@ -257,6 +302,27 @@ describe('BridgeDeliveryInbox', () => {
     expect(client.decide).toHaveBeenCalledWith(
       item.request.target.cvcCode, item.proposalId, 'accepted', ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY']
     )
+    renderer.unmount()
+  })
+
+  it('shows a Storyboard proposal as a typed review item', async () => {
+    const item = storyboardCreateDelivery()
+    const client = {
+      list: vi.fn().mockResolvedValue([item]),
+      decide: vi.fn().mockResolvedValue({ ...item, state: 'accepted' })
+    }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(<BridgeDeliveryInbox
+        cvcCode={item.request.target.cvcCode}
+        client={client}
+        onAccept={vi.fn().mockResolvedValue(['CVS-01ARZ3NDEKTSV4RRFFQ69G5FAY'])}
+      />)
+    })
+
+    expect(renderer.root.findByProps({ 'data-bridge-delivery-title': true }).children).toContain('Opening storyboard')
+    expect(renderer.root.findByProps({ 'aria-label': '接受外部 Agent 分镜 提案' })).toBeTruthy()
+    expect(renderer.root.findByProps({ 'data-bridge-delivery-provenance': true }).children.join('')).toContain('CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW')
     renderer.unmount()
   })
 })

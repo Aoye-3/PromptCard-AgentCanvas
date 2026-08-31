@@ -4,7 +4,8 @@ import {
   storageServiceClient,
   type BridgeDelivery,
   type BridgeDocumentDelivery,
-  type BridgePromptDelivery
+  type BridgePromptDelivery,
+  type BridgeStoryboardDelivery
 } from '@/storage/storage-service-client'
 
 
@@ -15,20 +16,28 @@ const isPromptDelivery = (delivery: BridgeDelivery): delivery is BridgePromptDel
 const isDocumentDelivery = (delivery: BridgeDelivery): delivery is BridgeDocumentDelivery => (
   delivery.request.kind === 'document.create' || delivery.request.kind === 'document.change'
 )
+const isStoryboardDelivery = (delivery: BridgeDelivery): delivery is BridgeStoryboardDelivery => (
+  delivery.request.kind === 'storyboard.create' || delivery.request.kind === 'storyboard.change'
+)
 const deliveryLabel = (delivery: BridgeDelivery): string => {
   if (isPromptDelivery(delivery)) return 'Prompt'
   if (isDocumentDelivery(delivery)) return '文档'
+  if (isStoryboardDelivery(delivery)) return '分镜'
   return '图片'
 }
 const deliveryTitle = (delivery: BridgeDelivery): string => {
   if (delivery.visualProposal.kind === 'document_changes') return `修改文档 ${delivery.visualProposal.documentCode}`
   if (delivery.visualProposal.kind === 'document_create') return delivery.visualProposal.title
+  if (delivery.visualProposal.kind === 'storyboard_changes') return `修改分镜 ${delivery.visualProposal.storyboardCode}`
+  if (delivery.visualProposal.kind === 'storyboard_create') return delivery.visualProposal.title
   return delivery.visualProposal.title
 }
 const deliveryKindLabel = (delivery: BridgeDelivery): string => {
   if (delivery.request.kind === 'prompt.create') return 'Prompt 创建'
   if (delivery.request.kind === 'image.place') return '图片放置'
-  return delivery.request.kind === 'document.create' ? 'Document 创建' : 'Document 修改'
+  if (delivery.request.kind === 'document.create') return 'Document 创建'
+  if (delivery.request.kind === 'document.change') return 'Document 修改'
+  return delivery.request.kind === 'storyboard.create' ? 'Storyboard 创建' : 'Storyboard 修改'
 }
 
 interface BridgeDeliveryInboxProps {
@@ -138,6 +147,12 @@ export const BridgeDeliveryInbox = ({
                 {delivery.request.kind === 'document.create'
                   ? <p>{delivery.request.payload.blocks.length} 个结构化内容块</p>
                   : <p>{delivery.request.payload.operations.length} 项红删绿增修改 · 基于 revision {delivery.request.target.baseRevision}</p>}
+              </div>
+            ) : isStoryboardDelivery(delivery) ? (
+              <div className="mt-2 rounded-md bg-gray-50 p-2 text-[10px] leading-4 text-gray-600">
+                {delivery.request.kind === 'storyboard.create'
+                  ? <p>{delivery.request.payload.sequence.rows.length} 个镜头 · 来源 {delivery.request.payload.sourceDocumentCode}</p>
+                  : <p>{delivery.request.payload.changes.length} 项分镜字段修改 · 基于 revision {delivery.request.target.baseRevision}</p>}
               </div>
             ) : (
               <div className="mt-2 grid grid-cols-[88px_1fr] gap-2">

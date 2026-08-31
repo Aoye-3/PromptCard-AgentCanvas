@@ -187,6 +187,115 @@ class DocumentChangeDeliveryPreviewPayload(BaseModel):
     payload: DocumentChangePayload
 
 
+class StoryboardRowPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cutLabel: str = Field(max_length=10_000)
+    timeRange: str = Field(max_length=10_000)
+    subject: str = Field(max_length=10_000)
+    action: str = Field(max_length=10_000)
+    scene: str = Field(max_length=10_000)
+    camera: str = Field(max_length=10_000)
+    lighting: str = Field(max_length=10_000)
+    audio: str = Field(max_length=10_000)
+    duration: str = Field(max_length=10_000)
+
+
+class StoryboardSequencePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=10_000)
+    description: str = Field(max_length=10_000)
+    style: str = Field(max_length=10_000)
+    constraints: str = Field(max_length=10_000)
+    rows: list[StoryboardRowPayload] = Field(min_length=1, max_length=200)
+
+
+class StoryboardCreateTargetPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cvcCode: str
+
+
+class StoryboardCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=500)
+    sourceDocumentCode: str
+    sourceDocumentRevision: int = Field(ge=0)
+    sourceDocumentDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    sequence: StoryboardSequencePayload
+
+
+class StoryboardCreateDeliveryPreviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    clientRequestId: str = Field(min_length=1, max_length=128)
+    normalizedRequestDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    kind: Literal["storyboard.create"]
+    target: StoryboardCreateTargetPayload
+    sourceCodes: list[str] = Field(max_length=32)
+    skillPins: list[SkillPinPayload] = Field(max_length=8)
+    rationale: str = Field(min_length=1, max_length=4000)
+    provenance: Literal["promptcard-bridge"]
+    payload: StoryboardCreatePayload
+
+
+class StoryboardChangeTargetPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cvcCode: str
+    storyboardCode: str
+    baseRevision: int = Field(ge=0)
+    baseDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class StoryboardSequenceChangePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["sequence"]
+    field: Literal["name", "description", "style", "constraints"]
+    value: str = Field(max_length=10_000)
+
+
+class StoryboardRowChangePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["row"]
+    rowOrdinal: int = Field(ge=0, le=199)
+    field: Literal[
+        "cutLabel", "timeRange", "subject", "action", "scene",
+        "camera", "lighting", "audio", "duration",
+    ]
+    value: str = Field(max_length=10_000)
+
+
+StoryboardChangePayload = Annotated[
+    StoryboardSequenceChangePayload | StoryboardRowChangePayload,
+    Field(discriminator="scope"),
+]
+
+
+class StoryboardChangesPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    changes: list[StoryboardChangePayload] = Field(min_length=1, max_length=32)
+
+
+class StoryboardChangeDeliveryPreviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    clientRequestId: str = Field(min_length=1, max_length=128)
+    normalizedRequestDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    kind: Literal["storyboard.change"]
+    target: StoryboardChangeTargetPayload
+    sourceCodes: list[str] = Field(max_length=32)
+    skillPins: list[SkillPinPayload] = Field(max_length=8)
+    rationale: str = Field(min_length=1, max_length=4000)
+    provenance: Literal["promptcard-bridge"]
+    payload: StoryboardChangesPayload
+
+
 class ImagePlacementTargetPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -238,7 +347,9 @@ DeliveryPreviewPayload = Annotated[
     PromptDeliveryPreviewPayload
     | ImageDeliveryPreviewPayload
     | DocumentCreateDeliveryPreviewPayload
-    | DocumentChangeDeliveryPreviewPayload,
+    | DocumentChangeDeliveryPreviewPayload
+    | StoryboardCreateDeliveryPreviewPayload
+    | StoryboardChangeDeliveryPreviewPayload,
     Field(discriminator="kind"),
 ]
 

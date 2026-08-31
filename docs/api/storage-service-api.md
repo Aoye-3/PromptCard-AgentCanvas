@@ -12,6 +12,13 @@ The local storage service is the durable source of truth for projects, Prompt Li
 
 `creativeReferenceCode` must be an exact `CVD-*` or `CVS-*` code belonging to the exact active `PRJ-*`. Document responses expose the editor-neutral AST, revision and digest. Storyboard responses expose the sequence fields and ordered rows, replacing internal row identities with `rowOrdinal` and replacing an available source Document node identity with its `CVD-*` code. Internal Canvas IDs, row IDs, coordinates, model/connection data, arbitrary metadata, and local paths are never returned. Unknown, cross-project, retired, malformed, or no-longer-referenceable objects fail with structured lifecycle/reference errors. The Canvas context selector admits stable `CVT-*`, `CVM-*`, `CVD-*`, and `CVS-*` objects; its browser Storage client fails closed unless Document AST/revision/digest or Storyboard sequence/ordered rows match the corresponding closed projection.
 
+## Bridge Storyboard Deliveries
+
+- `POST /api/internal/bridge-storyboard-deliveries/preview` (internal authentication only)
+- `POST /api/internal/bridge-storyboard-deliveries/commit` (internal authentication only)
+
+Both routes reuse the schema-v19 profile-scoped delivery ledger and require Gateway to supply an operation context with `bridge:deliver:storyboard`. Create validates one exact source `CVD-*` revision/digest inside the selected CVC before opening a ledger intent. Change validates one exact `CVS-*` revision/digest and closed sequence/row changes; external rows are addressed only by bounded ordinal. Preview and commit are deterministic and replay-safe, and an accepted terminal decision requires exactly one same-project `CVS-*`. These protected adapters do not expose internal Canvas node or row IDs and do not constitute a general Canvas mutation API.
+
 - `GET /health`
 
 Returns service status and the active data directory.

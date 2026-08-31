@@ -271,6 +271,48 @@ describe('storageServiceClient', () => {
   })
 
   test.each([
+    ['create', bridgeStoryboardCreateDelivery()],
+    ['change', bridgeStoryboardChangeDelivery()]
+  ])('parses a typed bridge storyboard %s delivery without internal row identity', async (_label, delivery) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ deliveries: [delivery] })))
+
+    const result = await storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )
+
+    expect(result).toEqual([delivery])
+    expect(result[0].request.kind).toBe(delivery.request.kind)
+    expect(JSON.stringify(result[0])).not.toContain('rowId')
+  })
+
+  test.each([
+    ['an internal Storyboard node target', () => ({
+      ...bridgeStoryboardChangeDelivery(),
+      request: {
+        ...bridgeStoryboardChangeDelivery().request,
+        target: { ...bridgeStoryboardChangeDelivery().request.target, nodeId: 'secret-node' }
+      }
+    })],
+    ['a visual proposal whose ordinal differs from its request', () => ({
+      ...bridgeStoryboardChangeDelivery(),
+      visualProposal: {
+        ...bridgeStoryboardChangeDelivery().visualProposal,
+        changes: [{
+          ...bridgeStoryboardChangeDelivery().visualProposal.changes[0],
+          rowOrdinal: 1
+        }]
+      }
+    })]
+  ])('fails closed when a Storyboard delivery contains %s', async (_label, buildDelivery) => {
+    const delivery = buildDelivery()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ deliveries: [delivery] })))
+
+    await expect(storageServiceClient.bridgeDeliveries.list(
+      delivery.request.target.cvcCode, 'pending_review'
+    )).rejects.toMatchObject({ code: 'invalid_storage_response' })
+  })
+
+  test.each([
     ['an internal write target', () => ({
       ...bridgeDocumentChangeDelivery(),
       request: {
@@ -1436,3 +1478,79 @@ const bridgeDocumentChangeDelivery = () => ({
     }
   }
 })
+
+const bridgeStoryboardCreateDelivery = () => ({
+  operationContext: {
+    profileId: 'codex-local', scopes: ['bridge:deliver:storyboard'],
+    provenance: 'promptcard-bridge', clientInfo: { name: 'codex', version: '1.0.0' }
+  },
+  request: {
+    clientRequestId: 'storyboard-create-preview', normalizedRequestDigest: `sha256:${'1'.repeat(64)}`,
+    kind: 'storyboard.create', target: { cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ' },
+    sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: [],
+    rationale: 'Create the opening shots.', provenance: 'promptcard-bridge',
+    payload: {
+      title: 'Opening shots', sourceDocumentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      sourceDocumentRevision: 2, sourceDocumentDigest: `sha256:${'a'.repeat(64)}`,
+      sequence: {
+        name: 'Opening', description: 'Quiet reveal', style: 'Naturalistic', constraints: 'No dialogue',
+        rows: [{
+          cutLabel: '1', timeRange: '00:00-00:04', subject: 'Street', action: 'Rain falls',
+          scene: 'Night exterior', camera: 'Slow push', lighting: 'Neon', audio: 'Rain', duration: '4s'
+        }]
+      }
+    }
+  },
+  proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAR', state: 'pending_review',
+  disposition: 'original', resultCodes: [], message: 'waiting',
+  createdAt: '2026-08-31T00:00:00.000Z', updatedAt: '2026-08-31T00:00:00.000Z',
+  visualProposal: {
+    kind: 'storyboard_create', id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAR', agentName: 'codex',
+    title: 'Opening shots', sourceDocumentCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    sourceDocumentRevision: 2, sourceDocumentDigest: `sha256:${'a'.repeat(64)}`,
+    sequence: {
+      name: 'Opening', description: 'Quiet reveal', style: 'Naturalistic', constraints: 'No dialogue',
+      rows: [{
+        cutLabel: '1', timeRange: '00:00-00:04', subject: 'Street', action: 'Rain falls',
+        scene: 'Night exterior', camera: 'Slow push', lighting: 'Neon', audio: 'Rain', duration: '4s'
+      }]
+    },
+    rationale: 'Create the opening shots.', status: 'pending', createdAt: 0,
+    bridgeDelivery: {
+      profileId: 'codex-local', cvcCode: 'CVC-01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+      clientRequestId: 'storyboard-create-preview', normalizedRequestDigest: `sha256:${'1'.repeat(64)}`,
+      sourceCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAW'], skillPins: []
+    }
+  }
+})
+
+const bridgeStoryboardChangeDelivery = () => {
+  const created = bridgeStoryboardCreateDelivery()
+  const change = { scope: 'row', rowOrdinal: 0, field: 'duration', value: '3s' }
+  return {
+    ...created,
+    request: {
+      ...created.request,
+      clientRequestId: 'storyboard-change-preview', kind: 'storyboard.change',
+      target: {
+        cvcCode: created.request.target.cvcCode,
+        storyboardCode: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        baseRevision: 1, baseDigest: `sha256:${'b'.repeat(64)}`
+      },
+      sourceCodes: ['CVS-01ARZ3NDEKTSV4RRFFQ69G5FAV'],
+      payload: { changes: [change] }
+    },
+    proposalId: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAQ',
+    visualProposal: {
+      kind: 'storyboard_changes', id: 'DVP-01ARZ3NDEKTSV4RRFFQ69G5FAQ', agentName: 'codex',
+      storyboardCode: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      baseRevision: 1, baseDigest: `sha256:${'b'.repeat(64)}`, changes: [change],
+      rationale: 'Create the opening shots.', status: 'pending', createdAt: 0,
+      bridgeDelivery: {
+        profileId: 'codex-local', cvcCode: created.request.target.cvcCode,
+        clientRequestId: 'storyboard-change-preview', normalizedRequestDigest: created.request.normalizedRequestDigest,
+        sourceCodes: ['CVS-01ARZ3NDEKTSV4RRFFQ69G5FAV'], skillPins: []
+      }
+    }
+  }
+}

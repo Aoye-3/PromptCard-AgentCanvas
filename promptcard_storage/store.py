@@ -31,6 +31,7 @@ from .delivery_ledger import (
 from .document_delivery import BridgeDocumentDeliveryService
 from .image_delivery import BridgeImageDeliveryService
 from .prompt_delivery import BridgePromptDeliveryService
+from .storyboard_delivery import BridgeStoryboardDeliveryService
 from .document_resources import DocumentResourceStore
 from .image_runs import (
     decode_cursor,
@@ -217,6 +218,10 @@ class SqliteStore:
             self._bridge_deliveries
         )
         self._bridge_document_deliveries = BridgeDocumentDeliveryService(
+            self._bridge_deliveries,
+            self.resolve_context_pack,
+        )
+        self._bridge_storyboard_deliveries = BridgeStoryboardDeliveryService(
             self._bridge_deliveries,
             self.resolve_context_pack,
         )
@@ -984,6 +989,20 @@ class SqliteStore:
     ) -> dict[str, Any]:
         return self._bridge_document_deliveries.commit(operation_context, request)
 
+    def preview_bridge_storyboard_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_storyboard_deliveries.preview(operation_context, request)
+
+    def commit_bridge_storyboard_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_storyboard_deliveries.commit(operation_context, request)
+
     def get_bridge_prompt_delivery(
         self, profile_id: str, client_request_id: str
     ) -> dict[str, Any]:
@@ -1039,6 +1058,8 @@ class SqliteStore:
             cvc_code, state=state, profile_id=profile_id
         ) + self._bridge_document_deliveries.list(
             cvc_code, state=state, profile_id=profile_id
+        ) + self._bridge_storyboard_deliveries.list(
+            cvc_code, state=state, profile_id=profile_id
         ) + self._bridge_image_deliveries.list(
             cvc_code, state=state, profile_id=profile_id
         )
@@ -1063,6 +1084,13 @@ class SqliteStore:
                 raise
         try:
             return self._bridge_document_deliveries.decide(
+                cvc_code, proposal_id, decision, result_codes
+            )
+        except BridgeDeliveryValidationError as exc:
+            if exc.code != "delivery_proposal_not_found":
+                raise
+        try:
+            return self._bridge_storyboard_deliveries.decide(
                 cvc_code, proposal_id, decision, result_codes
             )
         except BridgeDeliveryValidationError as exc:

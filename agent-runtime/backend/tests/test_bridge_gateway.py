@@ -18,6 +18,7 @@ PRJ = "PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAV"
 CVC = "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV"
 DIGEST = "sha256:" + "a" * 64
 CVD = "CVD-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+CVS = "CVS-01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 
 @pytest.fixture
@@ -735,6 +736,134 @@ def test_document_delivery_preview_and_commit_route_through_document_storage(
         f"/api/internal/bridge-delivery-proposals/{proposal_id}",
         "/api/internal/bridge-document-deliveries/commit",
         f"/api/internal/bridge-prompt-deliveries/{kind}-commit",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "target", "payload"),
+    [
+        (
+            "storyboard.create",
+            {"cvcCode": CVC.lower()},
+            {
+                "title": "Opening sequence",
+                "sourceDocumentCode": CVD.lower(),
+                "sourceDocumentRevision": 2,
+                "sourceDocumentDigest": DIGEST,
+                "sequence": {
+                    "name": "Opening",
+                    "description": "A quiet reveal.",
+                    "style": "Naturalistic",
+                    "constraints": "No dialogue",
+                    "rows": [{
+                        "cutLabel": "1",
+                        "timeRange": "00:00-00:04",
+                        "subject": "Empty street",
+                        "action": "Rain falls",
+                        "scene": "Night exterior",
+                        "camera": "Slow push",
+                        "lighting": "Neon reflections",
+                        "audio": "Rain",
+                        "duration": "4s",
+                    }],
+                },
+            },
+        ),
+        (
+            "storyboard.change",
+            {
+                "cvcCode": CVC.lower(),
+                "storyboardCode": CVS.lower(),
+                "baseRevision": 1,
+                "baseDigest": DIGEST,
+            },
+            {"changes": [{
+                "scope": "row",
+                "rowOrdinal": 0,
+                "field": "duration",
+                "value": "3s",
+            }]},
+        ),
+    ],
+)
+def test_storyboard_delivery_uses_storyboard_scope_and_storage_routes(
+    client, monkeypatch, kind, target, payload
+):
+    proposal_id = "DVP-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    preview_request = {
+        "clientRequestId": f"{kind}-preview",
+        "normalizedRequestDigest": DIGEST,
+        "kind": kind,
+        "target": target,
+        "sourceCodes": [
+            CVD.lower() if kind == "storyboard.create" else CVS.lower()
+        ],
+        "skillPins": [],
+        "rationale": "Create a reviewable Storyboard proposal.",
+        "provenance": "promptcard-bridge",
+        "payload": payload,
+    }
+    calls = []
+
+    async def fake_storage(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == f"/api/context-packs/{CVC}/resolve":
+            return {
+                "projectCode": PRJ,
+                "cvcCode": CVC,
+                "entries": [{
+                    "reference": {
+                        "namespace": "canvasDocument"
+                        if kind == "storyboard.create"
+                        else "canvasStoryboard",
+                        "code": CVD if kind == "storyboard.create" else CVS,
+                    },
+                    "content": "{}",
+                }],
+                "sourceCodes": [],
+            }
+        if path == "/api/internal/bridge-storyboard-deliveries/preview":
+            forwarded = kwargs["json"]
+            delivery = forwarded["deliveryRequest"]
+            assert forwarded["operationContext"]["profileId"] == "codex-local"
+            assert delivery["target"]["cvcCode"] == CVC
+            assert delivery["sourceCodes"] == [
+                CVD if kind == "storyboard.create" else CVS
+            ]
+            if kind == "storyboard.create":
+                assert delivery["payload"]["sourceDocumentCode"] == CVD
+            else:
+                assert delivery["target"]["storyboardCode"] == CVS
+            return _delivery_record(delivery, proposal_id, "previewed")
+        if path.endswith(proposal_id):
+            return {"proposalId": proposal_id, "kind": kind, "state": "previewed"}
+        if path == "/api/internal/bridge-storyboard-deliveries/commit":
+            return _delivery_record(preview_request, proposal_id, "pending_review")
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    preview = client.post(
+        "/api/promptcard/bridge/v3/delivery/preview",
+        json=preview_request,
+        headers=auth_headers(),
+    )
+    commit = client.post(
+        "/api/promptcard/bridge/v3/delivery/commit",
+        json={
+            "clientRequestId": f"{kind}-commit",
+            "normalizedRequestDigest": "sha256:" + "b" * 64,
+            "proposalId": proposal_id,
+        },
+        headers=auth_headers(),
+    )
+
+    assert preview.status_code == 200
+    assert commit.status_code == 200
+    assert [path for _, path, _ in calls] == [
+        f"/api/context-packs/{CVC}/resolve",
+        "/api/internal/bridge-storyboard-deliveries/preview",
+        f"/api/internal/bridge-delivery-proposals/{proposal_id}",
+        "/api/internal/bridge-storyboard-deliveries/commit",
     ]
 
 

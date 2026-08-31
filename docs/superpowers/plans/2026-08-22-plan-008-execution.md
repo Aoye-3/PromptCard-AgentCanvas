@@ -917,6 +917,8 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Implement `storyboard.create` and `storyboard.change` through the same ledger. Resolve exact CVS/revision/digest targets, compile ordinal-addressed external changes into the existing structured sequence proposal, and reuse per-shot/per-field review rather than creating another editor.
 
+**Status:** Foundation checkpoint pushed on `feat/skill-document-storyboard-loop` (2026-08-31). Storage and Gateway now accept the closed v3 Storyboard unions through the shared profile-scoped ledger; the browser parser rejects hidden node/row identities, and the native adapter deterministically converts external row ordinals to stable Canvas row IDs. The Inbox can identify and summarize Storyboard proposals. Canvas save-coordinator integration, pending-field projection, real-process create/change/review, replay, and restart evidence remain open, so none of the Task 26B acceptance criteria are checked yet. See [Task 26B foundation checkpoint](../../reviews/2026-08-31-task-26b-foundation-checkpoint.md).
+
 **Acceptance criteria:**
 
 - [ ] Storyboard create/change preserves the canonical sequence and source Document evidence.
