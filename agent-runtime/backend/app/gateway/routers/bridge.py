@@ -68,6 +68,125 @@ class PromptDeliveryPreviewPayload(BaseModel):
     payload: PromptCreatePayload
 
 
+class DocumentInlinePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(max_length=10_000)
+    bold: Literal[True] | None = None
+    italic: Literal[True] | None = None
+    href: str | None = Field(default=None, min_length=1, max_length=2048)
+
+
+class SimpleDocumentBlockPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=128)
+    type: Literal["paragraph", "blockquote", "heading"]
+    level: int | None = Field(default=None, ge=1, le=3)
+    content: list[DocumentInlinePayload] = Field(max_length=200)
+
+    @model_validator(mode="after")
+    def validate_heading_level(self):
+        if (self.type == "heading") != (self.level is not None):
+            raise ValueError("document heading level is invalid")
+        return self
+
+
+class DocumentCreateTargetPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cvcCode: str
+
+
+class DocumentCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=500)
+    blocks: list[SimpleDocumentBlockPayload] = Field(min_length=1, max_length=500)
+
+
+class DocumentCreateDeliveryPreviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    clientRequestId: str = Field(min_length=1, max_length=128)
+    normalizedRequestDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    kind: Literal["document.create"]
+    target: DocumentCreateTargetPayload
+    sourceCodes: list[str] = Field(max_length=32)
+    skillPins: list[SkillPinPayload] = Field(max_length=8)
+    rationale: str = Field(min_length=1, max_length=4000)
+    provenance: Literal["promptcard-bridge"]
+    payload: DocumentCreatePayload
+
+
+class DocumentChangeTargetPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cvcCode: str
+    documentCode: str
+    baseRevision: int = Field(ge=0)
+    baseDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class DocumentInsertOperationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["insert"]
+    blockId: str = Field(min_length=1, max_length=128)
+    utf8Offset: int = Field(ge=0)
+    text: str = Field(min_length=1, max_length=10_000)
+    expectedTextDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class DocumentDeleteOperationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["delete"]
+    blockId: str = Field(min_length=1, max_length=128)
+    utf8Start: int = Field(ge=0)
+    utf8End: int = Field(ge=0)
+    expectedTextDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_range(self):
+        if self.utf8End < self.utf8Start:
+            raise ValueError("document change range is invalid")
+        return self
+
+
+class DocumentReplaceOperationPayload(DocumentDeleteOperationPayload):
+    kind: Literal["replace"]
+    text: str = Field(min_length=1, max_length=10_000)
+
+
+DocumentOperationPayload = Annotated[
+    DocumentInsertOperationPayload
+    | DocumentDeleteOperationPayload
+    | DocumentReplaceOperationPayload,
+    Field(discriminator="kind"),
+]
+
+
+class DocumentChangePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operations: list[DocumentOperationPayload] = Field(min_length=1, max_length=32)
+
+
+class DocumentChangeDeliveryPreviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    clientRequestId: str = Field(min_length=1, max_length=128)
+    normalizedRequestDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    kind: Literal["document.change"]
+    target: DocumentChangeTargetPayload
+    sourceCodes: list[str] = Field(max_length=32)
+    skillPins: list[SkillPinPayload] = Field(max_length=8)
+    rationale: str = Field(min_length=1, max_length=4000)
+    provenance: Literal["promptcard-bridge"]
+    payload: DocumentChangePayload
+
+
 class ImagePlacementTargetPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -116,7 +235,10 @@ class ImageDeliveryPreviewPayload(BaseModel):
 
 
 DeliveryPreviewPayload = Annotated[
-    PromptDeliveryPreviewPayload | ImageDeliveryPreviewPayload,
+    PromptDeliveryPreviewPayload
+    | ImageDeliveryPreviewPayload
+    | DocumentCreateDeliveryPreviewPayload
+    | DocumentChangeDeliveryPreviewPayload,
     Field(discriminator="kind"),
 ]
 
@@ -215,7 +337,7 @@ async def preview_delivery(
     principal: Principal,
 ):
     _reject_extra_query(request, set())
-    return await delivery_preview(principal, payload.model_dump())
+    return await delivery_preview(principal, payload.model_dump(exclude_none=True))
 
 
 @router.post("/assets/stage")

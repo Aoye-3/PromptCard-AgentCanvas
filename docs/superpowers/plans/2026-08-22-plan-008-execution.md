@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Tasks 16-26 complete; Task 26A Storage Document kernel verified and Gateway/Canvas vertical slice next; final real-Codex closed-loop gate remains the merge condition`
+- Status: `Tasks 16-26 complete; Task 26A Storage and Gateway Document adapters verified and Canvas review/application next; final real-Codex closed-loop gate remains the merge condition`
 - Date: `2026-08-31`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -892,9 +892,11 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Implement `document.create` and `document.change` on the same preview/commit/status ledger, resolving only exact CVC/CVD/revision/digest targets. Reuse the editor-neutral AST, suggestion rendering, conflict checks, save coordinator, and single/all accept/reject mechanisms already implemented for the local Agent.
 
-**Status:** In progress on `feat/skill-document-storyboard-loop` (2026-08-31). The first checkpoint completes the Storage adapter and protected internal routes; Gateway/MCP routing and native Canvas review/application remain open. Task 26B is still locked.
+**Status:** In progress on `feat/skill-document-storyboard-loop` (2026-08-31). The first checkpoint completes the Storage adapter and protected internal routes; the second completes Gateway validation/routing through the existing MCP contract. Native Canvas review/application remains open. Task 26B is still locked.
 
 **Checkpoint evidence:** Storage now validates the closed v3 create/change request shapes, canonicalizes public references and NFC text, checks exact `CVC/CVD/revision/digest` plus per-leaf digest/UTF-8 boundaries before `ledger.begin`, rejects pending-suggestion and overlapping-range conflicts, persists deterministic visual proposals, and routes terminal decisions through same-project `CVD-*` validation. Preview, commit, replay, pending-review listing, rejection/acceptance, and process restart all use the existing profile-scoped v19 ledger. Focused Document plus Prompt/Image regression passes 15 tests and 4 subtests; touched Python passes Ruff.
+
+**Gateway checkpoint evidence:** the v3 router now uses closed discriminated models for Document create/change, rejects internal-node targets and absent Document scope before Storage, strips optional `None` fields, canonicalizes CVC/CVD/source references, preserves trusted profile context separately, and routes commit from the Storage-owned proposal kind. Status continues through the shared read-only ledger endpoint. The Bridge Gateway suite passes 29 tests; v1/v2/v3 contracts pass 52, CLI passes 8, MCP passes 10, Agent Runtime checks pass, and touched Python passes Ruff.
 
 **Acceptance criteria:**
 

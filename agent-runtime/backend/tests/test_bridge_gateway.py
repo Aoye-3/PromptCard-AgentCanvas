@@ -16,6 +16,7 @@ TOKEN = "bridge-test-token-that-is-longer-than-thirty-two-characters"
 PRJ = "PRJ-01ARZ3NDEKTSV4RRFFQ69G5FAV"
 CVC = "CVC-01ARZ3NDEKTSV4RRFFQ69G5FAV"
 DIGEST = "sha256:" + "a" * 64
+CVD = "CVD-01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 
 @pytest.fixture
@@ -599,6 +600,184 @@ def test_prompt_delivery_preview_commit_and_status_use_trusted_profile(client, m
     assert status.status_code == 200
     assert status.json()["state"] == "pending_review"
     assert len(calls) == 4
+
+
+@pytest.mark.parametrize(
+    ("kind", "target", "payload"),
+    [
+        (
+            "document.create",
+            {"cvcCode": CVC.lower()},
+            {
+                "title": "Script analysis",
+                "blocks": [{
+                    "id": "opening",
+                    "type": "paragraph",
+                    "content": [{"text": "Opening image"}],
+                }],
+            },
+        ),
+        (
+            "document.change",
+            {
+                "cvcCode": CVC.lower(),
+                "documentCode": CVD.lower(),
+                "baseRevision": 2,
+                "baseDigest": DIGEST,
+            },
+            {
+                "operations": [{
+                    "kind": "replace",
+                    "blockId": "opening",
+                    "utf8Start": 0,
+                    "utf8End": 7,
+                    "text": "First",
+                    "expectedTextDigest": DIGEST,
+                }],
+            },
+        ),
+    ],
+)
+def test_document_delivery_preview_and_commit_route_through_document_storage(
+    client, monkeypatch, kind, target, payload
+):
+    proposal_id = "DVP-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    preview_request = {
+        "clientRequestId": f"{kind}-preview",
+        "normalizedRequestDigest": DIGEST,
+        "kind": kind,
+        "target": target,
+        "sourceCodes": [CVD.lower()],
+        "skillPins": [],
+        "rationale": "Create a reviewable Document proposal.",
+        "provenance": "promptcard-bridge",
+        "payload": payload,
+    }
+    calls = []
+
+    async def fake_storage(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == f"/api/context-packs/{CVC}/resolve":
+            return {
+                "projectCode": PRJ,
+                "cvcCode": CVC,
+                "entries": [{
+                    "reference": {"namespace": "canvasDocument", "code": CVD},
+                    "content": "{}",
+                }],
+                "sourceCodes": [],
+            }
+        if path == "/api/internal/bridge-document-deliveries/preview":
+            forwarded = kwargs["json"]
+            assert forwarded["operationContext"]["profileId"] == "codex-local"
+            assert forwarded["deliveryRequest"]["target"]["cvcCode"] == CVC
+            if kind == "document.change":
+                assert forwarded["deliveryRequest"]["target"]["documentCode"] == CVD
+            assert forwarded["deliveryRequest"]["sourceCodes"] == [CVD]
+            assert forwarded["deliveryRequest"]["payload"] == payload
+            return _delivery_record(
+                forwarded["deliveryRequest"], proposal_id, "previewed"
+            )
+        if path.endswith(proposal_id):
+            return {"proposalId": proposal_id, "kind": kind, "state": "previewed"}
+        if path == "/api/internal/bridge-document-deliveries/commit":
+            return _delivery_record(preview_request, proposal_id, "pending_review")
+        if path.endswith(f"/{kind}-commit"):
+            assert kwargs["params"] == {"profileId": "codex-local"}
+            return _delivery_record(preview_request, proposal_id, "pending_review")
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    preview = client.post(
+        "/api/promptcard/bridge/v3/delivery/preview",
+        json=preview_request,
+        headers=auth_headers(),
+    )
+    commit = client.post(
+        "/api/promptcard/bridge/v3/delivery/commit",
+        json={
+            "clientRequestId": f"{kind}-commit",
+            "normalizedRequestDigest": "sha256:" + "b" * 64,
+            "proposalId": proposal_id,
+        },
+        headers=auth_headers(),
+    )
+    status = client.get(
+        "/api/promptcard/bridge/v3/delivery/status",
+        params={"clientRequestId": f"{kind}-commit"},
+        headers=auth_headers(),
+    )
+
+    assert preview.status_code == 200
+    assert commit.status_code == 200
+    assert status.status_code == 200
+    assert status.json()["request"]["kind"] == kind
+    assert [path for _, path, _ in calls] == [
+        f"/api/context-packs/{CVC}/resolve",
+        "/api/internal/bridge-document-deliveries/preview",
+        f"/api/internal/bridge-delivery-proposals/{proposal_id}",
+        "/api/internal/bridge-document-deliveries/commit",
+        f"/api/internal/bridge-prompt-deliveries/{kind}-commit",
+    ]
+
+
+def test_document_delivery_requires_document_scope_and_rejects_internal_node_targets(
+    client, monkeypatch
+):
+    prompt_only_token = "prompt-only-token-that-is-longer-than-thirty-two-chars"
+    monkeypatch.setenv(
+        "PROMPTCARD_BRIDGE_PROFILES_JSON",
+        json.dumps({
+            "prompt-only": {
+                "token": prompt_only_token,
+                "scopes": ["bridge:deliver:prompt"],
+            }
+        }),
+    )
+    called = False
+
+    async def fake_storage(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("rejected Document request must not reach Storage")
+
+    monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    request = {
+        "clientRequestId": "document-scope-preview",
+        "normalizedRequestDigest": DIGEST,
+        "kind": "document.create",
+        "target": {"cvcCode": CVC},
+        "sourceCodes": [],
+        "skillPins": [],
+        "rationale": "Create a reviewable Document proposal.",
+        "provenance": "promptcard-bridge",
+        "payload": {
+            "title": "Script analysis",
+            "blocks": [{
+                "id": "opening",
+                "type": "paragraph",
+                "content": [{"text": "Opening image"}],
+            }],
+        },
+    }
+    missing_scope = client.post(
+        "/api/promptcard/bridge/v3/delivery/preview",
+        json=request,
+        headers=auth_headers(prompt_only_token),
+    )
+    internal_target = client.post(
+        "/api/promptcard/bridge/v3/delivery/preview",
+        json={**request, "target": {"cvcCode": CVC, "nodeId": "document-1"}},
+        headers=auth_headers(prompt_only_token),
+    )
+
+    assert missing_scope.status_code == 403
+    assert missing_scope.json()["detail"] == {
+        "code": "bridge_scope_required",
+        "requiredScope": "bridge:deliver:document",
+    }
+    assert internal_target.status_code == 422
+    assert called is False
 
 
 def test_image_stage_validates_multipart_and_hides_internal_asset_id(client, monkeypatch):

@@ -265,6 +265,14 @@ async def delivery_preview(
 ) -> dict[str, Any]:
     kind = request.get("kind")
     kind_routes = {
+        "document.create": (
+            "bridge:deliver:document",
+            "/api/internal/bridge-document-deliveries/preview",
+        ),
+        "document.change": (
+            "bridge:deliver:document",
+            "/api/internal/bridge-document-deliveries/preview",
+        ),
         "prompt.create": (
             "bridge:deliver:prompt",
             "/api/internal/bridge-prompt-deliveries/preview",
@@ -372,6 +380,10 @@ async def _validate_delivery_sources_and_skills(
                 raise HTTPException(status_code=409, detail={"code": "skill_pin_stale"})
     normalized_target = dict(target)
     normalized_target["cvcCode"] = cvc_code
+    if request.get("kind") == "document.change":
+        normalized_target["documentCode"] = _canonical_reference(
+            target.get("documentCode"), "CVD"
+        )
     return {
         **request,
         "target": normalized_target,
@@ -442,6 +454,14 @@ async def delivery_commit(
     )
     kind = proposal.get("kind")
     routes = {
+        "document.create": (
+            "bridge:deliver:document",
+            "/api/internal/bridge-document-deliveries/commit",
+        ),
+        "document.change": (
+            "bridge:deliver:document",
+            "/api/internal/bridge-document-deliveries/commit",
+        ),
         "prompt.create": (
             "bridge:deliver:prompt",
             "/api/internal/bridge-prompt-deliveries/commit",

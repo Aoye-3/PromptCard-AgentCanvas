@@ -1,5 +1,7 @@
 # Task 26A Storage Kernel Checkpoint Handoff
 
+> Superseded for active work by [Task 26A Gateway Checkpoint Handoff](./2026-08-31-task-26a-gateway-checkpoint.md).
+
 ## Checkpoint
 
 - Date: 2026-08-31
