@@ -57,6 +57,8 @@ The Canvas CVC creation action first flushes the current Free Canvas through the
 
 `objectCodes` is derived from `resolve.entries[].reference.code`. It is deliberately separate from context-pack `sourceCodes`, which describe dependencies/evidence and must not be interpreted as CVC membership or write authority.
 
+Prompt acceptance creates one deterministic all-`user` text node, persists it before acknowledgement, and requires the Storage response to assign a same-project `CVT-*`. Its external-Agent model provenance is a closed snapshot including `capabilities: {}`; omitting that field is invalid even when the raw node could be stored, because the strict browser normalizer must be able to re-read the saved result before the ledger becomes `accepted`.
+
 ## PromptCard Runtime Boundary
 
 Authenticated browser mutations are protected by the Runtime CSRF middleware. The maintained frontend client sends the session cookie with `credentials: "include"`, reads the CSRF cookie, and copies it to `X-CSRF-Token`. Direct callers that omit or mismatch the token receive a structured rejection before model, keyring, Storage, or provider work begins.

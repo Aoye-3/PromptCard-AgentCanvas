@@ -35,6 +35,9 @@ interface StoredCanvasNode {
   pendingFieldChanges?: StoredStoryboardFieldChange[]
   revision?: number
   digest?: string
+  segments?: Array<{ source: string; text: string }>
+  agentPromptHandoff?: { proposalId: string; conversationId: string }
+  provenance?: { model: { capabilities?: Record<string, unknown> } }
   meta: Record<string, unknown>
 }
 
@@ -258,6 +261,82 @@ test('real Gateway creates and changes a reviewed Document without duplicate app
       for (const code of contextCodes) await revokeContext(request, code)
       await deleteProjectFixture(request, fixture.id)
     }
+  }
+})
+
+test('real Gateway persists and acknowledges one reviewed Prompt', async ({ context, page, request }) => {
+  test.skip(!bridgeToken, 'Run through npm run test:e2e:bridge so the real Gateway profile is configured.')
+  test.skip(Boolean(bridgePhase), 'The restart runner uses the dedicated prepare/recover tests.')
+
+  const fixture = await createProjectFixture(request)
+  let cvcCode: string | null = null
+  const dialogMessages: string[] = []
+  page.on('dialog', dialog => {
+    dialogMessages.push(dialog.message())
+    void dialog.accept()
+  })
+  try {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await openProject(page, fixture.id, fixture.title)
+    cvcCode = await createContextPack(page, request, fixture.id, fixture.sourceCode)
+    const title = 'Bridge-reviewed Prompt'
+    const userText = 'Naturalistic rainy railway platform close-up.'
+    const previewRequest = {
+      clientRequestId: `${fixture.id}-prompt-create-preview`,
+      normalizedRequestDigest: digest(`${fixture.id}:prompt-create-preview`),
+      kind: 'prompt.create',
+      target: { cvcCode },
+      sourceCodes: [fixture.sourceCode],
+      skillPins: [],
+      rationale: 'Create one reviewable generation Prompt.',
+      provenance: 'promptcard-bridge',
+      payload: { title, userText }
+    }
+    const preview = await bridgePost(request, '/delivery/preview', previewRequest)
+    const commit = await bridgePost(request, '/delivery/commit', {
+      clientRequestId: `${fixture.id}-prompt-create-commit`,
+      normalizedRequestDigest: digest(`${fixture.id}:prompt-create-commit`),
+      proposalId: preview.proposalId
+    })
+    expect(commit.state).toBe('pending_review')
+
+    await page.getByRole('button', { name: '刷新外部 Agent 提案' }).click()
+    const inbox = page.locator('[data-bridge-delivery-inbox]')
+    await expect(inbox.getByText(title, { exact: true })).toBeVisible({ timeout: 15_000 })
+    const decisionResponse = page.waitForResponse(response => (
+      response.request().method() === 'POST'
+      && new URL(response.url()).pathname.endsWith(`/bridge-deliveries/${preview.proposalId}/decision`)
+    ), { timeout: 30_000 })
+    await inbox.getByRole('button', { name: '接受外部 Agent Prompt 提案' }).click()
+    try {
+      const outcome = await Promise.race([
+        decisionResponse.then(response => ({ kind: 'decision' as const, response })),
+        inbox.getByRole('alert').waitFor({ state: 'visible', timeout: 10_000 }).then(async () => ({
+          kind: 'alert' as const,
+          text: await inbox.getByRole('alert').innerText()
+        }))
+      ])
+      if (outcome.kind === 'alert') throw new Error(`Prompt review alert: ${outcome.text}`)
+      const response = outcome.response
+      expect(response.ok(), await response.text()).toBe(true)
+    } catch (error) {
+      const stored = await getProject(request, fixture.id)
+      const alerts = await inbox.getByRole('alert').allTextContents()
+      throw new Error(`${String(error)} alerts=${JSON.stringify(alerts)} dialogs=${JSON.stringify(dialogMessages)} nodes=${JSON.stringify(stored.freeCanvas.nodes)}`)
+    }
+    await expect(inbox.getByText(title, { exact: true })).toHaveCount(0, { timeout: 10_000 })
+
+    const prompts = (await getProject(request, fixture.id)).freeCanvas.nodes.filter(node => (
+      node.kind === 'text' && node.title === title
+    ))
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0].referenceCode).toMatch(/^CVT-/)
+    expect(prompts[0].segments?.map(segment => segment.text).join('')).toBe(userText)
+    expect(prompts[0].segments?.every(segment => segment.source === 'user')).toBe(true)
+    expect(prompts[0].provenance?.model.capabilities).toEqual({})
+  } finally {
+    if (cvcCode) await revokeContext(request, cvcCode)
+    await deleteProjectFixture(request, fixture.id)
   }
 })
 

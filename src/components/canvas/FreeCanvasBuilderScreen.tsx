@@ -7083,7 +7083,8 @@ const createBridgePromptApplication = async (
       connectionId: `bridge:${delivery.operationContext.profileId}`,
       providerId: 'external-agent',
       modelId: delivery.operationContext.clientInfo?.name || delivery.operationContext.profileId,
-      displayName: delivery.visualProposal.agentName
+      displayName: delivery.visualProposal.agentName,
+      capabilities: {}
     },
     skills: delivery.request.skillPins.map(pin => ({
       skillId: pin.skillCode,

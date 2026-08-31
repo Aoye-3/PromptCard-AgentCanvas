@@ -50,6 +50,9 @@ interface StoredNode {
   document?: StoredDocument
   sequence?: StoredStoryboardSequence
   pendingFieldChanges?: StoredStoryboardFieldChange[]
+  segments?: Array<{ source: string; text: string }>
+  agentPromptHandoff?: { proposalId: string; conversationId: string }
+  provenance?: { model: { capabilities?: Record<string, unknown> } }
   meta: Record<string, unknown>
 }
 
@@ -60,7 +63,7 @@ interface StoredProject {
 
 test.describe.configure({ mode: 'serial' })
 
-test('real Codex creates and changes reviewable Document and Storyboard objects', async ({
+test('real Codex creates and changes reviewable Document, Storyboard, and Prompt objects', async ({
   context,
   page,
   request
@@ -266,6 +269,52 @@ test('real Codex creates and changes reviewable Document and Storyboard objects'
         pending: stored?.pendingFieldChanges?.length ?? -1
       }
     }).toEqual({ camera: 'Close-up', pending: 0 })
+
+    const acceptedStoryboard = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+      .find(node => node.referenceCode === storyboard!.referenceCode)
+    expect(acceptedStoryboard?.sequence?.rows[0].camera).toBe('Close-up')
+    const promptCvc = await createContextPack(
+      page, request, fixture.projectId, acceptedStoryboard!.referenceCode
+    )
+    contextCodes.push(promptCvc)
+    const promptTitle = `Codex shot prompt ${fixture.suffix}`
+    const promptText = 'Naturalistic close-up of a filmmaker waiting on a rain-soaked railway platform at night, neon reflections, departing train, no dialogue.'
+    const promptPreviewId = `${fixture.suffix}-prompt-create-preview`
+    const promptCommitId = `${fixture.suffix}-prompt-create-commit`
+    const promptRun = await runRealCodexPrompt([
+      'You are a newly connected external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, or non-PromptCard tools.',
+      `Work only in project ${fixture.projectCode} and context ${promptCvc}.`,
+      'Follow the packaged environment: describe Runtime, describe Workspace, read every exact approved Skill pin,',
+      `and resolve the exact accepted Storyboard ${acceptedStoryboard!.referenceCode}.`,
+      `Create exactly one review-only Prompt proposal titled “${promptTitle}”.`,
+      `Its exact user text must be “${promptText}”.`,
+      `Use ${acceptedStoryboard!.referenceCode} as the only source code and copy the exact approved Skill pin from Workspace.`,
+      `Use preview clientRequestId “${promptPreviewId}” with normalizedRequestDigest “${digest(promptPreviewId)}”.`,
+      `After preview succeeds, commit that proposal using clientRequestId “${promptCommitId}” and digest “${digest(promptCommitId)}”.`,
+      'Do not create any other proposal. Stop after commit reports pending review.'
+    ].join(' '), 300_000)
+
+    assertSuccessfulCalls(promptRun, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit'
+    ])
+    expect(toolPayload(promptRun, 'promptcard_delivery_commit')).toMatchObject({ state: 'pending_review' })
+    await reviewPending(page, promptTitle, '接受外部 Agent Prompt 提案')
+
+    const promptNodes = (await getProject(request, fixture.projectId)).freeCanvas.nodes.filter(node => (
+      node.kind === 'text' && node.title === promptTitle
+    ))
+    expect(promptNodes).toHaveLength(1)
+    expect(promptNodes[0].referenceCode).toMatch(/^CVT-/)
+    expect(promptNodes[0].segments?.map(segment => segment.text).join('')).toBe(promptText)
+    expect(promptNodes[0].segments?.every(segment => segment.source === 'user')).toBe(true)
+    expect(promptNodes[0].provenance?.model.capabilities).toEqual({})
+    expect(promptNodes[0].agentPromptHandoff?.conversationId).toBe(`bridge:codex-e2e:${promptCvc}`)
   } finally {
     for (const code of contextCodes.reverse()) await revokeContext(request, code)
     await cleanupFixture(request, fixture)
@@ -427,7 +476,12 @@ async function reviewPending(page: Page, title: string, acceptLabel: string) {
   const inbox = page.locator('[data-bridge-delivery-inbox]')
   await expect(inbox.getByText(title, { exact: true })).toBeVisible()
   await inbox.getByRole('button', { name: acceptLabel }).click()
-  await expect(inbox.getByText(title, { exact: true })).toHaveCount(0)
+  try {
+    await expect(inbox.getByText(title, { exact: true })).toHaveCount(0, { timeout: 30_000 })
+  } catch (error) {
+    const alerts = await inbox.getByRole('alert').allTextContents()
+    throw new Error(`${String(error)} reviewAlerts=${JSON.stringify(alerts)}`)
+  }
 }
 
 async function getProject(request: APIRequestContext, id: string) {

@@ -3,9 +3,9 @@
 ## State
 
 - Branch: `feat/skill-document-storyboard-loop`
-- Scope: real-Codex Document and Storyboard create/change writeback plus Bridge v3 first-contact usability
+- Scope: real-Codex Document/Storyboard create/change, Prompt create, and Bridge v3 first-contact usability
 - Merge state: feature branch only; `main` remains unchanged
-- Acceptance state: real Codex Document and Storyboard create/change review slices passed; Prompt, image, replay, and restart remain open
+- Acceptance state: real Codex Document/Storyboard create/change and Prompt create review slices passed; image, replay, and restart remain open
 
 ## What The Real Host Proved
 
@@ -39,12 +39,13 @@ Extending the harness through Document change exposed the remaining first-contac
 - TypeScript: passed.
 - CVC creation, App save coordination, and native Canvas regression: 110 passed.
 - Bootstrap strict parsing/service/UI regression: 107 passed.
-- Actual Codex Document and Storyboard create/change, both native review UIs, and final persistence: 1 passed in 5.2 minutes across four newly connected Codex sessions.
+- Isolated real Gateway/Storage/browser Prompt save and ledger decision: 1 passed in 53.4 seconds.
+- Actual Codex Document/Storyboard create/change and Prompt create with all native review UIs and final persistence: 1 passed in 6.4 minutes across five newly connected Codex sessions.
 
 The inaccessible legacy pytest-cache warnings are environmental and did not affect test results. The initial failed command that named `contracts/promptcard-bridge/tests` was a runner-path mistake; the repository's normative `npm.cmd run test:contracts` command passed all 52 cases.
 
 ## Accepted Boundary And Resume Point
 
-The Document and Storyboard slices are accepted because actual Codex proposals created exactly one `CVD` and one exact-source `CVS`, then changed both exact bases through the native red-delete/green-add and per-field review UIs. The user-facing flow persisted the Document replacement with zero suggestions and the Storyboard camera `Close-up` with zero pending field changes, while preserving source, four-field Skill pin, profile, CVC, request identity, and public identities. The strict harness recorded no failed PromptCard Tool call in the passing run. This is not Checkpoint 5.
+The Document, Storyboard, and Prompt slices are accepted because actual Codex proposals created exactly one `CVD`, one exact-source `CVS`, and one create-only `CVT`, then changed both mutable exact bases through the native red-delete/green-add and per-field review UIs. The user-facing flow persisted the Document replacement with zero suggestions, the Storyboard camera `Close-up` with zero pending field changes, and the exact Prompt as all-`user` segments with closed Bridge provenance. The strict harness recorded no failed PromptCard Tool call in the passing run. This is not Checkpoint 5.
 
-Extend the same real-host fixture from the accepted CVS into Prompt create and its visual review. Codex image generation/staging/placement, replay of every delivery, and process restart remain after that slice.
+Extend the same real-host fixture with Codex image generation, bounded workspace staging, placement against the accepted creative context, and visual review. Replay of every delivery and process restart remain after that slice.
