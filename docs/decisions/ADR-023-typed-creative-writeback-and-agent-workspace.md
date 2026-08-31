@@ -43,6 +43,8 @@ Task 25 implements the `image.place` vertical slice without borrowing provider-g
 
 Task 26 exposes the v3 write surface through the same repository CLI client and MCP server used by the read Tools. STDIO and loopback HTTP now publish identical closed schemas for delivery preview, commit, status, and asset staging. Staging requires an explicit absolute workspace root and resolves the candidate's real path before reading, so traversal and symlink/junction escape fail before Gateway I/O; size, signature, declared length, and digest are rechecked locally and again by Gateway. Status remains read-only, while preview/commit are declared idempotent, non-destructive proposal operations. Codex and other hosts therefore share one Tool contract rather than client-specific adapters.
 
+Task 26A's first checkpoint implements the Storage-owned Document delivery kernel. `document.create` accepts the closed simple Document AST, and `document.change` resolves only an exact `CVD-*` contained by the selected `CVC-*`. Revision/digest, leaf identity, expected text digest, NFC UTF-8 boundaries, pending suggestions, and overlapping ranges are checked before the ledger preview is created. Preview/commit/replay/restart share the same profile-scoped ledger and an accepted delivery must resolve to exactly one same-project `CVD-*`. This checkpoint does not yet claim the full vertical slice: Gateway routing, deterministic Canvas application, native red-delete/green-add review, and provenance display remain required before Task 26A completes.
+
 ## Alternatives Considered
 
 ### Extend Bridge v2 In Place

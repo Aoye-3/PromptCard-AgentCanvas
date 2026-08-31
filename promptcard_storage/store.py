@@ -28,6 +28,7 @@ from .delivery_ledger import (
     BridgeDeliveryValidationError,
     create_bridge_delivery_schema,
 )
+from .document_delivery import BridgeDocumentDeliveryService
 from .image_delivery import BridgeImageDeliveryService
 from .prompt_delivery import BridgePromptDeliveryService
 from .document_resources import DocumentResourceStore
@@ -214,6 +215,10 @@ class SqliteStore:
         )
         self._bridge_prompt_deliveries = BridgePromptDeliveryService(
             self._bridge_deliveries
+        )
+        self._bridge_document_deliveries = BridgeDocumentDeliveryService(
+            self._bridge_deliveries,
+            self.resolve_context_pack,
         )
         self._bridge_image_deliveries = BridgeImageDeliveryService(
             self._bridge_deliveries,
@@ -965,6 +970,20 @@ class SqliteStore:
     ) -> dict[str, Any]:
         return self._bridge_prompt_deliveries.commit(operation_context, request)
 
+    def preview_bridge_document_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_document_deliveries.preview(operation_context, request)
+
+    def commit_bridge_document_delivery(
+        self,
+        operation_context: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._bridge_document_deliveries.commit(operation_context, request)
+
     def get_bridge_prompt_delivery(
         self, profile_id: str, client_request_id: str
     ) -> dict[str, Any]:
@@ -1018,6 +1037,8 @@ class SqliteStore:
     ) -> list[dict[str, Any]]:
         deliveries = self._bridge_prompt_deliveries.list(
             cvc_code, state=state, profile_id=profile_id
+        ) + self._bridge_document_deliveries.list(
+            cvc_code, state=state, profile_id=profile_id
         ) + self._bridge_image_deliveries.list(
             cvc_code, state=state, profile_id=profile_id
         )
@@ -1035,6 +1056,13 @@ class SqliteStore:
     ) -> dict[str, Any]:
         try:
             return self._bridge_prompt_deliveries.decide(
+                cvc_code, proposal_id, decision, result_codes
+            )
+        except BridgeDeliveryValidationError as exc:
+            if exc.code != "delivery_proposal_not_found":
+                raise
+        try:
+            return self._bridge_document_deliveries.decide(
                 cvc_code, proposal_id, decision, result_codes
             )
         except BridgeDeliveryValidationError as exc:

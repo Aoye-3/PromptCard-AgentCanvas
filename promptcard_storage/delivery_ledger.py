@@ -524,18 +524,32 @@ def _require_result_codes_in_context(
     if expected_namespace not in {"CVT", "CVM", "CVD", "CVS"}:
         raise BridgeDeliveryValidationError("delivery_result_codes_invalid")
     for code in result_codes:
-        row = connection.execute(
-            """SELECT 1
-               FROM context_packs AS context
-               JOIN public_references AS project
-                 ON project.public_code=context.project_code
-                AND project.namespace='PRJ' AND project.owner_scope=''
-               JOIN public_references AS result
-                 ON result.owner_scope=project.internal_id
-                AND result.namespace=?
-               WHERE context.cvc_code=? AND result.public_code=?""",
-            (expected_namespace, cvc_code, code),
-        ).fetchone()
+        if expected_namespace in {"CVD", "CVS"}:
+            row = connection.execute(
+                """SELECT 1
+                   FROM context_packs AS context
+                   JOIN public_references AS project
+                     ON project.public_code=context.project_code
+                    AND project.namespace='PRJ' AND project.owner_scope=''
+                   JOIN creative_references AS result
+                     ON result.project_id=project.internal_id
+                    AND result.namespace=?
+                   WHERE context.cvc_code=? AND result.public_code=?""",
+                (expected_namespace, cvc_code, code),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """SELECT 1
+                   FROM context_packs AS context
+                   JOIN public_references AS project
+                     ON project.public_code=context.project_code
+                    AND project.namespace='PRJ' AND project.owner_scope=''
+                   JOIN public_references AS result
+                     ON result.owner_scope=project.internal_id
+                    AND result.namespace=?
+                   WHERE context.cvc_code=? AND result.public_code=?""",
+                (expected_namespace, cvc_code, code),
+            ).fetchone()
         if row is None:
             raise BridgeDeliveryValidationError("delivery_result_code_unavailable")
 

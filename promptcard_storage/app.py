@@ -770,6 +770,26 @@ def create_app(
             payload.operationContext, payload.deliveryRequest
         ))
 
+    @application.post("/api/internal/bridge-document-deliveries/preview")
+    def preview_bridge_document_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.preview_bridge_document_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
+    @application.post("/api/internal/bridge-document-deliveries/commit")
+    def commit_bridge_document_delivery(
+        payload: BridgePromptDeliveryPayload,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_internal_auth(request)
+        return _handle(lambda: storage.commit_bridge_document_delivery(
+            payload.operationContext, payload.deliveryRequest
+        ))
+
     @application.post("/api/internal/bridge-image-assets/stage")
     async def stage_bridge_image_asset(request: Request) -> dict[str, Any]:
         _require_internal_auth(request)

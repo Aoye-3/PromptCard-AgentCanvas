@@ -4,7 +4,7 @@
 
 ## Status
 
-- Status: `Tasks 16-26 complete on the feature branch; Task 26A typed Document writeback is next; final real-Codex closed-loop gate remains the merge condition`
+- Status: `Tasks 16-26 complete; Task 26A Storage Document kernel verified and Gateway/Canvas vertical slice next; final real-Codex closed-loop gate remains the merge condition`
 - Date: `2026-08-31`
 - Planning update branch: `docs/document-skill-loop-plan`
 - Active execution branch: `feat/skill-document-storyboard-loop`
@@ -891,6 +891,10 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 ### Task 26A: Adapt typed Document writeback into visual suggestions
 
 **Description:** Implement `document.create` and `document.change` on the same preview/commit/status ledger, resolving only exact CVC/CVD/revision/digest targets. Reuse the editor-neutral AST, suggestion rendering, conflict checks, save coordinator, and single/all accept/reject mechanisms already implemented for the local Agent.
+
+**Status:** In progress on `feat/skill-document-storyboard-loop` (2026-08-31). The first checkpoint completes the Storage adapter and protected internal routes; Gateway/MCP routing and native Canvas review/application remain open. Task 26B is still locked.
+
+**Checkpoint evidence:** Storage now validates the closed v3 create/change request shapes, canonicalizes public references and NFC text, checks exact `CVC/CVD/revision/digest` plus per-leaf digest/UTF-8 boundaries before `ledger.begin`, rejects pending-suggestion and overlapping-range conflicts, persists deterministic visual proposals, and routes terminal decisions through same-project `CVD-*` validation. Preview, commit, replay, pending-review listing, rejection/acceptance, and process restart all use the existing profile-scoped v19 ledger. Focused Document plus Prompt/Image regression passes 15 tests and 4 subtests; touched Python passes Ruff.
 
 **Acceptance criteria:**
 

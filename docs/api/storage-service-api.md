@@ -357,6 +357,8 @@ The following routes are internal-token-only Gateway/Storage coordination and ar
 - `POST /api/internal/bridge-deliveries/reconcile`
 - `POST /api/internal/bridge-prompt-deliveries/preview`
 - `POST /api/internal/bridge-prompt-deliveries/commit`
+- `POST /api/internal/bridge-document-deliveries/preview`
+- `POST /api/internal/bridge-document-deliveries/commit`
 - `POST /api/internal/bridge-image-assets/stage`
 - `POST /api/internal/bridge-image-deliveries/preview`
 - `POST /api/internal/bridge-image-deliveries/commit`
@@ -364,7 +366,7 @@ The following routes are internal-token-only Gateway/Storage coordination and ar
 - `GET /api/internal/bridge-prompt-deliveries/{clientRequestId}?profileId=`
 - `GET /api/internal/context-packs/{cvcCode}/bridge-deliveries?profileId=&state=`
 
-The Bridge delivery routes implement the schema v19 profile-scoped idempotency ledger. `begin` receives trusted operation context separately from the untrusted delivery request; requests containing `profileId`, scopes, client identity, or an operation context are rejected. Only new operations require a current active CVC; replay and status return the first durable result without repeating the mutation. `finish` is compare-by-profile/request/digest, and recovery converts bounded stale `processing` rows to a durable redacted failure. The typed Prompt routes adapt the v3 `prompt.create` preview/commit/status contract into that ledger and keep profile-specific status isolated.
+The Bridge delivery routes implement the schema v19 profile-scoped idempotency ledger. `begin` receives trusted operation context separately from the untrusted delivery request; requests containing `profileId`, scopes, client identity, or an operation context are rejected. Only new operations require a current active CVC; replay and status return the first durable result without repeating the mutation. `finish` is compare-by-profile/request/digest, and recovery converts bounded stale `processing` rows to a durable redacted failure. The typed Prompt routes adapt `prompt.create`; the typed Document routes adapt `document.create` and `document.change`. Document changes resolve one exact `CVD-*` inside the selected `CVC-*`, compare its revision/digest and per-leaf expected text digest before recording a preview, validate NFC UTF-8 boundaries, and reject pending-suggestion or overlapping-operation conflicts. Document acceptance requires exactly one same-project `CVD-*`; internal Canvas node IDs never enter the request or proposal. Gateway routing and browser application of the visual Document proposal are intentionally tracked separately in Task 26A.
 
 The internal image stage route accepts raw bytes plus an `X-PromptCard-Stage-Metadata` JSON envelope from Gateway only. It caps the image at 30 MB, revalidates the CVC and image bytes, records `asset.stage`, and stores the prepared result under deterministic content identity. The external Gateway response omits Storage asset IDs and returns an opaque `AST-*` handle. Image preview/commit accepts only that handle, not a filesystem path or URL. A local review decision may mark the proposal accepted only with one same-project `CVM-*`; the operation never inserts an image-generation run.
 
