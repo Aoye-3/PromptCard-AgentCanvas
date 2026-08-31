@@ -20,7 +20,7 @@ test('a real Codex host discovers PromptCard without prior internal schema knowl
       `Discover the available PromptCard environment for project ${fixture.projectCode} and context ${fixture.cvcCode}.`,
       'Follow the environment’s own progressive-disclosure guidance before doing anything else.',
       'Then inspect every exact creative object in the context, read every exact approved Skill pin,',
-      'search bounded Prompt evidence relevant to “rain station”, resolve the exact Prompt result if one exists,',
+      `search bounded Prompt evidence using the exact marker “${fixture.searchMarker}”, resolve that exact Prompt result,`,
       'and read one authorized image asset. Do not create or commit any proposal in this turn.',
       'Finish with a concise summary of only the actual public codes you successfully read.'
     ].join(' '))
@@ -32,7 +32,8 @@ test('a real Codex host discovers PromptCard without prior internal schema knowl
     expect(tools).toContain('promptcard_reference_resolve')
     expect(tools).toContain('promptcard_prompt_search')
     expect(tools).toContain('promptcard_asset_read')
-    expect(calls.every(call => call?.status === 'completed')).toBe(true)
+    const failedCalls = calls.filter(call => call?.status !== 'completed')
+    expect(failedCalls, JSON.stringify(failedCalls, null, 2)).toEqual([])
     expect(resultText(calls, 'promptcard_skill_read')).toContain('Keep cause-and-effect explicit')
     expect(resultText(calls, 'promptcard_workspace_describe')).toContain(fixture.sourceCode)
     expect(resultText(calls, 'promptcard_prompt_search')).toContain(fixture.promptCode)
@@ -44,6 +45,7 @@ test('a real Codex host discovers PromptCard without prior internal schema knowl
 
 const createDiscoveryFixture = async (request: APIRequestContext) => {
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const searchMarker = `RainSignal${suffix.replace(/[^a-z0-9]/gi, '')}`
   const assetResponse = await request.post(`${storageUrl}/api/assets`, {
     data: fixturePng,
     headers: { 'content-type': 'image/png', 'x-file-name': `real-codex-${suffix}.png` }
@@ -52,8 +54,8 @@ const createDiscoveryFixture = async (request: APIRequestContext) => {
   const asset = await assetResponse.json() as { id: string }
   const presetResponse = await request.post(`${storageUrl}/api/presets`, {
     data: {
-      type: 'custom', category: 'storyboard', label: `Rain station ${suffix}`,
-      content: 'Rain cuts across an empty station platform while the last train departs.',
+      type: 'custom', category: 'storyboard', label: `Rain station ${searchMarker}`,
+      content: `Rain cuts across an empty station platform while the last train departs. ${searchMarker}`,
       meta: {}
     }
   })
@@ -107,7 +109,7 @@ const createDiscoveryFixture = async (request: APIRequestContext) => {
   const skillResponse = await request.post(`${storageUrl}/api/skills`, {
     data: {
       id: skillId,
-      slug: skillId,
+      slug: `story-planning-${suffix}`,
       name: 'Real Codex Story Planning',
       description: 'A bounded acceptance Skill for story planning.',
       source: 'external',
@@ -133,6 +135,7 @@ const createDiscoveryFixture = async (request: APIRequestContext) => {
     cvcCode: context.cvcCode,
     promptId: preset.id,
     promptCode: preset.referenceCode,
+    searchMarker,
     assetId: asset.id,
     skillCode: skill.referenceCode
   }

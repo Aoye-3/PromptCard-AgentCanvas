@@ -4,7 +4,7 @@
 
 - Date: 2026-08-31
 - Branch: `feat/skill-document-storyboard-loop`
-- State: implementation and real-browser checkpoint passed; real Codex discovery remains open
+- State: implementation, real-browser checkpoint, and real Codex first-contact discovery passed
 - Merge state: feature branch only; do not merge or push `main` until the final real Codex four-kind loop passes
 
 ## Completed Boundary
@@ -31,6 +31,7 @@ The first browser run displayed `0/1` authorized objects even though the selecte
 - touched Ruff and ESLint: passed (three pre-existing `no-explicit-any` warnings remain within the repository threshold).
 - production build: passed with only the pre-existing CSS selector, dynamic-import, and large-chunk warnings.
 - real Storage + Gateway + Vite + Chromium scenario: 1 passed in 57.3 seconds.
+- actual Codex CLI + repository-owned STDIO MCP discovery scenario: 1 passed in 1.4 minutes.
 
 The real browser scenario proves:
 
@@ -40,19 +41,19 @@ The real browser scenario proves:
 4. one selected CVC Document is reported as `1/1` authorized and produces an exact copyable task;
 5. a CVC owned by another project is rejected and does not replace the active authority.
 
+The real Codex scenario additionally proves that a host with no preloaded PromptCard schema knowledge calls Runtime then Workspace first, reads the exact trusted Skill pin, resolves every CVC object, performs bounded Prompt retrieval, resolves the exact returned Prompt, and reads one authorized image asset. The test asserts captured MCP tool events and result payloads rather than accepting the model's final summary as evidence.
+
 ## Deliberately Not Claimed
 
-- A real Codex MCP client has not yet proved first-contact Bootstrap → runtime → workspace → Skill/reference discovery in this checkpoint.
 - This checkpoint does not repeat the final script → Document → Storyboard → Prompt → Codex-generated image loop.
 - Browser profile selection, recent activity, and saved CVC preference are not authorization.
 - `main` has not been changed.
 
 ## Next Exact Slice
 
-1. Connect a real Codex MCP process with a trusted profile and no preloaded PromptCard schema knowledge.
-2. Run the complete four-kind creative loop, including one requested revision, per-field Storyboard review, Prompt creation, image staging/writeback, replay, and process restart.
-3. Record blockers, data risks, and high-friction interactions; fix them test-first and rerun the entire loop.
-4. Only after that acceptance passes, update final evidence, merge the feature branch, and push `main`.
+1. Run the complete four-kind creative loop, including one requested revision, per-field Storyboard review, Prompt creation, image staging/writeback, replay, and process restart.
+2. Record blockers, data risks, and high-friction interactions; fix them test-first and rerun the entire loop.
+3. Only after that acceptance passes, update final evidence, merge the feature branch, and push `main`.
 
 ## Resume Commands
 
@@ -65,4 +66,5 @@ npm.cmd run test:mcp
 npx.cmd tsc --noEmit
 npm.cmd run build
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-e2e-tests.ps1 --real-gateway tests/e2e/agent-work-environment.spec.ts --workers=1
+npm.cmd run test:e2e:real-codex-discovery
 ```

@@ -8,13 +8,15 @@ $viteCli = Join-Path $repoRoot 'node_modules\vite\bin\vite.js'
 $playwrightCli = Join-Path $repoRoot 'node_modules\@playwright\test\cli.js'
 $runtimeFixture = Join-Path $repoRoot 'tests\fixtures\image_generation_runtime.py'
 $storageDataDir = Join-Path $repoRoot 'tests\.runtime\image-generation-storage'
+$realCodexRepositoryRoot = Join-Path $repoRoot 'tests\.runtime\real-codex-repository'
 $serviceLogRoot = Join-Path $repoRoot '.tmp\e2e-services'
 $timeoutSeconds = 600
 $ownedProcesses = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
 $exitCode = 1
 $playwrightArgs = @($args)
-$useRealGateway = $playwrightArgs -contains '--real-gateway'
-$playwrightArgs = @($playwrightArgs | Where-Object { $_ -ne '--real-gateway' })
+$useRealCodex = $playwrightArgs -contains '--real-codex'
+$useRealGateway = ($playwrightArgs -contains '--real-gateway') -or $useRealCodex
+$playwrightArgs = @($playwrightArgs | Where-Object { $_ -notin @('--real-gateway', '--real-codex') })
 
 if ($env:PROMPTCARD_E2E_RUNNER_TIMEOUT_SECONDS) {
   $parsedTimeout = 0
@@ -38,6 +40,9 @@ foreach ($requiredFile in $requiredFiles) {
 
 New-Item -ItemType Directory -Force -Path $serviceLogRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $storageDataDir | Out-Null
+if ($useRealCodex) {
+  New-Item -ItemType Directory -Force -Path $realCodexRepositoryRoot | Out-Null
+}
 
 function ConvertTo-ProcessArgument {
   param([AllowEmptyString()][string]$Value)
@@ -156,24 +161,39 @@ try {
   $env:PROMPTCARD_DESKTOP_DEV = '1'
   $env:PORT = '38101'
 
+  if ($useRealCodex) {
+    $env:PROMPTCARD_REAL_CODEX_ACCEPTANCE = '1'
+    $env:PROMPTCARD_REPOSITORY_SCOPE = 'real-codex-e2e'
+    $env:PROMPTCARD_REPOSITORY_ROOT = $realCodexRepositoryRoot
+  }
+
   if ($useRealGateway) {
     $env:PROMPTCARD_INTERNAL_TOKEN = 'promptcard-e2e-internal-token-38101'
     $env:PROMPTCARD_E2E_BRIDGE_TOKEN = 'promptcard-e2e-bridge-token-38101'
     $env:GATEWAY_CORS_ORIGINS = 'http://127.0.0.1:38100,http://localhost:38100'
+    $bridgeProfile = @{
+      token = $env:PROMPTCARD_E2E_BRIDGE_TOKEN
+      scopes = @(
+        'bridge:read',
+        'bridge:deliver:document',
+        'bridge:deliver:storyboard',
+        'bridge:deliver:prompt',
+        'bridge:deliver:image',
+        'bridge:status'
+      )
+      clientInfo = @{ name = 'codex'; version = 'e2e' }
+    }
+    if ($useRealCodex) {
+      $bridgeProfile.repositoryScope = $env:PROMPTCARD_REPOSITORY_SCOPE
+    }
     $env:PROMPTCARD_BRIDGE_PROFILES_JSON = (@{
-      'codex-e2e' = @{
-        token = $env:PROMPTCARD_E2E_BRIDGE_TOKEN
-        scopes = @(
-          'bridge:read',
-          'bridge:deliver:document',
-          'bridge:deliver:storyboard',
-          'bridge:deliver:prompt',
-          'bridge:deliver:image',
-          'bridge:status'
-        )
-        clientInfo = @{ name = 'codex'; version = 'e2e' }
-      }
+      'codex-e2e' = $bridgeProfile
     } | ConvertTo-Json -Compress -Depth 5)
+    if ($useRealCodex) {
+      $env:PROMPTCARD_BRIDGE_URL = 'http://127.0.0.1:38101'
+      $env:PROMPTCARD_BRIDGE_TOKEN = $env:PROMPTCARD_E2E_BRIDGE_TOKEN
+      $env:PROMPTCARD_BRIDGE_WORKSPACE_ROOT = $repoRoot
+    }
   }
 
   Write-Host 'Starting E2E storage service...'
