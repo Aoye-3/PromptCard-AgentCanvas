@@ -34,10 +34,38 @@ MAX_BRIDGE_ASSET_READ_BYTES = 5 * 1024 * 1024
 MAX_BRIDGE_ASSET_STAGE_BYTES = 30 * 1024 * 1024
 _BOOTSTRAP_TEXT = """# PromptCard Bootstrap
 
-PromptCard is a portable creative-context environment. Start with
-`promptcard_runtime_describe`, then call `promptcard_workspace_describe` with
-the exact PRJ and CVC selected by the user. Read only approved Skill revisions
-and exact references. All writes are proposals and require user review.
+PromptCard is a portable creative-context environment. This text is the built-in
+Bootstrap Skill; do not pass `promptcard-bootstrap` to `promptcard_skill_read`.
+
+1. Call `promptcard_workspace_describe` with the exact user-selected PRJ and CVC.
+   If it reports `context_stale` or `context_revoked`, stop and ask the user to
+   create or select a fresh CVC. Never guess a replacement context.
+2. Read only the exact SKL revisions returned in `skills`, and copy every Skill
+   pin into writeback unchanged: `skillCode`, `revision`, `digest`, and
+   `projectionHealth`. Do not add fields inside a Skill pin.
+3. Resolve only exact authorized references. Search results are discovery-only.
+4. A delivery preview is one closed kind-specific object. Its common fields are
+   `kind`, `clientRequestId`, `normalizedRequestDigest`, `sourceCodes`,
+   `skillPins`, `rationale`, `provenance: "promptcard-bridge"`, `target`, and
+   `payload`. Do not add project, context revision, or context digest fields.
+5. Use these exact target and payload shapes:
+   - `document.create`: target `{cvcCode}`; payload `{title, blocks}`. Each block
+     is `{id, type, content}`; each inline content item is `{text}` plus optional
+     `bold: true`, `italic: true`, or `href`. Inline items have no `type` field.
+   - `document.change`: target `{cvcCode, documentCode, baseRevision,
+     baseDigest}`; payload `{operations}` using the Tool schema.
+   - `storyboard.create`: target `{cvcCode}`; payload `{title,
+     sourceDocumentCode, sourceDocumentRevision, sourceDocumentDigest,
+     sequence}` using the Tool schema.
+   - `storyboard.change`: target `{cvcCode, storyboardCode, baseRevision,
+     baseDigest}`; payload `{changes}` using the Tool schema.
+   - `prompt.create`: target `{cvcCode}`; payload `{title, userText}`.
+   - `image.place`: target `{cvcCode}` plus optional exact Storyboard fields;
+     payload `{stagedAssetHandle}` plus optional `altText`.
+6. After preview succeeds, call `promptcard_delivery_commit` with only the same
+   preview `clientRequestId`, its `normalizedRequestDigest`, and returned
+   `proposalId`. Stop at `pending_review`; PromptCard applies nothing until the
+   user accepts it in the visual review interface.
 """
 
 
@@ -49,13 +77,13 @@ def bridge_contract_description() -> dict[str, Any]:
         "bridge:deliver:image",
     ]
     tools = [
-        _tool("promptcard_runtime_describe", "read", ["bridge:read"], "Describe the Bridge contract, Tools, limits, and next discovery step."),
+        _tool("promptcard_runtime_describe", "read", ["bridge:read"], "Describe the Bridge contract and return the built-in Bootstrap Skill instructions, Tools, limits, and next discovery step."),
         _tool("promptcard_workspace_describe", "read", ["bridge:read"], "Describe one explicit PRJ/CVC workspace, Skill pins, objects, and pending proposals."),
         _tool("promptcard_skill_read", "read", ["bridge:read"], "Read one user-approved exact Skill revision."),
         _tool("promptcard_reference_resolve", "read", ["bridge:read"], "Resolve an exact typed public reference inside its project scope."),
         _tool("promptcard_prompt_search", "read", ["bridge:read"], "Search bounded Prompt evidence; results are discovery-only."),
         _tool("promptcard_asset_read", "read", ["bridge:read"], "Read one explicitly authorized bounded asset."),
-        _tool("promptcard_delivery_preview", "proposal", delivery_scopes, "Validate a typed creative writeback and create or replay its preview."),
+        _tool("promptcard_delivery_preview", "proposal", delivery_scopes, "Validate one closed typed creative writeback described by bootstrapSkill.instructions and create or replay its preview."),
         _tool("promptcard_delivery_commit", "proposal", delivery_scopes, "Commit a preview to the visual review queue; never auto-apply it."),
         _tool("promptcard_delivery_status", "status", ["bridge:status"], "Read delivery state without repeating its mutation."),
         _tool("promptcard_asset_stage", "proposal", ["bridge:deliver:image"], "Stage one validated workspace image and return an opaque handle."),
@@ -65,8 +93,9 @@ def bridge_contract_description() -> dict[str, Any]:
         "serverName": "promptcard-bridge",
         "bootstrapSkill": {
             "name": "promptcard-bootstrap",
-            "revision": 1,
+            "revision": 2,
             "digest": "sha256:" + hashlib.sha256(_BOOTSTRAP_TEXT.encode("utf-8")).hexdigest(),
+            "instructions": _BOOTSTRAP_TEXT,
         },
         "tools": tools,
         "writebackKinds": [
@@ -111,6 +140,17 @@ async def workspace_description(
     project_summary = project_result.get("project") or {}
     if project_summary.get("referenceCode") != project:
         raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+    context_revision = inspection.get("projectRevision")
+    project_revision = project_summary.get("revision")
+    if (
+        not isinstance(context_revision, int)
+        or isinstance(context_revision, bool)
+        or not isinstance(project_revision, int)
+        or isinstance(project_revision, bool)
+    ):
+        raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+    if context_revision != project_revision:
+        raise HTTPException(status_code=409, detail={"code": "context_stale"})
     snapshot_digest = inspection.get("snapshotDigest")
     if not isinstance(snapshot_digest, str):
         raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
@@ -141,7 +181,7 @@ async def workspace_description(
     return {
         "projectCode": project,
         "cvcCode": context,
-        "contextRevision": inspection.get("projectRevision", project_summary.get("revision", 0)),
+        "contextRevision": context_revision,
         "contextDigest": snapshot_digest,
         "revoked": inspection.get("revokedAt") is not None,
         "skills": await _workspace_skills(principal),

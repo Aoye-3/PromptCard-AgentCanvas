@@ -8,15 +8,16 @@
     "serverName": "promptcard-bridge",
     "bootstrapSkill": {
       "name": "promptcard-bootstrap",
-      "revision": 1,
-      "digest": "sha256:862fce6d7cf3a7becb46412a44bbedba40fc8321976fbdc37cc44447865789fe"
+      "revision": 2,
+      "digest": "sha256:bb1b858f7ef6b89250c276a4b0beb82a1584f13266749044260b61334604f871",
+      "instructions": "Discover the exact Workspace first, stop on a stale or revoked CVC, copy approved four-field Skill pins unchanged, follow the closed kind-specific Tool schema, preview before commit, and stop for visual review."
     },
     "tools": [
       {
         "name": "promptcard_runtime_describe",
         "mode": "read",
         "requiredScopes": ["bridge:read"],
-        "description": "Describe the Bridge contract, Tools, limits, and next discovery step."
+        "description": "Describe the Bridge contract and return the built-in Bootstrap Skill instructions, Tools, limits, and next discovery step."
       },
       {
         "name": "promptcard_workspace_describe",
@@ -57,7 +58,7 @@
           "bridge:deliver:prompt",
           "bridge:deliver:image"
         ],
-        "description": "Validate a typed creative writeback and create or replay its preview."
+        "description": "Validate one closed typed creative writeback described by bootstrapSkill.instructions and create or replay its preview."
       },
       {
         "name": "promptcard_delivery_commit",

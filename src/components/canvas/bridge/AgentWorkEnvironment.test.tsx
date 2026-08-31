@@ -22,7 +22,10 @@ const environment = (): AgentWorkEnvironmentSnapshot => ({
       lastSeenAt: 1, connectionState: 'recently_active'
     }],
     contractVersion: '3.0.0',
-    bootstrapSkill: { name: 'promptcard-bootstrap', revision: 1, digest: DIGEST },
+    bootstrapSkill: {
+      name: 'promptcard-bootstrap', revision: 2, digest: DIGEST,
+      instructions: 'Use the explicit Workspace and preview before commit.'
+    },
     tools: [{
       name: 'promptcard_runtime_describe', mode: 'read',
       requiredScopes: ['bridge:read'], description: 'Describe the runtime.'
@@ -82,6 +85,7 @@ describe('AgentWorkEnvironment', () => {
 
     const text = JSON.stringify(renderer.toJSON())
     expect(text).toContain('promptcard-bootstrap')
+    expect(text).toContain('查看内置上手说明')
     expect(text).toContain('Bootstrap / Skill / Tool')
     expect(text).toContain(CVD)
     const copyButton = renderer.root.findAllByType('button').find(button => button.children.flat().includes('复制给外部 Agent'))

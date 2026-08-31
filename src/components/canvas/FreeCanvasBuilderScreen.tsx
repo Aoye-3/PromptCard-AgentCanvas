@@ -304,6 +304,7 @@ export interface FreeCanvasPersistReceipt {
   saved: true
   freeCanvas: IFreeCanvasProject
   editSeq: number
+  projectRevision: number
 }
 
 interface DocumentReconcileLease {
@@ -528,6 +529,17 @@ const FreeCanvasBuilderInner = ({
     setActiveBridgeCvcCode(code)
     writeActiveBridgeContext(activeProject.id, code)
   }, [activeProject.id])
+  const prepareContextPackRevision = useCallback(async () => {
+    if (!onPersistCanvas) return activeProject.revision
+    const receipt = await onPersistCanvas(freeCanvasRef.current)
+    if (
+      typeof receipt !== 'object'
+      || receipt.saved !== true
+      || !Number.isSafeInteger(receipt.projectRevision)
+      || receipt.projectRevision < 1
+    ) throw new Error('Canvas save did not return an authoritative project revision.')
+    return receipt.projectRevision
+  }, [activeProject.revision, onPersistCanvas])
   const [textSelections, setTextSelections] = useState<Record<string, Omit<CanvasAgentSelection, 'baseContentDigest'>>>({})
   const [nodeContextMenu, setNodeContextMenu] = useState<{
     nodeId: string
@@ -4091,6 +4103,7 @@ const FreeCanvasBuilderInner = ({
           nodes={freeCanvas.nodes}
           selectedNodeIds={selectedNodeIds}
           onActiveContextChange={context => changeActiveBridgeContext(context?.cvcCode || null)}
+          prepareProjectRevision={prepareContextPackRevision}
         />
         <ToolbarButton title="Save" onClick={onSave}><Save className="h-4 w-4" /></ToolbarButton>
       </header>

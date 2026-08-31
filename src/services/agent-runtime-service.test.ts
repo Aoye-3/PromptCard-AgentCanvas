@@ -105,7 +105,10 @@ describe('agent runtime message contract', () => {
           lastSeenAt: null, connectionState: 'configured'
         }],
         contractVersion: '3.0.0',
-        bootstrapSkill: { name: 'promptcard-bootstrap', revision: 1, digest },
+        bootstrapSkill: {
+          name: 'promptcard-bootstrap', revision: 2, digest,
+          instructions: 'Use the explicit Workspace and preview before commit.'
+        },
         tools: [{
           name: 'promptcard_runtime_describe', mode: 'read',
           requiredScopes: ['bridge:read'], description: 'Describe.'

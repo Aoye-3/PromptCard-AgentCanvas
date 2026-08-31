@@ -80,6 +80,9 @@ def test_bridge_runtime_describe_requires_a_separate_trusted_profile(client):
     body = response.json()
     assert body["contractVersion"] == "3.0.0"
     assert body["bootstrapSkill"]["name"] == "promptcard-bootstrap"
+    assert body["bootstrapSkill"]["revision"] == 2
+    assert "document.create" in body["bootstrapSkill"]["instructions"]
+    assert "do not pass `promptcard-bootstrap`" in body["bootstrapSkill"]["instructions"]
     assert {tool["name"] for tool in body["tools"]} == {
         "promptcard_runtime_describe",
         "promptcard_workspace_describe",
@@ -202,6 +205,36 @@ def test_workspace_describe_rejects_project_context_mismatch(client, monkeypatch
     )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "context_project_mismatch"
+
+
+def test_workspace_describe_rejects_a_context_behind_the_current_project_revision(
+    client, monkeypatch
+):
+    async def fake_storage(method, path, **kwargs):
+        assert method == "GET"
+        if path == f"/api/context-packs/{CVC}/resolve":
+            return {"projectCode": PRJ, "cvcCode": CVC, "entries": [], "sourceCodes": []}
+        if path == f"/api/context-packs/{CVC}":
+            return {
+                "projectCode": PRJ,
+                "cvcCode": CVC,
+                "projectRevision": 4,
+                "snapshotDigest": DIGEST,
+                "revokedAt": None,
+            }
+        if path == f"/api/projects/references/{PRJ}":
+            return {"project": {"referenceCode": PRJ, "revision": 5}}
+        raise AssertionError((method, path, kwargs))
+
+    monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    response = client.get(
+        "/api/promptcard/bridge/v3/workspace",
+        params={"projectCode": PRJ, "cvcCode": CVC},
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "context_stale"
 
 
 def test_workspace_describe_lists_only_typed_creative_objects(client, monkeypatch):

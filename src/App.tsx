@@ -144,6 +144,7 @@ function App() {
   )
   const lastHistoryContentRef = useRef('')
   const projectEditSeqRef = useRef<Record<string, number>>({})
+  const persistedProjectEditSeqRef = useRef<Record<string, number>>({})
   const lastCardWorkspaceSnapshotRef = useRef('')
   const activeProjectRef = useRef<IPromptProject | null>(null)
   const placeCaptureOnCanvasRef = useRef<(capture: RecentCaptureItem) => Promise<void>>(async () => undefined)
@@ -231,6 +232,17 @@ function App() {
 
   const getProjectEditSeq = useCallback((projectId: string) => projectEditSeqRef.current[projectId] || 0, [])
 
+  const markProjectPersisted = useCallback((projectId: string, editSeq: number) => {
+    persistedProjectEditSeqRef.current[projectId] = Math.max(
+      persistedProjectEditSeqRef.current[projectId] || 0,
+      editSeq
+    )
+  }, [])
+
+  const hasUnpersistedProjectEdits = useCallback((projectId: string) => (
+    getProjectEditSeq(projectId) > (persistedProjectEditSeqRef.current[projectId] || 0)
+  ), [getProjectEditSeq])
+
   const setProjectSaveStatus = useCallback((projectId: string, status: SaveStatus, savedAt?: number) => {
     setProjectSaveStates(current => ({
       ...current,
@@ -286,12 +298,13 @@ function App() {
     const snapshot = { ...project, ...updates }
     const result = await projectSaveCoordinator.enqueue({ project: snapshot, editSeq })
     if (result.status === 'saved' && result.project) {
+      markProjectPersisted(project.id, result.editSeq)
       confirmAutoSavedProject(result.project, savedAt, editSeq)
     } else if (result.status === 'failed') {
       handleProjectSaveError(project.id, result.error, errorMessage)
     }
     return result
-  }, [confirmAutoSavedProject, handleProjectSaveError, projectSaveCoordinator])
+  }, [confirmAutoSavedProject, handleProjectSaveError, markProjectPersisted, projectSaveCoordinator])
 
   const removeProjectsFromState = useCallback((ids: string[]) => {
     const idSet = new Set(ids)
@@ -464,6 +477,7 @@ function App() {
       try {
         const project = activeProjectRef.current
         if (!project || project.id !== activeProjectId || project.type !== 'card') return
+        if (!hasUnpersistedProjectEdits(activeProjectId)) return
         setProjectSaveStatus(activeProjectId, 'saving')
         const savedAt = Date.now()
         const editSeq = getProjectEditSeq(activeProjectId)
@@ -503,7 +517,7 @@ function App() {
     }, userSettings.autoSaveIdleSeconds * 1000)
 
     return () => window.clearTimeout(timeoutId)
-  }, [activeProjectId, allCards, canConfirmProjectSaved, currentPage, currentPrompt, getProjectEditSeq, handleProjectSaveError, isHydrated, pages, persistProjectChanges, projectMode, setProjectSaveStatus, userSettings.autoSave, userSettings.autoSaveIdleSeconds])
+  }, [activeProjectId, allCards, canConfirmProjectSaved, currentPage, currentPrompt, getProjectEditSeq, handleProjectSaveError, hasUnpersistedProjectEdits, isHydrated, pages, persistProjectChanges, projectMode, setProjectSaveStatus, userSettings.autoSave, userSettings.autoSaveIdleSeconds])
 
   useEffect(() => {
     if (!isHydrated || !userSettings.autoSave || !activeProjectId || projectMode !== 'builder' || !storyboardSnapshot) return
@@ -512,6 +526,7 @@ function App() {
       try {
         const project = activeProjectRef.current
         if (!project || project.id !== activeProjectId || project.type !== 'storyboard' || !project.storyboard) return
+        if (!hasUnpersistedProjectEdits(activeProjectId)) return
         setProjectSaveStatus(activeProjectId, 'saving')
         const savedAt = Date.now()
         const editSeq = getProjectEditSeq(activeProjectId)
@@ -532,7 +547,7 @@ function App() {
     }, userSettings.autoSaveIdleSeconds * 1000)
 
     return () => window.clearTimeout(timeoutId)
-  }, [activeProjectId, canConfirmProjectSaved, getProjectEditSeq, handleProjectSaveError, isHydrated, persistProjectChanges, projectMode, setProjectSaveStatus, storyboardSnapshot, userSettings.autoSave, userSettings.autoSaveIdleSeconds])
+  }, [activeProjectId, canConfirmProjectSaved, getProjectEditSeq, handleProjectSaveError, hasUnpersistedProjectEdits, isHydrated, persistProjectChanges, projectMode, setProjectSaveStatus, storyboardSnapshot, userSettings.autoSave, userSettings.autoSaveIdleSeconds])
 
   useEffect(() => {
     if (!isHydrated || !userSettings.autoSave || !activeProjectId || projectMode !== 'builder' || !threeStageSnapshot) return
@@ -541,6 +556,7 @@ function App() {
       try {
         const project = activeProjectRef.current
         if (!project || project.id !== activeProjectId || project.type !== 'three-stage' || !project.threeStage) return
+        if (!hasUnpersistedProjectEdits(activeProjectId)) return
         setProjectSaveStatus(activeProjectId, 'saving')
         const savedAt = Date.now()
         const editSeq = getProjectEditSeq(activeProjectId)
@@ -561,7 +577,7 @@ function App() {
     }, userSettings.autoSaveIdleSeconds * 1000)
 
     return () => window.clearTimeout(timeoutId)
-  }, [activeProjectId, canConfirmProjectSaved, getProjectEditSeq, handleProjectSaveError, isHydrated, persistProjectChanges, projectMode, setProjectSaveStatus, threeStageSnapshot, userSettings.autoSave, userSettings.autoSaveIdleSeconds])
+  }, [activeProjectId, canConfirmProjectSaved, getProjectEditSeq, handleProjectSaveError, hasUnpersistedProjectEdits, isHydrated, persistProjectChanges, projectMode, setProjectSaveStatus, threeStageSnapshot, userSettings.autoSave, userSettings.autoSaveIdleSeconds])
 
   useEffect(() => {
     if (!isHydrated || !userSettings.autoSave || !activeProjectId || projectMode !== 'builder' || !freeCanvasSnapshot) return
@@ -570,6 +586,7 @@ function App() {
       try {
         const project = activeProjectRef.current
         if (!project || project.id !== activeProjectId || project.type !== 'free-canvas' || !project.freeCanvas) return
+        if (!hasUnpersistedProjectEdits(activeProjectId)) return
         setProjectSaveStatus(activeProjectId, 'saving')
         const savedAt = Date.now()
         const editSeq = getProjectEditSeq(activeProjectId)
@@ -590,7 +607,7 @@ function App() {
     }, userSettings.autoSaveIdleSeconds * 1000)
 
     return () => window.clearTimeout(timeoutId)
-  }, [activeProjectId, canConfirmProjectSaved, freeCanvasSnapshot, getProjectEditSeq, handleProjectSaveError, isHydrated, persistProjectChanges, projectMode, setProjectSaveStatus, userSettings.autoSave, userSettings.autoSaveIdleSeconds])
+  }, [activeProjectId, canConfirmProjectSaved, freeCanvasSnapshot, getProjectEditSeq, handleProjectSaveError, hasUnpersistedProjectEdits, isHydrated, persistProjectChanges, projectMode, setProjectSaveStatus, userSettings.autoSave, userSettings.autoSaveIdleSeconds])
 
   const handleCreateProject = () => {
     setShowCreateProjectModal(true)
@@ -667,6 +684,7 @@ function App() {
       editSeq: getProjectEditSeq(project.id)
     })
     if (result.status === 'saved' && result.project) {
+      markProjectPersisted(project.id, result.editSeq)
       confirmStoredProjectMetadata(result.project, { savedAt: openedAt })
     } else if (result.status === 'failed') {
       handleProjectSaveError(project.id, result.error, 'Failed to update project last opened time:')
@@ -961,7 +979,12 @@ function App() {
     if (!currentProject || currentProject.id !== projectId || currentProject.type !== 'free-canvas') return false
     if (result.status !== 'saved' || result.project?.id !== projectId || result.project.type !== 'free-canvas' || !result.project.freeCanvas) return false
     setProjectSaveStatus(projectId, 'saved', savedAt)
-    return { saved: true as const, freeCanvas: result.project.freeCanvas, editSeq: result.editSeq }
+    return {
+      saved: true as const,
+      freeCanvas: result.project.freeCanvas,
+      editSeq: result.editSeq,
+      projectRevision: result.project.revision
+    }
   }
 
   const handleConfigureImageModel = (context: { projectId: string; nodeId?: string; returnTarget: 'free-canvas' }) => {

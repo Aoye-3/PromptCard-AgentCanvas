@@ -309,6 +309,8 @@ async function verifyToolsAndRuntime(client: Client): Promise<void> {
   assert.ok(['original', 'replay'].includes(previewedPayload.disposition))
   assert.equal(previewedPayload.proposalId, proposal)
   assert.equal(previewedPayload.state, 'previewed')
+  const previewTool = (await client.listTools()).tools.find(tool => tool.name === 'promptcard_delivery_preview')
+  assert.match(previewTool?.description || '', /bootstrapSkill\.instructions/)
 
   const replayed = await client.callTool({
     name: 'promptcard_delivery_preview',

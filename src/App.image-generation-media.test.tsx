@@ -475,7 +475,7 @@ describe('App generated result media placement', () => {
       await renderer.root.findByProps({ 'data-builder-persist': true }).props.onClick()
     })
 
-    expect(mocks.persistResult).toEqual({ saved: true, freeCanvas: winningCanvas, editSeq: 0 })
+    expect(mocks.persistResult).toEqual({ saved: true, freeCanvas: winningCanvas, editSeq: 0, projectRevision: 2 })
     expect((mocks.projectUpdate.mock.calls[0][1] as { freeCanvas: IFreeCanvasProject }).freeCanvas.meta)
       .toMatchObject({ handoffRequested: true })
   })

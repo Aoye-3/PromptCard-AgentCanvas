@@ -116,9 +116,10 @@
           "properties": {
             "name": { "const": "promptcard-bootstrap" },
             "revision": { "type": "integer", "minimum": 1 },
-            "digest": { "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/digest.schema.json" }
+            "digest": { "$ref": "https://schemas.promptcard.dev/promptcard-bridge/v1/digest.schema.json" },
+            "instructions": { "type": "string", "minLength": 1, "maxLength": 8000 }
           },
-          "required": ["name", "revision", "digest"],
+          "required": ["name", "revision", "digest", "instructions"],
           "additionalProperties": false
         },
         "tools": {

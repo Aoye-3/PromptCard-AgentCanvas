@@ -60,7 +60,7 @@ export interface AgentWorkEnvironmentSnapshot {
     selectedProfileId: string | null
     profiles: AgentWorkEnvironmentProfile[]
     contractVersion: '3.0.0'
-    bootstrapSkill: { name: 'promptcard-bootstrap'; revision: number; digest: string }
+    bootstrapSkill: { name: 'promptcard-bootstrap'; revision: number; digest: string; instructions: string }
     tools: AgentWorkEnvironmentTool[]
     writebackKinds: string[]
     constraints: {
@@ -98,10 +98,13 @@ export const parseAgentWorkEnvironmentSnapshot = (value: unknown): AgentWorkEnvi
     || (bridge.selectedProfileId !== null && typeof bridge.selectedProfileId !== 'string')
     || bridge.contractVersion !== '3.0.0'
     || !isRecord(bridge.bootstrapSkill)
-    || !hasOnlyKeys(bridge.bootstrapSkill, ['name', 'revision', 'digest'])
+    || !hasOnlyKeys(bridge.bootstrapSkill, ['name', 'revision', 'digest', 'instructions'])
     || bridge.bootstrapSkill.name !== 'promptcard-bootstrap'
     || !isPositiveInteger(bridge.bootstrapSkill.revision)
     || !isSha256(bridge.bootstrapSkill.digest)
+    || typeof bridge.bootstrapSkill.instructions !== 'string'
+    || bridge.bootstrapSkill.instructions.length < 1
+    || bridge.bootstrapSkill.instructions.length > 8_000
     || !Array.isArray(bridge.profiles)
     || bridge.profiles.length > 16
     || !bridge.profiles.every(isProfile)
@@ -151,8 +154,9 @@ export const buildExternalAgentTask = ({
     '开始顺序：',
     '1. 调用 promptcard_runtime_describe。',
     `2. 调用 promptcard_workspace_describe，显式传入 projectCode=${project} 和 cvcCode=${context}。`,
-    '3. 只读取工作环境返回的精确 Skill revision/digest 与上述对象引用。',
-    '4. 所有写回先 preview 再 commit，并等待我在 PromptCard 可视化界面审阅。',
+    '3. 遵循 Runtime 返回的 bootstrapSkill.instructions；不要把 promptcard-bootstrap 当作 SKL 读取。',
+    '4. 只读取工作环境返回的精确 Skill revision/digest/health 与上述对象引用。',
+    '5. 所有写回先 preview 再 commit，并等待我在 PromptCard 可视化界面审阅。',
     '',
     `任务：${task}`
   ].join('\n')

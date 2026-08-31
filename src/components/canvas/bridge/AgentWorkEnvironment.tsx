@@ -262,6 +262,10 @@ export const AgentWorkEnvironment = ({
                   <p className="mt-1.5 break-all text-[10px] text-gray-600">
                     {snapshot!.bridge.bootstrapSkill.name}@{snapshot!.bridge.bootstrapSkill.revision}
                   </p>
+                  <details className="mt-1.5 text-[10px] text-gray-600">
+                    <summary className="cursor-pointer font-bold text-gray-700">查看内置上手说明</summary>
+                    <pre className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-2 font-sans leading-4">{snapshot!.bridge.bootstrapSkill.instructions}</pre>
+                  </details>
                   <div className="mt-2 space-y-1">
                     {workspace.skills.length > 0 ? workspace.skills.map(skill => (
                       <div key={skill.skillCode} className="rounded-md bg-gray-50 px-2 py-1.5 text-[10px] text-gray-600">

@@ -142,7 +142,7 @@ export function createPromptCardMcpServer(
   server.registerTool(
     'promptcard_delivery_preview',
     {
-      description: 'Create or replay one typed, review-only Document, Storyboard, Prompt, or image-placement proposal in an exact canvas context.',
+      description: 'Create or replay one typed review-only proposal. First follow bootstrapSkill.instructions from promptcard_runtime_describe. Copy Workspace Skill pins exactly, use only the closed kind-specific target/payload schema, and add no project/context fields.',
       inputSchema: deliveryPreviewSchema,
       annotations: writeAnnotations,
     },

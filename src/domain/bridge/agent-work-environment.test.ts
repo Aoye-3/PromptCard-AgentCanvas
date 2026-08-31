@@ -24,7 +24,10 @@ const snapshot = () => ({
       connectionState: 'recently_active'
     }],
     contractVersion: '3.0.0',
-    bootstrapSkill: { name: 'promptcard-bootstrap', revision: 1, digest: DIGEST },
+    bootstrapSkill: {
+      name: 'promptcard-bootstrap', revision: 2, digest: DIGEST,
+      instructions: 'Use the explicit Workspace and preview before commit.'
+    },
     tools: [{
       name: 'promptcard_runtime_describe', mode: 'read', requiredScopes: ['bridge:read'], description: 'Describe.'
     }],
@@ -78,6 +81,7 @@ describe('Agent work environment contract', () => {
     expect(task).toContain(`工作上下文：${CVC}`)
     expect(task).toContain(`对象：${CVD}`)
     expect(task).toContain('promptcard_runtime_describe')
+    expect(task).toContain('bootstrapSkill.instructions')
     expect(task).toContain('不要根据截图或当前界面焦点推断目标')
   })
 })

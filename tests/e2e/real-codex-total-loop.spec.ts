@@ -41,7 +41,7 @@ test('real Codex creates the first reviewable Document through the packaged work
 
   try {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-    await openProject(page, fixture.projectId, fixture.projectTitle)
+    await openProject(page, request, fixture.projectId, fixture.projectTitle)
     cvcCode = await createContextPack(page, request, fixture.projectId, fixture.sourceCode)
     const title = `Codex reviewed script ${fixture.suffix}`
     const body = 'A creator waits beneath the rain as the last train leaves the platform.'
@@ -185,7 +185,7 @@ async function createFixture(request: APIRequestContext) {
   }
 }
 
-async function openProject(page: Page, projectId: string, title: string) {
+async function openProject(page: Page, request: APIRequestContext, projectId: string, title: string) {
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   const card = page.getByText(title, { exact: true }).locator('xpath=ancestor::article')
   const saveResponse = page.waitForResponse(response => (
@@ -195,6 +195,7 @@ async function openProject(page: Page, projectId: string, title: string) {
   await card.getByRole('button', { name: 'Open project' }).click()
   await saveResponse
   await expect(page.locator('[data-free-canvas-screen]')).toBeVisible()
+  await waitForStableProjectRevision(request, projectId)
 }
 
 async function createContextPack(
@@ -214,7 +215,31 @@ async function createContextPack(
   const code = await dialog.getByTestId('context-pack-code').innerText()
   expect(code).toMatch(/^CVC-/)
   await dialog.getByRole('button', { name: '关闭 Agent/MCP 上下文' }).click()
+  await expect.poll(async () => {
+    const [project, context] = await Promise.all([
+      getProject(request, projectId),
+      getContextPack(request, code)
+    ])
+    return context.projectRevision === project.revision
+  }, { timeout: 10_000, intervals: [250, 500, 1_000] }).toBe(true)
   return code
+}
+
+async function waitForStableProjectRevision(request: APIRequestContext, projectId: string) {
+  let previous = -1
+  let stableSamples = 0
+  await expect.poll(async () => {
+    const revision = (await getProject(request, projectId)).revision
+    stableSamples = revision === previous ? stableSamples + 1 : 0
+    previous = revision
+    return stableSamples >= 2
+  }, { timeout: 10_000, intervals: [250, 500, 750, 1_000] }).toBe(true)
+}
+
+async function getContextPack(request: APIRequestContext, code: string) {
+  const response = await request.get(`${storageUrl}/api/context-packs/${code}`)
+  expect(response.ok(), await response.text()).toBe(true)
+  return response.json() as Promise<{ projectRevision: number }>
 }
 
 async function reviewPending(page: Page, title: string, acceptLabel: string) {

@@ -334,7 +334,7 @@ const handoffProvenance = () => ({
 })
 
 const persistedReceipt = (freeCanvas: IFreeCanvasProject, editSeq = 1) => ({
-  saved: true as const, freeCanvas, editSeq
+  saved: true as const, freeCanvas, editSeq, projectRevision: 2
 })
 
 const twoDocumentCanvas = (): IFreeCanvasProject => ({

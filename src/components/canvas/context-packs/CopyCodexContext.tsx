@@ -25,6 +25,7 @@ interface CopyCodexContextProps {
   selectedNodeIds: string[]
   client?: ContextPackClient
   onActiveContextChange?: (context: ContextPackInspection | null) => void
+  prepareProjectRevision?: () => Promise<number>
 }
 
 interface PreviewSnapshot {
@@ -47,7 +48,8 @@ export const CopyCodexContext = ({
   nodes,
   selectedNodeIds,
   client = storageServiceClient.contextPacks,
-  onActiveContextChange
+  onActiveContextChange,
+  prepareProjectRevision
 }: CopyCodexContextProps) => {
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -183,7 +185,16 @@ export const CopyCodexContext = ({
     if (!snapshot?.request || createPendingRef.current || created) return
     const request = beginContextRequest('create', null)
     try {
-      const result = await client.create(snapshot.request)
+      const preparedRevision = prepareProjectRevision
+        ? await prepareProjectRevision()
+        : snapshot.request.projectRevision
+      if (!Number.isSafeInteger(preparedRevision) || preparedRevision < 1) {
+        throw new Error('Current project could not be persisted before context creation.')
+      }
+      const result = await client.create({
+        ...snapshot.request,
+        projectRevision: preparedRevision
+      })
       if (!open || !isCurrentContextRequest(request, result.cvcCode)) return
       setCreated(result)
       setInspected(null)
