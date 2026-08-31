@@ -8,9 +8,9 @@
     "serverName": "promptcard-bridge",
     "bootstrapSkill": {
       "name": "promptcard-bootstrap",
-      "revision": 2,
-      "digest": "sha256:bb1b858f7ef6b89250c276a4b0beb82a1584f13266749044260b61334604f871",
-      "instructions": "Discover the exact Workspace first, stop on a stale or revoked CVC, copy approved four-field Skill pins unchanged, follow the closed kind-specific Tool schema, preview before commit, and stop for visual review."
+      "revision": 4,
+      "digest": "sha256:acf1f5d88e23bd6cef41ff270f312ec84f6b2c206abc5c2f06cdffdc1344e183",
+      "instructions": "Discover the exact Workspace first, stop on a stale or revoked CVC, copy approved four-field Skill pins unchanged, use exact documentEditEvidence for UTF-8 Document changes, follow the closed kind-specific Tool schema, preview before commit, and stop for visual review."
     },
     "tools": [
       {

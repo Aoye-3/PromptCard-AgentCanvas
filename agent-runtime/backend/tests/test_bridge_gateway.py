@@ -80,8 +80,10 @@ def test_bridge_runtime_describe_requires_a_separate_trusted_profile(client):
     body = response.json()
     assert body["contractVersion"] == "3.0.0"
     assert body["bootstrapSkill"]["name"] == "promptcard-bootstrap"
-    assert body["bootstrapSkill"]["revision"] == 2
+    assert body["bootstrapSkill"]["revision"] == 4
     assert "document.create" in body["bootstrapSkill"]["instructions"]
+    assert "documentEditEvidence.blocks" in body["bootstrapSkill"]["instructions"]
+    assert "payload is exactly `{operations: [...]}`" in body["bootstrapSkill"]["instructions"]
     assert "do not pass `promptcard-bootstrap`" in body["bootstrapSkill"]["instructions"]
     assert {tool["name"] for tool in body["tools"]} == {
         "promptcard_runtime_describe",
@@ -369,6 +371,62 @@ def test_reference_resolve_requires_the_code_to_be_inside_the_explicit_context(
     assert allowed.json()["reference"]["code"] == prompt_code
     assert denied.status_code == 403
     assert denied.json()["detail"]["code"] == "reference_outside_context"
+
+
+def test_document_reference_supplies_exact_utf8_change_evidence(client, monkeypatch):
+    document_code = "CVD-01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    text = "雨夜 opening"
+
+    async def fake_storage(method, path, **kwargs):
+        assert method == "GET"
+        if path == f"/api/context-packs/{CVC}/resolve":
+            return {
+                "projectCode": PRJ,
+                "cvcCode": CVC,
+                "entries": [{"reference": {"namespace": "canvasDocument", "code": document_code}}],
+                "sourceCodes": [],
+            }
+        if path == f"/api/projects/references/{PRJ}/creative/{document_code}":
+            return {
+                "reference": document_code,
+                "project": {"referenceCode": PRJ, "revision": 4},
+                "node": {
+                    "referenceCode": document_code,
+                    "kind": "document",
+                    "title": "Script",
+                    "revision": 0,
+                    "digest": DIGEST,
+                    "document": {
+                        "version": 1,
+                        "revision": 0,
+                        "digest": DIGEST,
+                        "blocks": [{
+                            "id": "opening",
+                            "type": "paragraph",
+                            "content": [{"text": "雨夜 "}, {"text": "opening", "bold": True}],
+                        }],
+                        "suggestions": [],
+                    },
+                },
+            }
+        raise AssertionError((path, kwargs))
+
+    monkeypatch.setattr("app.gateway.bridge._storage_request", fake_storage)
+    response = client.get(
+        "/api/promptcard/bridge/v3/reference",
+        params={"cvcCode": CVC, "code": document_code},
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["documentEditEvidence"] == {
+        "blocks": [{
+            "blockId": "opening",
+            "text": text,
+            "utf8Length": len(text.encode("utf-8")),
+            "textDigest": "sha256:" + __import__("hashlib").sha256(text.encode("utf-8")).hexdigest(),
+        }]
+    }
 
 
 def test_prompt_search_requires_explicit_context_and_supplies_trusted_profile(client, monkeypatch):

@@ -28,7 +28,7 @@ interface StoredProject {
 
 test.describe.configure({ mode: 'serial' })
 
-test('real Codex creates the first reviewable Document through the packaged work environment', async ({
+test('real Codex creates and changes a reviewable Document through the packaged work environment', async ({
   context,
   page,
   request
@@ -36,13 +36,14 @@ test('real Codex creates the first reviewable Document through the packaged work
   test.skip(process.env.PROMPTCARD_REAL_CODEX_ACCEPTANCE !== '1', 'requires an explicit real Codex acceptance run')
   test.setTimeout(480_000)
   const fixture = await createFixture(request)
-  let cvcCode: string | null = null
+  const contextCodes: string[] = []
   page.on('dialog', dialog => void dialog.accept())
 
   try {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     await openProject(page, request, fixture.projectId, fixture.projectTitle)
-    cvcCode = await createContextPack(page, request, fixture.projectId, fixture.sourceCode)
+    const cvcCode = await createContextPack(page, request, fixture.projectId, fixture.sourceCode)
+    contextCodes.push(cvcCode)
     const title = `Codex reviewed script ${fixture.suffix}`
     const body = 'A creator waits beneath the rain as the last train leaves the platform.'
     const previewId = `${fixture.suffix}-document-create-preview`
@@ -86,8 +87,56 @@ test('real Codex creates the first reviewable Document through the packaged work
       sourceCodes: [fixture.sourceCode],
       skillPins: [expect.objectContaining({ skillCode: fixture.skillCode, revision: 1 })]
     }))
+
+    const created = documents[0]
+    const changeCvc = await createContextPack(page, request, fixture.projectId, created.referenceCode)
+    contextCodes.push(changeCvc)
+    const replacement = 'A filmmaker waits beneath the rain as the last train leaves the platform.'
+    const changePreviewId = `${fixture.suffix}-document-change-preview`
+    const changeCommitId = `${fixture.suffix}-document-change-commit`
+    const changeRun = await runRealCodexPrompt([
+      'You are a newly connected external creative Agent with no PromptCard internal-schema knowledge.',
+      'Do not inspect repository files and do not use shell, browser, apps, plugins, or non-PromptCard tools.',
+      `Work only in project ${fixture.projectCode} and context ${changeCvc}.`,
+      'Follow the packaged environment: describe Runtime, describe Workspace, read every exact approved Skill pin,',
+      `and resolve the exact accepted Document ${created.referenceCode}.`,
+      `Create exactly one review-only change proposal that replaces the complete text in block “opening” with “${replacement}”.`,
+      'Use the exact Document revision/digest returned by Workspace or reference resolution and preserve native tracked review.',
+      `Use ${created.referenceCode} as the only source code and copy the exact approved Skill pin from Workspace.`,
+      `Use preview clientRequestId “${changePreviewId}” with normalizedRequestDigest “${digest(changePreviewId)}”.`,
+      `After preview succeeds, commit that proposal using clientRequestId “${changeCommitId}” and digest “${digest(changeCommitId)}”.`,
+      'Do not create any other proposal. Stop after commit reports pending review.'
+    ].join(' '), 300_000)
+
+    assertSuccessfulCalls(changeRun, [
+      'promptcard_runtime_describe',
+      'promptcard_workspace_describe',
+      'promptcard_skill_read',
+      'promptcard_reference_resolve',
+      'promptcard_delivery_preview',
+      'promptcard_delivery_commit'
+    ])
+    expect(toolPayload(changeRun, 'promptcard_delivery_commit')).toMatchObject({ state: 'pending_review' })
+    await reviewPending(page, `修改文档 ${created.referenceCode}`, '接受外部 Agent 文档 提案')
+
+    const projectWithSuggestion = await getProject(request, fixture.projectId)
+    const changed = projectWithSuggestion.freeCanvas.nodes.find(node => node.referenceCode === created.referenceCode)
+    expect(changed?.document?.suggestions.length).toBeGreaterThan(0)
+    expect(documentText(changed!.document!)).toBe(replacement)
+    const documentNode = page.locator(`.react-flow__node[data-id="${created.id}"]`)
+    await expect(documentNode.locator('[data-document-suggestion-kind="insert"]')).toBeVisible()
+    await expect(documentNode.locator('[data-document-suggestion-kind="delete"]')).toBeVisible()
+    await documentNode.getByRole('button', { name: '全部接受修订' }).click()
+    await expect.poll(async () => {
+      const stored = (await getProject(request, fixture.projectId)).freeCanvas.nodes
+        .find(node => node.referenceCode === created.referenceCode)
+      return {
+        text: stored?.document ? documentText(stored.document) : '',
+        suggestions: stored?.document?.suggestions.length ?? -1
+      }
+    }).toEqual({ text: replacement, suggestions: 0 })
   } finally {
-    if (cvcCode) await revokeContext(request, cvcCode)
+    for (const code of contextCodes.reverse()) await revokeContext(request, code)
     await cleanupFixture(request, fixture)
   }
 })

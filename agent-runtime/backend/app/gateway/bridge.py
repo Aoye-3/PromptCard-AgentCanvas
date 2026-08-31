@@ -53,7 +53,13 @@ Bootstrap Skill; do not pass `promptcard-bootstrap` to `promptcard_skill_read`.
      is `{id, type, content}`; each inline content item is `{text}` plus optional
      `bold: true`, `italic: true`, or `href`. Inline items have no `type` field.
    - `document.change`: target `{cvcCode, documentCode, baseRevision,
-     baseDigest}`; payload `{operations}` using the Tool schema.
+     baseDigest}`; payload is exactly `{operations: [...]}`. First read
+     `documentEditEvidence.blocks` from exact reference resolution. An operation
+     for insert is `{kind: "insert", blockId, utf8Offset, text,
+     expectedTextDigest}`; delete is `{kind: "delete", blockId, utf8Start,
+     utf8End, expectedTextDigest}`; replace is `{kind: "replace", blockId,
+     utf8Start, utf8End, text, expectedTextDigest}`. Copy `textDigest` into
+     `expectedTextDigest`; use `utf8Length` as the end of a full-block change.
    - `storyboard.create`: target `{cvcCode}`; payload `{title,
      sourceDocumentCode, sourceDocumentRevision, sourceDocumentDigest,
      sequence}` using the Tool schema.
@@ -93,7 +99,7 @@ def bridge_contract_description() -> dict[str, Any]:
         "serverName": "promptcard-bridge",
         "bootstrapSkill": {
             "name": "promptcard-bootstrap",
-            "revision": 2,
+            "revision": 4,
             "digest": "sha256:" + hashlib.sha256(_BOOTSTRAP_TEXT.encode("utf-8")).hexdigest(),
             "instructions": _BOOTSTRAP_TEXT,
         },
@@ -285,10 +291,50 @@ async def reference_resolve(
             detail={"code": "use_promptcard_skill_read"},
         )
     if prefix in {"CVD", "CVS"}:
-        return await _storage_request(
+        resolved = await _storage_request(
             "GET", f"/api/projects/references/{project_code}/creative/{reference}"
         )
+        return _with_document_edit_evidence(resolved) if prefix == "CVD" else resolved
     raise HTTPException(status_code=422, detail={"code": "reference_invalid"})
+
+
+def _with_document_edit_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+    node = value.get("node")
+    document = node.get("document") if isinstance(node, dict) else None
+    blocks = document.get("blocks") if isinstance(document, dict) else None
+    if not isinstance(blocks, list) or len(blocks) > 500:
+        raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+    evidence = []
+    seen = set()
+    for block in blocks:
+        block_id = block.get("id") if isinstance(block, dict) else None
+        content = block.get("content") if isinstance(block, dict) else None
+        if (
+            not isinstance(block_id, str)
+            or not 1 <= len(block_id) <= 128
+            or block_id in seen
+            or not isinstance(content, list)
+            or len(content) > 200
+        ):
+            raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+        parts = []
+        for inline in content:
+            text = inline.get("text") if isinstance(inline, dict) else None
+            if not isinstance(text, str):
+                raise HTTPException(status_code=502, detail={"code": "storage_response_invalid"})
+            parts.append(text)
+        leaf_text = "".join(parts)
+        encoded = leaf_text.encode("utf-8")
+        evidence.append({
+            "blockId": block_id,
+            "text": leaf_text,
+            "utf8Length": len(encoded),
+            "textDigest": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+        })
+        seen.add(block_id)
+    return {**value, "documentEditEvidence": {"blocks": evidence}}
 
 
 async def prompt_search(
