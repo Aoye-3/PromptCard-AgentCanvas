@@ -2,10 +2,12 @@
 
 ## Checkpoint
 
-- Branch: `feat/skill-document-storyboard-loop`
+- Execution branch: `feat/skill-document-storyboard-loop`
 - Base packaging commit: `34c6877 feat(bridge): package optional MCP adapter`
+- Final feature commit: `ea13377 test(release): close Plan 008 matrix`
+- Initial `main` merge commit: `7b64cf8 merge: complete external Agent creative loop`
 - Date: 2026-09-01 (Europe/London)
-- Status: automated release matrix passed; ready for the authorized feature-branch-to-`main` merge
+- Status: automated release matrix passed; authorized merge and remote `main` push completed
 
 ## Closed Product Loop
 
@@ -57,9 +59,10 @@ The global ESLint command previously could not be a release gate: restrictive py
 
 None of these residuals blocks the external Agent creative-context closed loop or risks stored project data.
 
-## Merge Handoff
+## Merge Completion
 
-1. Commit and push this final-gate correction/evidence slice to `feat/skill-document-storyboard-loop`.
-2. Confirm the feature branch is clean apart from pre-existing inaccessible pytest artifact directories that are intentionally neither read nor deleted.
-3. Merge the feature branch into `main` without squashing away checkpoint history, then push `main`.
-4. Verify remote `main` resolves to the merge result and that README/Plan 008 are present there.
+- The final feature slice was pushed as `ea13377`.
+- The feature branch was merged without squashing away checkpoint history as `7b64cf8`.
+- The README release-status correction followed as `35caa75`.
+- Local and remote `main` were verified equal after push; the feature branch remains available at `ea13377`.
+- README, Plan 008, operations guidance, ADRs, checkpoint evidence, and this release matrix are present on `main`.
