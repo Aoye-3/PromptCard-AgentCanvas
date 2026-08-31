@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.gateway.auth_middleware import AuthMiddleware
 from app.gateway.bridge import _storage_asset_request, _storage_request
+from app.gateway.csrf_middleware import CSRFMiddleware
 from app.gateway.routers import bridge
 
 TOKEN = "bridge-test-token-that-is-longer-than-thirty-two-characters"
@@ -47,6 +48,7 @@ def bridge_profiles(monkeypatch):
 def client(bridge_profiles):
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
+    app.add_middleware(CSRFMiddleware)
     app.include_router(bridge.router)
 
     @app.get("/api/promptcard/runtime/private-test")
@@ -95,6 +97,21 @@ def test_bridge_runtime_describe_requires_a_separate_trusted_profile(client):
         "promptCreateOnly": True,
         "arbitraryPathsAccepted": False,
     }
+
+
+def test_bridge_mutation_skips_cookie_csrf_but_never_skips_bearer_auth(client):
+    denied = client.post(
+        "/api/promptcard/bridge/v3/delivery/preview",
+        json={},
+    )
+    authenticated = client.post(
+        "/api/promptcard/bridge/v3/delivery/preview",
+        json={},
+        headers=auth_headers(),
+    )
+
+    assert denied.status_code == 401
+    assert authenticated.status_code == 422
 
 
 def test_bridge_credential_cannot_call_existing_runtime_routes(client):

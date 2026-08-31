@@ -1,6 +1,7 @@
 import type { CardType, IPreset } from '@/models/Card.model'
 import type { IPromptProject, PlanningDocumentBlockV1 } from '@/models/PromptHistory.model'
 import type { DocumentChangeOperation } from '@/domain/documents/document-suggestions'
+import { parsePlanningDocumentV1 } from '@/domain/documents/planning-document'
 import type { ImageOperationRecipeSnapshot } from '@/domain/image-actions/image-operations'
 import { validatePublicReferenceCode } from '@/domain/reference-codes/reference-code'
 import type { AgentDocumentAttachmentAudit, AgentInteractionMode } from '@/models/Agent.model'
@@ -578,7 +579,7 @@ const projectWritePayload = (project: Partial<IPromptProject>): Record<string, u
 
 export interface ContextPackEntry {
   reference: {
-    namespace: 'canvasTemplate' | 'canvasMedia'
+    namespace: 'canvasTemplate' | 'canvasMedia' | 'canvasDocument' | 'canvasStoryboard'
     code: string
   }
   content: string
@@ -2216,9 +2217,13 @@ const parseContextPackEntry = (value: unknown): ContextPackEntry[] => {
     ? 'CVT'
     : namespace === 'canvasMedia'
       ? 'CVM'
-      : null
+      : namespace === 'canvasDocument'
+        ? 'CVD'
+        : namespace === 'canvasStoryboard'
+          ? 'CVS'
+          : null
   const code = expectedPrefix ? validatePublicReferenceCode(value.reference.code, expectedPrefix) : null
-  if (!code || (namespace !== 'canvasTemplate' && namespace !== 'canvasMedia') || !isSafeContextEntryContent(value.content, namespace)) return []
+  if (!code || !isContextEntryNamespace(namespace) || !isSafeContextEntryContent(value.content, namespace)) return []
   return [{
     reference: { namespace, code },
     content: value.content,
@@ -2244,7 +2249,10 @@ const parseContextSourceBoundary = (value: unknown): ContextPackSourceBoundary[]
 }
 
 const parseContextNodeCode = (value: unknown): string[] => (
-  parseReferenceCode(value, 'CVT').concat(parseReferenceCode(value, 'CVM'))
+  parseReferenceCode(value, 'CVT')
+    .concat(parseReferenceCode(value, 'CVM'))
+    .concat(parseReferenceCode(value, 'CVD'))
+    .concat(parseReferenceCode(value, 'CVS'))
 )
 
 const parsePromptSourceCode = (value: unknown): string[] => (
@@ -2257,7 +2265,7 @@ const parseContextSourceCode = (value: unknown): string[] => (
 
 const parseReferenceCode = (
   value: unknown,
-  prefix: 'PLP' | 'PLM' | 'CVT' | 'CVM'
+  prefix: 'PLP' | 'PLM' | 'CVT' | 'CVM' | 'CVD' | 'CVS'
 ): string[] => {
   const code = validatePublicReferenceCode(value, prefix)
   return code ? [code] : []
@@ -2265,7 +2273,7 @@ const parseReferenceCode = (
 
 const isSafeContextEntryContent = (
   content: string,
-  namespace: 'canvasTemplate' | 'canvasMedia'
+  namespace: ContextPackEntry['reference']['namespace']
 ): boolean => {
   let value: unknown
   try {
@@ -2280,6 +2288,22 @@ const isSafeContextEntryContent = (
       && typeof value.title === 'string'
       && typeof value.truncated === 'boolean'
   }
+  if (namespace === 'canvasDocument') {
+    if (
+      !isClosedRecord(value, ['kind', 'title', 'revision', 'digest', 'document'])
+      || value.kind !== 'document'
+      || typeof value.title !== 'string'
+      || !isNonNegativeInteger(value.revision)
+      || !isSha256(value.digest)
+      || !isClosedRecord(value.document, ['version', 'blocks', 'suggestions'])
+    ) return false
+    return parsePlanningDocumentV1({
+      ...value.document,
+      revision: value.revision,
+      digest: value.digest
+    }).ok
+  }
+  if (namespace === 'canvasStoryboard') return isSafeStoryboardContextEntry(value)
   if (!isRecord(value)) return false
   const required = ['height', 'kind', 'title', 'width']
   const optional = ['contentType', 'size']
@@ -2290,6 +2314,41 @@ const isSafeContextEntryContent = (
     && typeof value.height === 'number' && Number.isFinite(value.height) && value.height > 0
     && (value.contentType === undefined || typeof value.contentType === 'string')
     && (value.size === undefined || isNonNegativeInteger(value.size))
+}
+
+const isContextEntryNamespace = (
+  value: unknown
+): value is ContextPackEntry['reference']['namespace'] => (
+  value === 'canvasTemplate'
+  || value === 'canvasMedia'
+  || value === 'canvasDocument'
+  || value === 'canvasStoryboard'
+)
+
+const isSafeStoryboardContextEntry = (value: unknown): boolean => {
+  if (
+    !isClosedRecord(value, ['kind', 'title', 'revision', 'digest', 'sequence'])
+    || value.kind !== 'storyboard'
+    || typeof value.title !== 'string'
+    || !isNonNegativeInteger(value.revision)
+    || !isSha256(value.digest)
+    || !isClosedRecord(value.sequence, ['name', 'description', 'style', 'constraints', 'rows'])
+    || typeof value.sequence.name !== 'string'
+    || typeof value.sequence.description !== 'string'
+    || typeof value.sequence.style !== 'string'
+    || typeof value.sequence.constraints !== 'string'
+    || !Array.isArray(value.sequence.rows)
+    || value.sequence.rows.length > 200
+  ) return false
+  const fields = [
+    'ordinal', 'cutLabel', 'timeRange', 'subject', 'action',
+    'scene', 'camera', 'lighting', 'audio', 'duration'
+  ] as const
+  return value.sequence.rows.every((row, index) => (
+    isClosedRecord(row, fields)
+    && row.ordinal === index
+    && fields.slice(1).every(field => typeof row[field] === 'string')
+  ))
 }
 
 const requireContextPackCode = (value: string): string => {

@@ -145,6 +145,45 @@ describe('storageServiceClient', () => {
     ])
   })
 
+  test('accepts strict CVD/CVS entries in an immutable context-pack inspection', async () => {
+    const document = createPlanningDocumentV1([{
+      id: 'opening', type: 'paragraph', content: [{ text: 'A rainy opening.' }]
+    }], 2)
+    const inspection = {
+      ...contextPackInspection(),
+      entries: [{
+        reference: { namespace: 'canvasDocument' as const, code: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY' },
+        content: JSON.stringify({
+          kind: 'document', title: 'Script', revision: document.revision, digest: document.digest,
+          document: { version: document.version, blocks: document.blocks, suggestions: document.suggestions }
+        }),
+        contentDigest: `sha256:${'c'.repeat(64)}`
+      }, {
+        reference: { namespace: 'canvasStoryboard' as const, code: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAX' },
+        content: JSON.stringify({
+          kind: 'storyboard', title: 'Shots', revision: 1, digest: `sha256:${'d'.repeat(64)}`,
+          sequence: {
+            name: 'Shots', description: '', style: '', constraints: '',
+            rows: [{ ordinal: 0, cutLabel: '1', timeRange: '', subject: 'Hero', action: 'Walks', scene: 'Street', camera: 'Wide', lighting: 'Night', audio: 'Rain', duration: '3s' }]
+          }
+        }),
+        contentDigest: `sha256:${'e'.repeat(64)}`
+      }],
+      sourceBoundaries: [{
+        nodeCode: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY', promptLibraryReferences: [], canvasMediaReferences: []
+      }, {
+        nodeCode: 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAX', promptLibraryReferences: [], canvasMediaReferences: []
+      }],
+      placementHint: {
+        mode: 'after-selection' as const,
+        anchorNodeCodes: ['CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY', 'CVS-01ARZ3NDEKTSV4RRFFQ69G5FAX']
+      }
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(inspection)))
+
+    await expect(storageServiceClient.contextPacks.inspect(inspection.cvcCode)).resolves.toEqual(inspection)
+  })
+
   test.each([
     ['an unknown root field', { internalId: 'secret-id' }],
     ['a malformed typed reference', { entries: [{
@@ -155,6 +194,14 @@ describe('storageServiceClient', () => {
     ['a hidden nested URL field', { entries: [{
       ...contextPackInspection().entries[0],
       url: 'file:///secret/project.json'
+    }] }],
+    ['a hidden creative-object path', { entries: [{
+      reference: { namespace: 'canvasDocument', code: 'CVD-01ARZ3NDEKTSV4RRFFQ69G5FAY' },
+      content: JSON.stringify({
+        kind: 'document', title: 'Script', revision: 1, digest: `sha256:${'a'.repeat(64)}`,
+        workspacePath: '../secret.md', document: { version: 1, blocks: [], suggestions: [] }
+      }),
+      contentDigest: `sha256:${'a'.repeat(64)}`
     }] }]
   ])('fails closed when a context-pack response contains %s', async (_label, override) => {
     const payload = { ...contextPackInspection(), ...override }

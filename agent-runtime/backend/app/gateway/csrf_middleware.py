@@ -46,6 +46,11 @@ def should_check_csrf(request: Request) -> bool:
         return False
 
     path = request.url.path.rstrip("/")
+    # Bridge routes never authorize with the browser session cookie. The inner
+    # AuthMiddleware requires a dedicated Bearer profile for every Bridge path,
+    # so a double-submit browser token is neither available nor relevant here.
+    if path.startswith("/api/promptcard/bridge/"):
+        return False
     # Exempt /api/v1/auth/me endpoint
     if path == "/api/v1/auth/me":
         return False

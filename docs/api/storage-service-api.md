@@ -10,7 +10,7 @@ The local storage service is the durable source of truth for projects, Prompt Li
 
 - `GET /api/projects/references/{projectReferenceCode}/creative/{creativeReferenceCode}`
 
-`creativeReferenceCode` must be an exact `CVD-*` or `CVS-*` code belonging to the exact active `PRJ-*`. Document responses expose the editor-neutral AST, revision and digest. Storyboard responses expose the sequence fields and ordered rows, replacing internal row identities with `rowOrdinal` and replacing an available source Document node identity with its `CVD-*` code. Internal Canvas IDs, row IDs, coordinates, model/connection data, arbitrary metadata, and local paths are never returned. Unknown, cross-project, retired, malformed, or no-longer-referenceable objects fail with structured lifecycle/reference errors.
+`creativeReferenceCode` must be an exact `CVD-*` or `CVS-*` code belonging to the exact active `PRJ-*`. Document responses expose the editor-neutral AST, revision and digest. Storyboard responses expose the sequence fields and ordered rows, replacing internal row identities with `rowOrdinal` and replacing an available source Document node identity with its `CVD-*` code. Internal Canvas IDs, row IDs, coordinates, model/connection data, arbitrary metadata, and local paths are never returned. Unknown, cross-project, retired, malformed, or no-longer-referenceable objects fail with structured lifecycle/reference errors. The Canvas context selector admits stable `CVT-*`, `CVM-*`, `CVD-*`, and `CVS-*` objects; its browser Storage client fails closed unless Document AST/revision/digest or Storyboard sequence/ordered rows match the corresponding closed projection.
 
 - `GET /health`
 

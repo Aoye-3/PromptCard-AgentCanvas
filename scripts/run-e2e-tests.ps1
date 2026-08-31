@@ -12,6 +12,9 @@ $serviceLogRoot = Join-Path $repoRoot '.tmp\e2e-services'
 $timeoutSeconds = 600
 $ownedProcesses = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
 $exitCode = 1
+$playwrightArgs = @($args)
+$useRealGateway = $playwrightArgs -contains '--real-gateway'
+$playwrightArgs = @($playwrightArgs | Where-Object { $_ -ne '--real-gateway' })
 
 if ($env:PROMPTCARD_E2E_RUNNER_TIMEOUT_SECONDS) {
   $parsedTimeout = 0
@@ -22,7 +25,11 @@ if ($env:PROMPTCARD_E2E_RUNNER_TIMEOUT_SECONDS) {
   $timeoutSeconds = $parsedTimeout
 }
 
-foreach ($requiredFile in @($python, $viteCli, $playwrightCli, $runtimeFixture)) {
+$requiredFiles = @($python, $viteCli, $playwrightCli)
+if (-not $useRealGateway) {
+  $requiredFiles += $runtimeFixture
+}
+foreach ($requiredFile in $requiredFiles) {
   if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
     [Console]::Error.WriteLine("Required E2E executable was not found: $requiredFile")
     exit 1
@@ -149,13 +156,42 @@ try {
   $env:PROMPTCARD_DESKTOP_DEV = '1'
   $env:PORT = '38101'
 
+  if ($useRealGateway) {
+    $env:PROMPTCARD_INTERNAL_TOKEN = 'promptcard-e2e-internal-token-38101'
+    $env:PROMPTCARD_E2E_BRIDGE_TOKEN = 'promptcard-e2e-bridge-token-38101'
+    $env:GATEWAY_CORS_ORIGINS = 'http://127.0.0.1:38100,http://localhost:38100'
+    $env:PROMPTCARD_BRIDGE_PROFILES_JSON = (@{
+      'codex-e2e' = @{
+        token = $env:PROMPTCARD_E2E_BRIDGE_TOKEN
+        scopes = @(
+          'bridge:read',
+          'bridge:deliver:document',
+          'bridge:deliver:storyboard',
+          'bridge:deliver:prompt',
+          'bridge:deliver:image',
+          'bridge:status'
+        )
+        clientInfo = @{ name = 'codex'; version = 'e2e' }
+      }
+    } | ConvertTo-Json -Compress -Depth 5)
+  }
+
   Write-Host 'Starting E2E storage service...'
   $storage = Start-OwnedService -Name 'storage' -FilePath $python -ArgumentValues @('-m', 'promptcard_storage')
   Wait-ForHealth -Name 'Storage service' -Process $storage -Url 'http://127.0.0.1:38102/health'
 
-  Write-Host 'Starting E2E Fake Runtime...'
-  $runtime = Start-OwnedService -Name 'runtime' -FilePath $python -ArgumentValues @($runtimeFixture)
-  Wait-ForHealth -Name 'Fake Runtime' -Process $runtime -Url 'http://127.0.0.1:38101/health'
+  if ($useRealGateway) {
+    Write-Host 'Starting E2E real Gateway...'
+    $runtime = Start-OwnedService -Name 'gateway' -FilePath $python -ArgumentValues @(
+      '-m', 'uvicorn', 'app.gateway.app:app', '--host', '127.0.0.1', '--port', '38101'
+    )
+    Wait-ForHealth -Name 'Real Gateway' -Process $runtime -Url 'http://127.0.0.1:38101/health'
+  }
+  else {
+    Write-Host 'Starting E2E Fake Runtime...'
+    $runtime = Start-OwnedService -Name 'runtime' -FilePath $python -ArgumentValues @($runtimeFixture)
+    Wait-ForHealth -Name 'Fake Runtime' -Process $runtime -Url 'http://127.0.0.1:38101/health'
+  }
 
   Write-Host 'Starting E2E Vite frontend...'
   $frontend = Start-OwnedService -Name 'frontend' -FilePath $node -ArgumentValues @($viteCli, '--host', '127.0.0.1', '--port', '38100', '--strictPort')
@@ -164,7 +200,7 @@ try {
   Write-Host 'E2E services are healthy. Starting Playwright...'
   $env:PROMPTCARD_E2E_EXTERNAL_SERVICES = '1'
   $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $repoRoot '.playwright-browsers'
-  $playwrightArguments = @($playwrightCli, 'test') + @($args)
+  $playwrightArguments = @($playwrightCli, 'test') + $playwrightArgs
   $playwrightArgumentLine = (($playwrightArguments | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join ' ')
   $playwright = Start-Process -FilePath $node -ArgumentList $playwrightArgumentLine -WorkingDirectory $repoRoot -NoNewWindow -PassThru
   $null = $playwright.Handle
@@ -193,7 +229,8 @@ catch {
 }
 finally {
   Write-Host 'Stopping owned E2E services...'
-  foreach ($ownedProcess in @($ownedProcesses) | Sort-Object -Property StartTime -Descending) {
+  for ($index = $ownedProcesses.Count - 1; $index -ge 0; $index -= 1) {
+    $ownedProcess = $ownedProcesses[$index]
     Stop-ProcessTree -Process $ownedProcess
     $ownedProcess.Dispose()
   }

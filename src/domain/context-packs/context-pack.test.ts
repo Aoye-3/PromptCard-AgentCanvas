@@ -11,7 +11,9 @@ const ulids = {
   firstText: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
   image: '01ARZ3NDEKTSV4RRFFQ69G5FAX',
   secondText: '01ARZ3NDEKTSV4RRFFQ69G5FAY',
-  context: '01ARZ3NDEKTSV4RRFFQ69G5FAZ'
+  context: '01ARZ3NDEKTSV4RRFFQ69G5FAZ',
+  document: '01ARZ3NDEKTSV4RRFFQ69G5FB0',
+  storyboard: '01ARZ3NDEKTSV4RRFFQ69G5FB1'
 } as const
 
 const textNode = (id: string, title: string, referenceCode?: string): IFreeCanvasNode => ({
@@ -37,6 +39,24 @@ const imageNode = (id: string, title: string, referenceCode?: string, meta: Reco
   height: 240,
   annotations: [],
   meta
+})
+
+const documentNode = (referenceCode?: string): IFreeCanvasNode => ({
+  id: 'document', kind: 'document', title: 'Script document', referenceCode,
+  position: { x: 0, y: 0 }, width: 560, height: 420,
+  document: { version: 1, blocks: [], revision: 1, digest: 'sha256:' + 'a'.repeat(64), suggestions: [] },
+  linkedDocumentResourceIds: [], meta: {}
+})
+
+const storyboardNode = (referenceCode?: string): IFreeCanvasNode => ({
+  id: 'storyboard', kind: 'storyboard', title: 'Shot board', referenceCode,
+  position: { x: 0, y: 0 }, width: 640, height: 480,
+  sequence: { id: 'sequence', name: 'Shots', description: '', style: '', constraints: '', rows: [], createdAt: 1, updatedAt: 1, meta: {} },
+  source: {
+    documentNodeId: 'document', documentRevision: 1, documentDigest: 'sha256:' + 'a'.repeat(64),
+    documentResourceDigests: [], model: { connectionId: 'c', providerId: 'p', modelId: 'm', displayName: 'Model', capabilities: {} }, skills: []
+  },
+  pendingFieldChanges: [], meta: {}
 })
 
 const project = (overrides: Partial<IPromptProject> = {}): IPromptProject => ({
@@ -90,6 +110,22 @@ describe('context-pack selection domain', () => {
     ])
     expect(preview.selectedCount).toBe(4)
     expect(preview.omittedCount).toBe(1)
+  })
+
+  it('includes stable CVD/CVS creative objects as explicit Agent context', () => {
+    const preview = createContextPackSelectionPreview([
+      documentNode(`CVD-${ulids.document}`),
+      storyboardNode(`CVS-${ulids.storyboard}`)
+    ], ['storyboard', 'document'])
+
+    expect(preview).toEqual({
+      items: [
+        { nodeId: 'document', code: `CVD-${ulids.document}`, type: '文档', title: 'Script document' },
+        { nodeId: 'storyboard', code: `CVS-${ulids.storyboard}`, type: '分镜', title: 'Shot board' }
+      ],
+      selectedCount: 2,
+      omittedCount: 0
+    })
   })
 
   it('omits unsupported, transient, running, failed, missing-code and malformed-code selections', () => {

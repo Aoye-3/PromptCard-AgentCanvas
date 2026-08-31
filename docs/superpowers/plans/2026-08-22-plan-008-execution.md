@@ -892,7 +892,7 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Description:** Implement `document.create` and `document.change` on the same preview/commit/status ledger, resolving only exact CVC/CVD/revision/digest targets. Reuse the editor-neutral AST, suggestion rendering, conflict checks, save coordinator, and single/all accept/reject mechanisms already implemented for the local Agent.
 
-**Status:** In progress on `feat/skill-document-storyboard-loop` (2026-08-31). Storage, Gateway, and browser/Canvas adapters are implemented. A real process-level preview/commit/accept/restart/replay probe remains before Task 26A completes and Task 26B unlocks.
+**Status:** Complete on `feat/skill-document-storyboard-loop` (2026-08-31). The real Gateway → Storage → browser/Canvas create/change/review/replay path and a two-process-run restart/recovery probe pass. Task 26B is unlocked; `main` remains unchanged until the final real Codex loop passes.
 
 **Checkpoint evidence:** Storage now validates the closed v3 create/change request shapes, canonicalizes public references and NFC text, checks exact `CVC/CVD/revision/digest` plus per-leaf digest/UTF-8 boundaries before `ledger.begin`, rejects pending-suggestion and overlapping-range conflicts, persists deterministic visual proposals, and routes terminal decisions through same-project `CVD-*` validation. Preview, commit, replay, pending-review listing, rejection/acceptance, and process restart all use the existing profile-scoped v19 ledger. Focused Document plus Prompt/Image regression passes 15 tests and 4 subtests; touched Python passes Ruff.
 
@@ -900,11 +900,15 @@ This phase is a project-local extension of the existing Agent and Skill Host Ada
 
 **Canvas checkpoint evidence:** the browser Storage client now accepts only closed create/change records and verifies exact request/proposal/provenance parity. The Bridge Inbox presents create/change intent plus Agent, Skill revision, source and request identities. Acceptance uses deterministic Bridge markers, creates the existing native Document type, resolves change targets only by CVD/base revision/base digest, and compiles modifications through `applyDocumentChangeOperations` so the established single/all red-delete/green-add review remains authoritative. Canvas persistence must return one CVD before ledger acceptance. Focused parser/Inbox/application tests pass 55 cases; native Document suggestion, node, and normalization regression passes 119 cases. A discovered CVD-loss bug in Document normalization is fixed and covered by restart-style normalization tests.
 
+**Real-process acceptance evidence:** `npm.cmd run test:e2e:bridge` starts the real Storage, authenticated Gateway, Vite application, and Chromium, then creates a user-selected CVC, discovers runtime/workspace, previews and commits a Document, accepts it, performs an exact-base change through native tracked suggestions, reloads the browser, and proves status plus single-result replay. `npm.cmd run test:e2e:bridge-restart` runs prepare and recover in separate owned service lifetimes and proves the accepted CVD, Bridge marker, source codes, Skill pins, ledger state, CVD-bearing CVC projection, and browser-visible text survive restart. The probe exposed and fixed three boundary defects: Bridge Bearer POSTs were incorrectly blocked by browser CSRF middleware, CVD/CVS nodes could not be selected into a CVC, and the browser's strict CVC parser did not yet admit closed Document/Storyboard projections. Bridge routes now skip cookie CSRF but still require their dedicated Bearer profile; all other authenticated browser mutations retain double-submit CSRF.
+
+**Final Task 26A verification:** Bridge Gateway 30 passed; Bridge contracts 52 passed; CLI 8 passed; MCP 10 passed; focused CVC selection 10 passed; focused strict Storage client parsing 9 passed; all four frontend shards passed; touched ESLint passed with zero warnings; Agent Runtime/type checks passed; production build passed. The default real-process loop passed with one active scenario and two phase-gated skips; the restart runner passed both prepare and recover phases in newly started service processes.
+
 **Acceptance criteria:**
 
 - [x] Create and change payloads are bounded, canonical, and never expose internal node IDs.
 - [x] Stale base revisions/digests fail before a proposal can be applied.
-- [ ] Restart/replay creates exactly one proposal and one accepted Document result.
+- [x] Restart/replay creates exactly one proposal and one accepted Document result.
 - [x] Red-delete/green-add review and terminal acceptance/rejection preserve external Agent, Skill revision, source codes, and request identity.
 
 **Dependencies:** Tasks 23-24.
