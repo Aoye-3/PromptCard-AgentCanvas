@@ -31,8 +31,10 @@ The current frontend test suite covers several core utilities and stores:
 - Seedream prompt/provider mapping, standard/fast optimization, URL/Base64 response handling, multilingual Prompt preservation, sanitized errors, secure result download, input/concurrency limits, and terminal run persistence
 - contextual operation cross-field semantics, all-operation Fake Provider lifecycle/lineage, prepared-run conflict handling, atomic multi-view preparation, and queued interruption recovery
 - PromptCard Storage schema v3→v4→v5 migration, original/derived image import, project conversation/run pagination, placement state machine, output/original/derived strong references, and Runtime-to-Storage SQLite integration
+- PromptCard Storage schema v10→v19 public references, immutable CVC context packs, canonical Skill packages and host pins, Document resources, typed CVD/CVS references, transactional Prompt retrieval, and the profile-scoped Bridge delivery ledger
+- Bridge v1/v2/v3 contract fixtures, deterministic CLI, STDIO/loopback HTTP MCP, profile/scope isolation, bounded workspace asset staging, typed Document/Storyboard/Prompt/image writeback, replay/conflict, and restart recovery
 
-Tests are run through Vitest.
+Frontend unit and component tests run through Vitest. The complete repository matrix also uses Node test for Bridge contracts and MCP, Python unittest for PromptCard Storage, pytest for Gateway/Runtime, and Playwright for browser flows.
 
 Vitest excludes `tests/e2e/**` so Playwright specs are not collected by the unit-test runner.
 
@@ -43,7 +45,7 @@ Before merging implementation work, run:
 ```powershell
 npm.cmd run build
 npm.cmd run test:frontend
-.\agent-runtime\backend\.venv\Scripts\python.exe -m unittest discover -s promptcard_storage/tests -p "test_*.py"
+npm.cmd run storage:test
 npm.cmd run lint
 ```
 
@@ -55,6 +57,17 @@ For Agent Runtime work, also run:
 npm.cmd run agent:check
 .\agent-runtime\backend\.venv\Scripts\python.exe -m pytest agent-runtime\backend\tests -q -p no:cacheprovider
 .\agent-runtime\backend\.venv\Scripts\python.exe -m ruff check agent-runtime\backend\app agent-runtime\backend\tests
+```
+
+For Local Agent Bridge contract, CLI, MCP, or packaging work, also run:
+
+```powershell
+npm.cmd run test:contracts
+npm.cmd run bridge:cli:check
+npm.cmd run test:bridge-cli
+npm.cmd run mcp:check
+npm.cmd run test:mcp
+npm.cmd run test:bridge-package
 ```
 
 The full Runtime Ruff gate currently passes for `app` and `tests`; the image-generation E2E Runtime fixture is checked separately.
@@ -73,6 +86,18 @@ Use a unique workspace-local Ruff cache for the same reason:
 $env:RUFF_CACHE_DIR = Join-Path $PWD ('.tmp\ruff-' + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
 & .\agent-runtime\backend\.venv\Scripts\python.exe -m ruff check agent-runtime\backend\app agent-runtime\backend\tests
 ```
+
+PromptCard Storage unittest suites must not use the operating-system default temporary directory or a committed machine-specific absolute path. New suites obtain their parent with:
+
+```python
+from promptcard_storage.tests.workspace_paths import workspace_test_root
+
+TEST_ROOT = workspace_test_root("my-storage-suite")
+```
+
+The helper derives the active repository dynamically, rejects absolute/traversing suite names, resolves the final path, and verifies containment before creating `.test-tmp/promptcard-storage/<suite>/`. Each test still creates its own `TemporaryDirectory(dir=TEST_ROOT)` child and cleans it. `test_workspace_test_paths.py` is the regression gate for this policy.
+
+Restricted sandboxes may permit directory creation while denying SQLite file creation. When the same focused test fails with `sqlite3.OperationalError: unable to open database file`, rerun it through the approved unsandboxed test command and record the sandbox limitation separately from product assertions.
 
 The Plan 007 backend closure specifically asserts that all queued multi-view runs and all placeholders exist before the first Fake Provider call, batch failure produces zero Provider calls, queued reload resumes once at concurrency 1, running reload never resubmits, and localized output is stored before `succeeded`.
 

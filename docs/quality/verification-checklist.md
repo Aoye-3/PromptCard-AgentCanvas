@@ -4,16 +4,24 @@ Run before merging broad implementation or documentation restructuring:
 
 ```powershell
 npm.cmd run test:frontend
-.\agent-runtime\backend\.venv\Scripts\python.exe -m unittest discover -s promptcard_storage/tests -p "test_*.py"
+npm.cmd run storage:test
 .\agent-runtime\backend\.venv\Scripts\python.exe -m unittest promptcard_storage.tests.test_app
 npx.cmd tsc --noEmit
 npm.cmd run lint
 npm.cmd run build
 npm.cmd run agent:check
 npm.cmd run text-agent:check
+.\agent-runtime\backend\.venv\Scripts\python.exe -m unittest promptcard_storage.tests.test_workspace_test_paths -v
 cd agent-runtime/backend
 uv run pytest tests/test_promptcard_runtime_boundary.py -q
 ```
+
+Repository and documentation hygiene:
+
+- Confirm test, cache, build, runtime, and documentation defaults contain no machine-specific absolute checkout path.
+- Confirm new Storage tests use `workspace_test_root()` and never an unqualified `TemporaryDirectory()`.
+- Confirm current-state docs, ADR outcomes, Plan status, indexes, and review evidence follow the [documentation policy](../maintenance/documentation-policy.md).
+- Run `git diff --check` and the maintained relative-link test before handoff.
 
 For text-Agent boundary changes, also run:
 
@@ -55,7 +63,7 @@ npm.cmd run build
 npm.cmd run agent:check
 npm.cmd run test:e2e
 npm.cmd run test:e2e -- -c playwright.image-generation.config.ts
-.\agent-runtime\backend\.venv\Scripts\python.exe -m unittest discover -s promptcard_storage/tests -p "test_*.py"
+npm.cmd run storage:test
 .\agent-runtime\backend\.venv\Scripts\python.exe -m pytest agent-runtime\backend\tests\test_image_generation_service.py agent-runtime\backend\tests\test_image_generation_storage_integration.py agent-runtime\backend\tests\test_image_result_fetcher.py agent-runtime\backend\tests\test_seedream_prompt_compiler.py agent-runtime\backend\tests\test_seedream_provider.py agent-runtime\backend\tests\test_model_connections.py agent-runtime\backend\tests\test_credential_store.py agent-runtime\backend\tests\test_csrf_middleware.py -q -p no:cacheprovider
 .\agent-runtime\backend\.venv\Scripts\python.exe -m ruff check agent-runtime\backend\app agent-runtime\backend\tests
 cargo test --manifest-path src-tauri/Cargo.toml
@@ -64,7 +72,7 @@ git diff --check
 
 The dedicated Playwright config covers the image-generation node and multi-view flows, not model-management. The repository runner starts its own frontend, real SQLite Storage service, and Runtime with a Provider DI fake on ports `38100–38102`; those ports must be free. It fixes the browser path to the workspace `.playwright-browsers`, propagates the real Playwright exit code (or `124` on runner timeout), stops the owned service trees in `finally`, and verifies that the ports were released. This verifies HTTP/CSRF/Storage/UI integration without spending Ark quota or requiring a real credential. Do not bypass the runner with a direct Playwright CLI command.
 
-Keep `TEMP`, `TMP`, Python/uv caches, `PLAYWRIGHT_BROWSERS_PATH`, and `CARGO_TARGET_DIR` on the current F: workspace when these commands need to provision caches. Set `PLAYWRIGHT_BROWSERS_PATH="$PWD\.playwright-browsers"` before any `npx.cmd playwright install`; normal test execution sets it through the runner. Always run the Storage gate with the explicit workspace `.venv` interpreter shown above; do not install `pillow_heif` globally to make a system Python pass. A live Ark smoke test must never be attempted without a user-configured keyring credential and explicit rollout enablement. Before production rollout, record Windows results for text-to-image, 2–10 reference images, smart edit, point, bbox, and visual-markup raster derivatives. Also verify standard/fast, 1K/2K, preset/custom size, PNG/JPEG, watermark, and Arabic/Japanese/German prompts. Record full-suite baseline failures separately from feature-focused failures.
+Keep `TEMP`, `TMP`, Python/uv caches, `PLAYWRIGHT_BROWSERS_PATH`, and `CARGO_TARGET_DIR` inside the current repository and on its existing drive when these commands need to provision caches. Set `PLAYWRIGHT_BROWSERS_PATH="$PWD\.playwright-browsers"` before any `npx.cmd playwright install`; normal test execution sets it through the runner. Always run the Storage gate through `npm.cmd run storage:test`; do not install `pillow_heif` globally to make a system Python pass. A live Ark smoke test must never be attempted without a user-configured keyring credential and explicit rollout enablement. Before production rollout, record Windows results for text-to-image, 2–10 reference images, smart edit, point, bbox, and visual-markup raster derivatives. Also verify standard/fast, 1K/2K, preset/custom size, PNG/JPEG, watermark, and Arabic/Japanese/German prompts. Record full-suite baseline failures separately from feature-focused failures.
 
 Current known non-feature gates are tracked in the [Seedream implementation status](../Plan/005-seedream-image-node-frontend-implementation-status.md): the Runtime full suite includes Windows/POSIX/live-credential environment checks. Repository ESLint has zero errors and a ratcheted 41-warning baseline; warning 42 fails the gate. Do not increase that budget for feature work, and do not report platform/live-credential skips as a feature regression without reproducing them in the focused commands above.
 

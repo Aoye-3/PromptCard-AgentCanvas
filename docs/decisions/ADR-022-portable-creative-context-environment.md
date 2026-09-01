@@ -27,6 +27,10 @@ OpenStory and DramaClaw are reference repositories for future research into stru
 5. **External-tool integration is progressive.** The future Asset Shelf and connectors let creators retrieve the correct project assets beside their existing browser or creation tool. The baseline is reliable file/image drag-out, text copy, and execution-package export. Platform-specific fill, result return, or automation is optional and added only after compatibility and value are demonstrated.
 6. **Do not embed or take over third-party browser experiences as a prerequisite.** Browser plugins/connectors remain later work. No roadmap commitment is made to universal text drag-and-drop, arbitrary website automation, or persistence of third-party login/session state.
 
+## Implementation Outcome
+
+Plan 008 completed and merged to `main` on 2026-09-01. The delivered Stage 1 baseline includes the host-neutral Local Agent Bridge, bounded Prompt retrieval, ten-tool STDIO/loopback HTTP MCP, typed review-only Document/Storyboard/Prompt/image writeback, durable replay/conflict/restart recovery, and a verified real-Codex closed loop. The next gate under Plan 009 is an accepted exact shot data model and allowed Agent operations; Asset Shelf and browser-connector work remains unauthorized until that gate is satisfied.
+
 ## Consequences
 
 - Product and technical documents must describe the canvas as the interface to portable project context, not the core competitive moat.

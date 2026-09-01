@@ -73,7 +73,7 @@ One Ark connection may appear on both pages, but its bindings remain separate. S
 npm.cmd run agent:check
 npx.cmd vitest run scripts/start-dev-with-agent.test.ts
 .\agent-runtime\backend\.venv\Scripts\python.exe -m pytest agent-runtime\backend\tests -q -p no:cacheprovider
-.\agent-runtime\backend\.venv\Scripts\python.exe -m unittest discover -s promptcard_storage/tests -p "test_*.py"
+npm.cmd run storage:test
 npm.cmd run build
 npm.cmd run test:e2e
 ```

@@ -21,7 +21,7 @@ The Runtime must start and report health without any model credential. A valid i
 - macOS: use the same user Keychain context.
 - Linux: use an unlocked Secret Service or KWallet backend. Headless deployments must provision a supported secure backend explicitly.
 
-Run `npm.cmd run agent:check` before enabling image generation. It verifies keyring and the pinned Volcengine Ark SDK using the repository-local F: environment.
+Run `npm.cmd run agent:check` before enabling image generation. It verifies keyring and the pinned Volcengine Ark SDK using the repository-local environment on the repository's existing drive.
 
 ## Migration And Prohibited Sources
 

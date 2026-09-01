@@ -24,12 +24,14 @@ This is the single entry point for the maintained project documentation. Histori
 - [Real Codex First-Contact Discovery Checkpoint](./reviews/2026-08-31-real-codex-discovery-checkpoint.md)
 - [Task 28 Optional Bridge Packaging Checkpoint](./reviews/2026-09-01-task-28-bridge-packaging-checkpoint.md)
 - [Plan 008 Final Release Matrix](./reviews/2026-09-01-plan-008-final-release-matrix.md)
+- [Plan 008 Post-Merge Code Review](./reviews/2026-09-01-plan-008-post-merge-code-review.md)
 - [Backend](./backend/README.md)
 - [Database and Storage](./database/README.md)
 - [Operations](./operations/README.md)
 - [Local Agent Bridge And MCP Operations](./operations/local-agent-bridge.md)
 - [Quality](./quality/README.md)
 - [Maintenance](./maintenance/README.md)
+- [Documentation Policy And Change Matrix](./maintenance/documentation-policy.md)
 - [Plans](./Plan/README.md)
 - [Official References](./references/volcengine/seedream/README.md)
 
@@ -37,7 +39,7 @@ This is the single entry point for the maintained project documentation. Histori
 
 PromptCard-Manager is a local-first Vite, React, TypeScript application with a Python PromptCard Gateway and a separate pi text Agent runtime. Project and Prompt Library durable data is owned by the local `promptcard-storage` service; the frontend only keeps runtime UI state and compatibility-only browser migration markers.
 
-The current minimal closed loop is Prompt media library construction, Canvas Prompt image generation, and text-Agent prompt analysis/completion. Canvas text editing uses an omnireference-style model: one writable target, multiple read-only reference nodes, atomic `@` relations, anchored interleaved completion, and derived-node rewrite. Project text-Agent conversations and proposal states are durable, each conversation persists a whitelisted model binding, and Media uses an intentionally temporary collaboration dialog. Skill Hub now provides inert package inspection/import, revision history and diff, exact-revision trust review, archive/restore, independent Codex/local-Agent pins, visible projection health, and explicit repair while bounded local-Agent snapshots remain unable to expand Runtime permissions. See [Canvas Agent Omnireference Prompt Editing](./frontend/canvas-agent-reference-editing.md), [Text Agent Runtime Boundary](./architecture/agent-runtime-boundary.md), [Skill Host Pins And Projections](./architecture/skill-host-projections.md), [ADR-016](./decisions/ADR-016-durable-text-agent-conversations-and-bounded-skills.md), and [ADR-019](./decisions/ADR-019-generic-local-agent-bridge-boundary.md).
+The current minimal closed loop is Prompt media library construction, Canvas Prompt image generation, text-Agent prompt analysis/completion, and external-Agent review-only typed writeback for Documents, Storyboards, Prompts, and images. Canvas text editing uses an omnireference-style model: one writable target, multiple read-only reference nodes, atomic `@` relations, anchored interleaved completion, and derived-node rewrite. Project text-Agent conversations and proposal states are durable, each conversation persists a whitelisted model binding, and Media uses an intentionally temporary collaboration dialog. Skill Hub provides inert package inspection/import, revision history and diff, exact-revision trust review, archive/restore, independent Codex/local-Agent pins, visible projection health, and explicit repair while bounded local-Agent snapshots remain unable to expand Runtime permissions. See [Canvas Agent Omnireference Prompt Editing](./frontend/canvas-agent-reference-editing.md), [Text Agent Runtime Boundary](./architecture/agent-runtime-boundary.md), [Skill Host Pins And Projections](./architecture/skill-host-projections.md), [ADR-016](./decisions/ADR-016-durable-text-agent-conversations-and-bounded-skills.md), [ADR-019](./decisions/ADR-019-generic-local-agent-bridge-boundary.md), and [ADR-023](./decisions/ADR-023-typed-creative-writeback-and-agent-workspace.md).
 
 The Tauri desktop dev shell opens the same Vite app in a native window while keeping the source tree editable. During editable development, projects, Prompt presets, Recent Captures, and media use the ignored repository `data/` directory as their single durable root. Runtime logs and desktop metadata remain under `logs/`. See [Desktop Dev Shell](./operations/desktop-dev-shell.md), [Local App Data Layout](./database/local-app-data-layout.md), and [ADR-007](./decisions/ADR-007-repository-data-root-for-editable-development.md).
 
@@ -55,19 +57,15 @@ Contextual image actions and explicit multi-view groups are tracked by [Plan 007
 
 PromptCard-Manager is evolving into a portable, cross-platform creative-context environment. It preserves a creator's project context across external Agent applications and creation tools instead of competing to become another image/video generation canvas or model aggregator. The durable core is the context itself—script, references, structured storyboard, shot execution information, assets, feedback, and decisions—while Free Canvas is the shared human/Agent workbench for viewing and editing that context.
 
-The immediate product/technical priority is the host-neutral Local Agent Bridge / MCP foundation. It must let external Agents operate on explicit, typed project objects through Gateway/Storage policy and reviewable proposals. Browser-facing delivery is deliberately later: an Asset Shelf and connectors should first make project assets portable through file/image drag-out, text copy, and execution-package export; platform-specific fill/return flows follow only where they are reliable and valuable.
+The Local Agent Bridge / MCP foundation is now the accepted Stage 1 baseline. The immediate planning priority is the exact shot data model and its allowed Agent operations. Browser-facing delivery remains deliberately later: after that gate, an Asset Shelf and connectors should first make project assets portable through file/image drag-out, text copy, and execution-package export; platform-specific fill/return flows follow only where they are reliable and valuable.
 
 See [ADR-022](./decisions/ADR-022-portable-creative-context-environment.md) and [Plan 009](./Plan/009-portable-creative-context-environment.md) for scope, sequencing, and non-goals.
 
-The root workspace `F:\.Agent-PromptCardManager` is not the project. The project repository is:
-
-```text
-F:\.Agent-PromptCardManager\PromptCard-Manager
-```
+The project repository is the current checkout containing `package.json`, `promptcard_storage/`, `agent-runtime/`, `src/`, and this `docs/` directory. A surrounding workspace folder may contain references or local artifacts, but it is not the repository. Derive this root dynamically rather than copying an absolute path from documentation.
 
 ## Maintenance Rule
 
-When code changes, update the nearest documentation category in the same change. If the change touches storage, runtime integration, API routes, or user-visible workflows, also update the relevant verification checklist.
+When code changes, apply the [documentation policy and change matrix](./maintenance/documentation-policy.md) in the same change. If the change touches storage, runtime integration, API routes, tooling, paths, or user-visible workflows, update every affected current-state category and the relevant verification checklist.
 
 Current-state truth lives in the architecture, API, frontend, backend, database, operations, and ADR sections. Plans explain delivery history and must not override an accepted ADR or a current-state document.
 

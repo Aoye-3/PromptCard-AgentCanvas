@@ -9,7 +9,7 @@
 - Historical planning branch: `docs/document-skill-loop-plan`
 - Completed execution branch: `feat/skill-document-storyboard-loop`
 - Initial merge commit on `main`: `7b64cf8 merge: complete external Agent creative loop`
-- Plan 007 prerequisite: manual acceptance confirmed by the user on `2026-08-22`
+- Plan 007 prerequisite for beginning Plan 008: confirmed by the user on `2026-08-22`; this was not the full unified visual acceptance that still keeps Plan 007 `Active`
 - Paid live-provider evaluation remains independent and does not block this plan
 
 ## Goal

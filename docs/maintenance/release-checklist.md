@@ -2,12 +2,16 @@
 
 - `npm.cmd run test:frontend`
 - `npm.cmd run test:e2e`
-- `& .\agent-runtime\backend\.venv\Scripts\python.exe -m unittest discover -s promptcard_storage/tests -p "test_*.py"`
+- `npm.cmd run storage:test`
 - `npm.cmd run build`
 - `npm.cmd run agent:check` when Agent Runtime changes are included
 - `npm.cmd run tauri:dev` when desktop shell behavior changes
 - Review `git status --short`
 - Confirm docs changed with code behavior
+- Confirm the [documentation change matrix](./documentation-policy.md#code-to-documentation-change-matrix) is satisfied for every changed subsystem
+- Confirm maintained code, tests, configuration, and docs do not bind executable defaults to a drive letter, username, or absolute checkout path
+- Confirm `promptcard_storage.tests.test_workspace_test_paths` passes and new Storage tests use repository-local temporary roots
+- Confirm maintained relative documentation links and `git diff --check` pass
 - Confirm no API keys, tokens, passwords, or Agent Runtime state are staged
 - Confirm every maintained editable-development launcher reports the repository `data/` directory from Storage health
 - Confirm `data/`, `logs/desktop-profile/`, `backups/`, and Agent Runtime state are not staged unless a release-specific migration explicitly requires reviewed fixture data

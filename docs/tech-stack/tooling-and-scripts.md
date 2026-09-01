@@ -1,5 +1,11 @@
 # Tooling and Scripts
 
+## Repository-Local Path Resolution
+
+Launchers derive the repository root from their own location and keep dependencies, caches, builds, browser binaries, and test output on the repository drive. Workspace confinement is verified after resolving a path; committed scripts and tests must not encode the current drive letter or checkout path.
+
+PromptCard Storage tests use `promptcard_storage.tests.workspace_paths.workspace_test_root()` for suite-specific parents under `.test-tmp/promptcard-storage/`. The policy test `promptcard_storage.tests.test_workspace_test_paths` rejects machine-bound roots and unqualified system temporary directories.
+
 ## Frontend
 
 ```powershell
@@ -26,10 +32,10 @@ $env:PLAYWRIGHT_BROWSERS_PATH = "$PWD\.playwright-browsers"
 npx.cmd playwright install chromium
 ```
 
-Run Storage verification with the workspace virtual environment rather than the `storage:test` npm script's ambient `python` resolution:
+Run Storage verification through the canonical script. It derives the repository root and invokes the locked workspace virtual environment instead of resolving an ambient `python`:
 
 ```powershell
-.\agent-runtime\backend\.venv\Scripts\python.exe -m unittest discover -s promptcard_storage/tests -p "test_*.py"
+npm.cmd run storage:test
 ```
 
 Do not install `pillow_heif` globally to change the result of this gate.

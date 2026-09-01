@@ -58,10 +58,10 @@ Backups use the SQLite backup API and include the database, assets, documents, a
 
 ## Verification
 
-The Storage release gate discovers every `test_*.py` file under `promptcard_storage/tests` with the repository Agent backend environment. Use that explicit workspace interpreter so FastAPI and image-codec dependencies such as `pillow_heif` are present; do not install them into system Python to make an ambient `npm.cmd run storage:test` pass:
+The Storage release gate discovers every `test_*.py` file under `promptcard_storage/tests` with the repository Agent backend environment. The canonical npm script resolves that interpreter itself so FastAPI and image-codec dependencies such as `pillow_heif` are present; do not install them into system Python to change the result:
 
 ```powershell
-.\agent-runtime\backend\.venv\Scripts\python.exe -m unittest discover -s promptcard_storage/tests -p "test_*.py"
+npm.cmd run storage:test
 .\agent-runtime\backend\.venv\Scripts\python.exe -m unittest promptcard_storage.tests.test_app
 .\agent-runtime\backend\.venv\Scripts\python.exe -m pytest promptcard_storage/tests/test_image_runs.py -q
 .\agent-runtime\backend\.venv\Scripts\python.exe -m pytest promptcard_storage/tests/test_image_assets_v5.py -q

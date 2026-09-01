@@ -34,8 +34,11 @@ Use numbered filenames:
 - [002: Floating Capture Video Asset MVP](./002-floating-capture-video-asset-mvp.md)
 - [004: Update Module Integration](./004-update-module-integration.md)
 - [007: Provider-Neutral Contextual Image Editing And Multi-View](./007-contextual-image-editing-and-multi-view-plan.md)
-- [008: Local Agent Bridge, Prompt Library RAG, and host adapters](./008-local-mcp-prompt-media-codex-bridge.md) — historical filename/title; Phase 3.5 Skill conversation/Document/Storyboard loop is planned for implementation before Task 16, with the host-neutral Bridge boundary in ADR-019.
-- [009: Portable Creative Context Environment](./009-portable-creative-context-environment.md) — product-direction guardrail: stabilize the Local Agent Bridge / MCP before Asset Shelf or browser connectors.
+- [009: Portable Creative Context Environment](./009-portable-creative-context-environment.md) — product-direction guardrail: use the completed Local Agent Bridge / MCP baseline to define the exact shot model before Asset Shelf or browser connectors.
+
+## Completed Plans
+
+- [008: Local Agent Bridge, Prompt Library RAG, and host adapters](./008-local-mcp-prompt-media-codex-bridge.md) — completed and merged to `main` on 2026-09-01; the filename/title is historical, while ADR-019 and ADR-023 define the host-neutral and typed-writeback boundaries.
 
 ## Implemented Baselines
 

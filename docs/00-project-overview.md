@@ -6,7 +6,7 @@ PromptCard-Manager is a local-first, portable creative-context environment. It c
 
 The durable product is the project context shared by a creator, Agents, and external creative tools: script and planning material, characters/scenes, references, structured storyboard rows, shot execution information, generated assets, review notes, revisions, and decisions. Free Canvas is the visual workbench for these objects; it is not a competing video/image generation platform or a generic model aggregator.
 
-The current next technical priority is the host-neutral Local Agent Bridge / MCP foundation defined by ADR-019 and Plan 008. External Agents must work through the same typed references, Gateway policy, proposal/approval boundaries, and Storage authority as first-party flows. The future Asset Shelf and browser connectors are project-asset delivery surfaces: reliable file/image drag-out, text copy, and execution-package export come before optional platform-specific fill/return integrations. The app must not embed or take over a third-party browser UI as a prerequisite for the creative loop.
+The host-neutral Local Agent Bridge / MCP foundation defined by ADR-019, ADR-023, and Plan 008 is complete. External Agents work through typed references, Gateway policy, proposal/approval boundaries, and Storage authority rather than UI focus or internal node IDs. The next planning gate is the exact shot data model and its allowed Agent operations; only after that gate should Stage 2 Asset Shelf work begin. Future Asset Shelf and browser connectors remain project-asset delivery surfaces: reliable file/image drag-out, text copy, and execution-package export come before optional platform-specific fill/return integrations. The app must not embed or take over a third-party browser UI as a prerequisite for the creative loop.
 
 ## Minimal Closed Loop
 
@@ -16,6 +16,7 @@ The current delivery target is:
 2. Image generation from Canvas prompts.
 3. Prompt analysis and prompt completion through the text Agent.
 4. Contextual image operations and explicit front/left/top multi-view generation with recoverable, independently retryable members.
+5. External Agent discovery and review-only typed Document, Storyboard, Prompt, and image writeback through the Local Agent Bridge, with durable replay/conflict and restart recovery.
 
 ## Primary Capabilities
 

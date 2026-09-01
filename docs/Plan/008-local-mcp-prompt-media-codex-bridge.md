@@ -2,7 +2,9 @@
 
 ## Status
 
-Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes were merged into and satisfied by the final real-Codex closed-loop gate. Tasks 16-28 and the repository-wide release matrix are complete on `feat/skill-document-storyboard-loop`: Codex passed first-contact discovery, the complete Document/Storyboard create/change → Prompt create → generated-image review chain, four-kind replay, digest conflict, process restart recovery, the adversarial boundary matrix, optional Bridge packaging/diagnostics, and all build/regression/browser/security/documentation gates. The branch is ready for its authorized merge into `main`.
+Completed. Tasks 15.6-15.10 are the accepted automated regression baseline. Checkpoint 3.5 manual probes were merged into and satisfied by the final real-Codex closed-loop gate. Tasks 16-28 and the repository-wide release matrix completed on `feat/skill-document-storyboard-loop`: Codex passed first-contact discovery, the complete Document/Storyboard create/change → Prompt create → generated-image review chain, four-kind replay, digest conflict, process restart recovery, the adversarial boundary matrix, optional Bridge packaging/diagnostics, and all build/regression/browser/security/documentation gates. The feature was merged to `main` by `7b64cf8`, and the final documentation handoff was merged by `d09a0ab` on 2026-09-01.
+
+The unchecked boxes retained in the original design body below are historical planning criteria, not active work or the completion source of truth. Final implementation and verification status lives in the [execution ledger](../superpowers/plans/2026-08-22-plan-008-execution.md) and [release matrix](../reviews/2026-09-01-plan-008-final-release-matrix.md).
 
 ## Current Normative Boundary
 

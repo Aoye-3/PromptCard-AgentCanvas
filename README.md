@@ -178,7 +178,7 @@ cd PromptCard-Agent
 start-desktop.vbs
 ```
 
-启动器会在需要时安装前端依赖、初始化本地服务并打开 PMAgent-Canvas 桌面壳。正常启动会复用现有桌面进程；Rust 或 Tauri 源码变化时会触发重新构建。当前组合启动链路会校验 Storage schema v9，避免把旧 Storage 进程误当作可用服务。
+启动器会在需要时安装前端依赖、初始化本地服务并打开 PMAgent-Canvas 桌面壳。正常启动会复用现有桌面进程；Rust 或 Tauri 源码变化时会触发重新构建。当前组合启动链路会校验 Storage schema v19，避免把旧 Storage 进程误当作可用服务。
 
 如果启动失败，运行可见终端版本查看完整日志：
 
@@ -250,14 +250,13 @@ Backend Agent Runtime tests:
 
 ```powershell
 cd agent-runtime/backend
-$env:UV_CACHE_DIR='F:\.Agent-PromptCardManager\.uv-cache'
-uv run pytest tests -q -p no:cacheprovider
+& .\.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider
 ```
 
-PromptCard Storage release gate (use the existing workspace virtual environment so image-codec dependencies are available):
+PromptCard Storage release gate (the script resolves the repository root and uses its existing virtual environment so image-codec dependencies are available):
 
 ```powershell
-& .\agent-runtime\backend\.venv\Scripts\python.exe -m unittest discover -s promptcard_storage/tests -p "test_*.py"
+npm.cmd run storage:test
 ```
 
 </details>

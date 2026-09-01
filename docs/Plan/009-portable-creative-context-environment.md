@@ -14,6 +14,8 @@ This is a product-direction guardrail for future planning. It does not replace t
 
 PromptCard-Manager is not pursuing feature parity with image/video generation canvases, model aggregators, or end-to-end video-production systems. It is a portable, cross-platform creative-context environment that lets a creator, external Agents, and external creation tools work from the same durable project state.
 
+Plan 008 Stage 1 is now a completed implementation baseline. The next planning gate is to define and accept the exact shot data model and its allowed Agent operations before authorizing Stage 2 Asset Shelf work.
+
 ## Durable Product Context
 
 The product must preserve and connect these project assets:
@@ -29,9 +31,9 @@ Free Canvas is the visual workbench for this context. It is not the source of au
 
 ## Sequenced Direction
 
-### Stage 1: Stabilize External Agent Read/Write Collaboration
+### Stage 1: Stabilize External Agent Read/Write Collaboration — Completed Baseline
 
-Finish the gated Plan 008 sequence before adding browser-facing integration. The Local Agent Bridge / MCP must give Codex and other supported MCP-capable hosts a host-neutral, narrow, typed surface through Gateway and Storage.
+Plan 008 completed the gated Local Agent Bridge / MCP sequence. Codex is the first verified host for the host-neutral, narrow, typed Gateway and Storage surface; other hosts require their own official evidence and real-host smoke before compatibility is claimed.
 
 The first user-facing loop is:
 
@@ -77,7 +79,7 @@ Returned results should keep source-platform metadata and attach to the originat
 
 - [Plan 001](./001-cross-platform-clipboard-asset-workbench.md) remains the asset-management foundation; its manual copy/paste loop aligns with Stage 2.
 - [Plan 002](./002-floating-capture-video-asset-mvp.md) remains the capture/inbox foundation; it does not make raw captures ambient Agent context.
-- [Plan 008](./008-local-mcp-prompt-media-codex-bridge.md) is the active detailed execution ledger for Stage 1. Its checkpoints and acceptance gates take precedence for implementation order.
+- [Plan 008](./008-local-mcp-prompt-media-codex-bridge.md) is the completed detailed execution ledger and accepted Stage 1 baseline.
 - [ADR-019](../decisions/ADR-019-generic-local-agent-bridge-boundary.md) defines the host-neutral Bridge boundary.
 - [ADR-022](../decisions/ADR-022-portable-creative-context-environment.md) records the durable product decision behind this plan.
 
@@ -92,8 +94,8 @@ These repositories are research inputs only. Any source reuse requires a separat
 
 Before starting Stage 2:
 
-- [ ] Plan 008's relevant Local Agent Bridge / MCP acceptance gates have passed.
-- [ ] A human has confirmed the script/reference → storyboard → scoped review → executable asset-package loop.
+- [x] Plan 008's relevant Local Agent Bridge / MCP acceptance gates have passed.
+- [x] The accepted real-Codex loop confirmed script/reference → storyboard → scoped review → executable asset-package handoff.
 - [ ] The exact shot data model and its allowed Agent operations have an accepted plan.
 
 Before adding a platform-specific connector:

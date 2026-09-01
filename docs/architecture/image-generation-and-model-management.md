@@ -72,7 +72,7 @@ The runtime account must have an available keyring backend:
 - macOS: Keychain access for the Gateway user.
 - Linux: an unlocked Secret Service or KWallet session. Headless services need an explicitly provisioned supported backend; plaintext fallback is not acceptable.
 
-Run `npm.cmd run agent:check`. It imports `keyring` and the Ark SDK and prints a workspace-local repair command if dependencies are incomplete. The command sets `UV_CACHE_DIR`, `UV_PYTHON_INSTALL_DIR`, and `UV_PROJECT_ENVIRONMENT` inside this F: repository before running `uv sync`.
+Run `npm.cmd run agent:check`. It imports `keyring` and the Ark SDK and prints a workspace-local repair command if dependencies are incomplete. The command derives the repository root and sets `UV_CACHE_DIR`, `UV_PYTHON_INSTALL_DIR`, and `UV_PROJECT_ENVIRONMENT` inside that repository before running `uv sync`.
 
 Do not use `API-Key.txt`, parse `sk-` strings, set `DEEPSEEK_API_KEY`/`ARK_API_KEY` in maintained PromptCard launchers, or persist credentials in `.env`, localStorage, IndexedDB, project JSON, SQLite, logs, or generated assets.
 

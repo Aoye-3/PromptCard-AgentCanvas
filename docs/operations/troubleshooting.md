@@ -201,10 +201,10 @@ The runner owns the Storage, Fake Runtime, and Vite process trees it starts. It 
 
 ## Storage Tests Fail With Missing `pillow_heif`
 
-Run the Storage gate with the repository's workspace virtual environment:
+Run the Storage gate through the canonical script, which resolves the repository's workspace virtual environment:
 
 ```powershell
-.\agent-runtime\backend\.venv\Scripts\python.exe -m unittest discover -s promptcard_storage/tests -p "test_*.py"
+npm.cmd run storage:test
 ```
 
 Do not install `pillow_heif` into the global Python environment. If the workspace environment is incomplete, repair it through the maintained workspace Runtime setup instead of changing the interpreter used by the gate.
