@@ -10,7 +10,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "storage:dev": "powershell -ExecutionPolicy Bypass -File scripts/start-storage-service.ps1",
-    "storage:test": "python -m unittest discover -s promptcard_storage/tests -p \"test_*.py\"",
+    "storage:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-storage-tests.ps1",
     "agent:dev": "powershell -ExecutionPolicy Bypass -File scripts/start-agent-runtime.ps1",
     "agent:check": "powershell -ExecutionPolicy Bypass -File scripts/check-agent-runtime.ps1",
     "text-agent:dev": "node --experimental-strip-types text-agent-runtime/src/server.ts",

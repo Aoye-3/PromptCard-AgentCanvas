@@ -9,9 +9,10 @@ from fastapi.testclient import TestClient
 
 from promptcard_storage.app import create_app
 from promptcard_storage.store import JsonCollectionStore, SCHEMA_VERSION
+from promptcard_storage.tests.workspace_paths import workspace_test_root
 
 
-TEST_ROOT = Path("F:.test-tmp/task16-creative-references")
+TEST_ROOT = workspace_test_root("task16-creative-references")
 DIGEST = "sha256:" + "a" * 64
 
 

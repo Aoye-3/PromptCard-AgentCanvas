@@ -11,6 +11,10 @@ except ModuleNotFoundError:
     create_app = None
 
 from promptcard_storage.store import SqliteStore
+from promptcard_storage.tests.workspace_paths import workspace_test_root
+
+
+TEST_ROOT = workspace_test_root("app")
 
 
 def preset(item_id: str, label: str) -> dict:
@@ -31,7 +35,9 @@ def preset(item_id: str, label: str) -> dict:
 @unittest.skipUnless(TestClient and create_app, "FastAPI contract dependencies are not installed")
 class StorageAppContractTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(
+            prefix=f"{self._testMethodName}-", dir=TEST_ROOT
+        )
         self.store = SqliteStore(Path(self.temp_dir.name))
         self.client = TestClient(create_app(self.store))
 

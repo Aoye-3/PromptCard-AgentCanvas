@@ -11,11 +11,10 @@ from fastapi.testclient import TestClient
 from promptcard_storage.app import create_app
 from promptcard_storage.delivery_ledger import BridgeDeliveryValidationError
 from promptcard_storage.store import JsonCollectionStore, MissingItem
+from promptcard_storage.tests.workspace_paths import workspace_test_root
 
 
-TEST_ROOT = Path(
-    "F:/.Agent-PromptCardManager/PromptCard-Manager/.test-tmp/task26b-storyboard"
-)
+TEST_ROOT = workspace_test_root("task26b-storyboard")
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
 DIGEST_C = "sha256:" + "c" * 64

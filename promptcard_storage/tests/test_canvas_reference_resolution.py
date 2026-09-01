@@ -15,9 +15,10 @@ from promptcard_storage.app import create_app
 from promptcard_storage.maintenance import restore_backup
 from promptcard_storage.reference_codes import ReferenceCodeError
 from promptcard_storage.store import JsonCollectionStore
+from promptcard_storage.tests.workspace_paths import workspace_test_root
 
 
-TEST_ROOT = Path("F:.test-tmp/task8-canvas-references")
+TEST_ROOT = workspace_test_root("task8-canvas-references")
 CONTRACT_SCHEMA_PATH = (
     Path(__file__).resolve().parents[2]
     / "contracts"

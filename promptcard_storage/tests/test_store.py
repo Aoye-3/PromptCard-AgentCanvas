@@ -3,11 +3,17 @@ import unittest
 from pathlib import Path
 
 from promptcard_storage.store import JsonCollectionStore, RevisionConflict
+from promptcard_storage.tests.workspace_paths import workspace_test_root
+
+
+TEST_ROOT = workspace_test_root("store")
 
 
 class JsonCollectionStoreTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(
+            prefix=f"{self._testMethodName}-", dir=TEST_ROOT
+        )
         self.store = JsonCollectionStore(
             Path(self.temp_dir.name),
             presets_seed=[

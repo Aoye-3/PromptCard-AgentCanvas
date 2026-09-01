@@ -13,11 +13,10 @@ from promptcard_storage.delivery_ledger import (
     BridgeDeliveryValidationError,
 )
 from promptcard_storage.store import JsonCollectionStore, MissingItem
+from promptcard_storage.tests.workspace_paths import workspace_test_root
 
 
-TEST_ROOT = Path(
-    "F:/.Agent-PromptCardManager/PromptCard-Manager/.test-tmp/task26a-document"
-)
+TEST_ROOT = workspace_test_root("task26a-document")
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
 DIGEST_C = "sha256:" + "c" * 64
@@ -63,7 +62,6 @@ def project() -> dict:
 
 class BridgeDocumentDeliveryV19Test(unittest.TestCase):
     def setUp(self) -> None:
-        TEST_ROOT.mkdir(parents=True, exist_ok=True)
         self.temp_dir = tempfile.TemporaryDirectory(
             prefix=f"{self._testMethodName}-", dir=TEST_ROOT
         )

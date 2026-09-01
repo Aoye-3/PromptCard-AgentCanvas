@@ -14,10 +14,11 @@ from promptcard_storage.reference_codes import (
     generate_reference_code,
 )
 from promptcard_storage.store import SCHEMA_VERSION, DuplicateItem, JsonCollectionStore
+from promptcard_storage.tests.workspace_paths import workspace_test_root
 
 
 SKILL_CODE = re.compile(r"^SKL-[0-7][0-9A-HJKMNP-TV-Z]{25}$")
-TEST_ROOT = Path("F:/.Agent-PromptCardManager/PromptCard-Manager/.test-tmp/skill-packages-v13")
+TEST_ROOT = workspace_test_root("skill-packages-v13")
 
 
 def package_entry(entry_type: str, path: str, content: bytes, content_type: str) -> dict:

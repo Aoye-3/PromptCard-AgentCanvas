@@ -11,6 +11,10 @@ from promptcard_storage.store import (
     RevisionConflict,
     SqliteStore,
 )
+from promptcard_storage.tests.workspace_paths import workspace_test_root
+
+
+TEST_ROOT = workspace_test_root("project-resources")
 
 
 def project(item_id: str) -> dict:
@@ -26,7 +30,9 @@ def project(item_id: str) -> dict:
 
 class ProjectResourcesTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(
+            prefix=f"{self._testMethodName}-", dir=TEST_ROOT
+        )
         self.store = SqliteStore(Path(self.temp_dir.name))
         self.project_a = self.store.create_project(project("project-a"))
         self.project_b = self.store.create_project(project("project-b"))

@@ -12,9 +12,10 @@ from promptcard_storage.app import create_app
 from promptcard_storage.assets import AssetValidationError
 from promptcard_storage.delivery_ledger import BridgeDeliveryValidationError
 from promptcard_storage.store import JsonCollectionStore
+from promptcard_storage.tests.workspace_paths import workspace_test_root
 
 
-TEST_ROOT = Path("F:/.Agent-PromptCardManager/PromptCard-Manager/test-output/task25-image-v2")
+TEST_ROOT = workspace_test_root("task25-image-v2")
 PNG = b"\x89PNG\r\n\x1a\nbridge-image"
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
@@ -58,7 +59,6 @@ def prepare(_content_type: str, content: bytes) -> dict:
 
 class BridgeImageDeliveryV19Test(unittest.TestCase):
     def setUp(self) -> None:
-        TEST_ROOT.mkdir(parents=True, exist_ok=True)
         self.temp_dir = tempfile.TemporaryDirectory(
             prefix=f"{self._testMethodName}-", dir=TEST_ROOT
         )

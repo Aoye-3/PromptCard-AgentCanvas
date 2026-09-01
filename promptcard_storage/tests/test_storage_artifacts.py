@@ -4,9 +4,11 @@ import unittest
 from pathlib import Path
 
 from promptcard_storage.store import SCHEMA_VERSION, AssetInUse, DeletedAsset, SqliteStore
+from promptcard_storage.tests.workspace_paths import workspace_test_root
 
 
 PNG = b"\x89PNG\r\n\x1a\nasset"
+TEST_ROOT = workspace_test_root("storage-artifacts")
 
 
 def project_with_asset(item_id: str, asset_id: str) -> dict:
@@ -38,7 +40,9 @@ def project_with_asset(item_id: str, asset_id: str) -> dict:
 
 class StorageArtifactLifecycleTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(
+            prefix=f"{self._testMethodName}-", dir=TEST_ROOT
+        )
         self.data_dir = Path(self.temp_dir.name)
         self.store = SqliteStore(self.data_dir)
 
